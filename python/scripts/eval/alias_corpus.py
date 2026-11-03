@@ -432,10 +432,14 @@ SEED_RANDOM_V2 = {1: f"{SEED_BASE}|random-1-v2", 2: f"{SEED_BASE}|random-2-v2"}
 #: does not carry it, and both arms must be filtered on the same field.
 TYPE_CLASS = {"article": "article", "review": "review"}
 
-#: v2 random draws: the order in which an unfillable (type, band, source) cell is relaxed. Each
-#: relaxation pass reuses candidates already fetched for that study paper (no new fetch): first the
-#: source (PDF share), then the type, then the band; ``any`` takes whatever is left.
+#: v2/v3 random draws: the order in which an unfillable (type, band, source) cell is relaxed —
+#: **source first, then type, then band last** (owner, 2026-11-02). Level names: ``strict`` (all
+#: three match), ``source`` (type and band match, source relaxed), ``source+type`` (band matches,
+#: source and type relaxed), ``any`` (band relaxed too: whatever is left). Each relaxation pass
+#: reuses the passed-over candidates first; unfetched ones are fetched within the relax budget.
 RELAX_ORDER = ("strict", "source", "source+type", "any")
+#: the levels that relax the band (only the last one)
+BAND_RELAXED = frozenset({"any"})
 
 
 def type_class(t: str | None) -> str | None:
@@ -656,6 +660,58 @@ def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str
             "unfilled": {"|".join(map(str, c)): n for c, n in sorted(open_q.items()) if n > 0},
             "relaxed": dict(relaxed), "skipped": dict(skipped), "resolves": sum(resolves.values()),
             "resolves_by_phase": resolves, "budget_hit": budget_hit, "passed_over": len(later)}
+
+
+# ------------------------------------------------------------------ v3 (owner, 2026-11-02): the ≥ 80 band
+
+#: v3 splits the open-ended top length band of v2 at 80 chunks (v2 cuts 20/27/34/46 -> 20/27/34/46/80)
+V3_SPLIT_AT = 80.0
+
+
+def v3_cuts(v2_cuts: Sequence[float]) -> list[float]:
+    """The v2 cuts plus the split of the open top band at :data:`V3_SPLIT_AT`."""
+    cuts = [float(c) for c in v2_cuts]
+    if cuts and V3_SPLIT_AT <= cuts[-1]:
+        raise ValueError(f"split {V3_SPLIT_AT} is not above the top v2 cut {cuts[-1]}")
+    return cuts + [V3_SPLIT_AT]
+
+
+def carry_over(took: Sequence[Mapping[str, Any]], quota: Mapping[Cell, int], band: Callable[[int], int],
+               n_chunks: Callable[[str], int]) -> dict[str, Any]:
+    """Which of one study paper's v2 takes stay in v3, under the v3 ``quota`` and ``band``.
+
+    A take is **re-drawn** (released) when it was matched at a band-relaxed level (``any``:
+    ``relaxed_on_band``), or when the v3 slot its own band now points to has no room
+    (``band_assignment_changed``: the v2 top band split, so its slot moved to the other side of
+    the split). Every other take is kept with its v2 level: a take below ``any`` matched its slot's
+    band, so its v3 slot is (slot type, its own v3 band, slot source). Takes are considered in v2
+    take order; the first ones fill a v3 cell. Returns kept takes (``band``/``for_cell`` rewritten in
+    v3 terms), released takes (with ``why``) and the quota left open for the re-draw.
+    """
+    open_q: Counter[Cell] = Counter({c: n for c, n in quota.items() if n > 0})
+    kept: list[dict[str, Any]] = []
+    released: list[dict[str, Any]] = []
+    for t in took:
+        if t["level"] in BAND_RELAXED:
+            released.append({**t, "why": "relaxed_on_band"})
+            continue
+        ft, fb, fs = t["for_cell"]
+        if int(t["band"]) != int(fb):
+            raise ValueError(f"take {t['wid']} at level {t['level']} has band {t['band']} != slot band {fb}")
+        b3 = band(n_chunks(t["wid"]))
+        slot: Cell = (ft, b3, fs)
+        if open_q[slot] > 0:
+            open_q[slot] -= 1
+            kept.append({**t, "band": b3, "for_cell": list(slot), "v2_band": t["band"]})
+        else:
+            released.append({**t, "why": "band_assignment_changed", "v3_band": b3})
+    return {"kept": kept, "released": released, "open": {c: n for c, n in sorted(open_q.items()) if n > 0}}
+
+
+def strict_shortfall(quota: Mapping[Cell, int], took: Iterable[Mapping[str, Any]]) -> dict[Cell, int]:
+    """Per cell: slots not filled at level ``strict`` (quota minus strict takes for that cell)."""
+    got: Counter[Cell] = Counter(tuple(t["for_cell"]) for t in took if t["level"] == "strict")  # type: ignore[misc]
+    return {c: n - got[c] for c, n in sorted(quota.items()) if n - got[c] > 0}
 
 
 # ------------------------------------------------------------------ control-character screen

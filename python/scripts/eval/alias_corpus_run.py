@@ -19,6 +19,12 @@ Stages (``run`` does them in order; each is resumable)::
     finalize    per-arm chunk files, private manifests, public counts, disk use
     chunkcheck  re-chunk 3 OA-1000 papers through the same path and diff against the export
 
+v2 (``run-v2``: chunkcheck-v2, neighbours-v2, random-v2, finalize-v2): neighbour walk-down, type
+filter, matched random draws. v3 (``run-v3``: chunkcheck-v3, random-v3, finalize-v3; owner
+2026-11-02): v2's open top length band split at 80 chunks; only the slots the split moves, or that v2
+filled at a band-relaxed level, are re-drawn (``V3_REDRAW_RULE``); ``random-v3 --dry-run`` replays it
+on memoised outcomes without fetching. Every stage records the provenance captured at launch.
+
 Safety: downloaded files are untrusted data. They are stored under ``<root>/raw`` (0700 dirs, 0600
 files), parsed with stdlib ElementTree (JATS) or PyMuPDF in a **separate, resource-limited**
 ``python -I`` process (PDF), never executed. This process imports ragstack from the checkout that
@@ -78,6 +84,8 @@ MAX_PDF_BYTES = 100 * 1024 * 1024
 PDF_URL_TRIES = 3
 
 _LOG_LOCK = threading.Lock()
+#: provenance captured once at process launch (main); stages record this, not the tree at stage end
+LAUNCH_PROVENANCE: dict | None = None
 
 
 def now() -> str:
@@ -734,10 +742,11 @@ def http_get(url: str, gate: HostGate | None, max_bytes: int, timeout: int = 60,
 class Builder:
     """Fetch -> convert -> chunk -> screen for one work; memoised, thread-safe, resumable."""
 
-    def __init__(self, lay: Layout, workers: int = 16, v2: bool = False) -> None:
-        """``v2``: memoised outcomes are read from the v1 state files and then the v2 ones; every new
-        outcome and file goes to ``state/*-v2.jsonl`` and ``raw-v2/``, ``text-v2/``, ``chunks-v2/``
-        (the v1 files are read, never rewritten). Hosts that refused (403/429) in v1 stay refused."""
+    def __init__(self, lay: Layout, workers: int = 16, v2: bool = False, version: int | None = None) -> None:
+        """``version`` N >= 2 (``v2=True`` is version 2): memoised outcomes are read from the v1 state
+        files, then v2, ..., vN; every new outcome and file goes to ``state/*-vN.jsonl`` and
+        ``raw-vN/``, ``text-vN/``, ``chunks-vN/`` (earlier files are read, never rewritten). Hosts
+        that refused (403/429) in an earlier version stay refused (``host_refused_earlier``)."""
         from ragstack.ingestion import jats
         from ragstack.ingestion.boilerplate import filter_from_mode
         from ragstack.ingestion.chunker_config import build_chunker
@@ -762,8 +771,12 @@ class Builder:
         self.futs: dict[str, cf.Future] = {}
         self.kfuts: dict[str, cf.Future] = {}
         self.lock = threading.Lock()
-        self.v2 = v2
-        sfx = "-v2" if v2 else ""
+        self.version = version or (2 if v2 else 1)
+        self.v2 = self.version >= 2
+        sfx = f"-v{self.version}" if self.version >= 2 else ""
+        for sub in (f"raw{sfx}/jats", f"raw{sfx}/pdf", f"text{sfx}", f"chunks{sfx}"):
+            (lay.root / sub).mkdir(parents=True, exist_ok=True)
+            os.chmod(lay.root / sub, 0o700)
         self.out_path = lay.state / f"outcomes{sfx}.jsonl"
         self.pmc_path = lay.state / f"pmc-meta{sfx}.jsonl"
         self.raw_jats_dir = lay.root / f"raw{sfx}" / "jats"
@@ -773,8 +786,9 @@ class Builder:
         self.done: dict[str, dict] = {}
         self.pmc: dict[str, dict] = {}
         sources = [(self.out_path, self.done), (self.pmc_path, self.pmc)]
-        if v2:
-            sources = [(lay.state / "outcomes.jsonl", self.done), (lay.state / "pmc-meta.jsonl", self.pmc), *sources]
+        earlier = [""] + [f"-v{k}" for k in range(2, self.version)] if self.version >= 2 else []
+        sources = [*[(lay.state / f"{n}{e}.jsonl", st) for e in earlier
+                     for n, st in (("outcomes", self.done), ("pmc-meta", self.pmc))], *sources]
         for path, store in sources:
             if path.exists():
                 for line in open(path):
@@ -784,11 +798,11 @@ class Builder:
                     except Exception:
                         pass
         self.works: dict[str, ac.Work] = {}
-        if v2:
+        if self.v2:
             for r in self.done.values():
                 for a in [r, *(r.get("attempts") or [])]:
                     if (a or {}).get("reason") in ("host_refused_403", "host_refused_429") and a.get("host"):
-                        self.gate.refused.setdefault(a["host"], "v1:" + a["reason"][-3:])
+                        self.gate.refused.setdefault(a["host"], "earlier:" + a["reason"][-3:])
 
     # ---------------------------------------------------------- PMC open-access metadata
     def pmc_meta(self, pmcid: str) -> dict:
@@ -1543,9 +1557,11 @@ def _stats(xs: list[int]) -> dict:
             "max": s[-1]}
 
 
-def stage_finalize_v2(lay: Layout, b: Builder) -> dict:
+def stage_finalize_v2(lay: Layout, b: Builder, version: int = 2) -> dict:
+    """Per-arm chunk files and counts of version ``version`` (2 or 3: the neighbour arm is v2's in both)."""
+    sfx = f"-v{version}"
     sel = load_sel_v2(lay)
-    draws = {d: json.load(open(lay.manifests / f"random-{d}-draw-v2.json")) for d in (1, 2)}
+    draws = {d: json.load(open(lay.manifests / f"random-{d}-draw{sfx}.json")) for d in (1, 2)}
     cuts = draws[1]["matching"]["cuts"]
     wtype = {k: v["type"] for k, v in sel["works"].items()}
     for d in (1, 2):
@@ -1553,11 +1569,11 @@ def stage_finalize_v2(lay: Layout, b: Builder) -> dict:
     arms: dict[str, list[tuple[str, str]]] = {"neighbour": [(p, w) for p in sel["order"] for w, _ in sel["attributed"][p]]}
     for d in (1, 2):
         arms[f"random-{d}"] = [(p, t["wid"]) for p in draws[d]["order"] for t in draws[d]["per_study"][p]["took"]]
-    counts: dict[str, Any] = {"schema": "alias-corpus-counts/2", "version": "v2", "public": "counts only",
+    counts: dict[str, Any] = {"schema": f"alias-corpus-counts/{version}", "version": f"v{version}", "public": "counts only",
                               "finished": now(), "length_cuts": cuts, "type_filter": V2_SCHEMA_TYPE}
     per_study_chunks: dict[str, dict[str, int]] = {}
     for arm, items in arms.items():
-        out = lay.root / f"chunks-{arm}-v2.jsonl"
+        out = lay.root / f"chunks-{arm}{sfx}.jsonl"
         ids: set[str] = set()
         dup = 0
         n_chunks = 0
@@ -1639,17 +1655,334 @@ def stage_finalize_v2(lay: Layout, b: Builder) -> dict:
     s2 = {w for _, w in arms["random-2"]}
     counts["draw_overlap"] = len(s1 & s2)
     counts["hosts_refused"] = len(b.gate.refused)
-    counts["disk_bytes"] = {k: _du(lay.root / k) for k in ("raw-v2", "text-v2", "chunks-v2")}
-    counts["disk_bytes"]["arm_chunk_files_v2"] = sum((lay.root / f"chunks-{a}-v2.jsonl").stat().st_size for a in arms)
+    counts["disk_bytes"] = {k: _du(lay.root / k) for k in (f"raw{sfx}", f"text{sfx}", f"chunks{sfx}")}
+    counts["disk_bytes"][f"arm_chunk_files_v{version}"] = sum((lay.root / f"chunks-{a}{sfx}.jsonl").stat().st_size for a in arms)
     counts["disk_bytes"]["root_total"] = _du(lay.root)
     counts["seeds"] = {"neighbours": ac.SEED_NEIGHBOURS, "random_1": ac.SEED_RANDOM_V2[1], "random_2": ac.SEED_RANDOM_V2[2]}
-    counts["manifest_sha256"] = {f.name: sha256_file(f) for f in sorted(lay.manifests.glob("*-v2.json"))}
-    counts["provenance"] = _provenance()
-    write_json(lay.manifests / "per-study-chunks-v2.json", per_study_chunks)
-    write_json(lay.manifests / "neighbour-counts-v2.json", {p: len(sel["attributed"][p]) for p in sel["order"]})
-    write_json(lay.manifests / "counts-v2.json", counts)
-    log("finalize-v2: " + json.dumps({a: {k: counts[a].get(k) for k in ("papers", "chunks", "pdf_share")} for a in arms})
+    # the per-study files first, so that manifest_sha256 covers them: every *-vN.json manifest except
+    # counts-vN (this file) and power-vN (written later, by alias_study_power)
+    write_json(lay.manifests / f"per-study-chunks{sfx}.json", per_study_chunks)
+    write_json(lay.manifests / f"neighbour-counts{sfx}.json", {p: len(sel["attributed"][p]) for p in sel["order"]})
+    counts["manifest_sha256"] = {f.name: sha256_file(f) for f in sorted(lay.manifests.glob(f"*{sfx}.json"))
+                                 if not f.name.startswith(("counts-", "power-"))}
+    counts["manifest_sha256_covers"] = f"every manifests/*{sfx}.json except counts{sfx}.json and power{sfx}.json"
+    counts["provenance"] = LAUNCH_PROVENANCE or _provenance()
+    write_json(lay.manifests / f"counts{sfx}.json", counts)
+    log(f"finalize{sfx}: " + json.dumps({a: {k: counts[a].get(k) for k in ("papers", "chunks", "pdf_share")} for a in arms})
         + " " + json.dumps(counts["volume_verdict"]))
+    return counts
+
+
+# ====================================================================== v3 (owner, 2026-11-02)
+#
+# v3 splits v2's open top length band at 80 chunks (bands ..., 46-79, >= 80; the neighbour arm is
+# unchanged) and re-draws, in both random draws, only the slots that the split moves or that v2
+# filled at a band-relaxed level; every other v2 take is kept as it was. Same seeds, same seeded
+# candidate order; v3 writes ``*-v3`` manifests and state and reuses every earlier fetch outcome.
+
+V3_REDRAW_RULE = (
+    "per study paper and draw, the v2 takes are carried over in v2 take order (alias_corpus.carry_over): a take "
+    "matched at a band-relaxed level ('any') is re-drawn (relaxed_on_band); every other take keeps its v2 level and "
+    "goes to the v3 slot (slot type, its own v3 band, slot source) when that cell has room, else it is re-drawn "
+    "(band_assignment_changed: the split moved its slot). The open slots are then re-drawn with the v2 matched draw "
+    "rule (alias_corpus.draw_matched) on the same seeded candidate order (seeds 261101|alias|random-{1,2}-v2), "
+    "walked from the top: candidates taken by any kept or re-drawn slot of the same draw (any study paper, or the "
+    "same PMCID/DOI) are skipped, i.e. the walk continues past already-consumed candidates; released v2 takes and "
+    "passed-over candidates are eligible again; study papers in the v2 order")
+V3_BUDGET_RULE = ("v2's rule unchanged: per study paper with open slots, per phase of draw_matched (strict pass, "
+                  "relaxation), at most max(40, 15 x need) resolves, need = ALL the study paper's slots (kept + "
+                  "open), as a fresh v2-rule walk of that study paper would have; memoised outcomes count against "
+                  "it (the walk from the top re-reads the candidates v2 examined); new network fetches are a subset")
+
+
+def _count_lines(p: Path) -> int:
+    return sum(1 for _ in open(p)) if p.exists() else 0
+
+
+def stage_random_v3(lay: Layout, b: Builder, lookahead: int = 2, dry_run: bool = False) -> dict:
+    """v3 re-draw (see :data:`V3_REDRAW_RULE`). ``dry_run``: memoised outcomes and PMC metadata
+    only (an unknown one counts as a failed fetch, an unknown PMC record as JATS-eligible); writes
+    ``tmp/random-*-draw-v3.dryrun.json`` and no manifest."""
+    sel = load_sel_v2(lay)
+    sel1 = json.load(open(lay.manifests / "neighbour-selection.json"))
+    v2 = {d: json.load(open(lay.manifests / f"random-{d}-draw-v2.json")) for d in (1, 2)}
+    excl = load_exclusion(lay)
+    linked = set(json.load(open(lay.state / "linked.json")))
+    nworks = {k: _work_from_json(v) for k, v in {**sel1["works"], **sel["works"]}.items()}
+    nexcl = ac.Exclusion()
+    for w in nworks.values():
+        nexcl.add(w)
+    nwids = set(nworks)
+    cuts2 = _v2_cuts(sel, b)
+    if cuts2 != v2[1]["matching"]["cuts"] or cuts2 != v2[2]["matching"]["cuts"]:
+        raise SystemExit(f"v3: neighbour cuts {cuts2} differ from the v2 draws' {v2[1]['matching']['cuts']}")
+    cuts = ac.v3_cuts(cuts2)
+
+    def band(n: int) -> int:
+        return ac.band_of(n, cuts)
+
+    quota: dict[str, Counter] = {}
+    for p in sel["order"]:
+        q: Counter = Counter()
+        for wid, _ in sel["attributed"][p]:
+            r = b.done[wid]
+            q[(ac.type_class(sel["works"][wid]["type"]), band(r["n_chunks"]), r["source"])] += 1
+        quota[p] = q
+    pool = load_pool(lay)
+    log(f"random-v3: pool {sum(len(v) for v in pool.values()):,} works; length cuts {cuts}; dry_run={dry_run}")
+    cands: dict[str, list[str]] = {}
+    cand_stats: dict[str, dict] = {}
+    type_dropped: Counter = Counter()          # (study x work) pairs dropped by the type filter, by OpenAlex type
+    type_dropped_works: dict[str, set] = defaultdict(set)
+    works: dict[str, ac.Work] = {}
+    for p in sel["order"]:
+        m = sel["per_study"][p]
+        st: Counter = Counter()
+        keep = []
+        for w in pool.get(m["topic"], []):
+            why = ac.eligible_random(w, m["topic"], m["year"], excl, linked, nwids)
+            if why is None and nexcl.reason(w):
+                why = "neighbour_identity"
+            if why is None and ac.type_class(w.type) is None:
+                why = "type"
+                type_dropped[w.type or "none"] += 1
+                type_dropped_works[w.type or "none"].add(w.wid)
+            st[why or "eligible"] += 1
+            if why is None:
+                keep.append(w.wid)
+                works[w.wid] = w
+        cands[p] = keep
+        cand_stats[p] = dict(st)
+    if any(cand_stats[p] != v2[1]["candidates_per_study"][p] for p in sel["order"]):
+        raise SystemExit("v3: candidate pools differ from v2's")
+
+    def n_chunks(wid: str) -> int:
+        return int(b.done[wid]["n_chunks"])
+
+    def klass(wid: str) -> str | None:
+        if not dry_run:
+            return b.klass_async(works[wid]).result()
+        w = works[wid]
+        if w.pmcid:
+            m = b.pmc.get(w.pmcid)
+            if m is None or (m.get("in_bucket") and m.get("is_pmc_openaccess")):
+                return "jats"
+        return "pdf" if w.pdf_locations else None
+
+    unknown: Counter = Counter()
+
+    def resolve(wid: str) -> ac.Outcome:
+        if not dry_run:
+            return outcome_of(b.resolve(works[wid]))
+        rec = b.done.get(wid)
+        if rec is None or b._stale(works[wid], rec):
+            unknown["outcome"] += 1
+            return ac.Outcome(ok=False, reason="dry_run_unknown")
+        return outcome_of(rec)
+
+    cand_sets = {p: set(v) for p, v in cands.items()}
+
+    def run_draw(d: int) -> dict:
+        orders = {p: ac.random_order(d, p, cands[p], seeds=ac.SEED_RANDOM_V2) for p in sel["order"]}
+        carry = {p: ac.carry_over(v2[d]["per_study"][p]["took"], quota[p], band, n_chunks) for p in sel["order"]}
+        taken: set[str] = set()
+        ident = ac.Exclusion()
+        for p in sel["order"]:
+            for t in carry[p]["kept"]:
+                if t["wid"] not in cand_sets[p]:
+                    raise SystemExit(f"v3: kept take {t['wid']} is not a candidate of {p}")
+                taken.add(t["wid"])
+                ident.add(ac.Work(wid=t["wid"], pmcid=works[t["wid"]].pmcid, doi=works[t["wid"]].doi))
+        per: dict[str, dict] = {}
+
+        def prefetch(p: str) -> None:
+            q = carry[p]["open"]
+            need = sum(q.values())
+            if not need or dry_run:
+                return
+            ts = {(t, s) for t, _, s in q}
+            tt = {t for t, _ in ts}
+            looked = sent = 0
+            for wid in orders[p]:
+                if sent >= 3 * need + 6 or looked >= 12 * need + 40:
+                    break
+                if wid in taken or ac.type_class(works[wid].type) not in tt:
+                    continue
+                looked += 1
+                k = b.klass_async(works[wid]).result()
+                if (ac.type_class(works[wid].type), k) in ts:
+                    sent += 1
+                    b.resolve_async(works[wid])
+
+        order = sel["order"]
+        for i, p in enumerate(order):
+            for q in order[i: i + 1 + lookahead]:
+                if q not in per and carry[q]["open"]:
+                    threading.Thread(target=prefetch, args=(q,), daemon=True).start()
+            c = carry[p]
+            need_open = sum(c["open"].values())
+            rec: dict[str, Any] = {"need": sum(quota[p].values()), "kept": len(c["kept"]),
+                                   "released": [{k: t.get(k) for k in ("wid", "type", "band", "source", "level",
+                                                                       "for_cell", "why", "v3_band")}
+                                                for t in c["released"]],
+                                   "open": {"|".join(map(str, k)): n for k, n in c["open"].items()}}
+            if need_open:
+                budget = max(40, 15 * rec["need"])
+                r = ac.draw_matched(
+                    orders[p], c["open"], taken,
+                    type_of=lambda wid: works[wid].type, klass=klass, resolve=resolve, band=band,
+                    is_dup=lambda wid: ident.reason(ac.Work(wid="", pmcid=works[wid].pmcid, doi=works[wid].doi)) is not None,
+                    on_take=lambda wid: ident.add(ac.Work(wid=wid, pmcid=works[wid].pmcid, doi=works[wid].doi)),
+                    max_resolves=budget)
+                new = [{**t, "redrawn": True} for t in r["took"]]
+                rec.update({"redraw_budget": budget, "skipped": r["skipped"], "resolves": r["resolves"],
+                            "resolves_by_phase": r["resolves_by_phase"], "budget_hit": r["budget_hit"],
+                            "relaxed": r["relaxed"], "unfilled": r["unfilled"], "passed_over": r["passed_over"]})
+            else:
+                new = []
+                rec.update({"redraw_budget": 0, "skipped": {}, "resolves": 0, "budget_hit": False, "relaxed": {},
+                            "unfilled": {}})
+            took = [{**t, "redrawn": False} for t in c["kept"]] + new
+            rec.update({"took": took, "got": len(took), "shortfall": max(0, rec["need"] - len(took)),
+                        "redrawn_slots": need_open, "redrawn_got": len(new),
+                        "strict_shortfall": {"|".join(map(str, k)): n
+                                             for k, n in ac.strict_shortfall(quota[p], took).items()}})
+            per[p] = rec
+            if (i + 1) % 50 == 0:
+                log(f"random-{d}-v3: {i + 1}/{len(order)} study papers; taken {len(taken)}")
+        return per
+
+    out3 = lay.state / "outcomes-v3.jsonl"
+    lines0 = _count_lines(out3)
+    results: dict[int, dict] = {}
+    if dry_run:
+        for d in (1, 2):
+            results[d] = run_draw(d)
+    else:
+        with cf.ThreadPoolExecutor(max_workers=2) as ex:
+            futs = {d: ex.submit(run_draw, d) for d in (1, 2)}
+            for d, f in futs.items():
+                results[d] = f.result()
+    new_fetches = _count_lines(out3) - lines0
+    qtot: Counter = Counter()
+    for p in sel["order"]:
+        qtot.update(quota[p])
+    for d in (1, 2):
+        per = results[d]
+        lv: Counter = Counter(t["level"] for r in per.values() for t in r["took"])
+        why: Counter = Counter(t["why"] for r in per.values() for t in r["released"])
+        ss: Counter = Counter()
+        for r in per.values():
+            ss.update(r["strict_shortfall"])
+        summary = {
+            "slots_total": sum(r["need"] for r in per.values()), "kept": sum(r["kept"] for r in per.values()),
+            "redrawn_slots": sum(r["redrawn_slots"] for r in per.values()),
+            "redrawn_by_reason": dict(why), "redrawn_got": sum(r["redrawn_got"] for r in per.values()),
+            "studies_with_redraw": sum(1 for r in per.values() if r["redrawn_slots"]),
+            "redraw_resolves": sum(r["resolves"] for r in per.values()),
+            "redraw_budget_hit_studies": sum(1 for r in per.values() if r["budget_hit"]),
+            "shortfall_total": sum(r["shortfall"] for r in per.values()),
+            "match_level": dict(lv), "strict_share": round(lv["strict"] / max(1, sum(lv.values())), 4),
+            "strict_shortfall_per_cell": {k: {"quota": qtot[tuple(_cell_of(k))], "short": n}
+                                          for k, n in sorted(ss.items())},
+            "redraw_skipped": dict(sum((Counter(r["skipped"]) for r in per.values()), Counter())),
+        }
+        if dry_run:
+            summary["dry_run_unknown_outcomes"] = unknown["outcome"]
+        log(f"random-{d}-v3 summary: " + json.dumps({k: v for k, v in summary.items() if k != "strict_shortfall_per_cell"}))
+        for k, v in summary["strict_shortfall_per_cell"].items():
+            log(f"random-{d}-v3 strict shortfall cell {k}: {v['short']} of {v['quota']}")
+        doc = {
+            "schema": "alias-corpus-random-draw/3", "version": "v3", "draw": d, "seed": ac.SEED_RANDOM_V2[d],
+            "oa_definition": ac.OA_DEFINITION, "type_filter": V2_SCHEMA_TYPE,
+            "matching": {"cells": "(type class, length band, source) per study paper, from its attributed neighbours",
+                         "length_bands": f"v2's {V2_BANDS} quantile bands with the open top band split at "
+                                         f"{ac.V3_SPLIT_AT:g} chunks", "cuts": cuts, "v2_cuts": cuts2,
+                         "relax_order": list(ac.RELAX_ORDER),
+                         "relax_rule": "source first, then type, then band last ('any')",
+                         "max_resolves": V3_BUDGET_RULE, "redraw_rule": V3_REDRAW_RULE},
+            "summary": summary, "new_network_fetches_both_draws": None if dry_run else new_fetches,
+            "type_dropped_candidate_pairs": dict(type_dropped.most_common()),
+            "type_dropped_unique_works": {k: len(v) for k, v in sorted(type_dropped_works.items())},
+            "order": sel["order"], "quota": {p: {"|".join(map(str, c)): n for c, n in sorted(quota[p].items())}
+                                             for p in sel["order"]},
+            "per_study": per, "candidates_per_study": cand_stats,
+            "works": {t["wid"]: _work_json(works[t["wid"]]) for p in per for t in per[p]["took"]},
+            "provenance": LAUNCH_PROVENANCE, "finished": now()}
+        target = (lay.tmp / f"random-{d}-draw-v3.dryrun.json") if dry_run else (lay.manifests / f"random-{d}-draw-v3.json")
+        write_json(target, doc)
+    log(f"random-v3: both draws written (new network fetches {new_fetches})")
+    return {d: sum(r["got"] for r in results[d].values()) for d in (1, 2)}
+
+
+def _cell_of(key: str) -> tuple:
+    t, bnd, s = key.split("|")
+    return (t, int(bnd), s)
+
+
+def stage_finalize_v3(lay: Layout, b: Builder) -> dict:
+    counts = stage_finalize_v2(lay, b, version=3)
+    sel = load_sel_v2(lay)
+    draws = {d: json.load(open(lay.manifests / f"random-{d}-draw-v3.json")) for d in (1, 2)}
+    cuts = draws[1]["matching"]["cuts"]
+    nb = len(cuts) + 1
+    # per band: papers and chunks, neighbour vs each draw
+    def per_band(items: list[str]) -> dict[str, dict[str, int]]:
+        out = {str(k): {"papers": 0, "chunks": 0} for k in range(nb)}
+        for wid in items:
+            n = int(b.done[wid]["n_chunks"])
+            o = out[str(ac.band_of(n, cuts))]
+            o["papers"] += 1
+            o["chunks"] += n
+        return out
+    arms = {"neighbour": [w for p in sel["order"] for w, _ in sel["attributed"][p]]}
+    for d in (1, 2):
+        arms[f"random-{d}"] = [t["wid"] for p in draws[d]["order"] for t in draws[d]["per_study"][p]["took"]]
+    bands = {a: per_band(v) for a, v in arms.items()}
+    labels = [f"<{cuts[0]:g}"] + [f"{cuts[i - 1]:g}-{cuts[i] - 1:g}" for i in range(1, len(cuts))] + [f">={cuts[-1]:g}"]
+    counts["band_labels"] = labels
+    counts["per_band"] = bands
+    top = str(nb - 1)
+    counts["top_band_papers_matched"] = all(bands[f"random-{d}"][top]["papers"] == bands["neighbour"][top]["papers"]
+                                            for d in (1, 2))
+    # neighbour-side facts: type drops (preprints named), host_refused_earlier skips
+    nsk: Counter = Counter()
+    for p in sel["skips"]:
+        for lst in sel["skips"][p].values():
+            nsk.update(x for _, x in lst)
+    for d in (1, 2):
+        D = draws[d]
+        v2d = json.load(open(lay.manifests / f"random-{d}-draw-v2.json"))
+        v2sk: Counter = Counter()
+        for r in v2d["per_study"].values():
+            v2sk.update(r["skipped"])
+        counts[f"random-{d}"].update({
+            "v3_redraw": D["summary"], "new_network_fetches_both_draws": D["new_network_fetches_both_draws"],
+            "host_refused_earlier_skips": {"v2_draw_walk": v2sk.get("host_refused_earlier", 0),
+                                           "v3_redraw_walk": D["summary"]["redraw_skipped"].get("host_refused_earlier", 0)},
+            "preprints_dropped": {"candidate_pairs": D["type_dropped_candidate_pairs"].get("preprint", 0),
+                                  "unique_works": D["type_dropped_unique_works"].get("preprint", 0)},
+            "type_dropped_unique_works": D["type_dropped_unique_works"],
+            "fetch_budget": V3_BUDGET_RULE + "; v2's strict-pass and relax budgets were max(40, 15 x need) per study paper"})
+    counts["neighbour"].update({
+        "preprints_dropped": nsk.get("type:preprint", 0),
+        "type_dropped": {k[5:]: v for k, v in sorted(nsk.items()) if k.startswith("type:")},
+        "host_refused_earlier_skips": nsk.get("host_refused_earlier", 0)})
+    counts["relax_rule"] = "source first, then type, then band last; each take records its level"
+    counts["redraw_rule"] = V3_REDRAW_RULE
+    st = json.loads((lay.state / "provenance-v3.json").read_text()) if (lay.state / "provenance-v3.json").exists() else {}
+    commits = {k: v.get("commit") for k, v in st.items()}
+    # this stage's own marker is written after it returns: record its launch commit here
+    commits["finalize-v3"] = (LAUNCH_PROVENANCE or {}).get("commit")
+    counts["stage_provenance_commits"] = commits
+    counts["stage_provenance_authority"] = ("state/provenance-v3.json (full provenance per stage, written when each "
+                                            "stage's done marker is written); this map repeats its commits")
+    counts["stage_commits_agree"] = len(set(commits.values())) <= 1
+    counts["v2_provenance_note"] = (
+        "counts-v2.json recorded the commit checked out when finalize-v2 ran (c83f15f), not the launch commit of "
+        "run-v2 (c51b382, logs/run-v2.launch.json); v3 records the provenance captured at process launch, per stage")
+    write_json(lay.manifests / "counts-v3.json", counts)
+    log("finalize-v3: per band " + json.dumps(bands) + f"; top band matched {counts['top_band_papers_matched']}")
     return counts
 
 
@@ -1674,13 +2007,16 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stage", choices=["run", "study", "neighbours", "scan", "neighbours-fetch", "random",
                                       "finalize", "chunkcheck", "pdf-extract", "run-v2", "chunkcheck-v2",
-                                      "neighbours-v2", "random-v2", "finalize-v2"])
+                                      "neighbours-v2", "random-v2", "finalize-v2", "run-v3", "chunkcheck-v3",
+                                      "random-v3", "finalize-v3"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--seed-cache", nargs=2, metavar=("CACHE_JSON", "QUERY_LOG"), default=None,
                     help="seed the OpenAlex URL cache from an earlier run of the same queries")
     ap.add_argument("--scan-workers", type=int, default=32)
     ap.add_argument("--fetch-workers", type=int, default=16)
+    ap.add_argument("--dry-run", action="store_true",
+                    help="random-v3 only: memoised outcomes only, no fetch; writes tmp/*.dryrun.json, no manifest")
     a = ap.parse_args(argv)
     if a.stage == "pdf-extract":
         sys.path.insert(0, str(_PY / "scripts"))
@@ -1689,28 +2025,52 @@ def main(argv: list[str] | None = None) -> int:
     os.environ.setdefault("HF_HOME", "/rag/cache")
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     lay = Layout(a.root)
-    log(f"alias_corpus_run {a.stage}: root {lay.root}; python {sys.executable}")
+    global LAUNCH_PROVENANCE
+    LAUNCH_PROVENANCE = _provenance()
+    log(f"alias_corpus_run {a.stage}: root {lay.root}; python {sys.executable}; launch commit "
+        f"{LAUNCH_PROVENANCE.get('commit')} dirty={LAUNCH_PROVENANCE.get('dirty')}")
     api = OpenAlex(lay)
     if a.seed_cache:
         log(f"openalex: seeded {api.seed(*a.seed_cache)} cached responses")
-    v2 = a.stage.endswith("-v2")
+    v2 = a.stage.endswith(("-v2", "-v3"))
+    v3 = a.stage.endswith("-v3")
     if a.stage == "run":
         stages = ["study", "neighbours", "scan", "chunkcheck", "neighbours-fetch", "random", "finalize"]
     elif a.stage == "run-v2":
         stages = ["chunkcheck-v2", "neighbours-v2", "random-v2", "finalize-v2"]
+    elif a.stage == "run-v3":
+        stages = ["chunkcheck-v3", "random-v3", "finalize-v3"]
     else:
         stages = [a.stage]
     if v2:
         for need in ("study", "neighbours", "scan"):
             if not (lay.state / f"done-{need}").exists():
                 raise SystemExit(f"v2 needs the v1 stage {need} done")
+    if v3:
+        for need in ("neighbours-v2", "random-v2", "finalize-v2"):
+            if not (lay.state / f"done-{need}").exists():
+                raise SystemExit(f"v3 needs the v2 stage {need} done")
+        if a.dry_run and a.stage != "random-v3":
+            raise SystemExit("--dry-run is for the random-v3 stage only")
     b: Builder | None = None
     for st in stages:
         marker = lay.state / f"done-{st}"
-        if a.stage in ("run", "run-v2") and marker.exists():
+        if a.stage in ("run", "run-v2", "run-v3") and marker.exists():
             log(f"{st}: already done")
             continue
-        if st == "chunkcheck-v2":
+        if st == "chunkcheck-v3":
+            b = b or Builder(lay, a.fetch_workers, version=3)
+            stage_chunkcheck(lay, b, n=5, out_name="chunkcheck-v3.json")
+        elif st == "random-v3":
+            b = b or Builder(lay, a.fetch_workers, version=3)
+            stage_random_v3(lay, b, dry_run=a.dry_run)
+            if a.dry_run:
+                log("random-v3 dry run: no marker, no manifest")
+                continue
+        elif st == "finalize-v3":
+            b = b or Builder(lay, a.fetch_workers, version=3)
+            stage_finalize_v3(lay, b)
+        elif st == "chunkcheck-v2":
             b = b or Builder(lay, a.fetch_workers, v2=True)
             stage_chunkcheck(lay, b, n=5, out_name="chunkcheck-v2.json")
         elif st == "neighbours-v2":
@@ -1733,6 +2093,11 @@ def main(argv: list[str] | None = None) -> int:
             {"neighbours-fetch": stage_neighbours_fetch, "random": stage_random, "finalize": stage_finalize,
              "chunkcheck": stage_chunkcheck}[st](lay, b)
         marker.write_text(now())
+        if v3:
+            pp = lay.state / "provenance-v3.json"
+            prov = json.loads(pp.read_text()) if pp.exists() else {}
+            prov[st] = {**(LAUNCH_PROVENANCE or {}), "stage_done": now()}
+            write_json(pp, prov)
     api.save()
     log("done")
     return 0
