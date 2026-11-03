@@ -533,42 +533,41 @@ def _relaxed(cell: Cell, level: str) -> tuple:
     return {"strict": (t, b, s), "source": (t, b), "source+type": (b,), "any": ()}[level]
 
 
-def nearest_band_key(cell: Cell, cand: Cell, rank: int) -> tuple[int, bool, bool, int]:
-    """v4 ``any`` fill (owner, 2026-11-03): the sort key of fetched candidate ``cand`` for open slot
-    ``cell`` — band-index distance, then type mismatch, then source mismatch, then seeded rank."""
-    return (abs(int(cand[1]) - int(cell[1])), cand[0] != cell[0], cand[2] != cell[2], rank)
+def nearest_band_key(cell: Cell, cand: Cell, slot_pos: int, rank: int) -> tuple[int, bool, bool, int, int]:
+    """v4 ``any`` fill (owner, 2026-11-03): the sort key of the pair (open slot ``cell``, fetched
+    candidate ``cand``) — band-index distance, then type mismatch, then source mismatch, then the
+    slot's position in the sorted order of the open cells, then the candidate's seeded rank."""
+    return (abs(int(cand[1]) - int(cell[1])), cand[0] != cell[0], cand[2] != cell[2], slot_pos, rank)
 
 
 def nearest_band_fill(open_q: Mapping[Cell, int], fetched: Mapping[str, Cell], taken: set[str],
                       rank: Mapping[str, int], is_dup: Callable[[str], bool] | None = None,
                       on_pick: Callable[[str, Cell, Cell, int], None] | None = None
                       ) -> list[tuple[str, Cell, Cell, int]]:
-    """The v4 rule for the band-relaxed level ``any``: each open slot (cells in sorted order, one slot
-    at a time) takes, of the candidates already fetched and accepted (``fetched``: wid -> its cell),
-    not taken and not a duplicate, the one with the smallest :func:`nearest_band_key`. No fetch.
+    """The v4 rule for the band-relaxed level ``any``, over all of one study paper's open slots at
+    once: of every (open slot, candidate) pair — candidates already fetched and accepted (``fetched``:
+    wid -> its cell), not taken, not a duplicate — the pair with the smallest :func:`nearest_band_key`
+    is filled first, then the smallest of the pairs left, and so on (smallest band distance first over
+    all pairs, so the result does not depend on the order the slots are listed in). No fetch.
 
     Returns [(wid, its cell, slot cell, band distance)] in take order; ``taken`` is updated and
-    ``on_pick`` called on each pick before the next slot is served (so ``is_dup`` can see it). A slot
-    with no candidate left stays open.
+    ``on_pick`` called on each pick before the next one (so ``is_dup`` can see it). Slots with no
+    candidate left stay open.
     """
+    cells = [c for c, n in sorted(open_q.items()) if n > 0]
+    left = {c: int(open_q[c]) for c in cells}
+    pairs = sorted((nearest_band_key(c, cand, pos, rank[wid]), pos, wid)
+                   for pos, c in enumerate(cells) for wid, cand in fetched.items() if wid not in taken)
     out: list[tuple[str, Cell, Cell, int]] = []
-    slots = [(c, n) for c, n in sorted(open_q.items()) if n > 0]
-    for cell, n in slots:
-        for _ in range(n):
-            best: tuple[tuple, str] | None = None
-            for wid, cand in fetched.items():
-                if wid in taken or (is_dup is not None and is_dup(wid)):
-                    continue
-                k = nearest_band_key(cell, cand, rank[wid])
-                if best is None or k < best[0]:
-                    best = (k, wid)
-            if best is None:
-                break
-            wid = best[1]
-            taken.add(wid)
-            out.append((wid, fetched[wid], cell, best[0][0]))
-            if on_pick is not None:
-                on_pick(*out[-1])
+    for key, pos, wid in pairs:
+        cell = cells[pos]
+        if left[cell] <= 0 or wid in taken or (is_dup is not None and is_dup(wid)):
+            continue
+        left[cell] -= 1
+        taken.add(wid)
+        out.append((wid, fetched[wid], cell, key[0]))
+        if on_pick is not None:
+            on_pick(*out[-1])
     return out
 
 

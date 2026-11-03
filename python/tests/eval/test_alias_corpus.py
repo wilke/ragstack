@@ -378,9 +378,37 @@ def test_nearest_band_fill_orders_by_band_distance_then_type_then_source_then_ra
     picked: list[str] = []
     out = ac.nearest_band_fill({slot: 1, ("review", 0, "pdf"): 1}, fetched, taken, rank,
                                is_dup=lambda w: w == "near_art_jats_late", on_pick=lambda w, *_: picked.append(w))
-    assert [(w, s) for w, _, s, _ in out] == [(("near_art_pdf"), slot), ("far", ("review", 0, "pdf"))]
-    assert picked == ["near_art_pdf", "far"]
+    # global order: far -> review|0|pdf (distance 0) first, then near_art_pdf (type matches) -> slot
+    assert [(w, s) for w, _, s, _ in out] == [("far", ("review", 0, "pdf")), ("near_art_pdf", slot)]
+    assert picked == ["far", "near_art_pdf"]
     assert ac.nearest_band_fill({slot: 1}, {}, set(), {}) == []
+
+
+def test_nearest_band_fill_is_smallest_distance_first_over_all_pairs():
+    # slots in bands 5 and 3, candidates in bands 4 and 0. Pairs: (5, b4) = 1, (3, b4) = 1, (3, b0) = 3,
+    # (5, b0) = 5. Smallest distance first over all pairs: the two distance-1 pairs tie on distance, type
+    # and source, so the slot earlier in the sorted cell order (band 3) gets b4; b0 then fills band 5.
+    # The result is the same whatever order the slots are listed in. (Total 6: the rule is greedy, not
+    # the minimum-total assignment, which would be 5 <- b4, 3 <- b0 = 4.)
+    fetched = {"b4": ("article", 4, "jats"), "b0": ("article", 0, "jats")}
+    rank = {"b4": 0, "b0": 1}
+    for quota in ({("article", 5, "jats"): 1, ("article", 3, "jats"): 1},
+                  {("article", 3, "jats"): 1, ("article", 5, "jats"): 1}):
+        out = ac.nearest_band_fill(quota, fetched, set(), rank)
+        assert [(w, s[1], d) for w, _, s, d in out] == [("b4", 3, 1), ("b0", 5, 5)]
+    # a smaller distance beats the slot order: a band-5 candidate goes to the band-5 slot first
+    out = ac.nearest_band_fill({("article", 5, "jats"): 1, ("article", 3, "jats"): 1},
+                               {"b4": ("article", 4, "jats"), "b5": ("article", 5, "jats")}, set(), {"b4": 0, "b5": 1})
+    assert [(w, s[1], d) for w, _, s, d in out] == [("b5", 5, 0), ("b4", 3, 1)]
+    # full ties are taken in slot order before seeded order (this only orders the takes: tied pairs that
+    # share a candidate differ only in slot, tied pairs that share a slot only in candidate)
+    out = ac.nearest_band_fill({("article", 3, "jats"): 1, ("article", 5, "jats"): 1},
+                               {"x6": ("article", 6, "jats"), "y2": ("article", 2, "jats")}, set(), {"x6": 0, "y2": 1})
+    assert [(w, s[1]) for w, _, s, _ in out] == [("y2", 3), ("x6", 5)]
+    # type match beats slot order: a review candidate at the same distance goes to the review slot
+    out = ac.nearest_band_fill({("article", 3, "jats"): 1, ("review", 5, "jats"): 1},
+                               {"r4": ("review", 4, "jats"), "a0": ("article", 0, "jats")}, set(), {"r4": 0, "a0": 1})
+    assert [(w, s) for w, _, s, _ in out] == [("r4", ("review", 5, "jats")), ("a0", ("article", 3, "jats"))]
 
 
 def _info_matched(order, quota, info, any_rule, calls, max_resolves=None):
@@ -487,3 +515,9 @@ def test_carry_over_v4_releases_screened_any_and_quota_changed_and_keeps_the_res
                                                   ("article", 1, "pdf"): 1}, excluded=lambda w: False)
     assert len(same["kept"]) == 3 and not same["released"] and not same["open"]
     assert ac.V4_RELEASE == ("repetition_screen", "any_nearest_band", "quota_changed")
+
+
+def test_study_seed_table_names_the_corpus_random_seeds():
+    import alias_study_common as asc
+
+    assert (asc.SEEDS["random1"], asc.SEEDS["random2"]) == (ac.SEED_RANDOM_V2[1], ac.SEED_RANDOM_V2[2])

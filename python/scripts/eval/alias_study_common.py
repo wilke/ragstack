@@ -30,8 +30,8 @@ if str(_HERE) not in sys.path:
 SEED_BASE = "261101|alias"
 SEEDS: dict[str, str] = {
     "neighbours": f"{SEED_BASE}|neighbours",
-    "random1": f"{SEED_BASE}|random|1",
-    "random2": f"{SEED_BASE}|random|2",
+    "random1": f"{SEED_BASE}|random-1-v2",
+    "random2": f"{SEED_BASE}|random-2-v2",
     "noise": f"{SEED_BASE}|noise",
     "boot": f"{SEED_BASE}|boot",
     "perm": f"{SEED_BASE}|perm",
