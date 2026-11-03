@@ -6,12 +6,15 @@ item 12), against a fake retriever and fake judges: no store, no gateway, no mod
                           --glossary MERGED.jsonl --work DIR [--study-records ACCEPTED.jsonl] \\
                           [--added-per-arm 60] [--batch-size 300] [--n-perm 2000] [--n-boot 2000]
 
-What runs, unchanged, is the study's code: ``alias_study_run.py`` (all 28 legs, every gate:
-swap-record census, depth read-back, boost probe ``declared``, inactive-reranker gate, the
-admin config hash, gold presence, restore points, per-leg failed calls), then
-``alias_study_judge.py`` (registry, batches, C / E / Argon / its re-issue / Opus drift
-sample, finalize with the drift alarm), then ``alias_study_stats.py`` (Layer 1, Layer 2,
-sensitivities, the public check). What is fake:
+What runs, unchanged, is the study's code, in the prereg's two stages (§5.7):
+``alias_study_run.py --stage A`` (the 9 Layer-1 legs, every gate: swap-record census, depth
+read-back, boost probe ``declared``, the admin config hash, gold presence, restore points,
+per-leg failed calls), ``alias_study_judge.py`` on stage A's pairs (registry on demand,
+batches, C / E / Argon / Opus drift sample with the one-retry cap, finalize with the drift
+alarm, ``commit-stage-a``), then ``alias_study_run.py --stage B`` (the other 19 cells and the
+placebo leg, with the cross-stage inactive-reranker comparison) and the judge on stage B's new
+pairs, then the analysis gate and ``alias_study_stats.py`` (Layer 1, Layer 2, sensitivities,
+the public check). What is fake:
 
 * **the corpora**: ``base`` is the real chunk export (read only); each expanded arm adds
   ``--added-per-arm`` synthetic papers, copies of base chunks under new chunk ids and paper ids
@@ -103,7 +106,7 @@ class FakeServer:
             gl = self.attached[arm]
             ids = list(self.ranked(arm, body["query"]))
             mode = "bm25" if body["retrieval_mode"] == "bm25" else ("rerank" if body.get("rerank") else "rrf")
-            if mode != "bm25" or gl == "merged":
+            if mode != "bm25" or gl != "none":
                 salt = f"{mode}|{gl}|{body['query']}"
                 ids = sorted(ids[:60], key=lambda c: (ids.index(c) + (h(salt, c) % 25))) + ids[60:]
             top = ids[: int(body["top_k"])]
@@ -208,7 +211,7 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
         write_jsonl(exports[a], rows)
     added = {a: {r["chunk_id"]: r for r in rows} for a, rows in added_rows.items()}
     gfiles = {}
-    for g in asc.GLOSSARY_ARMS:
+    for g in ar.STUDY_GLOSSARY_ARMS:
         gf = work / f"glossary-{g}.txt"
         gf.write_text(f"dry-run glossary arm {g}\n")
         gfiles[g] = asc.sha256_file(gf)
@@ -228,7 +231,7 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
                                        for r in recs}))
     run_cfg = {"api": {"base_url": DRY_URL, "retry_backoff_s": 0.0}, "corpora": corpora,
                "arms": {g: {"stamps": [f"dry-{g}"], "glossary_file_sha256": dict.fromkeys(asc.CORPUS_ARMS, gfiles[g])}
-                        for g in asc.GLOSSARY_ARMS},
+                        for g in ar.STUDY_GLOSSARY_ARMS},
                "records": str(records), "out_dir": str(work / "runs"), "gold_hashes": str(gold_hashes),
                "dry_run": True}
     cfgp = work / "run-config.json"
@@ -237,28 +240,32 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
     swaps = work / "swaps"
     swaps.mkdir(exist_ok=True)
     codes: dict[str, int] = {}
-    for a in asc.CORPUS_ARMS:
-        for g in asc.GLOSSARY_ARMS:
-            sw = swaps / f"{a}-{g}.swap.json"
+
+    def run_stage(stage: str) -> None:
+        done: set[tuple[str, str, int]] = set()
+        for c, g, _r, rep in ar.stage_legs(stage):
+            if (c, g, rep) in done:
+                continue
+            done.add((c, g, rep))
+            sw = swaps / f"{c}-{g}.swap.json"
             sw.write_text(json.dumps({
-                "schema": "glossbench-swap/1", "arm": g, "index": corpora[a]["index"],
+                "schema": "glossbench-swap/1", "arm": g, "index": corpora[c]["index"],
                 "glossary_file": {"sha256": gfiles[g]}, "shuffle_seed": None,
-                "apply": {"dry_run": False, "chunks_to_update": expected[a], "chunks_written": expected[a],
+                "apply": {"dry_run": False, "chunks_to_update": expected[c], "chunks_written": expected[c],
                           "glossary_file": {"sha256": gfiles[g]}},
-                "census_after": {"total": expected[a], "stamps": {stamp(g): expected[a]}}}))
-            server.attached[a] = g
-            reps = [None, 2] if g == asc.REPEAT_GLOSSARY else [None]
-            for rep in reps:
-                argv = ["--config", str(cfgp), "run", "--corpus-arm", a, "--glossary", g, "--swap-record", str(sw),
-                        "--boost-declared", "1.0"] + (["--repeat", "2"] if rep else [])
-                codes[f"{a}|{g}|{rep or 1}"] = ar.main(argv, client_factory=lambda: httpx.AsyncClient(
-                    transport=httpx.MockTransport(server.handler)))
-    if any(codes.values()):
-        raise SystemExit(f"dry run: a leg did not complete: {codes}")
+                "census_after": {"total": expected[c], "stamps": {stamp(g): expected[c]}}}))
+            server.attached[c] = g
+            argv = ["--config", str(cfgp), "run", "--stage", stage, "--corpus-arm", c, "--glossary", g,
+                    "--swap-record", str(sw), "--boost-declared", "1.0"] + (["--repeat", "2"] if rep == 2 else [])
+            codes[f"{stage}|{c}|{g}|{rep}"] = ar.main(argv, client_factory=lambda: httpx.AsyncClient(
+                transport=httpx.MockTransport(server.handler)))
+        if any(codes.values()):
+            raise SystemExit(f"dry run: a leg did not complete: {codes}")
+
     # the judge
     jcfg = {"out_dir": str(work / "judge"), "runs_dir": str(work / "runs"), "records": str(records),
             "chunk_exports": {"base": str(base_export), **{a: str(p) for a, p in exports.items()}},
-            "glossary": str(glossary), "batch_size": batch_size,
+            "glossary": str(glossary), "batch_size": batch_size, "dry_run": True,
             "caps": {"argon_share": 1.0, "opus_share": 1.0},
             "judge_c": {"base_url": f"{DRY_URL}/c/v1", **{k: v for k, v in ajd.FIXED["C"].items() if k != "variant"}},
             "judge_e": {"base_url": f"{DRY_URL}/e/v1", **{k: v for k, v in ajd.FIXED["E"].items() if k != "variant"}},
@@ -274,16 +281,25 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
     def judge(*a: str) -> int:
         return ajd.main(["--config", str(jcfgp), *a], http_factory=lambda: fake, prov=prov)
 
-    assert judge("build-pairs") == 0
-    n_batches = len(json.loads((work / "judge" / "batches.json").read_text())["batches"])
     jcodes: dict[str, int] = {}
-    for b in range(1, n_batches + 1):
-        for be in ajd.BACKENDS:
-            judge("preflight", "--batch", str(b), "--backend", be)
-            jcodes[f"{b}|{be}"] = judge("label", "--batch", str(b), "--backend", be, "--notice-acknowledged")
-        jcodes[f"{b}|finalize"] = judge("finalize", "--batch", str(b))
-        if jcodes[f"{b}|finalize"] != 0:
-            break
+
+    def judge_stage(stage: str) -> None:
+        assert judge("build-pairs", "--stage", stage) == 0
+        nos = json.loads((work / "judge" / "batches.json").read_text())["stages"][stage]
+        for b in nos:
+            for be in ajd.BACKENDS:
+                judge("preflight", "--batch", str(b), "--backend", be)
+                jcodes[f"{b}|{be}"] = judge("label", "--batch", str(b), "--backend", be, "--notice-acknowledged")
+            jcodes[f"{b}|finalize"] = judge("finalize", "--batch", str(b))
+            if jcodes[f"{b}|finalize"] != 0:
+                raise SystemExit(f"dry run: batch {b} did not finalize: {jcodes}")
+
+    run_stage("A")
+    judge_stage("A")
+    jcodes["commit-stage-a"] = judge("commit-stage-a")
+    run_stage("B")
+    judge_stage("B")
+    gate = ajd.analysis_gate(work / "runs", dry_run=True)
     # the statistics
     n_g = sum(1 for r in asc.split_records(recs)[0] if r["kind"] == "G")
     scfg = {"records": str(records), "runs_dir": str(work / "runs"), "judge_dir": str(work / "judge"),
@@ -293,7 +309,7 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
     rc = ast.main(["--config", str(scfgp), "--out", str(work / "results-dryrun.json"),
                    "--public", str(work / "public-dryrun.json")])
     res = json.loads((work / "results-dryrun.json").read_text())
-    return {"legs": codes, "judge": jcodes, "stats_exit": rc, "retrieve_calls": server.calls,
+    return {"legs": codes, "judge": jcodes, "stats_exit": rc, "retrieve_calls": server.calls, "analysis_gate": gate,
             "judge_calls": fake.calls, "layer1": {k: res["layer1"][k]["status"] for k in ("H1", "H2", "H1b")},
             "records": len(recs), "work": str(work)}
 
