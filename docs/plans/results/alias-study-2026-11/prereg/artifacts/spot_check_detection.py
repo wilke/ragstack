@@ -23,7 +23,7 @@ cell's pairs to the other arms of its stratum, then to *answers*, then to *not*,
 *answers* stratum can exceed 50.
 
 The provenance block comes from ``ragstack.provenance.experiment_provenance`` of this repository's
-``python/`` tree when it imports; otherwise it is recorded as absent with the reason.
+``python/`` tree when it imports, without its ``host`` and ``warnings`` fields (prereg §11); otherwise it is recorded as absent with the reason.
 """
 from __future__ import annotations
 
@@ -63,7 +63,9 @@ def provenance() -> dict[str, Any]:
         from ragstack.provenance import experiment_provenance
     except Exception as e:  # noqa: BLE001 - recorded, never raised
         return {"absent": f"ragstack.provenance did not import: {type(e).__name__}"}
-    return experiment_provenance(repo=REPO)
+    prov = experiment_provenance(repo=REPO)
+    # a public artifact carries no host and no warnings (prereg §11; alias_study_common.HOST_KEYS)
+    return {k: v for k, v in prov.items() if k not in ("host", "hostname", "warnings")}
 
 
 def main(argv: list[str] | None = None) -> int:

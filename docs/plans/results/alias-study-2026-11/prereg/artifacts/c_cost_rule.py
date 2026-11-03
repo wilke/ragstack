@@ -32,7 +32,7 @@ big-endian; seed string ``261101|alias|power|c-cost|q<q>|cost<cost>`` per scenar
 seed ``261101|alias|power`` followed by ``|`` and the named parts).
 
 Run from a clean checkout so the embedded provenance is citable. The provenance block comes from
-``ragstack.provenance.experiment_provenance`` of this repository's ``python/`` tree when it imports;
+``ragstack.provenance.experiment_provenance`` of this repository's ``python/`` tree when it imports, without its ``host`` and ``warnings`` fields (prereg §11);
 otherwise it is recorded as absent with the reason.
 """
 from __future__ import annotations
@@ -115,7 +115,9 @@ def provenance() -> dict[str, Any]:
         from ragstack.provenance import experiment_provenance
     except Exception as e:  # noqa: BLE001 - recorded, never raised
         return {"absent": f"ragstack.provenance did not import: {type(e).__name__}"}
-    return experiment_provenance(repo=REPO)
+    prov = experiment_provenance(repo=REPO)
+    # a public artifact carries no host and no warnings (prereg §11; alias_study_common.HOST_KEYS)
+    return {k: v for k, v in prov.items() if k not in ("host", "hostname", "warnings")}
 
 
 def main(argv: list[str] | None = None) -> int:
