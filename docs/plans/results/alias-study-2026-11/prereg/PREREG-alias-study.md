@@ -697,9 +697,15 @@ matching rule above. They are design facts, as the build facts of 2026-11-01 are
 - **Fetch budget.** Per study paper and per phase of the draw (the strict pass, then relaxation), at most
   **max(40, 15 × n)** candidates are resolved, where n is **all** of that study paper's slots (kept and
   open) and a candidate read from an earlier fetch counts against the budget
-  (`alias_corpus_run.V3_BUDGET_RULE`). The budget decides only **whether** relaxation happens; it never
-  decides **which** candidate within a cell is taken, which is the seeded order (or, at `any`, the
-  nearest band, R17).
+  (`alias_corpus_run.V3_BUDGET_RULE`). In the strict pass the budget decides only **whether** relaxation
+  happens: when it is spent, the walk stops and the open slots pass to relaxation. **In relaxation it can
+  also decide which candidate fills a cell** (a disclosed property of `alias_corpus.draw_matched`, not a
+  rule change): at the `source` and `source+type` levels the passed-over candidates are walked in seeded
+  order, and once the relaxation budget is spent an unfetched candidate is skipped, so a later candidate
+  already fetched can be taken in its place. The choice still depends only on metadata and on fetch
+  availability; it is seeded and content-blind. At `any` the budget plays no part, because the
+  nearest-band fill makes no new fetches (R17).
+
 - **Relaxation order.** A cell the strict pass (type, band and source all matching) leaves open is relaxed
   **source first, then type, then band**: the levels are `strict`, `source` (type and band match),
   `source+type` (band matches) and `any` (band relaxed too; `alias_corpus.RELAX_ORDER`). Every take
