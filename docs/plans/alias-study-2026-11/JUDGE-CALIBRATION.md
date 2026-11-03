@@ -414,3 +414,56 @@ pair Argon says no and the gate says yes. Sol and Argon agree with each other on
 **Selection (plan §5):** both models qualify (0 % refusal on the 83). **Gemini 4 Argon** is selected on agreement
 (485 vs 482); the cost tie-break is not needed. Gateway use: 1,909 labelling calls (Sol 956, including 3 HTTP
 502s that were re-issued; Argon 953), 1.74 M prompt and 93 k completion tokens, with no notice, no 429 and no budget stop.
+
+## Review follow-ups: prevalence-aware metrics and a prompt-paraphrase check
+
+Requested by the methodology review and approved by the owner on 2026-11-02. Code is at `8f4043b` (clean):
+`alias_judge_followups.py`, plus the paraphrases and a pinned Qwen subset in the harness. The private outputs are
+in `calib/review-followups/` (`analysis-precision.json`, `analysis-paraphrase.json`, `provenance.json`,
+`SHA256SUMS`). The only model calls were local Qwen; there were no gateway, Opus or CLI calls. **Exploratory:
+neither analysis was in a frozen plan.**
+
+**1. Prevalence-aware metrics** (offline, the 487 Opus-unanimous validation pairs). Opus says *answers* on
+**109 / 487 (prevalence 0.224)**: gold 77/77, lex_same 18/67, lex_other 7/132, coll_same 7/132, coll_diff 0/79.
+The positive class is *answers*, and a missing label counts as *no*. Wilson 95 % intervals are given. F1 has a
+bootstrap interval, because it is not a proportion.
+
+| judge | TP / FP / FN / TN | precision | recall | specificity | F1 | κ | AC1 |
+|---|---|---|---|---|---|---|---|
+| gate, escalation → Opus | 109 / 4 / 0 / 374 | 0.965 [0.913, 0.986] | 1.000 [0.966, 1] | 0.989 | 0.982 | 0.977 | 0.987 |
+| gate, escalation → Argon (the study's rule) | 109 / 5 / 0 / 373 | 0.956 [0.901, 0.981] | 1.000 [0.966, 1] | 0.987 | 0.978 | 0.971 | 0.984 |
+| C alone (Qwen3.6, maj. of 5) | 107 / 10 / 2 / 368 | 0.915 [0.850, 0.953] | 0.982 [0.936, 0.995] | 0.974 | 0.947 | 0.931 | 0.962 |
+| E alone (Qwen3.8, n = 1) | 106 / 5 / 3 / 373 | 0.955 [0.899, 0.981] | 0.972 [0.922, 0.991] | 0.987 | 0.964 | 0.953 | 0.975 |
+| Gemini 4 Argon alone | 109 / 2 / 0 / 376 | 0.982 [0.937, 0.995] | 1.000 [0.966, 1] | 0.995 | 0.991 | 0.988 | 0.994 |
+
+Argon labels 11 of the gate's 12 escalations correctly, so the study's rule adds 1 false yes (lex_same). Every gate
+error is a false yes: lex_same 3 (4 with Argon) and coll_same 1. **The false-yes rate on non-gold pairs** (the rate
+the per-arm check of H2 depends on) is FP / Opus-no non-gold pairs. It is **4 / 378 = 1.06 %** [0.41, 2.69] for the
+gate with escalation to Opus, and **5 / 378 = 1.32 %** [0.57, 3.06] with escalation to Argon. The one-sided 95 % upper
+limits are 2.34 % and 2.69 %. Without the pairs that touch a study paper (243 pairs, 200 of them unanimous; prereg
+§4.3 item 6), the gate → Argon has precision 0.955 and recall 1.000 on 287 pairs, with a false-yes rate of 4 / 203 =
+1.97 % [0.77, 4.96]. Without the 121 pairs whose question paper is a study paper, those figures are 0.956, 1.000 and
+4 / 301 = 1.33 %. Per stratum, by subset, and for GPT-5.6 Sol: see `analysis-precision.json`.
+
+**2. Prompt paraphrases** (`alias-judge/2-p1..p3`). The rule and the output format are verbatim. p1 rewords
+sentence by sentence, p2 moves the yes / no criteria first, and p3 uses plain short sentences. The subset is 200
+Opus-unanimous pairs, seeded (`20261102|judge-followups|paraphrase`) and stratified: 100 *answers* and 100 *not*.
+C took n = 5 and E took n = 1, with thinking on. **p0** is a fresh re-run of /2, as a run-to-run noise floor. On the
+subset, the original /2 labels give a gate accuracy of 0.995, precision 0.990 and recall 1.000.
+
+| version | gate acc | gate precision | gate recall | gate κ | escalated | C recall | E recall |
+|---|---|---|---|---|---|---|---|
+| /2 (stored validation labels) | 0.995 | 0.990 | 1.000 | 0.99 | 7 | 0.98 | 0.97 |
+| p0 (/2 re-run) | 0.995 | 0.990 | 1.000 | 0.99 | 7 | 0.99 | 0.96 |
+| p1 | 0.995 | 0.990 | 1.000 | 0.99 | 5 | 0.99 | 0.98 |
+| p2 | 0.990 | 0.990 | 0.990 | 0.98 | 5 | 0.98 | 0.97 |
+| p3 | 0.995 | 0.990 | 1.000 | 0.99 | 6 | 0.99 | 0.97 |
+
+The subset's prevalence is 0.50 by design, so its precision is not comparable with the 0.224-prevalence table
+above: re-weighted to the population prevalence (`precision_at_population_prevalence`), the gate's precision is
+0.966 for /2 and every paraphrase, C's is 0.904 to 0.905 and E's 0.965 to 0.966.
+
+Across the paraphrases, the largest change against /2 in precision or recall, for the gate or for either judge, is
+**1 point (one pair)**. That is the size of the p0 re-run's own change and of E's sample-to-sample change in the
+stored validation samples. **No paraphrase moves recall or precision by more than 3 points.** At most 4 of 200 raw
+gate labels flip against /2 (2 for the p0 re-run). There were no invalid samples, failures or served-model mismatches.

@@ -152,7 +152,51 @@ JUDGE_RULE_V2 = ("- If the passage uses a short form (an abbreviation or a symbo
                  "question's TERM, treat the short form as the TERM itself.")
 _V2_ANCHOR = '- "yes": the passage states'
 JUDGE_SYSTEM_V2 = JUDGE_SYSTEM.replace(_V2_ANCHOR, JUDGE_RULE_V2 + "\n" + _V2_ANCHOR, 1)
-JUDGE_SYSTEMS: dict[str, str] = {"alias-judge/1": JUDGE_SYSTEM, "alias-judge/2": JUDGE_SYSTEM_V2}
+#: The output-format block every judge prompt ends with (kept verbatim by the paraphrases).
+JUDGE_OUTPUT_FORMAT = ('Answer with a JSON object only, exactly these keys, reason first:\n'
+                       '{"reason": "at most 25 words", "answers": "yes" | "no"}')
+
+#: Prompt-paraphrase check (review follow-up, 2026-11-02): three meaning-preserving rewordings of
+#: alias-judge/2. Each keeps :data:`JUDGE_RULE_V2` (the short-form rule) and
+#: :data:`JUDGE_OUTPUT_FORMAT` verbatim and rewords the rest: p1 sentence by sentence in the same
+#: order, p2 with the yes / no criteria moved first, p3 in plainer, shorter sentences. They are
+#: for measuring prompt sensitivity only; the study's judge prompt stays alias-judge/2.
+JUDGE_SYSTEM_V2_P1 = f"""Your task is to decide whether a PASSAGE taken from a scientific paper answers a QUESTION. Base your decision only on the text provided here, and never on anything you may know from outside about a particular paper.
+
+Rules:
+- The QUESTION uses a TERM. The passage can come from ANY paper, which need not be the paper the question was drawn from. A passage that answers the question counts.
+- Instead of the TERM, the passage may use a short form (an abbreviation or a symbol). Such a short form is the TERM only when, within the passage's own paper, it denotes the TERM (the same concept). Rely on the definitions from the passage's paper that are supplied with the passage; if the passage or those definitions show that the short form denotes something else, it is NOT the TERM. One short form frequently has different meanings in different papers.
+{JUDGE_RULE_V2}
+- "yes": the passage gives the information the question asks for, concerning the TERM (or a short form that denotes the TERM in that paper), under the conditions named in the question (organism, population, material, method, setting). If the passage gives the core of what is asked, answer "yes", even when it includes extra details or leaves some out.
+- "no": the passage does not give the requested information; it merely mentions the term, the topic or related facts; it concerns a different concept that happens to share a short form; or it describes conditions that contradict the ones the question names.
+
+{JUDGE_OUTPUT_FORMAT}"""
+
+JUDGE_SYSTEM_V2_P2 = f"""A QUESTION and a PASSAGE from a scientific paper are given. Decide whether the PASSAGE answers the QUESTION, using only the given text; do not draw on outside knowledge of any specific paper.
+
+How to decide:
+- Answer "yes" when the passage states what the question asks for, about the TERM the question is phrased with (or about a short form that means the TERM in the passage's paper), under the conditions the question specifies (organism, population, material, method, setting). Stating the core of what is asked is enough for "yes"; additional or missing details do not change that.
+- Answer "no" when the passage does not state the requested information: when it only mentions the term, the topic or related facts, when it is about another concept that shares a short form, or when its conditions contradict the conditions the question specifies.
+- Where the passage comes from does not matter: it can be from ANY paper, not only the paper the question was written from. If it answers the question, it counts.
+- A short form (an abbreviation or a symbol) used in place of the TERM counts as the TERM only if the passage's own paper uses it for the TERM (the same concept). Check the definitions from the passage's paper that come with the passage. If the passage or these definitions show the short form standing for something else, it is NOT the TERM. Different papers often use the same short form for different things.
+{JUDGE_RULE_V2}
+
+{JUDGE_OUTPUT_FORMAT}"""
+
+JUDGE_SYSTEM_V2_P3 = f"""Read the QUESTION and the PASSAGE. The passage is from a scientific paper. Say whether it answers the question. Use only the text you are given. Do not use outside knowledge about any particular paper.
+
+Rules:
+- The question is written with a TERM. The passage might be from a different paper than the question. That is fine: if the passage answers the question, it counts.
+- The passage might use a short form (an abbreviation or a symbol) where the question has the TERM. The short form is the TERM only if the passage's own paper uses it to mean the TERM (the same concept). Look at the passage paper's definitions, which are given with the passage. If the passage or its definitions show that the short form means something else, it is NOT the TERM. A short form often means different things in different papers.
+{JUDGE_RULE_V2}
+- Say "yes" if the passage states the information the question asks for. It must be about the TERM (or a short form that means the TERM in that paper) and must fit the conditions the question names (organism, population, material, method, setting). If the passage states the core of what is asked, say "yes", even if it adds details or leaves some out.
+- Say "no" if the passage does not state the information asked for. This covers a passage that only mentions the term, the topic or related facts; a passage about a different concept that shares a short form; and a passage whose conditions contradict the ones the question names.
+
+{JUDGE_OUTPUT_FORMAT}"""
+
+JUDGE_SYSTEMS: dict[str, str] = {"alias-judge/1": JUDGE_SYSTEM, "alias-judge/2": JUDGE_SYSTEM_V2,
+                                 "alias-judge/2-p1": JUDGE_SYSTEM_V2_P1, "alias-judge/2-p2": JUDGE_SYSTEM_V2_P2,
+                                 "alias-judge/2-p3": JUDGE_SYSTEM_V2_P3}
 #: how thinking is switched for Qwen3 on vLLM: the chat template's ``enable_thinking`` flag,
 #: sent as ``chat_template_kwargs``; the server returns the thinking in ``message.reasoning``
 #: and counts it in ``usage.completion_tokens_details.reasoning_tokens``.
@@ -230,7 +274,10 @@ DEFAULTS: dict[str, Any] = {
              "variant": None,
              # round 3: refuse a reply whose served model id is not ``model`` (a shared endpoint
              # can be redeployed under another model between preflight and run)
-             "require_served_model": False},
+             "require_served_model": False,
+             # review follow-up: label only the pairs listed in ``subset_file`` (one pair id per
+             # line), pinned by ``subset_sha256`` (required with it); both enter the plan
+             "subset_file": None, "subset_sha256": None},
     "limits": {**dr.DEFAULTS["limits"], "input_token_cap": 3_000_000, "output_token_cap": 600_000,
                "call_cap": 1500},
     "analysis": {"bootstrap": 1000, "seed": 20261031, "plateau_eps": 0.005,
@@ -603,7 +650,7 @@ class Labeler:
 
     # -- plan / gate
     def plan(self, backend: str, reps: int) -> dict[str, Any]:
-        pairs = self.w.pairs()
+        pairs = self.qwen_pairs() if backend == "qwen" else self.w.pairs()
         chars = [len(self.w.prompt(p)[0]) + len(JUDGE_SYSTEM) for p in pairs]
         calls = len(pairs) * (reps if backend == "opus" else 1)
         q = self.cfg["qwen"]
@@ -645,7 +692,28 @@ class Labeler:
                 plan.update({"variant": q["variant"], "thinking_switch": THINKING_SWITCH})
                 if q["require_served_model"]:   # round 3: the endpoint is part of the plan
                     plan.update({"base_url": str(q["base_url"]), "require_served_model": True})
+            if q["subset_file"]:                # review follow-up: a pinned subset of the pairs
+                plan.update({"subset_file": str(q["subset_file"]), "subset_sha256": q["subset_sha256"]})
         return plan
+
+    def qwen_pairs(self) -> list[dict[str, Any]]:
+        """The pairs the Qwen backend labels: every pair, or only those of ``qwen.subset_file``
+        (checked against ``qwen.subset_sha256``, which is then required, and the pairs file)."""
+        pairs = self.w.pairs()
+        q = self.cfg["qwen"]
+        if not q["subset_file"]:
+            return pairs
+        path = Path(q["subset_file"])
+        if not q["subset_sha256"]:
+            raise SystemExit("qwen.subset_file needs qwen.subset_sha256")
+        if g.file_sha(path) != q["subset_sha256"]:
+            raise p4.HardStop(f"{path}: sha256 differs from qwen.subset_sha256")
+        ids = [x.strip() for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+        known = {p["pair_id"] for p in pairs}
+        if len(set(ids)) != len(ids) or not set(ids) <= known:
+            raise SystemExit(f"{path.name}: duplicate pair ids or ids not in pairs.jsonl")
+        keep = set(ids)
+        return [p for p in pairs if p["pair_id"] in keep]
 
     def plan_sha(self, plan: Mapping[str, Any]) -> str:
         return g.sha_text(json.dumps(dict(plan), sort_keys=True))
@@ -1067,7 +1135,7 @@ class Labeler:
         url = str(q["base_url"]).rstrip("/").removesuffix("/v1")
         st = self.store("qwen")
         ctl = Ctl(self.out, int(q["inflight"]))
-        pairs = self.w.pairs()
+        pairs = self.qwen_pairs()
         todo = [p for p in pairs if f"qwen|{p['pair_id']}" not in st]
         seg: Counter[str] = Counter()
         fails = {"row": 0}
