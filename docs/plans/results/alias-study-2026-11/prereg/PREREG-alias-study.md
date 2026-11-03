@@ -932,8 +932,9 @@ their gold chunk (this and the two-line count below are scratch counts from the 
 check on the base chunk export, not committed artifacts). The glossary files therefore carry, for every `abbreviation` or `both` entry, an added
 **`Xs` entry with the same definitions**. Where both forms occur in a chunk (about 2,247 base chunks), the
 field shows two lines. With the plural entries, **600 of the 600** balanced G records render their own
-entry on the gold chunk under base × merged (the writer's census, below). The rendering conventions, for
-every glossary file:
+entry on the gold chunk under base × merged (the writer's private parity record
+`base.merged.parity.json`, sha256 `b2a1b3a6…`, for the file `1804f55c…` and the balanced set `2be86f8c…`).
+The rendering conventions, for every glossary file:
 - **one line per alias**: `alias — p1; p2`;
 - the **12-entry cap counts lines** (aliases), not merged entries. Disclosed in the writer's census
   (`alias_glossary_file.ENTRY_CAP_RULE`): on base × merged, **88** chunks render a different field than
