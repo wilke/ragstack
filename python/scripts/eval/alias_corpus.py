@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -307,9 +308,10 @@ def attribute(picks: Mapping[str, Sequence[tuple[str, str]]]) -> tuple[dict[str,
 # ------------------------------------------------------------------ random draws
 
 
-def random_order(draw: int, study: str, wids: Iterable[str]) -> list[str]:
-    """Candidates of one study paper in the seeded order of draw ``draw`` (1 or 2)."""
-    seed = SEED_RANDOM[draw]
+def random_order(draw: int, study: str, wids: Iterable[str], seeds: Mapping[int, str] | None = None) -> list[str]:
+    """Candidates of one study paper in the seeded order of draw ``draw`` (1 or 2); ``seeds``
+    defaults to :data:`SEED_RANDOM` (v1), :data:`SEED_RANDOM_V2` for the v2 re-draw."""
+    seed = (seeds or SEED_RANDOM)[draw]
     return sorted(set(wids), key=lambda w: seeded_hash(seed, study, w))
 
 
@@ -417,6 +419,243 @@ def draw_for_study(order: Sequence[str], need_jats: int, need_pdf: int, taken: s
             "need_pdf": need_pdf, "got": n, "shortfall": max(0, need - n),
             "filled_from_other_class": filled_from_other, "skipped": skipped,
             "deferred": len(deferred)}
+
+
+# ------------------------------------------------------------------ v2 (owner, 2026-11-01): walk-down, type, bands
+
+SEED_RANDOM_V2 = {1: f"{SEED_BASE}|random-1-v2", 2: f"{SEED_BASE}|random-2-v2"}
+
+#: The article-type filter, both arms (v2). OpenAlex ``type`` -> the matching class. Only these two
+#: are kept; every other ``type`` (preprint, letter, editorial, erratum, retraction, paratext,
+#: peer-review, book-chapter, conference-paper, dissertation, supplementary-materials, other, ...)
+#: is dropped. ``type_crossref`` is not read: the snapshot projection the random pool came from
+#: does not carry it, and both arms must be filtered on the same field.
+TYPE_CLASS = {"article": "article", "review": "review"}
+
+#: v2 random draws: the order in which an unfillable (type, band, source) cell is relaxed. Each
+#: relaxation pass reuses candidates already fetched for that study paper (no new fetch): first the
+#: source (PDF share), then the type, then the band; ``any`` takes whatever is left.
+RELAX_ORDER = ("strict", "source", "source+type", "any")
+
+
+def type_class(t: str | None) -> str | None:
+    """OpenAlex ``type`` -> ``article`` / ``review``, or ``None`` (dropped)."""
+    return TYPE_CLASS.get(t or "")
+
+
+def rank_references(study: str, refs: Iterable[Work], excl: Exclusion) -> list[Work]:
+    """Every eligible reference in pick order (:func:`pick_references` is its first ``cap``)."""
+    elig = [r for r in refs if excl.reason(r) is None and r.oa_fulltext]
+    elig.sort(key=lambda r: (-r.cited_by_count, seeded_hash(SEED_NEIGHBOURS, "tie", "refs", study, r.wid)))
+    return elig
+
+
+def rank_citers(study: str, citers: Iterable[Work], excl: Exclusion) -> list[Work]:
+    """Every eligible citer in pick order (:func:`pick_citers` is its first ``cap``)."""
+    elig = [c for c in citers if excl.reason(c) is None and c.oa_fulltext]
+    elig.sort(key=lambda c: ((c.pub_date or ""), _desc_key(seeded_hash(SEED_NEIGHBOURS, "tie", "citers", study, c.wid))),
+              reverse=True)
+    return elig
+
+
+def walk_down(ranked: Sequence[Work], cap: int, resolve: Callable[[str], Outcome]) -> dict[str, Any]:
+    """The v2 neighbour rule for one side of one study paper: down the ranked list until ``cap``
+    works are obtained or the list is exhausted.
+
+    A work is skipped (with its reason) when its OpenAlex type is not kept (``type:<t>``), when the
+    fetch fails (the fetch reason: not in the PMC OA subset, robots, 403/429, not a PDF, ...) or when
+    the C0 screen excludes it (``c0_screen``). ``resolve`` is only called for type-kept works.
+    """
+    picked: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    examined = 0
+    for w in ranked:
+        if len(picked) >= cap:
+            break
+        examined += 1
+        if type_class(w.type) is None:
+            skipped.append((w.wid, f"type:{w.type}"))
+            continue
+        out = resolve(w.wid)
+        if not out.ok:
+            skipped.append((w.wid, "c0_screen" if out.excluded_c0 else (out.reason or "failed")))
+            continue
+        picked.append(w.wid)
+    return {"picked": picked, "skipped": skipped, "examined": examined, "ranked": len(ranked),
+            "exhausted": len(picked) < cap}
+
+
+def next_to_resolve(ranked: Sequence[Work], cap: int, known: Callable[[str], Outcome | None]) -> list[str]:
+    """The works :func:`walk_down` would resolve next given what is already known: walk the list
+    with the known outcomes and return the next ``cap - picked`` unknown, type-kept works (resolving
+    exactly those cannot over-fetch: each is needed unless an earlier one succeeds)."""
+    got = 0
+    want: list[str] = []
+    for w in ranked:
+        if got + len(want) >= cap:
+            break
+        if type_class(w.type) is None:
+            continue
+        o = known(w.wid)
+        if o is None:
+            want.append(w.wid)
+        elif o.ok:
+            got += 1
+    return want
+
+
+def length_cuts(values: Sequence[int], n_bands: int) -> list[float]:
+    """Band boundaries at the ``n_bands`` quantiles of ``values`` (nearest-rank, lower)."""
+    xs = sorted(values)
+    if not xs:
+        raise ValueError("no values")
+    return [float(xs[min(len(xs) - 1, (len(xs) * i) // n_bands)]) for i in range(1, n_bands)]
+
+
+def band_of(n: int, cuts: Sequence[float]) -> int:
+    """Band index 0..len(cuts): band i holds cuts[i-1] <= n < cuts[i]."""
+    b = 0
+    for c in cuts:
+        if n >= c:
+            b += 1
+    return b
+
+
+Cell = tuple[str, int, str]  # (type class, length band, source)
+
+
+def _relaxed(cell: Cell, level: str) -> tuple:
+    t, b, s = cell
+    return {"strict": (t, b, s), "source": (t, b), "source+type": (b,), "any": ()}[level]
+
+
+def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str],
+                 type_of: Callable[[str], str | None], klass: Callable[[str], str | None],
+                 resolve: Callable[[str], Outcome], band: Callable[[int], int],
+                 is_dup: Callable[[str], bool] | None = None, on_take: Callable[[str], None] | None = None,
+                 max_resolves: int | None = None) -> dict[str, Any]:
+    """One study paper's share of one v2 random draw: matched on (type, length band, source).
+
+    ``quota``: cell -> count, from the study paper's attributed neighbours. Candidates are walked in
+    the draw's seeded order. Before fetching, a candidate is skipped when its type is not kept, and
+    not fetched when no open cell has its type and predicted source (``cell_closed``); a fetched,
+    accepted (ok) candidate is taken when its (type, band of its chunk count, actual source) cell is
+    open, else it is passed over as ``rejected_for_band`` (its type and source had an open cell, its
+    band did not) or ``rejected_cell_full``. The walk stops when every cell is full, the candidates
+    run out, or ``max_resolves`` fetches were spent. Cells still open are then filled from the
+    passed-over candidates, in seeded order, level by level of :data:`RELAX_ORDER` (fetched ones
+    first cost nothing; unfetched ones are fetched when the level could use them, within a second
+    ``max_resolves``); every take records the level it was matched at.
+    """
+    open_q: dict[Cell, int] = {c: n for c, n in quota.items() if n > 0}
+    need = sum(open_q.values())
+    took: list[dict[str, Any]] = []
+    later: list[str] = []                 # passed over in the strict pass, in seeded order
+    cells: dict[str, Cell | None] = {}    # fetched: wid -> its cell (None: failed / screened out)
+    skipped: Counter[str] = Counter()
+    resolves = {"strict": 0, "relax": 0}
+    budget_hit = False
+
+    def is_open(pred: Callable[[Cell], bool]) -> bool:
+        return any(n > 0 and pred(c) for c, n in open_q.items())
+
+    def take(wid: str, cell: Cell, matched: Cell, level: str) -> None:
+        open_q[matched] -= 1
+        taken.add(wid)
+        took.append({"wid": wid, "type": cell[0], "band": cell[1], "source": cell[2], "level": level,
+                     "for_cell": list(matched)})
+        if on_take is not None:
+            on_take(wid)
+
+    def fetch(wid: str, t: str, k: str, phase: str) -> Cell | None:
+        resolves[phase] += 1
+        out = resolve(wid)
+        if not out.ok:
+            skipped["c0_screen" if out.excluded_c0 else (out.reason or "failed")] += 1
+            cells[wid] = None
+            return None
+        cells[wid] = (t, band(out.n_chunks), out.source or k)
+        return cells[wid]
+
+    for i, wid in enumerate(order):
+        if not is_open(lambda c: True):
+            break
+        if wid in taken:
+            continue
+        t = type_class(type_of(wid))
+        if t is None:
+            skipped["type"] += 1
+            continue
+        if is_dup is not None and is_dup(wid):
+            skipped["duplicate"] += 1
+            continue
+        if not is_open(lambda c, t=t: c[0] == t):
+            skipped["type_cells_full"] += 1
+            later.append(wid)
+            continue
+        k = klass(wid)
+        if k is None:
+            skipped["no_oa_fulltext"] += 1
+            continue
+        if not is_open(lambda c, t=t, k=k: c[0] == t and c[2] == k):
+            skipped["cell_closed"] += 1
+            later.append(wid)
+            continue
+        if max_resolves is not None and resolves["strict"] >= max_resolves:
+            budget_hit = True
+            later += [w for w in order[i:] if w not in taken]
+            break
+        cell = fetch(wid, t, k, "strict")
+        if cell is None:
+            continue
+        if open_q.get(cell, 0) > 0:
+            take(wid, cell, cell, "strict")
+            continue
+        src = cell[2]
+        skipped["rejected_for_band" if is_open(lambda c, t=t, src=src: c[0] == t and c[2] == src)
+                else "rejected_cell_full"] += 1
+        later.append(wid)
+    # relaxation: the passed-over candidates, in seeded order; fetched ones first cost nothing, the
+    # unfetched ones are fetched only when the relaxed level could use them (own budget)
+    rank = {w: i for i, w in enumerate(order)}
+    later.sort(key=rank.__getitem__)
+    relaxed: Counter[str] = Counter()
+    for level in RELAX_ORDER[1:]:
+        for wid in later:
+            if not is_open(lambda c: True):
+                break
+            if wid in taken or (is_dup is not None and is_dup(wid)):
+                continue
+            if wid not in cells:
+                t = type_class(type_of(wid)) or ""
+                if not t:
+                    cells[wid] = None
+                    continue
+                if level == "source" and not is_open(lambda c, t=t: c[0] == t):
+                    continue
+                if max_resolves is not None and resolves["relax"] >= max_resolves:
+                    budget_hit = True
+                    continue
+                k = klass(wid)
+                if k is None:
+                    cells[wid] = None
+                    continue
+                fetch(wid, t, k, "relax")
+            cell = cells[wid]
+            if cell is None:
+                continue
+            key = _relaxed(cell, level)
+            match = next((c for c, n in sorted(open_q.items()) if n > 0 and _relaxed(c, level) == key), None)
+            if match is not None:
+                lv = "strict" if match == cell else level   # fetched late, matched exactly
+                take(wid, cell, match, lv)
+                relaxed[lv] += 1
+    got = len(took)
+    return {"took": took, "need": need, "got": got, "shortfall": max(0, need - got),
+            "quota": {"|".join(map(str, c)): n for c, n in sorted(quota.items())},
+            "unfilled": {"|".join(map(str, c)): n for c, n in sorted(open_q.items()) if n > 0},
+            "relaxed": dict(relaxed), "skipped": dict(skipped), "resolves": sum(resolves.values()),
+            "resolves_by_phase": resolves, "budget_hit": budget_hit, "passed_over": len(later)}
 
 
 # ------------------------------------------------------------------ control-character screen

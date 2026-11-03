@@ -19,9 +19,14 @@ file with the committed balanced-set rule when ``--records`` is given, else the 
 
    * **H1**: the 2 G records of each paper, the paper sum of hit(merged) - hit(none) > 0.
    * **H2**: all 3 records, d = (d_1 + d_2) / 2 with d_k = hit(neighbour) - hit(random-k), the
-     paper sum < 0. ``q`` is a record's discordance between the neighbour arm and EACH draw
-     (q scaled per paper by its realised neighbour count over the mean count when
-     ``--neighbour-counts`` is given); a share ``rho`` of it is shared by both draws (same
+     paper sum < 0. ``q`` is a record's discordance between the neighbour arm and EACH draw **at
+     the planned dose** (prereg §5.1: about 2,800 added papers, ``--planned-added``). With
+     ``--neighbour-counts`` the realised dose enters: paper j's q is q x n_j / (planned / clusters),
+     n_j its attributed neighbour count — discordance assumed linear in the number of added papers,
+     so a corpus that adds fewer papers than planned has proportionally less H2 signal (the earlier
+     version scaled by n_j / mean n, which kept the average q at the planned value whatever the
+     realised count). The normal approximation is also printed at the realised dose (q x dose,
+     dose = sum n_j / planned). A share ``rho`` of it is shared by both draws (same
      record, same direction: d = +-1) and the rest occurs per draw independently (d = +-1/2).
      rho = 1 is the prereg's three-valued approximation; rho = 0.5 shows what averaging two
      draws buys (§8, *H2 is approximated conservatively*). The neighbour arm loses a
@@ -62,6 +67,9 @@ AGREEMENTS = (1.0, 0.8, 0.6)
 #: the share of a record's neighbour-vs-draw discordance that both random draws share: 1.0 is the
 #: prereg's three-valued approximation (the draws identical); 0.5 lets the average cut noise
 RHOS = (1.0, 0.5)
+#: prereg §5.1: "about 9-10 added per study paper, so about 2,800 papers for 300" — the dose the
+#: q grid is read at
+PLANNED_ADDED = 2800.0
 POWER_SEED = f"{asc.SEED_BASE}|power"
 _TOL = 1e-9
 
@@ -155,6 +163,14 @@ def simulate_h2(n_clusters: int, rec_per: int, q: float, p: float, *, rho: float
     return out
 
 
+def dose_scale(counts: Mapping[str, float], papers: Sequence[str], planned_added: float) -> tuple[np.ndarray, float, float]:
+    """(per-paper realised counts in ``papers`` order, planned added per paper, dose = realised /
+    planned total). Paper j's H2 discordance is q x counts_j / planned-per-paper."""
+    vals = np.array([float(counts.get(p, 0)) for p in papers])
+    per_planned = planned_added / len(papers)
+    return vals, per_planned, float(vals.sum() / planned_added)
+
+
 def layout_from_records(path: Path) -> dict[str, Any]:
     recs = asc.load_records(path)
     bal, desc = asc.split_records(recs)
@@ -169,7 +185,10 @@ def layout_from_records(path: Path) -> dict[str, Any]:
             "papers": sorted(per)}
 
 
-def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: int, n_flips: int) -> dict[str, Any]:
+def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: int, n_flips: int,
+            dose: float = 1.0) -> dict[str, Any]:
+    """``q_scale``: per-paper multipliers of q for H2 (dose included); ``dose``: the realised
+    added papers over the planned, for the H2 normal approximation at the realised dose."""
     if layout["shapes"] != [[2, 1]]:
         raise SystemExit(f"layout is not exactly 2 G + 1 C per paper: {layout['shapes']}")
     nc = int(layout["clusters"])
@@ -182,6 +201,8 @@ def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: 
             key = f"p{p:g}_q{q:g}"
             normal["H1"][key] = {str(a): round(normal_power(n_h1, q, p, a), 4) for a in (0.025, 0.05)}
             normal["H2"][key] = {str(a): round(normal_power(n_h2, q, p, a), 4) for a in (0.025, 0.05)}
+            normal.setdefault("H2_at_realised_dose", {})[key] = {
+                str(a): round(normal_power(n_h2, min(1.0, q * dose), p, a), 4) for a in (0.025, 0.05)}
             s1 = simulate_h1(nc, 2, q, p, n_sims=n_sims, n_flips=n_flips, seed=seed + 100 * i + j)
             sim["H1"][key] = {k: v for k, v in s1.items() if k in ("0.025", "0.05")}
             for t, rho in enumerate(RHOS):
@@ -191,7 +212,7 @@ def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: 
     mde = {"H1": {f"q{q:g}": round(mde80_points(n_h1, q), 2) for q in QS},
            "H2": {f"q{q:g}": round(mde80_points(n_h2, q), 2) for q in QS}}
     h2_lever = sim["H2"]["rho1"]["p0.85_q0.05"]["0.025"]
-    return {"normal_approximation": normal, "simulation": sim, "mde80_points": mde,
+    return {"normal_approximation": normal, "simulation": sim, "mde80_points": mde, "h2_dose": dose,
             "h2_at_q05_p85_alpha025": h2_lever,
             "h2_caps_lever_fires": bool(h2_lever["test_only"] < 0.80),
             "evaluability_floor": {"alpha_0.025_min_nonzero_clusters": 6, "alpha_0.05_min_nonzero_clusters": 5}}
@@ -202,6 +223,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--records", type=Path, default=None)
     ap.add_argument("--neighbour-counts", type=Path, default=None,
                     help="JSON {paper: attributed neighbour count} from the neighbour manifest (§15 item 4)")
+    ap.add_argument("--planned-added", type=float, default=PLANNED_ADDED,
+                    help="the added papers the q grid refers to (prereg §5.1 estimate: 2,800)")
     ap.add_argument("--sims", type=int, default=2000)
     ap.add_argument("--flips", type=int, default=2000)
     ap.add_argument("--out", type=Path, required=True)
@@ -213,23 +236,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         layout = {"source": "prereg §4.1 (300 x (2 G + 1 C))", "clusters": 300, "shapes": [[2, 1]], "records": 900}
         papers = None
     q_scale = None
-    counts_note = "realised neighbour counts not given (§15 item 4 open): equal q across papers"
+    dose = 1.0
+    counts_note = "realised neighbour counts not given (§15 item 4 open): equal q across papers, planned dose"
     if args.neighbour_counts is not None:
         if papers is None:
             raise SystemExit("--neighbour-counts needs --records (the paper order)")
         cnt = json.loads(args.neighbour_counts.read_text())
-        vals = np.array([float(cnt.get(p, 0)) for p in papers])
-        q_scale = list(vals / vals.mean()) if vals.mean() > 0 else None
-        counts_note = (f"q scaled per paper by its attributed neighbour count / mean count (mean {vals.mean():.2f}, "
-                       f"min {vals.min():g}, max {vals.max():g}); counts sha256 {asc.sha256_file(args.neighbour_counts)}")
-    res = compute(layout, q_scale, args.sims, args.flips)
+        vals, per_planned, dose = dose_scale(cnt, papers, args.planned_added)
+        q_scale = list(vals / per_planned)
+        counts_note = (f"q scaled per paper by its attributed neighbour count / planned per paper "
+                       f"({args.planned_added:g} / {len(papers)} = {per_planned:.3f}); realised mean {vals.mean():.2f}, "
+                       f"min {vals.min():g}, max {vals.max():g}, total {vals.sum():g}, dose {dose:.4f}; "
+                       f"counts sha256 {asc.sha256_file(args.neighbour_counts)}")
+    res = compute(layout, q_scale, args.sims, args.flips, dose=dose)
     try:
         from ragstack.provenance import experiment_provenance
         prov = experiment_provenance()
     except Exception:  # noqa: BLE001
         prov = {}
     out = {"schema": "alias-study-power/1", "layout": layout, **res,
-           "assumptions": {"sd_p_between_papers": SD_P, "rho_shared_discordance": list(RHOS),
+           "assumptions": {"sd_p_between_papers": SD_P, "planned_added": args.planned_added,
+                           "dose_rule": "H2 discordance linear in added papers (q at the planned dose)", "rho_shared_discordance": list(RHOS),
                            "gold_agreement": list(AGREEMENTS), "neighbour_counts": counts_note,
                            "seed": POWER_SEED, "seed_rule": asc.SEED_RULE, "sims": args.sims, "flips": args.flips},
            "provenance": prov, "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0)}
