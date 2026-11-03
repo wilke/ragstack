@@ -1659,11 +1659,14 @@ def stage_finalize_v2(lay: Layout, b: Builder, version: int = 2) -> dict:
     counts["disk_bytes"][f"arm_chunk_files_v{version}"] = sum((lay.root / f"chunks-{a}{sfx}.jsonl").stat().st_size for a in arms)
     counts["disk_bytes"]["root_total"] = _du(lay.root)
     counts["seeds"] = {"neighbours": ac.SEED_NEIGHBOURS, "random_1": ac.SEED_RANDOM_V2[1], "random_2": ac.SEED_RANDOM_V2[2]}
-    counts["manifest_sha256"] = {f.name: sha256_file(f) for f in sorted(lay.manifests.glob(f"*{sfx}.json"))
-                                 if not f.name.startswith(("counts-", "power-"))}
-    counts["provenance"] = LAUNCH_PROVENANCE or _provenance()
+    # the per-study files first, so that manifest_sha256 covers them: every *-vN.json manifest except
+    # counts-vN (this file) and power-vN (written later, by alias_study_power)
     write_json(lay.manifests / f"per-study-chunks{sfx}.json", per_study_chunks)
     write_json(lay.manifests / f"neighbour-counts{sfx}.json", {p: len(sel["attributed"][p]) for p in sel["order"]})
+    counts["manifest_sha256"] = {f.name: sha256_file(f) for f in sorted(lay.manifests.glob(f"*{sfx}.json"))
+                                 if not f.name.startswith(("counts-", "power-"))}
+    counts["manifest_sha256_covers"] = f"every manifests/*{sfx}.json except counts{sfx}.json and power{sfx}.json"
+    counts["provenance"] = LAUNCH_PROVENANCE or _provenance()
     write_json(lay.manifests / f"counts{sfx}.json", counts)
     log(f"finalize{sfx}: " + json.dumps({a: {k: counts[a].get(k) for k in ("papers", "chunks", "pdf_share")} for a in arms})
         + " " + json.dumps(counts["volume_verdict"]))
@@ -1969,7 +1972,11 @@ def stage_finalize_v3(lay: Layout, b: Builder) -> dict:
     counts["redraw_rule"] = V3_REDRAW_RULE
     st = json.loads((lay.state / "provenance-v3.json").read_text()) if (lay.state / "provenance-v3.json").exists() else {}
     commits = {k: v.get("commit") for k, v in st.items()}
+    # this stage's own marker is written after it returns: record its launch commit here
+    commits["finalize-v3"] = (LAUNCH_PROVENANCE or {}).get("commit")
     counts["stage_provenance_commits"] = commits
+    counts["stage_provenance_authority"] = ("state/provenance-v3.json (full provenance per stage, written when each "
+                                            "stage's done marker is written); this map repeats its commits")
     counts["stage_commits_agree"] = len(set(commits.values())) <= 1
     counts["v2_provenance_note"] = (
         "counts-v2.json recorded the commit checked out when finalize-v2 ran (c83f15f), not the launch commit of "
