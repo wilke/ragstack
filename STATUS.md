@@ -2,13 +2,13 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-10-29
+**Last updated:** 2026-11-03
 **Deployed:** seven tenants, image mode. Six are on server tag
 [`v1.6.14`](https://github.com/wilke/ragstack/releases/tag/v1.6.14) (**`baf7174`**): the API
 from `ragstack-server-v1.6.14-b1.sif`, with workflows naming tools image
 `ragstack-tools-v1.6.13-b1.sif`. `dev` first (2026-10-22T13:32Z), then `asm-next` (15:45Z),
 then `demo`, `elrond`, `clark`, `lucid-next` and `hackathon` (17:25:33–17:27:04Z).
-**`dev` alone has moved on since and runs server tag `v1.6.21` (see below); the rest wait for
+**`dev` alone has moved on since and runs server tag `v1.6.22` (see below); the rest wait for
 the owner's "Roll fleet".**
 They sit behind the nginx gateway on `:9000` at `/ragstack/<tenant>/api/`, and publicly at
 `https://www.bv-brc.org/ragstack/<tenant>/`. `ragstack-ctl fleet status` is the live
@@ -43,12 +43,13 @@ current-state snapshot: the open PR stack, the chunking study's stopped confirma
 one human task that is blocking, live infrastructure, and the failures this line of work
 already made. This file remains the long-form project history.
 
-**Released; deployed on `dev` only (2026-10-28/29): tools tag `v1.6.18` → `ragstack-tools-v1.6.18-b1.sif`,
+**Released; deployed on `dev` only (2026-10-28 – 2026-11-03): tools tag `v1.6.18` → `ragstack-tools-v1.6.18-b1.sif`,
 server tag `v1.6.19` → `ragstack-server-v1.6.19-b1.sif` (dev ≈04:25Z 2026-10-28, `update-code dev` job
 01M60C2V7E2WVJ6510FH7Z3W9A), then tools image `ragstack-tools-v1.6.20-b1.sif` and server tag `v1.6.21` →
 `ragstack-server-v1.6.21-b1.sif` (dev on the owner's "Upgrade dev", 2026-10-28/29; the v1.6.21 UI artifact is
-prepared for the fleet). `asm-next`, `demo`, `elrond`, `clark`, `lucid-next` and `hackathon` stay on v1.6.14
-until the owner's "Roll fleet"; the post-roll soak legs on v1.6.21 have not been run
+prepared for the fleet), then server tag `v1.6.22` → `ragstack-server-v1.6.22-b1.sif` (dev 2026-11-03T19:50Z,
+`update-code` job 01M6HFDET5SN635XVY9SRG41XZ). `asm-next`, `demo`, `elrond`, `clark`, `lucid-next` and `hackathon` stay on v1.6.14
+until the owner's "Roll fleet"; the post-roll soak legs have not been run on v1.6.21 or v1.6.22
 ([handoff](docs/runbooks/handoff-2026-10-29-chunking-release-1.6.21-dev.md)).** Dev-only settings:
 `MAX_COLLECTIONS_PER_OWNER=100` (admins exempt, no per-user override), `MAX_COLLECTIONS=150` tenant-wide,
 `MAX_CHUNKS_PER_COLLECTION=0` (cap off; the per-collection override is registry `collections.max_chunks`).
@@ -372,6 +373,7 @@ Tags between `v0.15.0` and `v1.6.7` are not in this table: their notes are the [
 | [`v1.6.19`](https://github.com/wilke/ragstack/releases/tag/v1.6.19) | `9394a18` | 2026-10-28 | **Server tag** (ADR-0010; restamp + bump, #842): the CWL names **`ragstack-tools-v1.6.18-b1.sif`**. Server image `ragstack-server-v1.6.19-b1.sif` (sha256 `c9fd52d9…c68bafa5`). **Semantic token cap** (#829): new `semantic` collections record `size_cap: tokens`, `cap_split: greedy`, `breakpoint_cap: size`, with `size` default 512. **Markdown on the GoWe path** (#830): `.md` uploads are extracted correctly (dev: 1,113 chunks against 1,023 on v1.6.17). **`size_tolerance` / `min_piece`** (#836) under `chunk.params`, receipt chunking v2; refused on non-semantic methods; `overlap >= size` is a 400. #839 and #840 landed after the tag and are not in it. Deployed on dev only (≈04:25Z, `update-code dev` job 01M60C2V7E2WVJ6510FH7Z3W9A). |
 | [`v1.6.20`](https://github.com/wilke/ragstack/releases/tag/v1.6.20) | `4a0571b` | 2026-10-29 | **Tools tag** (ADR-0010; the merge of #853). No server release is cut from this tag. Tools image **`ragstack-tools-v1.6.20-b1.sif`** (sha256 `1dbb8539…40ec95e6`). Adds the glossary step flags, `--glossary-file`, `--max-chunks` (default 0) and `--workflow-id`, and the #852 receipt guard. |
 | [`v1.6.21`](https://github.com/wilke/ragstack/releases/tag/v1.6.21) | `0e22c55` | 2026-10-29 | **Server tag** (ADR-0010; G2b, #854): renames the receipts (#852) and stamps the CWL with **`ragstack-tools-v1.6.20-b1.sif`**. Also in the tree: the glossary step in the shard workflows, driven by the API when `SYMBOL_GLOSSARY_EXTRACTION=llm` (#847), job `warnings`, `max_chunks` on the bulk CWLs (#849) and bulk provenance (#821). Server image `ragstack-server-v1.6.21-b1.sif` (sha256 `19571ef4…8efe62ef`). Deployed on dev only (owner "Upgrade dev", 2026-10-28/29); the v1.6.21 UI artifact is prepared for the fleet, which stays on v1.6.14 until the owner's "Roll fleet". Post-roll soak legs not yet run ([handoff](docs/runbooks/handoff-2026-10-29-chunking-release-1.6.21-dev.md)). |
+| [`v1.6.22`](https://github.com/wilke/ragstack/releases/tag/v1.6.22) | `74ef9bb` | 2026-11-03 | **Server tag** (ADR-0010; version bump only, #928). No tools tag: the CWLs keep naming **`ragstack-tools-v1.6.20-b1.sif`** (60 sites). Server image `ragstack-server-v1.6.22-b1.sif` (sha256 `f96d5f22…5e378c9f`), built 2026-11-03T19:45:06Z from a clean worktree. **`include_symbol_glossary` on `POST /v1/retrieve`** (#846): with the flag, every source carries `symbol_glossary` (`""` when the chunk has none); without it the response is unchanged. It is read after the rerank and the `top_k` cut, from each source's own collection, tenant-scoped, and a slow or unreachable text index gives `""` with a 200. `RERANK_GLOSSARY_TIMEOUT<=0` turns the lookup off (every source then gets `""`). The warning for a failed lookup now reads `symbol glossary hydration failed for collection …` (was `rerank glossary hydration failed …`). New conformance test `conformance/test_symbol_glossary.py` (the Go half is vacuous). New `glossary` stage in the request timings. The Go server accepts and ignores the field (parity TODO). Also in the tree, study tooling only, no API effect: glossary-file `rederive` (`--merge`, `--attach`) and subset subcommands, the shuffled-glossary control on `backfill_symbol_glossary --shuffle-rendered` (stamp `+shuf/1`), and the glossary-benchmark (rounds 2–3), reranker-test and alias-study scripts with their pre-registrations and results under `docs/plans/results`. Deployed on dev only: `update-code` job 01M6HFDET5SN635XVY9SRG41XZ at 2026-11-03T19:50:51Z, `/v1/version` reports 1.6.22; dev's boost (1) and the reranker's glossary setting are unchanged. The rest of the fleet stays on v1.6.14 until the owner's "Roll fleet". |
 
 ## Production layout (`/rag/`)
 
