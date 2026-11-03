@@ -48,8 +48,8 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   counts entered in prereg §5.1, H2's power recomputed on them (the caps lever does not fire at a = 0.7,
   prereg §8); the power output still to be committed as an artifact;
 - the three expanded corpora, built and censused on bench copies within a management window, and the 9
-  immutable bench collections (one per corpus × glossary arm, prereg R26), with the duplication plan and
-  the capacity agreed with management;
+  bench collections (one per corpus × glossary arm, prereg R26; the count pending owner confirmation),
+  loaded from each corpus's embeddings with the variant's glossary file;
 - glossaries for the added papers in every arm, made by the same pipeline, and the offline reach count;
 - the record-set sha, the balanced set and the overlap counts recomputed by committed code;
 - an offline power calculation by committed code;
@@ -108,6 +108,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   the neighbour arm's chunks; the ≥ 80 band still short), with its carry-over rule quoted verbatim, the
   nearest-band fill's global-greedy order, the repetition screen's 9 hits (7 JATS) disclosed, and §8's
   power on the v4 dose.
-  No glossary is swapped in place: each corpus × glossary arm is its own bench collection (9), built once
-  by duplicating the arm's *none* collection and backfilling the copy, immutable after build and censused
-  against its build manifest at every leg; restore points remain for the initial loads only (R26).
+  No glossary is swapped in place: each corpus × glossary arm is its own bench collection (9, pending
+  owner confirmation), written once by loading the corpus's single embedding with the variant's glossary
+  file (no re-embedding, no backfill), with a registry entry and a load receipt, censused at every leg
+  (R26).
