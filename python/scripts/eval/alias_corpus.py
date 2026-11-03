@@ -533,11 +533,54 @@ def _relaxed(cell: Cell, level: str) -> tuple:
     return {"strict": (t, b, s), "source": (t, b), "source+type": (b,), "any": ()}[level]
 
 
+def nearest_band_key(cell: Cell, cand: Cell, rank: int) -> tuple[int, bool, bool, int]:
+    """v4 ``any`` fill (owner, 2026-11-03): the sort key of fetched candidate ``cand`` for open slot
+    ``cell`` — band-index distance, then type mismatch, then source mismatch, then seeded rank."""
+    return (abs(int(cand[1]) - int(cell[1])), cand[0] != cell[0], cand[2] != cell[2], rank)
+
+
+def nearest_band_fill(open_q: Mapping[Cell, int], fetched: Mapping[str, Cell], taken: set[str],
+                      rank: Mapping[str, int], is_dup: Callable[[str], bool] | None = None,
+                      on_pick: Callable[[str, Cell, Cell, int], None] | None = None
+                      ) -> list[tuple[str, Cell, Cell, int]]:
+    """The v4 rule for the band-relaxed level ``any``: each open slot (cells in sorted order, one slot
+    at a time) takes, of the candidates already fetched and accepted (``fetched``: wid -> its cell),
+    not taken and not a duplicate, the one with the smallest :func:`nearest_band_key`. No fetch.
+
+    Returns [(wid, its cell, slot cell, band distance)] in take order; ``taken`` is updated and
+    ``on_pick`` called on each pick before the next slot is served (so ``is_dup`` can see it). A slot
+    with no candidate left stays open.
+    """
+    out: list[tuple[str, Cell, Cell, int]] = []
+    slots = [(c, n) for c, n in sorted(open_q.items()) if n > 0]
+    for cell, n in slots:
+        for _ in range(n):
+            best: tuple[tuple, str] | None = None
+            for wid, cand in fetched.items():
+                if wid in taken or (is_dup is not None and is_dup(wid)):
+                    continue
+                k = nearest_band_key(cell, cand, rank[wid])
+                if best is None or k < best[0]:
+                    best = (k, wid)
+            if best is None:
+                break
+            wid = best[1]
+            taken.add(wid)
+            out.append((wid, fetched[wid], cell, best[0][0]))
+            if on_pick is not None:
+                on_pick(*out[-1])
+    return out
+
+
+ANY_RULES = ("first", "nearest")
+
+
 def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str],
                  type_of: Callable[[str], str | None], klass: Callable[[str], str | None],
                  resolve: Callable[[str], Outcome], band: Callable[[int], int],
                  is_dup: Callable[[str], bool] | None = None, on_take: Callable[[str], None] | None = None,
-                 max_resolves: int | None = None) -> dict[str, Any]:
+                 max_resolves: int | None = None, any_rule: str = "first",
+                 fetched_out: dict[str, tuple[Cell, str]] | None = None) -> dict[str, Any]:
     """One study paper's share of one v2 random draw: matched on (type, length band, source).
 
     ``quota``: cell -> count, from the study paper's attributed neighbours. Candidates are walked in
@@ -550,7 +593,16 @@ def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str
     passed-over candidates, in seeded order, level by level of :data:`RELAX_ORDER` (fetched ones
     first cost nothing; unfetched ones are fetched when the level could use them, within a second
     ``max_resolves``); every take records the level it was matched at.
+
+    ``any_rule``: ``"first"`` (v2/v3) fills the band-relaxed level ``any`` like the other levels —
+    the first passed-over candidate in seeded order, fetching unfetched ones within the relax
+    budget; ``"nearest"`` (v4, owner 2026-11-03) fills it with :func:`nearest_band_fill` from the
+    candidates this walk already fetched, without fetching (those takes record ``band_distance``).
+    ``fetched_out``, when given, receives every accepted candidate this walk fetched, as
+    wid -> (cell, the level it was fetched at: ``strict`` for the strict pass, else the relax level).
     """
+    if any_rule not in ANY_RULES:
+        raise ValueError(f"any_rule {any_rule!r} not in {ANY_RULES}")
     open_q: dict[Cell, int] = {c: n for c, n in quota.items() if n > 0}
     need = sum(open_q.values())
     took: list[dict[str, Any]] = []
@@ -571,8 +623,11 @@ def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str
         if on_take is not None:
             on_take(wid)
 
-    def fetch(wid: str, t: str, k: str, phase: str) -> Cell | None:
+    fetched_at: dict[str, str] = {}
+
+    def fetch(wid: str, t: str, k: str, phase: str, level: str = "strict") -> Cell | None:
         resolves[phase] += 1
+        fetched_at[wid] = level
         out = resolve(wid)
         if not out.ok:
             skipped["c0_screen" if out.excluded_c0 else (out.reason or "failed")] += 1
@@ -624,7 +679,8 @@ def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str
     rank = {w: i for i, w in enumerate(order)}
     later.sort(key=rank.__getitem__)
     relaxed: Counter[str] = Counter()
-    for level in RELAX_ORDER[1:]:
+    levels = RELAX_ORDER[1:] if any_rule == "first" else tuple(lv for lv in RELAX_ORDER[1:] if lv not in BAND_RELAXED)
+    for level in levels:
         for wid in later:
             if not is_open(lambda c: True):
                 break
@@ -644,7 +700,7 @@ def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str
                 if k is None:
                     cells[wid] = None
                     continue
-                fetch(wid, t, k, "relax")
+                fetch(wid, t, k, "relax", level)
             cell = cells[wid]
             if cell is None:
                 continue
@@ -654,6 +710,15 @@ def draw_matched(order: Sequence[str], quota: Mapping[Cell, int], taken: set[str
                 lv = "strict" if match == cell else level   # fetched late, matched exactly
                 take(wid, cell, match, lv)
                 relaxed[lv] += 1
+    if any_rule == "nearest" and is_open(lambda c: True):
+        def pick(wid: str, cell: Cell, slot: Cell, dist: int) -> None:
+            take(wid, cell, slot, "any")
+            took[-1]["band_distance"] = dist
+            relaxed["any"] += 1
+
+        nearest_band_fill(open_q, {w: c for w, c in cells.items() if c is not None}, taken, rank, is_dup, pick)
+    if fetched_out is not None:
+        fetched_out.update({w: (c, fetched_at[w]) for w, c in cells.items() if c is not None})
     got = len(took)
     return {"took": took, "need": need, "got": got, "shortfall": max(0, need - got),
             "quota": {"|".join(map(str, c)): n for c, n in sorted(quota.items())},
@@ -712,6 +777,69 @@ def strict_shortfall(quota: Mapping[Cell, int], took: Iterable[Mapping[str, Any]
     """Per cell: slots not filled at level ``strict`` (quota minus strict takes for that cell)."""
     got: Counter[Cell] = Counter(tuple(t["for_cell"]) for t in took if t["level"] == "strict")  # type: ignore[misc]
     return {c: n - got[c] for c, n in sorted(quota.items()) if n - got[c] > 0}
+
+
+# ------------------------------------------------------------------ v4 (owner, 2026-11-03): repetition screen, nearest-band fill
+
+#: a paper is excluded when distinct chunk texts / chunks < 0.90 (every arm, any source, after C0)
+REPETITION_THRESHOLD = 0.90
+_WS_RE = re.compile(r"\s+")
+
+
+def chunk_text_key(text: str) -> str:
+    """The identity of a chunk text for the repetition screen: NFC, whitespace runs -> one space, stripped."""
+    return _WS_RE.sub(" ", unicodedata.normalize("NFC", text)).strip()
+
+
+def repetition_screen(chunks: Sequence[str], threshold: float = REPETITION_THRESHOLD) -> dict[str, Any]:
+    """Distinct-chunk ratio of one paper's chunks (fixed_token 512 / overlap 0): distinct texts by
+    exact match after :func:`chunk_text_key`, over the chunk count. ``excluded`` when below
+    ``threshold``; a paper with no chunks is not excluded here (it fails as ``no_chunks``)."""
+    n = len(chunks)
+    distinct = len({chunk_text_key(c) for c in chunks})
+    ratio = distinct / n if n else 1.0
+    return {"n_chunks": n, "distinct": distinct, "ratio": ratio, "excluded": ratio < threshold}
+
+
+def screen_outcome(out: Outcome, ratio: float | None, threshold: float = REPETITION_THRESHOLD) -> Outcome:
+    """An accepted outcome with a distinct-chunk ratio below ``threshold`` becomes a rejection
+    (``repetition_screen``); a failed or C0-excluded one is returned unchanged (C0 comes first)."""
+    if not out.ok or ratio is None or ratio >= threshold:
+        return out
+    return Outcome(ok=False, source=out.source, reason="repetition_screen", n_chunks=out.n_chunks,
+                   c0_chunks=out.c0_chunks)
+
+
+#: v4 carry-over release reasons, in the order they are tested
+V4_RELEASE = ("repetition_screen", "any_nearest_band", "quota_changed")
+
+
+def carry_over_v4(took: Sequence[Mapping[str, Any]], quota: Mapping[Cell, int],
+                  excluded: Callable[[str], bool]) -> dict[str, Any]:
+    """Which of one study paper's v3 takes stay in v4, under the v4 ``quota``.
+
+    In v3 take order, a take is released when its paper fails the repetition screen
+    (``repetition_screen``), when it was matched at the band-relaxed level (``any_nearest_band``:
+    the v4 rule refills it from the nearest band), or when its slot (``for_cell``, unchanged: the
+    bands are v3's) has no room left in the v4 quota (``quota_changed``: the neighbour arm changed
+    under the screen). Every other take is kept exactly. Returns kept, released (with ``why``) and
+    the quota left open.
+    """
+    open_q: Counter[Cell] = Counter({c: n for c, n in quota.items() if n > 0})
+    kept: list[dict[str, Any]] = []
+    released: list[dict[str, Any]] = []
+    for t in took:
+        slot: Cell = tuple(t["for_cell"])  # type: ignore[assignment]
+        if excluded(t["wid"]):
+            released.append({**t, "why": "repetition_screen"})
+        elif t["level"] in BAND_RELAXED:
+            released.append({**t, "why": "any_nearest_band"})
+        elif open_q[slot] > 0:
+            open_q[slot] -= 1
+            kept.append(dict(t))
+        else:
+            released.append({**t, "why": "quota_changed"})
+    return {"kept": kept, "released": released, "open": {c: n for c, n in sorted(open_q.items()) if n > 0}}
 
 
 # ------------------------------------------------------------------ control-character screen

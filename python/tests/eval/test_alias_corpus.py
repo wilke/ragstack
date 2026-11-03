@@ -356,3 +356,134 @@ def test_strict_shortfall_counts_non_strict_slots_per_cell():
             _take("C", "review", 5, "pdf", "strict", ("review", 5, "pdf"))]
     assert ac.strict_shortfall(quota, took) == {("article", 0, "jats"): 1}
     assert ac.RELAX_ORDER == ("strict", "source", "source+type", "any") and ac.BAND_RELAXED == {"any"}
+
+
+# ------------------------------------------------------------------ v4: nearest-band fill, repetition screen
+
+
+def test_nearest_band_fill_orders_by_band_distance_then_type_then_source_then_rank():
+    slot = ("article", 3, "jats")
+    fetched = {"far": ("article", 0, "jats"),       # distance 3
+               "near_rev_pdf": ("review", 2, "pdf"),  # distance 1, type and source differ
+               "near_art_pdf": ("article", 4, "pdf"),  # distance 1, type matches
+               "near_art_jats_late": ("article", 2, "jats"),  # distance 1, type and source match, later rank
+               "near_art_jats": ("article", 4, "jats")}       # distance 1, type and source match, earlier rank
+    rank = {"far": 0, "near_rev_pdf": 1, "near_art_pdf": 2, "near_art_jats": 3, "near_art_jats_late": 4}
+    taken: set[str] = set()
+    out = ac.nearest_band_fill({slot: 5}, fetched, taken, rank)
+    assert [w for w, *_ in out] == ["near_art_jats", "near_art_jats_late", "near_art_pdf", "near_rev_pdf", "far"]
+    assert [d for *_, d in out] == [1, 1, 1, 1, 3] and taken == set(fetched)
+    # taken and duplicate candidates are never picked; a slot with nothing left stays open
+    taken = {"near_art_jats"}
+    picked: list[str] = []
+    out = ac.nearest_band_fill({slot: 1, ("review", 0, "pdf"): 1}, fetched, taken, rank,
+                               is_dup=lambda w: w == "near_art_jats_late", on_pick=lambda w, *_: picked.append(w))
+    assert [(w, s) for w, _, s, _ in out] == [(("near_art_pdf"), slot), ("far", ("review", 0, "pdf"))]
+    assert picked == ["near_art_pdf", "far"]
+    assert ac.nearest_band_fill({slot: 1}, {}, set(), {}) == []
+
+
+def _info_matched(order, quota, info, any_rule, calls, max_resolves=None):
+    def resolve(w):
+        calls.append(w)
+        return info[w][2]
+    return ac.draw_matched(order, quota, set(), type_of=lambda w: info[w][0], klass=lambda w: info[w][1],
+                           resolve=resolve, band=lambda n: n // 10, max_resolves=max_resolves, any_rule=any_rule)
+
+
+def test_draw_matched_nearest_any_takes_nearest_fetched_band_without_fetching():
+    # slot article|5|jats; A (band 0) and B (band 4) are fetched in the strict pass and passed over
+    # (rejected_for_band); C (review/pdf, band 3) only in the relaxation. Only level "any" can fill the slot.
+    info = {"A": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5)),
+            "B": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=45)),
+            "C": ("review", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=35)),
+            "D": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=41))}
+    quota = {("article", 5, "jats"): 1}
+    calls: list[str] = []
+    first = _info_matched(["A", "C", "B"], quota, info, "first", calls)
+    assert [(t["wid"], t["level"]) for t in first["took"]] == [("A", "any")]   # v3: first passed over
+    first_calls = list(calls)
+    calls.clear()
+    near = _info_matched(["A", "C", "B"], quota, info, "nearest", calls)
+    assert [(t["wid"], t["level"], t["band_distance"]) for t in near["took"]] == [("B", "any", 1)]
+    assert calls == first_calls and near["shortfall"] == 0   # no fetch beyond the walk's
+    # ties at the same distance: type match beats source match, then seeded order
+    info2 = {"X": ("review", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=45)),     # type differs
+             "Y": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=41)),  # source differs
+             "Z": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=49))}  # same as Y, later
+    near = _info_matched(["X", "Y", "Z"], {("article", 5, "pdf"): 1}, info2, "nearest", [])
+    assert [(t["wid"], t["band_distance"]) for t in near["took"]] == [("Y", 1)]
+    near = _info_matched(["X", "Z", "Y"], {("article", 5, "pdf"): 1}, info2, "nearest", [])
+    assert [t["wid"] for t in near["took"]] == ["Z"]
+    with pytest.raises(ValueError):
+        _info_matched(["A"], quota, info, "closest", calls)
+
+
+def test_draw_matched_reports_fetched_candidates_with_their_level():
+    info = {"A": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5)),
+            "B": ("article", "jats", ac.Outcome(ok=False, reason="http_404")),
+            "C": ("review", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=50))}
+    out: dict = {}
+    ac.draw_matched(["A", "B", "C"], {("article", 5, "jats"): 1}, set(), type_of=lambda w: info[w][0],
+                    klass=lambda w: info[w][1], resolve=lambda w: info[w][2], band=lambda n: n // 10,
+                    fetched_out=out)
+    assert out == {"A": (("article", 0, "jats"), "strict"), "C": (("review", 5, "pdf"), "source+type")}
+
+
+def test_repetition_screen_counts_distinct_texts_after_nfc_and_whitespace_collapse():
+    assert ac.chunk_text_key(" cafe\u0301  au\n\tlait ") == ac.chunk_text_key("caf\u00e9 au lait")
+    base = [f"chunk {i}" for i in range(9)]
+    # 10 chunks, one repeated: 9 distinct = 0.90, not excluded (below 0.90 is)
+    s = ac.repetition_screen(base + ["chunk 0"])
+    assert (s["n_chunks"], s["distinct"], s["ratio"], s["excluded"]) == (10, 9, 0.9, False)
+    # 10 chunks, three spellings of one text (precomposed vs decomposed, whitespace): 8 distinct = 0.80, excluded
+    s = ac.repetition_screen(base[:7] + ["caf\u00e9 x", "cafe\u0301 x", "cafe\u0301\n  x"])
+    assert (s["n_chunks"], s["distinct"], s["excluded"]) == (10, 8, True)
+    assert ac.repetition_screen(base[:7] + ["caf\u00e9 x", "caf\u00e9 y", "cafe\u0301\n  x"])["distinct"] == 9
+    assert ac.repetition_screen([])["excluded"] is False
+    assert ac.REPETITION_THRESHOLD == 0.90
+
+
+def test_screen_outcome_rejects_only_accepted_repetitive_papers():
+    ok = ac.Outcome(ok=True, source="jats", n_chunks=100)
+    out = ac.screen_outcome(ok, 0.54)
+    assert not out.ok and out.reason == "repetition_screen" and out.source == "jats" and out.n_chunks == 100
+    assert ac.screen_outcome(ok, 0.90) is ok and ac.screen_outcome(ok, None) is ok
+    c0 = ac.Outcome(ok=False, source="pdf", excluded_c0=True, reason="c0_screen")
+    assert ac.screen_outcome(c0, 0.1) is c0   # the C0 screen comes first
+
+
+def test_repetition_screen_walks_the_neighbour_list_down_and_the_random_order_on():
+    ratio = {"W1": 0.99, "W2": 0.61, "W3": 0.97, "W4": 0.95}
+    raw = {w: ac.Outcome(ok=True, source="pdf", n_chunks=5) for w in ratio}
+
+    def screened(w):
+        return ac.screen_outcome(raw[w], ratio[w])
+
+    ranked = [W(w, type="article") for w in ratio]
+    r = ac.walk_down(ranked, 2, screened)
+    assert r["picked"] == ["W1", "W3"] and ("W2", "repetition_screen") in r["skipped"]
+    assert ac.walk_down(ranked, 2, lambda w: raw[w])["picked"] == ["W1", "W2"]   # unscreened: W2 stays
+    info = dict.fromkeys(ratio, ("article", "pdf", None))
+    m = ac.draw_matched(["W2", "W4", "W1"], {("article", 0, "pdf"): 1}, set(), type_of=lambda w: info[w][0],
+                        klass=lambda w: info[w][1], resolve=screened, band=lambda n: 0)
+    assert [t["wid"] for t in m["took"]] == ["W4"] and m["skipped"] == {"repetition_screen": 1}
+
+
+def test_carry_over_v4_releases_screened_any_and_quota_changed_and_keeps_the_rest_exactly():
+    took = [_take("A", "article", 0, "jats", "strict", ("article", 0, "jats")),
+            _take("B", "article", 5, "pdf", "source", ("article", 5, "jats")),        # repetitive: released
+            _take("C", "review", 4, "jats", "any", ("article", 5, "jats")),           # band relaxed: released
+            _take("D", "article", 2, "pdf", "strict", ("article", 2, "pdf")),         # its slot left the quota
+            _take("E", "review", 1, "jats", "source+type", ("article", 1, "pdf"))]
+    quota = {("article", 0, "jats"): 1, ("article", 5, "jats"): 2, ("article", 1, "pdf"): 1, ("review", 3, "jats"): 1}
+    r = ac.carry_over_v4(took, quota, excluded=lambda w: w == "B")
+    assert r["kept"] == [took[0], took[4]]
+    assert {t["wid"]: t["why"] for t in r["released"]} == {"B": "repetition_screen", "C": "any_nearest_band",
+                                                          "D": "quota_changed"}
+    assert r["open"] == {("article", 5, "jats"): 2, ("review", 3, "jats"): 1}
+    # nothing touched: every take kept, nothing open
+    same = ac.carry_over_v4(took[:1] + took[3:], {("article", 0, "jats"): 1, ("article", 2, "pdf"): 1,
+                                                  ("article", 1, "pdf"): 1}, excluded=lambda w: False)
+    assert len(same["kept"]) == 3 and not same["released"] and not same["open"]
+    assert ac.V4_RELEASE == ("repetition_screen", "any_nearest_band", "quota_changed")
