@@ -88,7 +88,7 @@ files' plurals and rendering, and the pilot's blindness.
 | R25 | **BM25 legs of the Layer-1 attachments retrieved in stage A, judged in stage B**: stage-A retrieval is 19 legs (5 attachments × default, norerank, BM25, plus the 4 noise repeats; 20,729 calls), stage-A judging the default and norerank legs and the repeats (14); each attachment's glossary swapped once in total (**superseded by R26**: no swap at all); the stage-A commit pins the BM25 rows, their labels arrive in stage B; total unchanged | §5.4, §5.7, §6.2, §9.3 |
 | R26 | **no in-place glossary swaps**: each (corpus arm, glossary arm) is its own bench collection, built once and never written again (base × none, merged, placebo; neighbour, random-1, random-2 × none, merged: 9 collections); each corpus embedded once, and its embedding shards loaded once per variant collection with the variant's glossary file (for *none*, an explicit file of empty rows), so no re-embedding and no backfill; each collection written exactly once, with a registry entry and a load receipt with provenance, censused at the start and end of every leg | §5.1, §5.3, §5.7, §9.3, §10, §15 |
 | R27 | **abbreviation plurals in the glossary files**: for every `abbreviation` or `both` entry an added `Xs` entry with the same definitions, because the served renderer matches only the exact token (48 of 600 G records would otherwise get no entry on their gold chunk); and the rendering conventions (one line per alias, the 12-entry cap counting lines, served order, the 1,200-character stop, config, version strings, definition text) | §5.3 |
-| R28 | **the pilot stays blind to outcomes**: in pilot mode no per-leg found@10, found@10-gold or RR@10 is printed, written to a public file or derivable from the pilot report; §5.6's per-leg pair count is replaced by judge-pair counts per judging stage plus the registry total | §5.6 |
+| R28 | **the pilot stays blind to outcomes**: in pilot mode no found@10, found@10-gold or RR@10 of any leg is printed, written to a public file or derivable from the pilot report, the baseline C found@10 included; §5.6's per-leg pair count is replaced by judge-pair counts per judging stage plus the registry total | §5.6 |
 
 **Pre-freeze corrections of 2026-11-03, and where each is written.** These correct statements of this
 text against the code and the serving configuration; none changes a decision above.
@@ -96,7 +96,7 @@ text against the code and the serving configuration; none changes a decision abo
 | # | correction, in short | where |
 |---|---|---|
 | P1 | `/v1/config` pins neither the BM25 glossary boost nor the reranker-field setting; the boost is established by found10's behavioural probe, the reranker field is declared only | §5.2, §9.2 |
-| P2 | H2's U is always read from the frozen stage-A judge summary and cross-checked against the stage-A final rows | §3.4 |
+| P2 | H2's U is always read from the frozen stage-A judge summary and cross-checked against the stage-A final rows; outside a dry run a summary without the counts is refused | §3.4 |
 | P3 | the record spot check's draw: the first 40 record ids by seeded hash, not stratified; what the sheet shows | §5.5, §13.4 |
 | P4 | the judged-pair spot check: arm re-split, the shortfall chain, the sheet order, the pool, the public record | §5.5, §13.5 |
 | P5 | the pilot's intervals, the tiebreaker share split three ways, and H2's four discordance readings | §5.6 |
@@ -485,7 +485,9 @@ pair, is printed beside it; the bound uses the share among *answers* labels beca
 *answers* label.) Then **B = 100 · U · J_r / 900 points** is an upper limit on how much of H2's net effect
 spurious random-arm hits could account for. U_r, U_p and their n are printed beside B. **U is always
 read from the frozen stage-A judge summary** (P2), because all of H2's judged pairs are stage A; it is
-cross-checked against the stage-A final rows, and a mismatch is refused outside a dry run. A scope with no
+cross-checked against the stage-A final rows. Outside a dry run a mismatch is refused, and so is a
+summary that carries no false-yes counts (`alias_study_stats.false_yes_inputs`); only a dry run falls back
+to the rows. A scope with no
 such pair gives no limit; if neither has one, B is *absent*. **Rule:** if |H2's net effect| ≤ B, every
 sentence that quotes H2 carries *within the judge false-yes bound*, and the gold-only change is quoted
 first; B never changes H2's label. *Why the maximum:* the random arm alone may hold few such pairs, so
@@ -541,7 +543,7 @@ every cluster. The 191 records on the 108 unsatisfied papers are run in every ce
 **descriptive leg** and never enter a test or a Layer-2 decision. Satisfaction is a property of the build,
 fixed before any retrieval, so the split cannot depend on an outcome. The 191 are also the **pre-freeze
 pilot** (§5.6): they are retrieved and judged once before the freeze, and their post-freeze descriptive
-leg is quoted as *seen in the pilot*.
+leg is quoted as *retrieved in the pilot*.
 
 ### 4.3 Disclosures about the build
 
@@ -1039,19 +1041,24 @@ real collections. No balanced-set record is retrieved or judged by it.
 
 **What it estimates** (each with its n and a 95 % interval, committed as counts before the freeze):
 discordance between the two cells of each Layer-1 contrast (G and C separately for the glossary
-contrast; for H2, against random-1, against random-2, against either and against both); the baseline C
-found@10 under base × default × none (the C ceiling, §2 item 4); the share of judged pairs labelled
-*answers*, per arm; the escalated, tiebroken and unjudged shares; the Opus-filtered share of the drift
-sample, per arm; and the judge-pair counts per judging stage plus the registry total (for the judge caps,
-§14 O7). **Intervals** (P5): a paper-cluster percentile bootstrap (seed `261101|alias|boot`) for the
-discordances and the found@10 estimate, a Wilson interval for the pair shares.
+contrast; for H2, against random-1, against random-2, against either and against both); the share of
+judged pairs labelled *answers*, per arm; the escalated, tiebroken and unjudged shares; the Opus-filtered
+share of the drift sample, per arm; and the judge-pair counts per judging stage plus the registry total
+(for the judge caps, §14 O7). **Intervals** (P5): a paper-cluster percentile bootstrap (seed
+`261101|alias|boot`) for the discordances, a Wilson interval for the pair shares.
 
-**The pilot stays blind to outcomes (owner, 2026-11-03, R28).** Beyond the estimates listed above, in
-pilot mode **no per-leg found@10, found@10-gold or RR@10** is printed, written to a public file, or
-derivable from the pilot report, and pair counts are reported per judging stage and as the registry
-total, never per leg. *Why:* a leg's on-demand judge-pair demand equals 10 × (rows − failed −
-found@10-gold), so per-leg pair counts would reveal the gold-only H1 and H2 changes; and the harness's
-stage-A commit step printed per-leg found@10, which pilot mode no longer does.
+**The pilot stays blind to outcomes (owner, 2026-11-03, R28).** In pilot mode **no found@10,
+found@10-gold or RR@10** of any leg is printed, written to a public file, or derivable from the pilot
+report; the estimates above are the only figures it reports, and pair counts are reported per judging
+stage and as the registry total, never per leg. The harness's stage-A commit step, which printed per-leg
+found@10, must not do so in pilot mode (as implemented in the judge's pilot mode, R28 / #923). *Why:* a
+leg's on-demand judge-pair demand equals 10 × (rows − failed − found@10-gold), so per-leg pair counts
+would reveal the gold-only H1 and H2 changes. A baseline C found@10 (base × default × none), with the C
+discordance under merged vs none, would bound the direction of the pilot's C change: gains are at most the
+headroom and losses at most the baseline hits, and C sits near the ceiling (§2 item 4). So the pilot does
+not report it; the main run prints the baseline C found@10 beside the C gate anyway (§3.4). The
+discordances carry no level, so they are direction-free; none of the listed estimates, alone or
+combined, bounds the direction of any contrast.
 
 **Its limits, stated now.** The 191 sit on papers the stop rule did not satisfy (83 G, 108 C), so they are
 not a sample of the balanced set. Their own papers' neighbours are **not** in the neighbour arm (§5.1
@@ -1513,12 +1520,12 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
   are `exhausted_verified` (scored, not gated), `clamp` (hard stop), `query_mismatch` (hard stop) and
   `under_served` (gated).
 - **Glossary boost:** the round-3 behavioural probe rule (found10's boost probe: *active*, *inactive* or
-  *mixed*; it proves a boost greater than 0, not its value). Where the probe is structurally
+  *mixed*; it proves a boost greater than 0, not its value; *inactive* or *mixed* is a hard stop, below). Where the probe is structurally
   `not_testable`, as on the *none*-arm collections, the boost is declared from the serving release and the
   label `declared` is printed, never `pass`. The reranker's glossary field is declared only; the
   admin-config hash pins neither setting (§5.2, P1).
 - **Hard stops:** more than 2 % failed calls; a `clamp` or `query_mismatch` verdict; a config-hash
-  difference; a served judge model id that is not the requested one; a judge budget stop; a drift alarm
+  difference; a boost probe reading *inactive* or *mixed* (found10 refuses the leg and measures nothing); a served judge model id that is not the requested one; a judge budget stop; a drift alarm
   (§6.3); a frozen-prereg sha mismatch in any stage that reads `prereg.file`.
 
 ### 9.3 Collections written once (R26)
@@ -1620,7 +1627,8 @@ entry, not a silent retry.
 4. **Record validity (owner spot check, D9).** The owner labels **40** records drawn from the 900 balanced
    records, valid / invalid: the first 40 in ascending order of sha256 of
    `261101|alias|spot|records|<record id>`, not stratified by kind (P3). The sheet reveals no kind (G / C),
-   arm, paper or record id; the passage inevitably shows the short or the spelled-out form. **Rule, as round 3's:** validity below **0.85** at the point estimate makes every result
+   arm, paper id or record id; it shows the paper's title, and the passage inevitably shows the short or
+   the spelled-out form. **Rule, as round 3's:** validity below **0.85** at the point estimate makes every result
    sentence carry *validity below threshold*. The Wilson 95 % interval is printed and decides nothing. The
    set is not rebuilt. The labels are committed (as counts, with the sheet's sha) **before any analysis**.
    The verifier's spot-reads found about 1 in 12 current-pipeline G records doubtful (VERIFIER.md).

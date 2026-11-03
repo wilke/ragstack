@@ -105,9 +105,9 @@
  "note": "at e = 0.10 the true agreement equals the threshold; detection is below 0.5 at the sheet's answers sizes (30, 50) and whole-sheet sizes (60, 100), but not at every n: at n not a multiple of 10 it can exceed 0.5 (e.g. the 17-pair tiebroken stratum). Sizes are nominal: the shortfall rule of prereg \u00a713.5 can push the answers stratum above 50",
  "provenance": {
   "schema": 1,
-  "version": "v1.6.21+123ff70",
-  "describe": "v1.6.21-261-g123ff70",
-  "commit": "123ff709c1ab117c9914e0b6a59c7255361f9710",
+  "version": "v1.6.21+4c0de8e",
+  "describe": "v1.6.21-263-g4c0de8e",
+  "commit": "4c0de8e818a63d1908285d45431eef4c7f2c4ba4",
   "dirty": false,
   "untracked": 0,
   "source": "git",
@@ -129,7 +129,7 @@
    }
   ],
   "python": "3.12.13",
-  "recorded_at": "2026-11-03T17:56:25Z",
+  "recorded_at": "2026-11-03T18:13:04Z",
   "citable": true
  }
 }
