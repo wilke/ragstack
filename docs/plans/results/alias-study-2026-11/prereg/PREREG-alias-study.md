@@ -1,6 +1,11 @@
-# Pre-registration, alias study (OA-1000) — DRAFT v1, 2026-11-01
+# Pre-registration, alias study (OA-1000) — DRAFT v2, 2026-11-03
 
-**Status: DRAFT — not frozen; owner review pending.** This version folds in the owner's ten decisions of
+**Status: DRAFT — not frozen; owner review pending.** Version 2 folds in the changes the owner approved
+on 2026-11-02 and 2026-11-03 from an independent methodology review, 2026-11-02 (R1–R11, the second table
+below): two separate families in place of the Holm pair, a harm rule and CI-based cost rules in Layer 2,
+the claims' scope wording, judge reporting, a stratified judged-pair spot check, fixed sensitivities, a
+placebo glossary leg, a pre-freeze pilot, a two-stage run with judging on demand, a signed freeze tag and
+a stated H2 estimand. Version 1 folded in the owner's ten decisions of
 2026-11-01 (table below), and their later decisions of the same day on O1 (the C gate, rule C), O2
 (H1b routing), O5 (shared neighbours), O6 (text format and the control-character screen) and O9 (seeds),
 with the glossary pipeline for added papers (§5.3). It also folds in the owner's resolutions of
@@ -11,7 +16,8 @@ the exact sign-flip p: §5.5, §6.3, §7, §8, §9.2) and the corpus-build decis
 the owner's decisions of 2026-11-02: the test of each Layer-1 member (§7) and the caps-lever agreement
 `a = 0.7` (§8, §14 O11). The items still open are in §14. Nothing in this text binds a run until it is
 frozen by the procedure in this directory's `README.md`. At freeze the text is frozen **as written**, and
-its sha256 goes into the README and a private `PREREG.sha256`, never into this file. After freeze this
+its sha256 goes into the README, a private `PREREG.sha256` and the message of a signed annotated tag
+pushed to the public repository (README, *Freeze procedure* step 4; R10), never into this file. After freeze this
 file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 > **Public copy.** The file names no tenant, host, endpoint, collection, person or gateway owner. The corpus
@@ -23,16 +29,33 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 | # | decision, in short | where |
 |---|---|---|
-| D1 | H1 = G records only, base, default, merged vs none, one-sided; C as a **gate**; H1b = G-vs-C DiD, no extra Holm member (routing amended by §14 O2, Option B: tested at α = 0.05 only if H1 **and** H2 are confirmed, fixed sequence after the Holm pair); the H1 × H1b table | §3.1, §3.2, §3.4, §9.1 |
+| D1 | H1 = G records only, base, default, merged vs none, one-sided; C as a **gate**; H1b = G-vs-C DiD, no extra Holm member (routing amended by §14 O2, Option B, and then by **R1**: H1b is tested at α = 0.05 in fixed sequence after H1 alone, within Family G); the H1 × H1b table | §3.1, §3.2, §3.4, §9.1 |
 | D2 | H2 = neighbour vs random (average of two draws), default, none, one-sided, judged found@10; confirmed only if gold-only found@10 also drops (a gate, not a third test); drift stratified by arm; per-arm false-yes rates | §3.1, §3.2, §6.3 |
-| D3 | two layers: Layer 1 confirmatory (H1, H2 under Holm over 2; H1b after both H1 and H2, §14 O2); Layer 2 serving decisions on CI-based thresholds, no gates; H3 moves to Layer 2 with a 95 % CI | §3 |
+| D3 | two layers: Layer 1 confirmatory (H1, H2 under Holm over 2; H1b after both H1 and H2, §14 O2; **amended by R1**: two separate families, G and N, each at α = 0.05); Layer 2 serving decisions on CI-based thresholds, no gates (amended by R2); H3 moves to Layer 2 with a 95 % CI | §3 |
 | D4 | neighbour caps: ≤ 5 references (most cited) + ≤ 5 citers (most recent), open-access full text, via OpenAlex, deduplicated against OA-1000 | §5.1 |
 | D5 | random arm "same field": matched count per study paper, same OpenAlex primary topic, OA full text, no citation link to any study paper, year ± 3, seeded content-blind rule | §5.1 |
 | D6 | two random draws; one noise repeat per arm; a rank-based secondary (Layer 2); H2 power from the realised layout; raising the caps is the lever | §5.1, §5.4, §3.3, §8 |
 | D7 | merged glossary attached by mention, same pipeline for added papers; reach gate ≥ 80 %; Layer-2 split by alias type | §5.3, §9.1, §3.3 |
 | D8 | judge as in v0; Opus drift sample stratified equally across arms; alarm < 0.97 overall or < 0.95 in any arm, after every batch; served-model check | §6.3 |
-| D9 | owner spot checks: 40 records (0.85 rule, blind to G/C) and 60 judged pairs (10 per arm × glossary cell, < 0.90 rule), labelled and committed before analysis | §13.4–13.5 |
+| D9 | owner spot checks: 40 records (0.85 rule, blind to G/C) and 60 judged pairs (10 per arm × glossary cell, < 0.90 rule; the stratification **amended by R5**: by judge label, spread across arms), labelled and committed before analysis | §13.4–13.5 |
 | D10 | a prior-results section, with the disclosure that prior evidence points against H1 | §2 |
+
+**Owner decisions of 2026-11-02 and 2026-11-03 from an independent methodology review, 2026-11-02, and
+where each is written.** The review's text is not part of this record; what the owner adopted from it is.
+
+| # | decision, in short | where |
+|---|---|---|
+| R1 | **two families.** Family G (glossary): H1 at one-sided α = 0.05, then H1b in fixed sequence at 0.05 (exact label randomization). Family N (growth): H2 at one-sided α = 0.05 (exact sign-flip, gold-only direction gate). No level passes between H1 and H2. Powers restated | §3.1, §3.2, §7, §8 |
+| R2 | **Layer-2 rules.** A harm rule (G lift CI upper bound < 0: *harmful, do not attach*); the C cost judged by its CI (non-inferiority at −1 point); the reranker rule as non-inferiority at −3 points; Layer 1's verdict governs the wording of the serving statement; the thresholds labelled judgement-based; *no effect* only through an equivalence bound | §3, §3.3 |
+| R3 | **scope wording.** Every claim reads *for questions using the glossary's primary term*; the records are LLM-drafted, LLM-verified, plus the owner check | §3, §13.2 |
+| R4 | **judge reporting.** Precision, recall and F1 for *answers*, specificity, κ and Gwet's AC1 with counts; the false-yes rate's Wilson upper limit carried as a bound on H2; a prompt-paraphrase check before the freeze; the two Qwen primaries' correlated errors stated as a limitation; Opus empties retried at most once | §3.4, §6.3, §6.6, §13.3 |
+| R5 | **judged-pair spot check** of 60 pairs stratified by judge label (30 *answers* / 20 *not* / 10 tiebroken), spread across arms; single rater a limitation | §13.5, §14 O12 |
+| R6 | **fixed sensitivities**, never deciding, with a *fragile* label when one flips a verdict | §7 |
+| R7 | **placebo glossary leg** (base × default, entries permuted across papers), descriptive | §5.3, §5.4 |
+| R8 | **pre-freeze pilot** on the 191 held-out records, with its allowed consequences fixed now | §5.6 |
+| R9 | **two stages after the freeze** (stage A: the Layer-1 legs; stage B: the rest) and **judging on demand** | §5.7, §6.2 |
+| R10 | **freeze verification** by a signed annotated git tag pushed to the public repository, plus the private `PREREG.sha256` | README, §15 |
+| R11 | **H2's estimand** stated | §3.1 |
 
 **Terms.**
 - **Glossary entry:** a pair *alias → primary term* for one paper. The alias is a **symbol** (the round-3
@@ -81,7 +104,13 @@ data** of any kind. Its selections predate this version's rules and are re-drawn
 its retriever factor were chosen after seeing round 3's null and the reranker test's reading that the
 reranker can lose to BM25 on some corpora. H1's form (G-only, with C as a gate) and the extension of the
 record set from 200 to 300 papers were both decided after v0's power sketch showed the DiD form weak, on
-that sketch and acceptance counts alone. All of this is disclosed so that a reader can weigh it (§13.7).
+that sketch and acceptance counts alone. **For version 2** the independent methodology review of
+2026-11-02 was read, and a scratch run of the merged power script on the second build's neighbour counts
+(the *v2* manifests: 2,424 attributed neighbours) was made (§8); neither reads any retrieval or judge
+output. **The pre-freeze pilot (§5.6) will retrieve and judge the 191 held-out records before the
+freeze**; its counts are entered here before the freeze, and from then on this paragraph's statement
+that no retrieval has been run holds for the **900 balanced records** only. All of this is disclosed so
+that a reader can weigh it (§13.7).
 
 ## 1. Question
 
@@ -153,16 +182,32 @@ named record.
 
 ## 3. Hypotheses, in two layers
 
-The same runs feed both layers. **Neither layer changes the other**: a Layer-1 label does not move a
-Layer-2 threshold, and a Layer-2 reading does not move a Layer-1 label.
+The same runs feed both layers. **Neither layer changes the other's numbers**: a Layer-1 label does not
+move a Layer-2 threshold, and a Layer-2 reading does not move a Layer-1 label. **Layer 1's verdict does
+govern the wording of a serving statement** (R2, §3.3): a Layer-2 reading is quoted with the Layer-1
+verdict on the same question beside it, in the words fixed there.
+
+**Scope of every claim (R3).** Every H1, H1b and glossary sentence, in either layer, reads *for questions
+using the glossary's primary term*: the G and C records ask with the primary term, and nothing here
+measures questions asked with the alias, with another synonym, or in other words. Every claim in either
+layer is about records that were **LLM-drafted** (Gemini 2.5 Pro, §4.1), **LLM-verified** (the
+mechanical layer 1 and the `alias-verify/3` verifier, Claude with a Codex fallback, §4.1), **plus the
+owner's check** of 40 records (§13.4). No sentence calls them human-written or human-validated.
 
 ### 3.1 Layer 1: the claim (confirmatory)
 
-| id | hypothesis | records | cells compared | type | per-cluster statistic |
-|---|---|---|---|---|---|
-| **H1** | the merged glossary raises found@10 on G records | the **600 G** records of the balanced set (§4.2) | corpus **base**, retriever **default**: glossary **merged** vs **none** | superiority, **one-sided** (> 0) | per paper: Σ over its 2 G records of hit(merged) − hit(none) ∈ {−2, …, +2} |
-| **H1b** | the gain on G exceeds the change on C (alias-specific) | the **900** balanced records (600 G, 300 C) | as H1 | difference-in-differences, **one-sided** (> 0); tested **only if H1 and H2 are both confirmed**, at α = 0.05 | per paper: ½ Σ over its G records of Δ − its C record's Δ, with Δ = hit(merged) − hit(none) |
-| **H2** | citation neighbours reduce found@10 more than random same-field papers | the **900** balanced records | retriever **default**, glossary **none**: corpus **neighbour** vs **random** (the average of random-1 and random-2) | superiority, **one-sided** (< 0); **gold-only direction gate** | per paper: Σ over its 3 records of hit(neighbour) − ½ [hit(random-1) + hit(random-2)] |
+| id | family | hypothesis | records | cells compared | type | per-cluster statistic |
+|---|---|---|---|---|---|---|
+| **H1** | **G** | the merged glossary raises found@10 on G records | the **600 G** records of the balanced set (§4.2) | corpus **base**, retriever **default**: glossary **merged** vs **none** | superiority, **one-sided** (> 0), at α = **0.05** | per paper: Σ over its 2 G records of hit(merged) − hit(none) ∈ {−2, …, +2} |
+| **H1b** | **G** | the gain on G exceeds the change on C (alias-specific) | the **900** balanced records (600 G, 300 C) | as H1 | difference-in-differences, **one-sided** (> 0); tested **only if H1 is confirmed**, at α = 0.05 (fixed sequence) | per paper: ½ Σ over its G records of Δ − its C record's Δ, with Δ = hit(merged) − hit(none) |
+| **H2** | **N** | citation neighbours reduce found@10 more than random same-field papers | the **900** balanced records | retriever **default**, glossary **none**: corpus **neighbour** vs **random** (the average of random-1 and random-2) | superiority, **one-sided** (< 0), at α = **0.05**; **gold-only direction gate** | per paper: Σ over its 3 records of hit(neighbour) − ½ [hit(random-1) + hit(random-2)] |
+
+**H2's estimand (R11).** H2 estimates the effect, on a study record's judged found@10 under the default
+retriever, of adding **the citation neighbours of all 300 study papers** to OA-1000, against adding the
+same number of matched random same-field papers (§5.1). A record's retrieval in the neighbour arm faces
+its own paper's neighbours **and** every other study paper's neighbours at once; the two are **not
+separated**, and H2 makes no claim about either alone. The origin of the chunks that displace a gold
+chunk (own paper's neighbour, another study paper's neighbour, base) is reported descriptively (§7).
 
 **Gates specific to Layer 1** (in addition to the general gates of §9.1):
 - **The C gate on H1 (rule C; owner, 2026-11-01, §14 O1).** H1 reads the G records alone, so a general
@@ -176,7 +221,8 @@ Layer-2 threshold, and a Layer-2 reading does not move a Layer-1 label.
   percentile bootstrap, 10,000 resamples, seed `261101|alias|boot`, §5.5) excludes 0. **A C drop never
   trips the gate**: with ΔG > 0, condition (a) excludes it, and with ΔG ≤ 0 the gate is moot, so there is
   no case in which "same sign" and "a C drop never trips" conflict. The gate fires only on a C rise that
-  keeps pace with a G rise. A C drop is read in Layer 2, by the C-cost rule (≤ 1 point, §3.3). Printed beside H1 whatever the verdict: ΔC with its CI, ΔG, the ratio ΔC / ΔG, and the
+  keeps pace with a G rise. A C drop is read in Layer 2, by the C-cost rule (CI-based, margin −1 point,
+  §3.3). Printed beside H1 whatever the verdict: ΔC with its CI, ΔG, the ratio ΔC / ΔG, and the
   baseline C found@10 (base × default × none) with its headroom to 100 %. **Ceiling note:** if the
   headroom is below ½ ΔG (in records, 300 C), condition (b) cannot be met upward, so the gate cannot fire
   however much C would have risen without the ceiling; the sentence quoting H1 then says *C gate
@@ -185,52 +231,41 @@ Layer-2 threshold, and a Layer-2 reading does not move a Layer-1 label.
 - **The gold-only direction gate on H2.** H2 is *confirmed* only if its judged test is significant **and**
   found@10-gold points the same way: the net gold-only change, neighbour − random average, on the same
   900 records, is below 0 at the point estimate. The gold-only figure is a gate, not a third test: it has
-  no p value in the family. If the judged test is significant and the gate fails, H2 is *not confirmed
-  (gold-only direction gate)*, and for the multiplicity procedure it counts as not rejected (§14 O3).
+  no p value. If the judged test is significant and the gate fails, H2 is *not confirmed (gold-only
+  direction gate)* (§14 O3).
 
-**Multiplicity: Holm over H1 and H2, then H1b in fixed sequence after both (owner, 2026-11-01, §14
-O2).** α = 0.05, all members one-sided. In graphical (weight-passing) form (Bretz, Maurer, Brannath and
-Posch 2009, *A graphical approach to sequentially rejective multiple test procedures*, Statistics in
-Medicine 28(4):586–604, doi:10.1002/sim.3495):
+**Multiplicity: two families, each controlled at one-sided α = 0.05 (owner, R1).** The v1 design (Holm
+over H1 and H2, with H1b after both) is replaced.
 
-| node | initial level | when it is rejected, its level passes to |
-|---|---|---|
-| **H1** | α/2 = 0.025 | H2 (weight 1); to H1b once H2 is also rejected |
-| **H2** | α/2 = 0.025 | H1 (weight 1); to H1b once H1 is also rejected |
-| **H1b** | 0 | — (last node) |
+| family | question | members, in order | level |
+|---|---|---|---|
+| **G** (glossary) | does attaching the merged glossary make alias passages findable, and is the gain alias-specific? | **H1**, then **H1b** in fixed sequence | H1 at 0.05; H1b at 0.05, tested **only if H1 is confirmed** |
+| **N** (growth) | does growing the collection with citation neighbours cost more than growing it with random same-field papers? | **H2** alone | 0.05, with the gold-only direction gate |
 
-```
-         weight 1
-  H1  ────────────>  H2
- .025 <────────────  .025
-         weight 1
+- **No level passes between the families.** H1's verdict does not change the level H2 is tested at, nor
+  the reverse, and H1b's route depends on H1 alone.
+- **H1b is tested only if H1 is confirmed.** If H1 is *not confirmed*, GATE-NOT-EVALUABLE or absent, H1b
+  is **not tested**; its estimate, CI and power at 0.05 are reported descriptively (§3.2).
+- A GATE-NOT-EVALUABLE or absent member enters at p = 1.0, and a family is never shrunk (round 3 D14).
 
-  H1 and H2 both rejected  ──>  H1b tested at α = 0.05
-```
-
-- **H1 and H2 are Holm over 2.** Each is tested first at 0.025. If H1 is confirmed, its 0.025 passes to
-  H2, which is then tested at 0.05; if H2 is confirmed, its 0.025 passes to H1, which is then tested at
-  0.05. This is exactly the Holm procedure over the pair.
-- **H1b is tested only if both H1 and H2 are confirmed, at α = 0.05.** If either is not confirmed
-  (including *not confirmed*, GATE-NOT-EVALUABLE or absent), H1b is **not tested**; its estimate, CI and
-  power are reported descriptively (§3.2). H1b adds no Holm member and costs neither H1 nor H2 anything.
-- **H2's gold-only direction gate** failing makes H2 *not confirmed*: it passes no level to H1, and H1b is
-  not tested (§14 O3).
-- A GATE-NOT-EVALUABLE or absent member enters at p = 1.0, and the family is never shrunk (round 3 D14).
-
-**Why this controls the family-wise error at 0.05 (strong control).** Let I be the set of true null
-hypotheses. If I contains H1 or H2, a false rejection of H1b requires rejecting both H1 and H2, so it
-requires a false rejection inside the Holm pair; the family-wise error is then the Holm pair's, which is
-≤ 0.05. If I = {H1b} alone, the only possible error is p(H1b) ≤ 0.05, with probability ≤ 0.05. This is
-the fixed-sequence argument, and the procedure is a closed test; in the graphical notation of Bretz et
-al. it is the limit of the graph with ε-weight edges H1 → H1b and H2 → H1b as ε → 0.
+**Why two families.** H1/H1b and H2 are separate claims that answer unrelated questions: a serving
+decision about attaching a glossary field (base corpus, glossary arms swapped), and a property of corpus
+growth (corpus arms swapped, no glossary). They compare disjoint pairs of cells, feed different
+decisions in Layer 2 (§3.3), and no conclusion of this study is drawn from their conjunction: no sentence
+says "the glossary helps **and** neighbours hurt" as one finding. Each family is therefore controlled on
+its own. **Within Family G** the family-wise error is ≤ 0.05 in the strong sense by the fixed-sequence
+argument: if H1's null is true, any false rejection in G needs H1 rejected, with probability ≤ 0.05; if
+only H1b's null is true, the only error is p(H1b) ≤ 0.05. **Family N** has one member. **What this does
+not control:** the probability of at least one false confirmation across both families is up to
+1 − 0.95² ≈ 0.0975 when every null is true. A reader who wants a joint statement across H1 and H2 has no
+study-wide error control for it, and this prereg makes none.
 
 **Why these forms.**
 - **H1 is G-only, with C as a gate (D1).** The DiD form of v0 gave each paper's single C record the weight
-  of its two G records and needed 10–20 % of G records discordant (v0 §7). The G-only test at Holm over
-  2 is resolvable at much lower discordance (§8). The price is a weaker control, which the C gate and
-  H1b pay back: H1b keeps the DiD reading, tested only where H1 has something to explain and H2 has also been
-  confirmed (§14 O2); otherwise it is descriptive.
+  of its two G records and needed 10–20 % of G records discordant (v0 §7). The G-only test at α = 0.05
+  is resolvable at much lower discordance (§8). The price is a weaker control, which the C gate and
+  H1b pay back: H1b keeps the DiD reading, tested only where H1 has something to explain (R1); otherwise
+  it is descriptive.
 - **H2 is neighbour vs random, not neighbour vs base.** Adding any papers adds distractors. The random arm
   holds the number of added papers, their field and their age fixed, so H2 reads what is specific to
   *citation* neighbours. Two random draws, averaged, keep one unlucky draw from deciding H2 (§5.1).
@@ -241,19 +276,25 @@ al. it is the limit of the graph with ε-weight edges H1 → H1b and H2 → H1b 
 - **H2 is on glossary none.** This keeps the corpus factor from being confounded by attachment, which
   itself depends on the corpus.
 
-### 3.2 Outcome interpretation, H1 × H1b
+### 3.2 Outcome interpretation: Family G (H1 × H1b) and Family N (H2)
 
-H1b is tested only when H1 **and** H2 are both confirmed (§3.1), so its *confirmed*, *not confirmed* and
-*GATE-NOT-EVALUABLE* rows below arise only when H2 is confirmed.
+Every reading below is *for questions using the glossary's primary term* (§3, R3). H1b is tested only
+when H1 is confirmed (§3.1, R1); H2's verdict does not enter this table.
 
 | H1 | H1b | reading |
 |---|---|---|
 | **confirmed** | **confirmed** | the merged glossary makes alias passages findable, and the gain on G exceeds the change on C: an alias-specific gain |
 | **confirmed** | **not confirmed** | G gained and the C gate did not fire (rule C), but the G gain was not shown to exceed the C change. The gain is on alias questions; its specificity is unresolved. Read beside the baseline C found@10 (ceiling, §2 item 4) and H1b's power floor |
 | **confirmed** | **GATE-NOT-EVALUABLE** | as the row above, and H1b could not be read (for example too few non-zero clusters) |
-| **confirmed** | *not tested* (H2 not confirmed) | G gained and the C gate did not fire; H1b's level was never released because H2 was not confirmed (including its gold-only gate failing, or H2 GATE-NOT-EVALUABLE). The specificity is unresolved; H1b's estimate, CI and power at α = 0.05 are printed descriptively, never as a test |
-| **not confirmed** | *absent* (not tested) | no evidence that the glossary helps alias questions; the power floor of §8 is printed beside it. Not a null unless the power at the stated scenario is ≥ .80 |
+| **not confirmed** | *absent* (not tested) | no evidence that the glossary helps alias questions; the power floor of §8 is printed beside it. Not a null unless the power at the stated scenario is ≥ .80, and *no effect* is written only through the equivalence bound of §3.3 |
 | **GATE-NOT-EVALUABLE** | *absent* (not tested) | the design could not read H1: the C gate fired (C rose with G, rule C), the reach gate failed, or a general gate fired. Nothing is said about the glossary's effect on G, in either direction |
+
+| H2 | reading |
+|---|---|
+| **confirmed** | adding all 300 papers' citation neighbours lowered judged found@10 more than adding matched random same-field papers, and the gold-only change points the same way (the estimand of §3.1). Quoted with the draw-gap flag and the judge false-yes bound (§3.4) |
+| **not confirmed (gold-only direction gate)** | the judged test was significant but the gold-only change did not point the same way: the judged drop is not shown to be displacement and may be a judge artefact |
+| **not confirmed** | no evidence that neighbours cost more than random papers; the power floor of §8 beside it; *no effect* only through the equivalence bound of §3.3 |
+| **GATE-NOT-EVALUABLE** | the design could not read H2 (a general gate of §9.1). Nothing is said in either direction |
 
 ### 3.3 Layer 2: serving decisions (descriptive, CI-based, no gates)
 
@@ -263,11 +304,51 @@ and no gate makes a Layer-2 figure unreadable. Each figure is printed with the g
 apply to it in Layer 1, for the reader, and is labelled *Layer 2, descriptive* in its sentence. Where a
 CI is wide, the rule below does not fire, and the sentence says *not resolved*.
 
-| decision | figure (900 balanced records unless stated) | threshold, fixed now |
+| decision | figure (900 balanced records unless stated) | rule, fixed now (R2) |
 |---|---|---|
-| **attach the merged glossary** | G found@10 lift (merged − none, base × default, 600 G) and C cost (none − merged, 300 C) | attach if the G lift is **≥ 2 points** with CI lower bound **> 0**, **and** the C cost is **≤ 1 point** (point estimate) |
-| **keep the reranker default** | default − BM25 found@10, neighbour arm, glossary none | keep, unless default **trails BM25 by ≥ 3 points** in the neighbour arm with the CI **excluding 0** |
+| **attach the merged glossary** | the G lift L = found@10(merged) − found@10(none), base × default, 600 G, 95 % CI [L_lo, L_hi]; the C change ΔC = found@10(merged) − found@10(none) on the 300 C, 95 % CI [C_lo, C_hi] (the C cost is −ΔC) | applied in this order: (1) **harm rule:** L_hi **< 0** → *harmful, do not attach*; (2) **C cost rule:** C_lo **< −1 point** → *do not attach (C cost)*: a loss on term-bearing passages larger than 1 point is not ruled out; (3) L **≥ 2 points** **and** L_lo **> 0** (and so C_lo ≥ −1) → *attach*; (4) otherwise *not resolved* |
+| **keep the reranker default** | D = found@10(default) − found@10(BM25), neighbour arm, glossary none, 95 % CI [D_lo, D_hi] | **non-inferiority, margin −3 points:** D_lo **> −3** → *keep the default (non-inferior to BM25)*; D_hi **< −3** → *default inferior to BM25 by more than the margin: reconsider*; otherwise *not resolved* |
 | **related-paper growth is a concern** | neighbour − random (average) found@10, default, none (the H2 figure) | a concern if neighbours cost **≥ 3 points more** than random with the CI **excluding 0** |
+
+**The C cost rule in precise form.** ΔC is in points of the 300 C records (1 record = 0.33 points). The
+rule is a non-inferiority rule at margin −1 point on the C change, read on its 95 % paper-bootstrap CI;
+it passes when C_lo ≥ −1 and fails when C_lo < −1. Because C has one record per paper, the CI's width is
+set by how many C records change at all: by the normal approximation, with ΔC = 0 the lower bound stays
+above −1 point only if fewer than about **0.8 %** of C records (about 2 of 300) are discordant. **The rule
+is therefore strict by construction**: it lets the glossary be attached only when it leaves term-bearing
+passages almost untouched. The pilot (§5.6) estimates C discordance before the freeze; the rule itself is
+not changed on that estimate except as a recorded deviation before the freeze.
+
+**Layer 1 governs the wording (R2).** A Layer-2 decision is quoted with the Layer-1 verdict on the same
+question, in these words (glossary decision with H1, and H1b where tested; growth with H2). The reranker
+decision has no Layer-1 member and is quoted as *Layer 2, descriptive*.
+
+| Layer 2 says | Layer 1 verdict | the serving statement reads |
+|---|---|---|
+| *attach* | H1 confirmed | *attach, for questions using the glossary's primary term* (with *alias-specificity unresolved* unless H1b is confirmed) |
+| *attach* | H1 not confirmed | *attach provisionally; the confirmatory claim was not confirmed* |
+| *attach* | H1 GATE-NOT-EVALUABLE | *attach provisionally, claim not evaluable* (and the gate that fired) |
+| *harmful, do not attach* | any | *harmful, do not attach*, with the H1 verdict beside it |
+| *do not attach (C cost)* | H1 confirmed | *do not attach: the gain on alias questions is confirmed, but a cost on term-bearing passages larger than 1 point is not ruled out* |
+| *do not attach (C cost)* or *not resolved* | H1 not confirmed or GATE-NOT-EVALUABLE | the Layer-2 phrase, with the H1 verdict beside it |
+| growth *a concern* | H2 confirmed | *related-paper growth is a concern* |
+| growth *a concern* | H2 not confirmed (either form) or GATE-NOT-EVALUABLE | *a concern provisionally; the confirmatory claim was not confirmed* (or *not evaluable*) |
+
+**The thresholds are judgement-based.** The 2-point lift, the −1-point C margin and the 3-point margins
+are the owner's judgement of what is worth acting on. **No cost model** of a missed answer, a displaced
+answer or the added text exists, and none was built; the thresholds are not derived from one. They are
+fixed here and are never tuned on any result, the pilot's included.
+
+**Statements of no effect (R2).** "No difference" is never written. A figure in either layer may be
+described as showing no effect **only through an equivalence bound**: when its **90 %** paper-bootstrap
+percentile CI (same draws, seed `261101|alias|boot`) lies entirely within ±δ, which is the two one-sided
+tests procedure at 0.05 each side (Lakens 2017, *Equivalence Tests: A Practical Primer for t Tests,
+Correlations, and Meta-Analyses*, Social Psychological and Personality Science 8(4):355–362,
+doi:10.1177/1948550617697177), the sentence reads *no effect larger than δ points*. **δ is the contrast's
+realised 80 %-power MDE**: §8's formula (k = 1.960 + 0.842) at the contrast's realised discordance, the
+share of its records whose hit differs between the two cells, printed beside it. At the planning
+discordance q 5 % that is **≈ 2.5 points** for H1 (2.54, 600 G) and ≈ 2.1 points for H2 (900). Otherwise
+the figure is *not resolved*.
 
 **Other Layer-2 figures, printed with 95 % CIs:**
 - **H3 (moved from Layer 1, D3):** the default retriever's change under neighbour expansion against BM25's,
@@ -280,22 +361,41 @@ CI is wide, the rule below does not fire, and the sentence says *not resolved*.
   and under the other retrievers; neighbour − base and random − base; random-1 − random-2 (the
   draw-to-draw gap); found@10-gold beside every found@10 figure; H1 split by whether the alias collides
   across papers (ABBREV.md *collision*); hits split into gold, same-paper judged and other-paper judged;
-  the 191 records on the 108 unsatisfied papers, as a descriptive leg (§4.2).
+  the 191 records on the 108 unsatisfied papers, as a descriptive leg (§4.2; they are also the pre-freeze
+  pilot, §5.6, and every sentence quoting them says so);
+- **the placebo glossary leg (R7, §5.3):** found@10 under base × default × placebo against base × default
+  × none and against merged, on G and on C, with the placebo's field coverage beside it.
 
 **Exploratory.** Anything else, labelled *exploratory* in every sentence that quotes it.
 
-"No difference" is never written. A one-sided member that is not significant is *not confirmed*, with its
-power floor beside it (§8). A member whose minimum attainable p exceeds its level is
-**GATE-NOT-EVALUABLE** (§9.1).
+A one-sided member that is not significant is *not confirmed*, with its power floor beside it (§8), and
+*no effect* is written only through the equivalence bound above. A member whose minimum attainable p
+exceeds its level is **GATE-NOT-EVALUABLE** (§9.1).
 
 ### 3.4 What is printed beside the Layer-1 members
 
 Beside H1: the C net change with its CI, the ratio ΔC / ΔG and the C gate's verdict (rule C, §3.1), the
 baseline C found@10 (base × default × none) with its headroom and the ceiling note, the reach count,
 found@10-gold. Beside H1b: the baseline C found@10 and its distance from the ceiling. Beside H2: the
-gold-only net change (the gate), the draw-to-draw gap, the per-arm judge false-yes rates (§6.3). If
-|H2's net effect| is smaller than the draw-to-draw gap |found@10(random-1) − found@10(random-2)|, every
-sentence that quotes H2 carries *within random-draw variation*, whatever H2's label.
+gold-only net change (the gate), the draw-to-draw gap, the per-arm judge false-yes rates (§6.3), and the
+**judge false-yes bound B** (below). If |H2's net effect| is smaller than the draw-to-draw gap
+|found@10(random-1) − found@10(random-2)|, every sentence that quotes H2 carries *within random-draw
+variation*, whatever H2's label. Beside H1 and H2 both: the fixed sensitivities of §7 and, if any flips
+the verdict, the label *fragile*.
+
+**The judge false-yes bound on H2 (R4).** A false *answers* label adds a spurious hit. In the neighbour
+arm that works **against** H2; in the random arms it lowers the neighbour − random contrast and so works
+**for** H2. The bound therefore reads the random arms. Let J_r be the number of the 900 records whose hit
+in a random-draw cell (default × none) rests on judged pairs only (gold outside the top 10), averaged
+over the two draws, and let U_r be the **Wilson 95 % upper limit of the random arm's false-yes share**:
+among the random-arm drift pairs (§6.3) that the final label calls *answers* and Opus answers, the share
+Opus calls *not*. (§6.3's per-arm false-yes rate, per Opus-*not* pair, is printed beside it; the bound
+uses the share among *answers* labels because a hit is made by an *answers* label.) Then
+**B = 100 · U_r · J_r / 900 points** is an upper limit on how much of H2's net effect spurious random-arm
+hits could account for. **Rule:** if |H2's net effect| ≤ B, every sentence that quotes H2 carries *within
+the judge false-yes bound*, and the gold-only change is quoted first; B never changes H2's label. If the
+random arm has fewer than 30 Opus-answered *answers* pairs, U_r is taken from the three arms pooled, and
+the sentence says so.
 
 ## 4. Instrument: the record set, as built
 
@@ -344,7 +444,9 @@ for the safeguard-fallback detection, #895 for the same-model re-ask fix). The a
 layout is exactly balanced, 2 G + 1 C per paper, so every per-cluster statistic of §3.1 is defined for
 every cluster. The 191 records on the 108 unsatisfied papers are run in every cell. They are reported as a
 **descriptive leg** and never enter a test or a Layer-2 decision. Satisfaction is a property of the build,
-fixed before any retrieval, so the split cannot depend on an outcome.
+fixed before any retrieval, so the split cannot depend on an outcome. The 191 are also the **pre-freeze
+pilot** (§5.6): they are retrieved and judged once before the freeze, and their post-freeze descriptive
+leg is quoted as *seen in the pilot*.
 
 ### 4.3 Disclosures about the build
 
@@ -397,7 +499,8 @@ fixed before any retrieval, so the split cannot depend on an outcome.
 ## 5. Design: factors and cells
 
 Four factors. Corpus arm, retriever and glossary arm define the **24 cells** that every record is run in.
-Question type (G / C) is a property of the record.
+Question type (G / C) is a property of the record. One further leg, the placebo glossary (§5.3, R7), is
+run on base × default only.
 
 ### 5.1 Corpus arm
 
@@ -537,6 +640,15 @@ inactive-reranker gate (§9.1).
 |---|---|
 | **none** | empty on every chunk |
 | **merged** | the paper's merged glossary (symbol + defined abbreviation), rendered on **every chunk where the entry's alias occurs** as a whole token (the **mention** rule; abbreviations state no value), under the served caps (12 entries, 1,200 characters) |
+| **placebo** (one leg: base × default only; R7) | another paper's merged glossary: the entry lists are **permuted across the OA-1000 papers that have at least one merged entry** by a seeded derangement (each paper receives the whole entry list of the paper that follows it in the order of sha256 of `261101\|alias\|placebo\|<paper>`, ascending, the last receiving the first's), then rendered on the receiving paper's chunks by the same mention rule and caps |
+
+**The placebo leg is a descriptive control for "extra text"** (R7). It attaches glossary-shaped text that
+carries no entry of the chunk's own paper, so a G gain under merged that the placebo also shows is not an
+alias bridge. Because rendering is by mention, a foreign alias renders only where that token happens to
+occur, so the placebo attaches to fewer chunks than merged: its field coverage (share of chunks with a
+field, mean rendered characters) is printed beside merged's, and the comparison is read with it. The
+placebo enters no test and no Layer-2 decision. It is swapped in by the same backfill with its own
+version stamp and census, after stage A (§5.7).
 
 The arms are swapped by the backfill on each bench collection, with the round-3 stamp census, and no
 re-indexing. For added papers in **every** expanded arm, the glossaries are generated **by the same
@@ -559,9 +671,62 @@ depend on the glossary arm.
 
 ### 5.4 Volume
 
-24 cells, plus **one noise repeat per corpus arm** (default × none, run twice; §9.4): 28 legs × 1,091
-records = **30,548** retrieval calls, at ≤ 4 in flight against the bench copies. No gateway call is made
-for retrieval.
+24 cells, plus **one noise repeat per corpus arm** (default × none, run twice; §9.4), plus the **placebo
+leg** (base × default × placebo, §5.3): 29 legs × 1,091 records = **31,639** retrieval calls, at ≤ 4 in
+flight against the bench copies. After the freeze the 191 pilot records are run again in every leg as
+the descriptive leg (§4.2). No gateway call is made for retrieval. The pilot (§5.6) adds its own calls
+before the freeze.
+
+### 5.6 Pre-freeze pilot on the 191 held-out records (R8)
+
+**What.** The 191 records on the 108 unsatisfied papers (§4.1), which enter no test and no Layer-2
+decision, are run **before the freeze** in all 29 legs, and their pairs are judged by the composed rule
+of §6.3 with the drift reference, on demand as in §6.2. It runs **after** the expanded collections are
+loaded and censused (§15 item 5) and after the code of §10 is merged, so it also exercises the chain on
+real collections. No balanced-set record is retrieved or judged by it.
+
+**What it estimates** (each with its n and a 95 % interval, committed as counts before the freeze):
+discordance between the two cells of each Layer-1 contrast (G and C separately for the glossary
+contrast); the baseline C found@10 under base × default × none (the C ceiling, §2 item 4); the share of
+judged pairs labelled *answers*, per arm; the tiebreaker share; the Opus-filtered share of the drift
+sample, per arm; the deduplicated pair count per leg (for the judge caps, §14 O7).
+
+**Its limits, stated now.** The 191 sit on papers the stop rule did not satisfy (83 G, 108 C), so they are
+not a sample of the balanced set. Their own papers' neighbours are **not** in the neighbour arm (§5.1
+adds neighbours of the 300 satisfied papers only), so their neighbour-vs-random discordance measures only
+other papers' neighbours and is expected to understate H2's. Discordance estimated from a small pilot is
+itself uncertain, and power computed from it can be badly off (Webber, Moffat and Zobel 2008,
+*Statistical power in retrieval experimentation*, CIKM 2008, 571–580, doi:10.1145/1458082.1458158): the
+planning scenarios of §8 stay as they are, and the pilot's estimate is added as a row, never substituted.
+
+**Allowed consequences, fixed now.** On the pilot's counts, before the freeze, and recorded in this text
+with the counts they rest on: (a) add the pilot-estimate rows to §8's power tables; (b) set the judge
+gateway caps and the Argon budget (§14 O7) and the batch sizes; (c) set operational limits (timeouts,
+in-flight counts) that do not change any label or hit. **Not allowed:** changing a hypothesis, a family,
+a level, a gate, a Layer-2 threshold or rule, a cell, a record, a judge or its prompt, a seed or an
+analysis — **unless** the change is recorded in this text before the freeze as a **deviation before
+freeze**, with its reason and the pilot counts that were seen, and listed in the README's change log. The
+pilot's labels are **not** carried into the main run: after the freeze the 191 are judged again with the
+main run's labels (§6.2).
+
+**Disclosure.** The pilot's counts and the date it ran are entered in *What had been seen before writing*
+before the freeze, and the freeze commit's text includes them.
+
+### 5.7 After the freeze: two stages (R9)
+
+- **Stage A, the Layer-1 legs**: base × default × none, base × default × merged, neighbour × default ×
+  none, random-1 × default × none, random-2 × default × none, and the noise repeat of each corpus arm
+  (default × none, §9.4): 9 legs. They are retrieved, their found@10 pairs are judged (§6.2), and the
+  stage-A outputs (hits, pair labels, logs, as private files with public sha256s) are **committed before
+  stage B starts**.
+- **Stage B, everything else**: the other 19 cells, the placebo leg, and the pairs that only RR@10 or a
+  descriptive split needs (§6.2).
+- **A stage-A label is never changed by stage B.** Pairs are deduplicated across cells (§6.2), so a pair
+  that stage B meets again keeps its stage-A label; stage B labels only new pairs. Stage B cannot move a
+  Layer-1 figure.
+- No analysis is run until stage A is committed and both owner spot checks (§13.4, §13.5) are committed.
+  The judged-pair spot check is drawn from stage A's labels (§13.5), so the Layer-1 analysis can be run
+  after stage A without waiting for stage B.
 
 ### 5.5 Seeds (owner, 2026-11-01, §14 O9)
 
@@ -584,7 +749,8 @@ draws), it is the **first 8 bytes of sha256(seed string)**, read big-endian as a
 | judge order | `261101\|alias\|judge\|order` | the labelling order of deduplicated pairs, §6.2 |
 | drift sample | `261101\|alias\|drift` | the per-batch drift sample (`…\|<batch>`), §6.3 |
 | record spot check | `261101\|alias\|spot\|records` | the 40 records of §13.4 |
-| judged-pair spot check | `261101\|alias\|spot\|judge` | the 60 pairs of §13.5 |
+| judged-pair spot check | `261101\|alias\|spot\|judge` | the 60 pairs of §13.5 (`…\|<label stratum>\|<arm>\|<pair>`) |
+| placebo glossary | `261101\|alias\|placebo` | the derangement of entry lists across papers (`…\|<paper>`), §5.3 (R7) |
 
 ## 6. Outcome and judge
 
@@ -597,6 +763,12 @@ is H2's direction gate. **RR@10** (Layer 2) uses the same labels.
 ### 6.2 What is judged, and blindness
 
 - **Only top-10 non-gold chunks** are judged. The gold chunk is a hit by definition.
+- **Judging on demand (R9).** For found@10, a non-gold pair (record, chunk) is judged **only if the
+  record's gold chunk is outside that cell's top 10**: when the gold is in the top 10 the record is a hit
+  whatever the other chunks are. Stage A (§5.7) judges the pairs its 9 legs need this way, first. Stage B
+  judges the pairs its own legs need for found@10, then the pairs that **RR@10** needs (non-gold chunks
+  ranked **above** the gold in a cell where the gold is in the top 10, stage-A legs included) and those
+  the descriptive splits of §3.3 and §7 need. A pair is labelled once, whatever first asked for it.
 - **Pairs are deduplicated across cells.** The unit is (record, chunk). One final label serves every cell
   in which that chunk appears in that record's top 10.
 - **Blind to arm, retriever and rank.** The pair prompt (`alias-judge/2`) carries the question, its term,
@@ -644,13 +816,17 @@ deviation. Opus labels never replace a final label. The Opus-filtered share of t
 arm. **Topic filter:** Opus via the gateway returns empty answers on some questions, clustered on vaccine
 and virus topics: 33 of 410 calibration pairs and 81 of 587 validation pairs had no answer on any attempt
 (83 validation pairs have no reference; the other 2 had no parseable verdict). The Claude CLI refuses
-most of the same pairs, while Argon and both Qwen judges answer them. A filtered pair is **not** a drift
-failure. It is excluded from the drift agreement and counted.
+most of the same pairs, while Argon and both Qwen judges answer them. **An empty or unparseable Opus
+reply is re-issued at most once (R4); if the second reply is also empty or unparseable, the pair is
+*no-reference*** (filtered). A filtered pair is **not** a drift failure. It is excluded from the drift
+agreement and counted, and no further call is made for it.
 
 **Per-arm false-yes rates (D2).** For each arm: the share of Opus-*not* drift pairs that the final label
 calls *answers*, and the share of owner-*not* spot-check pairs (§13.5) that the final label calls
 *answers*, each with its n and a Wilson 95 % interval. A higher false-yes rate in the neighbour arm would
-inflate its judged found@10 and work against H2; this is why the gold-only gate exists.
+inflate its judged found@10 and work against H2; this is why the gold-only gate exists. A higher
+false-yes rate in the random arms would work **for** H2; that is what the false-yes bound of §3.4
+carries.
 
 ### 6.4 Why this judge: calibration facts (counts only)
 
@@ -678,13 +854,51 @@ judged here.
 
 There are at most 10 non-gold chunks per record and leg, so 30,548 lists give an upper bound of
 **305,480** pair instances before deduplication. The deduplicated count is known only after retrieval;
-it is far smaller, because most top-10 lists repeat across retrievers, glossary arms and the repeats. At
+it is far smaller, because most top-10 lists repeat across retrievers, glossary arms and the repeats,
+and judging on demand (§6.2) skips the pairs of every record whose gold is in a cell's top 10. At
 the validation throughput, judge C took about 1.85 s per pair and judge E about 0.74 s per pair (4 in
 flight). The tiebreaker load is expected at about 2–2.5 % of pairs and Opus at 5 %. **Gateway caps for
 the judge** are set before the freeze from the realised pair count (§14 O7). **The Opus drift cap**
 (owner, 2026-11-01) is **7 % of the judged (deduplicated) pairs**, and it counts **every Opus call,
 re-issued calls included** (the cumulative calls log plus the planned selection may not exceed it). The budget stop and `PAUSE`
 apply, as in the calibration harness.
+
+### 6.6 Judge reporting (R4)
+
+**Agreement metrics, with counts.** The judge is reported against its reference labels (Opus on the
+validation set, and the owner on the spot check of §13.5) as a 2 × 2 table of counts (final label ×
+reference label, *answers* / *not*), and from it: **precision, recall and F1 for *answers***,
+**specificity** (the *not* class's recall), **Cohen's κ** and **Gwet's AC1** (Gwet 2008, *Computing
+inter-rater reliability and its variance in the presence of high agreement*, British Journal of
+Mathematical and Statistical Psychology 61(1):29–48, doi:10.1348/000711006X126600), each with its n. AC1
+is printed beside κ because κ is depressed when one class dominates even at high raw agreement (Zec,
+Soriani, Comoretto and Baldi 2017, *High Agreement and High Prevalence: The Paradox of Cohen's Kappa*,
+The Open Nursing Journal 11:211–218, doi:10.2174/1874434601711010211), and *not* dominates these pairs.
+**The validation-set figures are computed by a separate PR from the committed validation data** (the
+calibration follow-up); they are **to be inserted from the calibration follow-up** here before the freeze
+(§15). The same metrics are computed by the committed analysis for the drift reference (per arm) and for
+the owner spot check (per label stratum and weighted, §13.5).
+
+**The false-yes bound on H2** is the rule of §3.4.
+
+**Prompt-paraphrase check, before the freeze.** LLM relevance labels are known to vary unpredictably with
+simple paraphrases of the prompt (Thomas, Spielman, Craswell and Mitra 2024, *Large Language Models can
+Accurately Predict Searcher Preferences*, SIGIR 2024, 1930–1940, doi:10.1145/3626772.3657707). Before the
+freeze, **three paraphrases** of `alias-judge/2` (same fields, same output format, wording changed only;
+written and committed before any is run) are run by both primary judges on the validation pairs (never on
+a study pair), and the composed C + E rule is scored under each against the Opus-unanimous labels.
+Reported: accuracy, escalation share, the metrics above, and each paraphrase's label agreement with the
+original prompt. **Consequence:** the study keeps `alias-judge/2`. If any paraphrase's accuracy falls
+below the validation criterion (0.98) or its escalation share above 5 %, this is recorded here before the
+freeze and stated in §13.3 as a measured prompt sensitivity; replacing the prompt is a deviation before
+freeze with its own frozen plan, as TIEBREAKER-PLAN.md was.
+
+**Correlated primaries (known limitation).** Judges C and E are both Qwen models. Errors they share give
+the same label twice, so the pair is never escalated, and **correlated errors do not reach the
+tiebreaker**. The composed rule's error rate is only as low as the two models' errors are independent.
+This is stated in §13.3. It is mitigated, not removed, by the drift reference (a different model family
+on a 5 % sample) and by the owner spot check, which oversamples *answers* labels, the direction of every
+validation error (§13.5).
 
 ## 7. Analysis
 
@@ -712,17 +926,15 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
 - **Minimum attainable p** (owner, 2026-11-01) is 2^−k for H1's and H2's exact p. For H1b (owner,
   2026-11-02) it is the null mass of the most extreme value: the product, over the units whose
   relabellings change the statistic, of each unit's share of relabellings at its extreme. For any
-  Monte-Carlo p it is max(that floor, 1/(m + 1)). It is judged against the **final level** at which the member is tested: for H1 and
-  H2 the level after any level passed by the other member (0.025, or 0.05 once the other is confirmed),
-  for H1b 0.05. A member whose minimum attainable p exceeds 0.025 can therefore still be evaluated, and
-  rejected, at 0.05.
+  Monte-Carlo p it is max(that floor, 1/(m + 1)). It is judged against the level at which the member is
+  tested, which is **0.05 for all three** (R1).
 - **H1b with a missing record** (owner, 2026-11-01: as implemented in `alias_study_stats.h1b_values`):
   a record excluded under *Missing data* (below) drops out of its paper's statistic. A paper's H1b score
   is **the mean of Δ over its remaining G records minus its C record's Δ**
   (with both G records present this is ½ Σ_G Δ − Δ_C, as in §3.1). **A paper whose C record, or both of
   whose G records, are excluded is dropped** from H1b, and it is counted with the missing records.
-- **Multiplicity:** the graphical Holm-with-gatekeeping procedure of §3.1. Gated or absent members at p =
-  1.0. `holm_drop_gated` is a labelled sensitivity that never decides.
+- **Multiplicity:** the two families of §3.1 (R1): Family G, H1 then H1b in fixed sequence at 0.05;
+  Family N, H2 at 0.05. Gated or absent members at p = 1.0.
 - **Beside every Layer-1 member:** the 95 % paper-bootstrap percentile CI of the net statistic (10,000
   resamples); the gained / lost record counts; the number of non-zero clusters; the minimum attainable p;
   the level the member was tested at; the realised power (§8); `mde_split`; found@10-gold; the items of
@@ -735,6 +947,38 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
   own label in turn; H2 against random-1 alone and random-2 alone; **H2 with a chunk-volume covariate**
   (owner, 2026-11-01): the H2 contrast adjusted for the difference in added chunks between the neighbour
   arm and the random average, per study paper, reported as a sensitivity that never decides.
+- **Fixed sensitivities of R6**, displayed in a fixed table beside H1 and H2 whatever the verdict, never
+  deciding:
+  - **Studentized randomization test, H1 and H2:** the paper sign-flip with the studentized statistic
+    (mean paper score over its standard error) in place of the sum, after Wu and Ding (2021,
+    *Randomization Tests for Weak Null Hypotheses in Randomized Experiments*, Journal of the American
+    Statistical Association 116(536):1898–1913, doi:10.1080/01621459.2020.1750415): exact under the same
+    sharp null, and asymptotically conservative under the **weak null** of zero mean effect, which the
+    primary tests do not address (above).
+  - **Topic-level clustering, H1 and H2:** the same tests with the cluster raised from the paper to the
+    study paper's **OpenAlex primary topic** (papers sharing a topic pooled into one cluster score),
+    against correlation between papers of one field.
+  - **H2 with the chunk-volume covariate** (above).
+  - **H2 on the XML-only stratum:** H2 recomputed on the study papers whose attributed neighbours and
+    whose papers in both random draws are **all** JATS-sourced (§5.1), so that no PDF extraction enters
+    the contrast; the stratum's size is printed.
+  - **H2 by citation-count tercile and by text-similarity tercile:** the study papers split into terciles
+    by their OpenAlex citation count at the query date (§5.1), and separately by the mean dense-embedding
+    cosine similarity between the study paper's chunks and its attributed neighbours' chunks (the served
+    embedder, computed offline from the stored vectors before any outcome is read); the tercile cut points
+    are fixed and committed before the stage-A outputs are read. Each tercile's H2 estimate and CI.
+  - **Origin of displacing chunks (descriptive):** for each record that is a hit in the random average
+    but not in the neighbour arm, the papers of the top-10 chunks that outrank its gold chunk, counted as
+    the record's **own paper's neighbour**, **another study paper's neighbour** or **base**.
+
+  **Fragile.** If any sensitivity in this section flips a primary verdict, that verdict is labelled
+  ***fragile*** in every sentence that quotes it. A sensitivity that re-tests the member (the declared
+  sensitivities above, the studentized test, topic clustering, the covariate) **flips** the verdict when,
+  at the member's level, it gives the other verdict (*confirmed* ↔ *not confirmed*). A subgroup display
+  (the XML-only stratum, a tercile) carries no test at the member's level, because its power is lower; it
+  **flips** a *confirmed* verdict when its 95 % CI excludes 0 in the direction opposite to the
+  hypothesis, and it never makes a *not confirmed* verdict fragile (that would be a subgroup claim). The
+  origin counts are descriptive and cannot flip anything. *Fragile* never changes a label.
 - **Missing data:** a record whose retrieval call failed in any cell of a contrast is excluded from it
   and counted. `family_missing_as_not_found` is the one pre-named sensitivity. More than 2 % failed calls
   in a leg is a hard stop.
@@ -747,46 +991,64 @@ No layout uncertainty remains for the records. What is unknown is **discordance*
 whose hit changes between the two cells of a contrast, and the share p of the discordant records that move
 in the hypothesised direction.
 
+**Every member is tested at one-sided α = 0.05 (R1)**, so every power below is at 0.05. The v1 tables at
+the Holm worst case (0.025) and the conditional tables are withdrawn with the Holm pair.
+
 **Normal approximation** (this draft; the committed calculation is a pre-freeze item, §15). Each record
 gets d ∈ {−1, 0, +1}: non-zero with probability q, in the hypothesised direction with probability p. Then
 
   μ = q (2p − 1),  σ² = q − μ²,  power = Φ( √n · μ / σ − z ),
 
-with z = 1.95996 for the Holm worst case, one-sided α/2 = 0.025 (the conditional rows use z = 1.64485,
-one-sided α = 0.05). This treats records as independent and
-paper-level shares as constant. A paper-level spread of p lowers power somewhat; the committed simulation
-adds it (below).
+with z = 1.64485 (one-sided α = 0.05). This treats records as independent and paper-level shares as
+constant. A paper-level spread of p lowers power somewhat; the simulation adds it (below). H2's rows are
+at the **planned dose** (about 2,800 added papers, §5.1), where q is defined, and at the **realised v2
+dose** (2,424 attributed neighbours, dose 0.866; q scaled by it, scratch, below).
 
-| member (n) | q .02 | q .03 | q .05 | q .10 | q .20 |
+| member (n), α = 0.05, normal approximation | q .02 | q .03 | q .05 | q .10 | q .20 |
 |---|---|---|---|---|---|
-| **H1**, p .85 (600) | .68 | .85 | **.97** | 1.00 | 1.00 |
-| **H1**, p .70 (600) | .28 | .40 | .59 | **.88** | .99 |
-| **H2**, p .85 (900) | .85 | .96 | 1.00 | 1.00 | 1.00 |
-| **H2**, p .70 (900) | .40 | .55 | .77 | .97 | 1.00 |
+| **H1**, p .85 (600) | .79 | .91 | **.99** | 1.00 | 1.00 |
+| **H1**, p .70 (600) | .40 | .52 | .71 | **.93** | 1.00 |
+| **H2**, p .85 (900), planned dose | .91 | .98 | 1.00 | 1.00 | 1.00 |
+| **H2**, p .70 (900), planned dose | .52 | .67 | .85 | .99 | 1.00 |
+| **H2**, p .85 (900), realised v2 dose | .87 | .96 | 1.00 | 1.00 | 1.00 |
+| **H2**, p .70 (900), realised v2 dose | .47 | .62 | .81 | .97 | 1.00 |
 
-**Conditional power at α = 0.05** (§3.1: H2 is tested at 0.05 once H1 is confirmed, and H1 at 0.05 once H2
-is confirmed). These are powers *given* that the other member was confirmed; the unconditional floor is
-the 0.025 table above.
+**The two planning scenarios** are q 5 % / p .85 and q 10 % / p .70. **H1: power ≈ 0.99 and ≈ 0.93**
+(normal approximation; the simulation below gives .99 and .92). The 80 %-power MDE, from
+μ = k · √(q / (n + k²)) with k = 1.960 + 0.842, is 2.5 points for H1 at q 5 % and 2.1 points for H2 at
+q 5 % (3.6 and 2.9 at q 10 %); it is also the equivalence bound δ of §3.3 at those discordances.
 
-| member (n), at α = 0.05 | q .02 | q .03 | q .05 | q .10 | q .20 |
+**Simulation of each member's test (scratch, not citable).** The merged power script
+(`python/scripts/eval/alias_study_power.py` at `692f812`, clean tree) was run for this draft on the
+accepted-record file (sha `09fc5ca4…`, balanced-set id sha `2be86f8c…`) and the v2 neighbour counts
+(the private `neighbour-counts-v2.json`, sha256 `e6bb912e…`: 2,424 attributed, mean 8.08 per study paper,
+min 0, max 10), 2,000 simulated studies per cell, between-paper SD of p .15, seed `261101|alias|power`.
+The output stays outside the repository and is **not citable**; the committed calculation (§15 item 8)
+replaces it. H2 is at the realised dose, with **ρ = 1** (the draws' discordance fully shared, the
+conservative three-valued case) and, in brackets, ρ = 0.5; *confirm* means the judged test rejects **and**
+the gold-only gate passes, at agreement a between the gold-only and judged changes.
+
+| member, α = 0.05, simulation | q .02 | q .03 | q .05 | q .10 | q .20 |
 |---|---|---|---|---|---|
-| **H1**, p .85 (600), given H2 confirmed | .79 | .91 | .99 | 1.00 | 1.00 |
-| **H1**, p .70 (600), given H2 confirmed | .40 | .52 | .71 | .93 | 1.00 |
-| **H2**, p .85 (900), given H1 confirmed | .91 | .98 | 1.00 | 1.00 | 1.00 |
-| **H2**, p .70 (900), given H1 confirmed | .52 | .67 | .85 | .99 | 1.00 |
+| **H1** sign-flip, p .85 | .74 | .92 | **.99** | 1.00 | 1.00 |
+| **H1** sign-flip, p .70 | .28 | .44 | .64 | **.92** | 1.00 |
+| **H1b** label randomization, p .85 (C with no effect) | .33 | .47 | .67 | .92 | 1.00 |
+| **H1b** label randomization, p .70 (C with no effect) | .14 | .20 | .32 | .54 | .80 |
+| **H2** confirm, **a = 0.7**, p .85 | .73 [.85] | .88 [.93] | **.96** [.98] | 1.00 [1.00] | 1.00 [1.00] |
+| **H2** confirm, **a = 0.7**, p .70 | .34 [.44] | .45 [.59] | .65 [.78] | **.90** [.93] | .98 [.99] |
+| **H2** confirm, a = 0.6 (sensitivity), p .85 | .58 [.67] | .70 [.76] | **.79** [.83] | .88 [.92] | .95 [.97] |
+| **H2** confirm, a = 0.6 (sensitivity), p .70 | .26 [.36] | .36 [.47] | .53 [.64] | **.73** [.76] | .83 [.86] |
 
-**The two planning scenarios for H1** are q 5 % / p .85 and q 10 % / p .70: power **≈ 0.97** and **≈ 0.88**
-at 0.025 (≈ 0.99 and ≈ 0.93 given H2 confirmed). For H2 at the same two scenarios: 1.00 and .97 at 0.025;
-given H1 confirmed, 1.00 and .99 (and at q 5 % / p .70, .77 → .85).
-The 80 %-power MDE, from μ = k · √(q / (n + k²)) with k = 1.960 + 0.842, is 2.5 points for H1 at q 5 % and
-2.1 points for H2 at q 5 % (3.6 and 2.9 at q 10 %).
+**H2 at the two planning scenarios, realised v2 dose, ρ = 1:** power to confirm **.96 and .90 at
+a = 0.7**, **.79 and .73 at a = 0.6** (the test alone: 1.00 and .97). At q 5 % / p .70 it is .65
+(a = 0.7). H1b is a fixed-sequence member, tested only after H1 is confirmed; its power is low at the
+planning scenarios (.67 and .54) and is printed beside it as its floor.
 
-**H2 is approximated conservatively.** H2 compares the neighbour arm with the **average** of two random
-draws, so d takes values in {−1, −½, 0, ½, 1}. Averaging two draws removes part of the random-arm noise,
-which lowers σ for the same mean, so the three-valued table understates H2's power at a given net effect.
-The gold-only gate is a second condition, so the power to *confirm* H2 is at most the table's figure. Its
-size depends on how often the judged and gold-only directions agree, which the committed simulation takes
-as a stated assumption.
+**H2 is approximated conservatively at ρ = 1.** H2 compares the neighbour arm with the **average** of two
+random draws, so d takes values in {−1, −½, 0, ½, 1}. Averaging two draws removes part of the random-arm
+noise, which lowers σ for the same mean; ρ = 0.5 shows what that buys. The gold-only gate is a second
+condition, so the power to *confirm* H2 is at most the test's power. Its size depends on how often the
+judged and gold-only directions agree, which the simulation takes as the stated assumption a.
 
 **Read this beside §2.** Round 3 saw **0 discordant records** between the served glossary and none under
 the served path, and a 1 / 9 split in the adverse direction under mention attachment. If G discordance
@@ -794,20 +1056,26 @@ here is as low, or the split as adverse, H1 ends *not confirmed* with this floor
 not a null unless the power at the stated scenario is ≥ .80.
 
 **The committed calculation (pre-freeze, §15)** runs on the realised layout and, for H2, on the realised
-neighbour and random counts per study paper. It repeats the table above by the normal approximation and
+neighbour and random counts per study paper. It repeats the tables above by the normal approximation and
 by simulation of each member's test of §7 (2,000 simulations; H1's sign-flip with 2,000 flips, H2's
 sign-flip and H1b's randomization test exactly; a between-paper SD of p of .15, seed `261101|alias|power`, §5.5),
-and it computes H2 with the two-draw average and the gold-only gate under stated agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, the caps of
-§5.1 are raised before the freeze**; that is the lever, and it acts on metadata counts only. **The power
-the lever reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test rejects **and** the
-gold-only direction gate passes, not the test's power alone. **The lever reads the agreement level
-`a = 0.7`, and `a = 0.6` is reported as a sensitivity** (owner, 2026-11-02, §14 O11;
-`alias_study_power.LEVER_AGREEMENT`).
+and it computes H2 with the two-draw average and the gold-only gate under stated agreement assumptions.
+The pilot's discordance estimates (§5.6) are added as rows, never substituted for the planning scenarios.
+**If H2's simulated power to confirm is below .80 at q 5 % / p .85, at α = 0.05, the caps of §5.1 are
+raised before the freeze**; that is the lever, and it acts on metadata counts only. **The power the lever
+reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test rejects **and** the gold-only
+direction gate passes, not the test's power alone. **The lever reads the agreement level `a = 0.7`, and
+`a = 0.6` is reported as a sensitivity** (owner, 2026-11-02, §14 O11;
+`alias_study_power.LEVER_AGREEMENT`). On the scratch run above the lever does **not** fire at a = 0.7
+(.96); at the a = 0.6 sensitivity it would (.79). **The merged script still reads the lever at 0.025**
+(the v1 Holm level), where the a = 0.7 figure is .95; updating it to read 0.05 is part of the committed
+calculation (§15 item 8). The level change cannot make the lever fire where it did not, because power
+at 0.05 is at least power at 0.025 (up to simulation noise).
 
 **Evaluability floor.** For H1 and H2, with k non-zero clusters, the minimum attainable one-sided p
-is 2^−k. At the Holm worst case α/2 a member needs k ≥ 6; at α = 0.05 (after the other is confirmed)
-it needs k ≥ 5. For H1b the floor is the randomization floor of §7: each paper whose relabellings
-change the statistic contributes 1/3 or 2/3 (2 G + 1 C), or 1/2 (a paper left with 1 G + 1 C).
+is 2^−k, so at α = 0.05 a member needs k ≥ 5. For H1b the floor is the randomization floor of §7: each
+paper whose relabellings change the statistic contributes 1/3 or 2/3 (2 G + 1 C), or 1/2 (a paper left
+with 1 G + 1 C).
 
 ## 9. Gates, stops, and restore points
 
@@ -875,11 +1143,15 @@ census.
 and the verdict-source split (§4.1); the OpenAlex neighbour and random selectors (metadata only, seeded,
 writing the manifests of §5.1); an alias adapter for the runner (the records schema; the 24 cells and 4
 repeats; the four corpus collections); the pair builder and the deduplication for judged pairs; the
-composed-rule labeller (C + E, then Argon), with the arm-stratified drift sampler and both alarms; the
-statistics for H1, H1b (with the graphical procedure) and H2 (two-draw average, gold-only gate), with
-tests; the Layer-2 script (CIs, the three decision rules, RR@10, H3); a glossary-file writer for the merged
-glossary that the backfill renders, with render parity tests, and the offline reach count; the committed
-power calculation (§8); the public-artifact check (§11).
+composed-rule labeller (C + E, then Argon), with the arm-stratified drift sampler and both alarms, the
+Opus single retry (§6.3) and the on-demand pair selection by stage (§6.2, §5.7); the statistics for H1,
+H1b (fixed sequence within Family G) and H2 (two-draw average, gold-only gate), with tests, and the fixed
+sensitivities of §7 (studentized test, topic clustering, XML-only stratum, terciles, origin counts, the
+*fragile* rule); the false-yes bound of §3.4 and the judge metrics of §6.6; the Layer-2 script (CIs, the
+decision rules of §3.3 with the harm rule, the C-cost and reranker non-inferiority rules, the Layer-1
+wording table and the equivalence bound, RR@10, H3); a glossary-file writer for the merged glossary and
+the placebo glossary that the backfill renders, with render parity tests, and the offline reach count;
+the committed power calculation (§8, the lever at α = 0.05); the public-artifact check (§11).
 
 **Pin.** Every run is from one `main` commit, at or after the merge of the last item above, in a clean
 worktree (`dirty false`, `untracked 0`), or from a tools image built from a tag at or after it (ADR-0010).
@@ -913,64 +1185,109 @@ entry, not a silent retry.
 1. **One corpus.** OA-1000 only. The expanded arms add papers around it but do not make a second corpus.
 2. **The population is glossary papers.** Records exist only for papers with ≥ 2 usable G entries and ≥ 1
    C. The 300 satisfied papers are those the stop rule reached first in a seeded order, and the estimand
-   is conditional on them. Abbreviations dominate: 508 of 600 G records.
+   is conditional on them. Abbreviations dominate: 508 of 600 G records. **Every claim is for questions
+   using the glossary's primary term** (§3, R3): no record asks with the alias or in other words. The
+   records are **LLM-drafted and LLM-verified, plus the owner's check of 40** (§13.4); none was written
+   by a person.
 3. **The judge is not truth.** found@10 inherits the judge's errors. On the validation set those errors
    were few (§6.4) but were all false yeses, 3 of 4 on same-paper non-gold chunks. They inflate found@10
    equally across arms only if such chunks are retrieved equally often, which is why false-yes rates are
-   printed per arm and H2 carries the gold-only gate.
+   printed per arm, H2 carries the gold-only gate, and the false-yes bound of §3.4 is quoted beside H2.
+   **Both primary judges are Qwen models** (§6.6): errors they share are never escalated, so correlated
+   errors do not reach the tiebreaker. The drift reference (Opus, 5 %) and the owner spot check, which
+   oversamples *answers* labels (§13.5), mitigate this; they do not remove it. The prompt-paraphrase check
+   (§6.6) is reported here.
 4. **Record validity (owner spot check, D9).** The owner labels **40** records drawn from the 900 balanced
    records (seed `261101|alias|spot|records`), valid / invalid, on a sheet that carries no kind (G / C), arm
    or record id. **Rule, as round 3's:** validity below **0.85** at the point estimate makes every result
    sentence carry *validity below threshold*. The Wilson 95 % interval is printed and decides nothing. The
    set is not rebuilt. The labels are committed (as counts, with the sheet's sha) **before any analysis**.
    The verifier's spot-reads found about 1 in 12 current-pipeline G records doubtful (VERIFIER.md).
-5. **Judge validity (owner spot check, D9).** The owner labels **60** judged pairs, **10 per arm × glossary
-   cell** (base, neighbour, random × none, merged), drawn uniformly from the non-gold pairs judged in the
-   default retriever's top 10 for that cell (seed `261101|alias|spot|judge`; a pair drawn for one cell is
-   not drawn again). The sheet is **blind to arm and to the judge's verdict**. **Rule:** owner–judge
-   agreement below **0.90** at the point estimate is stated in every result sentence, and found@10-gold is
-   reported alongside each found@10 result as the sensitivity. Nothing is re-labelled. The labels are
-   committed **before any analysis**.
+5. **Judge validity (owner spot check, D9 as amended by R5).** The owner labels **60** judged pairs drawn
+   from the non-gold pairs labelled in **stage A** (§5.7), **stratified by the final judge label**:
+
+   | stratum | pairs | per arm (base / neighbour / random) |
+   |---|---|---|
+   | *answers*, C and E agreed | **30** | 10 / 10 / 10 |
+   | *not*, C and E agreed | **20** | 7 / 7 / 6 |
+   | **tiebroken** (the Argon label is final, either verdict) | **10** | 4 / 3 / 3 |
+
+   **Why this split.** Every residual error of the validation was a false *yes* (§6.4), a false *yes* is
+   what inflates found@10, and *answers* labels are the minority of pairs, so a uniform draw would hold few
+   of them: half the sheet goes to *answers*, which estimates the judge's precision with an n large enough
+   to see a 1-in-10 error rate. The *not* stratum (20) estimates false *no*s, which only lower found@10 and
+   were not seen in validation. The tiebroken stratum (10) covers the pairs on which the two primaries
+   disagreed, the hardest pairs and the only ones the tiebreaker decides; it is small because those pairs
+   are about 2–2.5 % of all (§6.5). Within each stratum the pairs are spread across arms as above, so the
+   neighbour and random papers, which calibration never saw (§6.4), carry two thirds of the sheet. Where
+   an arm × stratum cell has fewer pairs than its share, it is taken whole and the shortfall goes to the
+   other arms of the same stratum, then to *answers*, then to *not*. Within a cell the first pairs in the
+   order sha256 of `261101|alias|spot|judge|<stratum>|<arm>|<pair>` are taken. The sheet is **blind to arm
+   and to the judge's verdict** (the stratum is not on it).
+
+   **Reported:** per-stratum owner–judge agreement with Wilson 95 % intervals, the §6.6 metrics, and the
+   agreement **re-weighted to the stage-A label shares** (each stratum weighted by its share of stage-A
+   labels), which is the estimate of the judge's overall agreement. **Rule:** a re-weighted owner–judge
+   agreement below **0.90** at the point estimate, or an *answers*-stratum agreement below 0.90, is stated
+   in every result sentence, and found@10-gold is reported alongside each found@10 result as the
+   sensitivity. Nothing is re-labelled. The labels are committed **before any analysis**.
+
+   **Single rater.** The spot check has one rater, the owner, who also designed the study. That is a
+   limitation: no inter-rater agreement for the reference exists. Adding a second, independent rater on
+   the same 60 pairs is left open (§14 O12).
 6. **Neighbour definition.** References and citers come from OpenAlex, whose coverage is incomplete, and
    open-access availability filters them. The caps take the most cited references and the most recent
    citers, so the added set is a sample of the neighbourhood, not the neighbourhood itself.
 7. **Forking paths.** The corpus and retriever factors were chosen after round 3's null and the reranker
    test's papers-OC reading. H1's form and the 300-paper target were chosen after v0's power sketch. The
    record set's target was extended twice mid-build (§4.3). The judge's tiebreaker was chosen after its
-   calibration results. Each is bounded by being fixed here before any retrieval on a study record.
+   calibration results. Version 2's changes (R1–R11) were adopted from an independent methodology review
+   before any retrieval on a study record; the pilot (§5.6) is run on held-out records before the freeze,
+   and what it may change is fixed in advance. Each is bounded by being fixed here before any retrieval
+   on a balanced-set record.
+8. **No study-wide error control across the two families** (§3.1, R1). Family G and Family N are each
+   controlled at 0.05; the chance of at least one false confirmation across both, with every null true,
+   is up to about 0.0975.
+9. **Judgement-based thresholds.** The Layer-2 thresholds and margins (§3.3) rest on the owner's judgement,
+   not on a cost model.
 
 ## 14. Open decisions for the owner
 
-Only items not settled by D1–D10.
+Only items not settled by D1–D10 and R1–R11.
 
 | # | decision | proposal in this draft |
 |---|---|---|
-| O1 | **Numeric definition of the C gate** | **Decided (owner, 2026-11-01): rule C.** Evaluated only when ΔG > 0 (H1 is one-sided; at ΔG ≤ 0 the gate is moot). H1 is GATE-NOT-EVALUABLE if ΔC (merged − none, base × default, 300 C) has the same sign as ΔG, \|ΔC\| ≥ ½ \|ΔG\| in points, and ΔC's 95 % paper-cluster bootstrap CI (seeded) excludes 0. A C drop never trips the gate (it feeds Layer 2's ≤ 1-point C-cost rule). Baseline C found@10 printed beside it with a ceiling note. Written in §3.1, §3.2, §3.4 |
-| O2 | Reading of "H1b at full α" | **Decided (owner, 2026-11-01): Option B.** H1 and H2 start at one-sided 0.025 each (Holm over 2); a confirmed member passes its 0.025 to the other. H1b is tested only if **both** H1 and H2 are confirmed, at α = 0.05 (fixed sequence after the Holm pair); otherwise it is not tested and is reported descriptively. H2's gold-only gate failing = H2 not confirmed. Written in §3.1, §3.2 and §8 |
-| O3 | H2 when the judged test is significant but the gold-only gate fails | label *not confirmed (gold-only direction gate)*; counted as not rejected, so it passes no level on |
+| O1 | **Numeric definition of the C gate** | **Decided (owner, 2026-11-01): rule C.** Evaluated only when ΔG > 0 (H1 is one-sided; at ΔG ≤ 0 the gate is moot). H1 is GATE-NOT-EVALUABLE if ΔC (merged − none, base × default, 300 C) has the same sign as ΔG, \|ΔC\| ≥ ½ \|ΔG\| in points, and ΔC's 95 % paper-cluster bootstrap CI (seeded) excludes 0. A C drop never trips the gate (it feeds Layer 2's C-cost rule, made CI-based at margin −1 point by R2). Baseline C found@10 printed beside it with a ceiling note. Written in §3.1, §3.2, §3.4 |
+| O2 | Reading of "H1b at full α" | **Decided (owner, 2026-11-01): Option B.** H1 and H2 start at one-sided 0.025 each (Holm over 2); a confirmed member passes its 0.025 to the other. H1b is tested only if **both** H1 and H2 are confirmed, at α = 0.05 (fixed sequence after the Holm pair); otherwise it is not tested and is reported descriptively. H2's gold-only gate failing = H2 not confirmed. Written in §3.1, §3.2 and §8. **Superseded (owner, 2026-11-02/03, R1):** two families; H1 at 0.05 with H1b after it in fixed sequence (Family G), H2 alone at 0.05 (Family N); no level passes between H1 and H2 |
+| O3 | H2 when the judged test is significant but the gold-only gate fails | **Decided (owner, 2026-11-02/03, with R1):** label *not confirmed (gold-only direction gate)*. With H2 alone in Family N there is no level to pass on. Written in §3.1, §3.2 |
 | O4 | Minimum Opus-answered pairs before a drift alarm can fire | **Decided (owner, 2026-11-01).** 100 per scope (overall and per arm); with it the drift-sample arithmetic: 5 % of each 2,000-pair batch rounded half up, a capped stratum's shortfall reallocated to the others. Written in §6.3 |
 | O5 | Attribution of a neighbour shared by several study papers | **Decided (owner, 2026-11-01).** Added once; attributed to the first study paper in the seeded order (`261101\|alias\|neighbours`, `…\|order\|<study paper>`); no replacement for the others; each random draw takes per study paper as many papers as were attributed to it, so the arms hold equal unique counts. Written in §5.1 |
 | O6 | How "prefer PMC/JATS" is applied | **Decided (owner, 2026-11-01).** PMC JATS XML for every added paper in both arms where it exists; the random arm's PDF share matched to the neighbour arm's; every added paper scanned for C0 control characters (other than tab, newline, carriage return), a PDF paper excluded when any occurs in > 0.5 % of its chunks; exclusions counted per arm. Written in §5.1 |
 | O7 | Gateway caps for the judge | **Opus decided (owner, 2026-11-01):** ≤ 7 % of judged pairs, re-issued calls counted (§6.5). Still open: Argon ≤ 4 % of pairs, and the absolute ceiling agreed with the papers-OC owner, set from the realised deduplicated pair count before the freeze |
 | O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | not now: it is **not on the gateway allow-list**. Adding it later would be a deviation with its own frozen selection plan, as TIEBREAKER-PLAN.md was |
 | O9 | Seeds | **Decided (owner, 2026-11-01).** One recorded seed string per draw, seed base `261101\|alias`: neighbours `…\|neighbours`, random draws `…\|random\|1` and `…\|random\|2`, noise repeats `…\|noise`, bootstrap `…\|boot`, and the derived strings of §5.5. Written in §5.5. **Amended (owner, 2026-11-01):** numeric seeds are the first 8 bytes of sha256(seed string), big-endian unsigned; power seed `…\|power`; random draws `…\|random-1-v2` and `…\|random-2-v2` |
-| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
+| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios .97 → .97 and .88 → .87 at the v1 level 0.025), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
 | O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.7, 0.6 in `alias_study_power`) | **Decided (owner, 2026-11-02): `a = 0.7`**; `a = 0.6` is reported as a sensitivity. Written in §8 |
+| O12 | **A second rater for the judged-pair spot check** (§13.5, R5) | open. As drafted the owner is the single rater, stated as a limitation. A second, independent rater would label the same 60 pairs blind to the owner's labels and to the judge's; their agreement (κ, AC1, §6.6) would then be printed beside the spot-check figures. Who, and whether, is left open |
 
 ## 15. What must exist before freeze
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; O3, O7 (Argon, ceiling), O8 and O10 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
-| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open |
+| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; a second build's private manifests (*v2*) exist, and their neighbour counts fed the scratch power run of §8 only |
 | 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The merged-glossary file the backfill renders, with render parity tests; the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
-| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7, H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, §8), with a clean tree and `citable true` | open; a scratch run on the v2 neighbour counts exists and is not citable |
+| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the merged script reads the lever at 0.025 and needs the level change |
 | 9 | The committed replay of the composed judge rule on the validation labels (§6.4), replacing the scratch replay | open |
 | 10 | The code of §10 *Must be written*, merged after an independent review | open |
 | 11 | **Owner spot check of the 40 records** (§13.4): may be done before the freeze; must be committed before any analysis | open |
 | 12 | A dry run of the whole chain on base × BM25 × none for **non-study records only** (for example the validation set's), to check the plumbing without reading any study outcome | open |
 | 13 | O1 (the C gate's numeric definition) and O9 (seed base) fixed in the text | done in this draft: rule C (§3.1) and the seed strings (§5.5) |
+| 14 | **The pre-freeze pilot** on the 191 held-out records (§5.6, R8): run after item 5 and item 10, in all 29 legs, judged; its counts committed and entered in *What had been seen before writing*; any consequence recorded with the counts it rests on, and anything beyond the allowed consequences recorded as a deviation before freeze | open |
+| 15 | **The prompt-paraphrase check** (§6.6, R4): three paraphrases of `alias-judge/2`, committed before they are run, scored on the validation pairs by both primaries; the result recorded in §6.6 and §13.3 | open |
+| 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | open: *to be inserted from the calibration follow-up* |
+| 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
