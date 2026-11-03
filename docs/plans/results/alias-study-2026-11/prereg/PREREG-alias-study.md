@@ -815,9 +815,12 @@ neighbours: a take whose cell lost room is released and not refilled, and a new 
 walk. **Disclosed:** one study paper's walk-down was exhausted after its screened neighbour, so it has
 one neighbour fewer, and each draw one random slot fewer, than in v3 (2,423 papers per arm, from 2,424).
 
-**Build counts, v4.** Every v4 artifact records one commit, **`617d28d`** (clean, `citable true`, the
-stages' commits agreeing), the build commit of #915; #915 is merged with a merge commit, never
-squashed, so that commit stays reachable from `main`. Private manifests, by sha256 prefix: `counts-v4.json` `fd15b1bf…`,
+**Build counts, v4.** The v4 build commit is **`617d28d`**, the build commit of #915, which is merged
+with a merge commit (`a623981`), so it is reachable from `main`. `counts-v4.json`,
+`neighbour-selection-v4.json`, both draw manifests and `power-v4.json` embed provenance at `617d28d`
+(clean, `citable true`, the stages' commits agreeing); `neighbour-counts-v4.json`,
+`per-study-chunks-v4.json` and `chunkcheck-v4.json` carry none and are pinned by `counts-v4.json`'s
+`manifest_sha256`. Private manifests, by sha256 prefix: `counts-v4.json` `fd15b1bf…`,
 `random-1-draw-v4.json` `1d8a72e5…`, `random-2-draw-v4.json` `cb3b9acc…`, `neighbour-selection-v4.json`
 `2da5dc13…`, `neighbour-counts-v4.json` `ed71fcb9…`, `per-study-chunks-v4.json` `5c0cfe15…`,
 `chunkcheck-v4.json` `8d898a69…`, `power-v4.json` `5ea9d25c…`; chunk files (neighbour / random-1 /
@@ -868,9 +871,9 @@ to raise the caps, before the freeze and on the counts alone.
 
 Every request carries `use_graph=false` and `rewrite_strategies ["passthrough"]`, as round 3's
 `FIXED_REQUEST` does. The settings are checked against `/v1/config` where it exposes them and are
-otherwise declared, as in the reranker test §3. **Serving facts** (from management, 2026-11-03): the
-bench tenant serves with the BM25 glossary boost on and with the reranker reading the glossary field, as
-in round 3; both are pinned by the per-leg admin-config hash (§9.2). **default** is the retriever of every
+otherwise declared, as in the reranker test §3. **Declared settings:** the bench tenant serves with the
+BM25 glossary boost on and with the reranker reading the glossary field, as in round 3; both are pinned
+by the per-leg admin-config hash (§9.2). **default** is the retriever of every
 Layer-1 member.
 BM25 enters Layer 2 (H3 and the reranker decision). norerank is a Layer-2 secondary and feeds the
 inactive-reranker gate (§9.1), whose cells are run in stage A (R20, §5.7).
@@ -925,24 +928,26 @@ time, with the 85 % heap stop.
 **Plurals and rendering conventions (owner, 2026-11-03, R27).** The served renderer matches an alias only
 as the exact token, while the study's matcher (`alias_abbrev.alias_occurs`) also accepts an
 abbreviation's plural `Xs`. Under the exact token alone, **48 of the 600 G records** would get no entry on
-their gold chunk. The glossary files therefore carry, for every `abbreviation` or `both` entry, an added
+their gold chunk (this and the two counts below are scratch counts from the glossary-file feasibility
+check on the base chunk export, not committed artifacts). The glossary files therefore carry, for every `abbreviation` or `both` entry, an added
 **`Xs` entry with the same definitions**. Where both forms occur in a chunk (about 2,247 base chunks), the
 field shows two lines. The rendering conventions, for every glossary file:
 - **one line per alias**: `alias — p1; p2`;
 - the **12-entry cap counts lines** (aliases), not merged entries; on base the two counts give different
   fields on 61 chunks;
 - **served order**: aliases by codepoint, ascending; definitions in file order;
-- the **1,200-character cap stops at the first line that would exceed it**; that line and the ones after
-  it are dropped, and no line is truncated;
+- the **1,200-character cap stops at the first line that would exceed it** (the count includes the
+  newline between lines); that line and the ones after it are dropped, and no line is truncated;
 - served config `attach_only_with_value` false and `positional` false;
-- each variant has **its own version string**, ending in `+attach=mention`;
+- each variant has **its own version string**, ending in `+attach=mention`; the chunk stamp is
+  `<version>@file/1`, so a stamp ends in `+attach=mention@file/1`;
 - **definition text**: an abbreviation's primary term is cut from the paper's **canonical text**
   (`alias_abbrev.find_definitions` on `symbol_glossary.canonical_text`). That text is NFKD-decomposed
   character by character, with bar spellings mapped to a combining macron, Greek variant letters unified
   (`ϕ` → `φ`), LaTeX Greek names and underscore subscripts folded. So the compatibility folds stay folded
   in the rendered line: the micro sign becomes Greek mu, a ligature becomes separate letters, a
   math-italic letter a plain one. The renderer, not the glossary-file writer, then passes every line
-  through `symbol_glossary.display_form` (NFC; `Glossary.for_chunk` on `main`, verified), which recomposes canonical decompositions (an accented letter, a barred letter that has a
+  through `symbol_glossary.display_form` (NFC; applied in `Glossary.for_chunk` on `main`), which recomposes canonical decompositions (an accented letter, a barred letter that has a
   precomposed form) but undoes none of those folds.
 
 For added papers in **every** expanded arm, the glossaries are generated **by the same pipeline at the
@@ -1679,7 +1684,7 @@ Only items not settled by D1–D10 and R1–R27.
 | 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R27 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
-| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, at `617d28d`) exists and its counts are entered in §5.1, with its private manifests' sha256s; #915 is still to be merged, with a merge commit |
+| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, at `617d28d`) exists and its counts are entered in §5.1, with its private manifests' sha256s; #915 is merged with a merge commit (`a623981`), so `617d28d` is reachable from `main` |
 | 5 | **The 9 bench collections of R26 loaded** (§5.3, §9.3) under a reviewed live-ops plan: each corpus embedded once at the same chunker, embedder and tools image, base chunk ids and content verified identical across the arms, each collection loaded once with its glossary file (an empty-row file for *none*), each with its registry entry and load receipt | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The `ragstack.glossary_file/v1` files (merged, placebo) that `load-embeddings` renders, with render-parity tests against the prereg's mention rule and caps (§5.3); the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
@@ -1693,7 +1698,7 @@ Only items not settled by D1–D10 and R1–R27.
 | 15 | **The prompt-paraphrase check** (§6.6, R4): three paraphrases of `alias-judge/2`, committed before they are run, scored on the validation pairs by both primaries; the result recorded in §6.6 and §13.3 | open |
 | 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | open: *to be inserted from the calibration follow-up* |
 | 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
-| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915 (to be merged with a merge commit); the v4 build ran on it at `617d28d` (item 4) |
+| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915, merged with a merge commit (`a623981`); the v4 build ran on it at `617d28d` (item 4) |
 | 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | decided (R23, §7); implementation open (§10) |
 | 20 | **The stage-A leg lists** (R20, R25, §5.7): retrieval 19 legs (the 5 Layer-1 attachments × default, norerank, BM25, and the 4 noise repeats), judging 14 legs (without the BM25 legs), checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
 | 21 | **The load route** (R26): each corpus embedded once (`embed-bulk.cwl`), its shards loaded once per variant with `load-embeddings.cwl` and the variant's `ragstack.glossary_file/v1` file (an explicit empty-row file for *none*, never `null`), through the workflow engine under the approved path | settled with management; the 9-collection count pending the owner's confirmation |

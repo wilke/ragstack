@@ -46,7 +46,7 @@ JUDGE-CALIBRATION, JUDGE-VALIDATION-PLAN, TIEBREAKER-PLAN).
 The prereg's §15 is the checklist. The items that need work outside this repository are:
 
 - the neighbour and two random selection manifests (OpenAlex metadata only) of the **v4** build (the v3
-  pass with the nearest-band fill and the repetition screen, prereg R16–R18): built (#915 at `617d28d`, to be merged with a merge commit),
+  pass with the nearest-band fill and the repetition screen, prereg R16–R18): built (#915 at `617d28d`, merged with a merge commit as `a623981`),
   counts entered in prereg §5.1, H2's power recomputed on them (the caps lever does not fire at a = 0.7,
   prereg §8); the power output still to be committed as an artifact;
 - the 9 bench collections (one per corpus × glossary arm, prereg R26; the count pending the owner's
