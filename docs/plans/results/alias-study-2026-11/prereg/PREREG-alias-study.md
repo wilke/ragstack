@@ -677,6 +677,30 @@ flight against the bench copies. After the freeze the 191 pilot records are run 
 the descriptive leg (§4.2). No gateway call is made for retrieval. The pilot (§5.6) adds its own calls
 before the freeze.
 
+### 5.5 Seeds (owner, 2026-11-01, §14 O9)
+
+One recorded seed string per draw, fixed here and copied into every manifest and artifact that uses it.
+They follow the project's `<yymmdd>|<study>|<purpose>` pattern (the pool seed was `261031|alias|main|O`).
+The **seed base** is `261101|alias`. Every hash below is sha256 of the seed string followed by `|` and
+the named parts, ascending. **Where a numeric RNG seed is needed** (the permutation, bootstrap and power
+draws), it is the **first 8 bytes of sha256(seed string)**, read big-endian as an unsigned integer
+(owner, 2026-11-01; `alias_study_common.seed_int`).
+
+| draw | seed string | what it orders |
+|---|---|---|
+| **neighbour selection** | `261101\|alias\|neighbours` | tie-breaks within the reference and citer caps (`…\|tie\|<refs or citers>\|<study paper>\|<work id>`) and the attribution order of shared neighbours (`…\|order\|<study paper>`), §5.1 |
+| **random draw 1** | `261101\|alias\|random-1-v2` | the candidate order of random-1 (`…\|<study paper>\|<work id>`), §5.1 (owner, 2026-11-01, with the matching rule; replaces `…\|random\|1`) |
+| **random draw 2** | `261101\|alias\|random-2-v2` | the candidate order of random-2, §5.1 (replaces `…\|random\|2`) |
+| **noise repeats** | `261101\|alias\|noise` | the request order of each repeat leg (`…\|<corpus arm>`), so a repeat is not a replay of the first leg's request sequence, §9.4 |
+| **bootstrap** | `261101\|alias\|boot` | every paper-cluster percentile bootstrap: the C gate's CI (§3.1), the CIs beside Layer-1 members (§7) and every Layer-2 CI (§3.3) |
+| permutation | `261101\|alias\|perm` | any Layer-1 test (sign-flip or randomization) where Monte Carlo is used, §7 |
+| power | `261101\|alias\|power` | the committed power simulation, §8 (owner, 2026-11-01) |
+| judge order | `261101\|alias\|judge\|order` | the labelling order of deduplicated pairs, §6.2 |
+| drift sample | `261101\|alias\|drift` | the per-batch drift sample (`…\|<batch>`), §6.3 |
+| record spot check | `261101\|alias\|spot\|records` | the 40 records of §13.4 |
+| judged-pair spot check | `261101\|alias\|spot\|judge` | the 60 pairs of §13.5 (`…\|<label stratum>\|<arm>\|<pair>`) |
+| placebo glossary | `261101\|alias\|placebo` | the derangement of entry lists across papers (`…\|<paper>`), §5.3 (R7) |
+
 ### 5.6 Pre-freeze pilot on the 191 held-out records (R8)
 
 **What.** The 191 records on the 108 unsatisfied papers (§4.1), which enter no test and no Layer-2
@@ -727,30 +751,6 @@ before the freeze, and the freeze commit's text includes them.
 - No analysis is run until stage A is committed and both owner spot checks (§13.4, §13.5) are committed.
   The judged-pair spot check is drawn from stage A's labels (§13.5), so the Layer-1 analysis can be run
   after stage A without waiting for stage B.
-
-### 5.5 Seeds (owner, 2026-11-01, §14 O9)
-
-One recorded seed string per draw, fixed here and copied into every manifest and artifact that uses it.
-They follow the project's `<yymmdd>|<study>|<purpose>` pattern (the pool seed was `261031|alias|main|O`).
-The **seed base** is `261101|alias`. Every hash below is sha256 of the seed string followed by `|` and
-the named parts, ascending. **Where a numeric RNG seed is needed** (the permutation, bootstrap and power
-draws), it is the **first 8 bytes of sha256(seed string)**, read big-endian as an unsigned integer
-(owner, 2026-11-01; `alias_study_common.seed_int`).
-
-| draw | seed string | what it orders |
-|---|---|---|
-| **neighbour selection** | `261101\|alias\|neighbours` | tie-breaks within the reference and citer caps (`…\|tie\|<refs or citers>\|<study paper>\|<work id>`) and the attribution order of shared neighbours (`…\|order\|<study paper>`), §5.1 |
-| **random draw 1** | `261101\|alias\|random-1-v2` | the candidate order of random-1 (`…\|<study paper>\|<work id>`), §5.1 (owner, 2026-11-01, with the matching rule; replaces `…\|random\|1`) |
-| **random draw 2** | `261101\|alias\|random-2-v2` | the candidate order of random-2, §5.1 (replaces `…\|random\|2`) |
-| **noise repeats** | `261101\|alias\|noise` | the request order of each repeat leg (`…\|<corpus arm>`), so a repeat is not a replay of the first leg's request sequence, §9.4 |
-| **bootstrap** | `261101\|alias\|boot` | every paper-cluster percentile bootstrap: the C gate's CI (§3.1), the CIs beside Layer-1 members (§7) and every Layer-2 CI (§3.3) |
-| permutation | `261101\|alias\|perm` | any Layer-1 test (sign-flip or randomization) where Monte Carlo is used, §7 |
-| power | `261101\|alias\|power` | the committed power simulation, §8 (owner, 2026-11-01) |
-| judge order | `261101\|alias\|judge\|order` | the labelling order of deduplicated pairs, §6.2 |
-| drift sample | `261101\|alias\|drift` | the per-batch drift sample (`…\|<batch>`), §6.3 |
-| record spot check | `261101\|alias\|spot\|records` | the 40 records of §13.4 |
-| judged-pair spot check | `261101\|alias\|spot\|judge` | the 60 pairs of §13.5 (`…\|<label stratum>\|<arm>\|<pair>`) |
-| placebo glossary | `261101\|alias\|placebo` | the derangement of entry lists across papers (`…\|<paper>`), §5.3 (R7) |
 
 ## 6. Outcome and judge
 
@@ -852,8 +852,8 @@ judged here.
 
 ### 6.5 Volume (planning only)
 
-There are at most 10 non-gold chunks per record and leg, so 30,548 lists give an upper bound of
-**305,480** pair instances before deduplication. The deduplicated count is known only after retrieval;
+There are at most 10 non-gold chunks per record and leg, so the 31,639 lists of §5.4 (29 legs) give an
+upper bound of **316,390** pair instances before deduplication. The deduplicated count is known only after retrieval;
 it is far smaller, because most top-10 lists repeat across retrievers, glossary arms and the repeats,
 and judging on demand (§6.2) skips the pairs of every record whose gold is in a cell's top 10. At
 the validation throughput, judge C took about 1.85 s per pair and judge E about 0.74 s per pair (4 in
@@ -1067,10 +1067,9 @@ reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test reject
 direction gate passes, not the test's power alone. **The lever reads the agreement level `a = 0.7`, and
 `a = 0.6` is reported as a sensitivity** (owner, 2026-11-02, §14 O11;
 `alias_study_power.LEVER_AGREEMENT`). On the scratch run above the lever does **not** fire at a = 0.7
-(.96); at the a = 0.6 sensitivity it would (.79). **The merged script still reads the lever at 0.025**
-(the v1 Holm level), where the a = 0.7 figure is .95; updating it to read 0.05 is part of the committed
-calculation (§15 item 8). The level change cannot make the lever fire where it did not, because power
-at 0.05 is at least power at 0.025 (up to simulation noise).
+(.96); at the a = 0.6 sensitivity it would (.79). **The script reads the lever at α = 0.05**
+(`alias_study_power.LEVER_ALPHA`, changed from the v1 Holm level 0.025 on this draft's branch; the
+0.025 row stays in its output for comparison, where the a = 0.7 figure is .95).
 
 **Evaluability floor.** For H1 and H2, with k non-zero clusters, the minimum attainable one-sided p
 is 2^−k, so at α = 0.05 a member needs k ≥ 5. For H1b the floor is the randomization floor of §7: each
@@ -1145,7 +1144,9 @@ writing the manifests of §5.1); an alias adapter for the runner (the records sc
 repeats; the four corpus collections); the pair builder and the deduplication for judged pairs; the
 composed-rule labeller (C + E, then Argon), with the arm-stratified drift sampler and both alarms, the
 Opus single retry (§6.3) and the on-demand pair selection by stage (§6.2, §5.7); the statistics for H1,
-H1b (fixed sequence within Family G) and H2 (two-draw average, gold-only gate), with tests, and the fixed
+H1b (fixed sequence within Family G) and H2 (two-draw average, gold-only gate), with tests — the
+merged `alias_study_stats.py` still implements v1's Option-B Holm procedure (`layer1_procedure`) and a
+Holm drop-gated sensitivity (`holm_drop_gated`), both replaced by the two families of §3.1 — and the fixed
 sensitivities of §7 (studentized test, topic clustering, XML-only stratum, terciles, origin counts, the
 *fragile* rule); the false-yes bound of §3.4 and the judge metrics of §6.6; the Layer-2 script (CIs, the
 decision rules of §3.3 with the harm rule, the C-cost and reranker non-inferiority rules, the Layer-1
@@ -1226,8 +1227,9 @@ entry, not a silent retry.
    and to the judge's verdict** (the stratum is not on it).
 
    **Reported:** per-stratum owner–judge agreement with Wilson 95 % intervals, the §6.6 metrics, and the
-   agreement **re-weighted to the stage-A label shares** (each stratum weighted by its share of stage-A
-   labels), which is the estimate of the judge's overall agreement. **Rule:** a re-weighted owner–judge
+   agreement **re-weighted to the stage-A label shares** (each stratum × arm cell weighted by its share of
+   stage-A labels, because the arms are allocated equally rather than in proportion to their pairs), which
+   is the estimate of the judge's overall agreement. **Rule:** a re-weighted owner–judge
    agreement below **0.90** at the point estimate, or an *answers*-stratum agreement below 0.90, is stated
    in every result sentence, and found@10-gold is reported alongside each found@10 result as the
    sensitivity. Nothing is re-labelled. The labels are committed **before any analysis**.
@@ -1266,7 +1268,7 @@ Only items not settled by D1–D10 and R1–R11.
 | O7 | Gateway caps for the judge | **Opus decided (owner, 2026-11-01):** ≤ 7 % of judged pairs, re-issued calls counted (§6.5). Still open: Argon ≤ 4 % of pairs, and the absolute ceiling agreed with the papers-OC owner, set from the realised deduplicated pair count before the freeze |
 | O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | not now: it is **not on the gateway allow-list**. Adding it later would be a deviation with its own frozen selection plan, as TIEBREAKER-PLAN.md was |
 | O9 | Seeds | **Decided (owner, 2026-11-01).** One recorded seed string per draw, seed base `261101\|alias`: neighbours `…\|neighbours`, random draws `…\|random\|1` and `…\|random\|2`, noise repeats `…\|noise`, bootstrap `…\|boot`, and the derived strings of §5.5. Written in §5.5. **Amended (owner, 2026-11-01):** numeric seeds are the first 8 bytes of sha256(seed string), big-endian unsigned; power seed `…\|power`; random draws `…\|random-1-v2` and `…\|random-2-v2` |
-| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios .97 → .97 and .88 → .87 at the v1 level 0.025), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
+| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios, normal approximation at α = 0.05, .987 → .986 and .930 → .925; at the v1 level 0.025 .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
 | O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.7, 0.6 in `alias_study_power`) | **Decided (owner, 2026-11-02): `a = 0.7`**; `a = 0.6` is reported as a sensitivity. Written in §8 |
 | O12 | **A second rater for the judged-pair spot check** (§13.5, R5) | open. As drafted the owner is the single rater, stated as a limitation. A second, independent rater would label the same 60 pairs blind to the owner's labels and to the judge's; their agreement (κ, AC1, §6.6) would then be printed beside the spot-check figures. Who, and whether, is left open |
 
@@ -1281,7 +1283,7 @@ Only items not settled by D1–D10 and R1–R11.
 | 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The merged-glossary file the backfill renders, with render parity tests; the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
-| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the merged script reads the lever at 0.025 and needs the level change |
+| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, this draft's branch) |
 | 9 | The committed replay of the composed judge rule on the validation labels (§6.4), replacing the scratch replay | open |
 | 10 | The code of §10 *Must be written*, merged after an independent review | open |
 | 11 | **Owner spot check of the 40 records** (§13.4): may be done before the freeze; must be committed before any analysis | open |
