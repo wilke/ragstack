@@ -356,3 +356,329 @@ def test_strict_shortfall_counts_non_strict_slots_per_cell():
             _take("C", "review", 5, "pdf", "strict", ("review", 5, "pdf"))]
     assert ac.strict_shortfall(quota, took) == {("article", 0, "jats"): 1}
     assert ac.RELAX_ORDER == ("strict", "source", "source+type", "any") and ac.BAND_RELAXED == {"any"}
+
+
+# ------------------------------------------------------------------ v4: nearest-band fill, repetition screen
+
+
+def test_nearest_band_fill_orders_by_band_distance_then_type_then_source_then_rank():
+    slot = ("article", 3, "jats")
+    fetched = {"far": ("article", 0, "jats"),       # distance 3
+               "near_rev_pdf": ("review", 2, "pdf"),  # distance 1, type and source differ
+               "near_art_pdf": ("article", 4, "pdf"),  # distance 1, type matches
+               "near_art_jats_late": ("article", 2, "jats"),  # distance 1, type and source match, later rank
+               "near_art_jats": ("article", 4, "jats")}       # distance 1, type and source match, earlier rank
+    rank = {"far": 0, "near_rev_pdf": 1, "near_art_pdf": 2, "near_art_jats": 3, "near_art_jats_late": 4}
+    taken: set[str] = set()
+    out = ac.nearest_band_fill({slot: 5}, fetched, taken, rank)
+    assert [w for w, *_ in out] == ["near_art_jats", "near_art_jats_late", "near_art_pdf", "near_rev_pdf", "far"]
+    assert [d for *_, d in out] == [1, 1, 1, 1, 3] and taken == set(fetched)
+    # taken and duplicate candidates are never picked; a slot with nothing left stays open
+    taken = {"near_art_jats"}
+    picked: list[str] = []
+    out = ac.nearest_band_fill({slot: 1, ("review", 0, "pdf"): 1}, fetched, taken, rank,
+                               is_dup=lambda w: w == "near_art_jats_late", on_pick=lambda w, *_: picked.append(w))
+    # global order: far -> review|0|pdf (distance 0) first, then near_art_pdf (type matches) -> slot
+    assert [(w, s) for w, _, s, _ in out] == [("far", ("review", 0, "pdf")), ("near_art_pdf", slot)]
+    assert picked == ["far", "near_art_pdf"]
+    assert ac.nearest_band_fill({slot: 1}, {}, set(), {}) == []
+
+
+def test_nearest_band_fill_is_smallest_distance_first_over_all_pairs():
+    # slots in bands 5 and 3, candidates in bands 4 and 0. Pairs: (5, b4) = 1, (3, b4) = 1, (3, b0) = 3,
+    # (5, b0) = 5. Smallest distance first over all pairs: the two distance-1 pairs tie on distance, type
+    # and source, so the slot earlier in the sorted cell order (band 3) gets b4; b0 then fills band 5.
+    # The result is the same whatever order the slots are listed in. (Total 6: the rule is greedy, not
+    # the minimum-total assignment, which would be 5 <- b4, 3 <- b0 = 4.)
+    fetched = {"b4": ("article", 4, "jats"), "b0": ("article", 0, "jats")}
+    rank = {"b4": 0, "b0": 1}
+    for quota in ({("article", 5, "jats"): 1, ("article", 3, "jats"): 1},
+                  {("article", 3, "jats"): 1, ("article", 5, "jats"): 1}):
+        out = ac.nearest_band_fill(quota, fetched, set(), rank)
+        assert [(w, s[1], d) for w, _, s, d in out] == [("b4", 3, 1), ("b0", 5, 5)]
+    # a smaller distance beats the slot order: a band-5 candidate goes to the band-5 slot first
+    out = ac.nearest_band_fill({("article", 5, "jats"): 1, ("article", 3, "jats"): 1},
+                               {"b4": ("article", 4, "jats"), "b5": ("article", 5, "jats")}, set(), {"b4": 0, "b5": 1})
+    assert [(w, s[1], d) for w, _, s, d in out] == [("b5", 5, 0), ("b4", 3, 1)]
+    # full ties are taken in slot order before seeded order (this only orders the takes: tied pairs that
+    # share a candidate differ only in slot, tied pairs that share a slot only in candidate)
+    out = ac.nearest_band_fill({("article", 3, "jats"): 1, ("article", 5, "jats"): 1},
+                               {"x6": ("article", 6, "jats"), "y2": ("article", 2, "jats")}, set(), {"x6": 0, "y2": 1})
+    assert [(w, s[1]) for w, _, s, _ in out] == [("y2", 3), ("x6", 5)]
+    # type match beats slot order: a review candidate at the same distance goes to the review slot
+    out = ac.nearest_band_fill({("article", 3, "jats"): 1, ("review", 5, "jats"): 1},
+                               {"r4": ("review", 4, "jats"), "a0": ("article", 0, "jats")}, set(), {"r4": 0, "a0": 1})
+    assert [(w, s) for w, _, s, _ in out] == [("r4", ("review", 5, "jats")), ("a0", ("article", 3, "jats"))]
+
+
+def _info_matched(order, quota, info, any_rule, calls, max_resolves=None):
+    def resolve(w):
+        calls.append(w)
+        return info[w][2]
+    return ac.draw_matched(order, quota, set(), type_of=lambda w: info[w][0], klass=lambda w: info[w][1],
+                           resolve=resolve, band=lambda n: n // 10, max_resolves=max_resolves, any_rule=any_rule)
+
+
+def test_draw_matched_nearest_any_takes_nearest_fetched_band_without_fetching():
+    # slot article|5|jats; A (band 0) and B (band 4) are fetched in the strict pass and passed over
+    # (rejected_for_band); C (review/pdf, band 3) only in the relaxation. Only level "any" can fill the slot.
+    info = {"A": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5)),
+            "B": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=45)),
+            "C": ("review", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=35)),
+            "D": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=41))}
+    quota = {("article", 5, "jats"): 1}
+    calls: list[str] = []
+    first = _info_matched(["A", "C", "B"], quota, info, "first", calls)
+    assert [(t["wid"], t["level"]) for t in first["took"]] == [("A", "any")]   # v3: first passed over
+    first_calls = list(calls)
+    calls.clear()
+    near = _info_matched(["A", "C", "B"], quota, info, "nearest", calls)
+    assert [(t["wid"], t["level"], t["band_distance"]) for t in near["took"]] == [("B", "any", 1)]
+    assert calls == first_calls and near["shortfall"] == 0   # no fetch beyond the walk's
+    # ties at the same distance: type match beats source match, then seeded order
+    info2 = {"X": ("review", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=45)),     # type differs
+             "Y": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=41)),  # source differs
+             "Z": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=49))}  # same as Y, later
+    near = _info_matched(["X", "Y", "Z"], {("article", 5, "pdf"): 1}, info2, "nearest", [])
+    assert [(t["wid"], t["band_distance"]) for t in near["took"]] == [("Y", 1)]
+    near = _info_matched(["X", "Z", "Y"], {("article", 5, "pdf"): 1}, info2, "nearest", [])
+    assert [t["wid"] for t in near["took"]] == ["Z"]
+    with pytest.raises(ValueError):
+        _info_matched(["A"], quota, info, "closest", calls)
+
+
+def test_draw_matched_reports_fetched_candidates_with_their_level():
+    info = {"A": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5)),
+            "B": ("article", "jats", ac.Outcome(ok=False, reason="http_404")),
+            "C": ("review", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=50))}
+    out: dict = {}
+    ac.draw_matched(["A", "B", "C"], {("article", 5, "jats"): 1}, set(), type_of=lambda w: info[w][0],
+                    klass=lambda w: info[w][1], resolve=lambda w: info[w][2], band=lambda n: n // 10,
+                    fetched_out=out)
+    assert out == {"A": (("article", 0, "jats"), "strict"), "C": (("review", 5, "pdf"), "source+type")}
+
+
+def test_repetition_screen_counts_distinct_texts_after_nfc_and_whitespace_collapse():
+    assert ac.chunk_text_key(" cafe\u0301  au\n\tlait ") == ac.chunk_text_key("caf\u00e9 au lait")
+    base = [f"chunk {i}" for i in range(9)]
+    # 10 chunks, one repeated: 9 distinct = 0.90, not excluded (below 0.90 is)
+    s = ac.repetition_screen(base + ["chunk 0"])
+    assert (s["n_chunks"], s["distinct"], s["ratio"], s["excluded"]) == (10, 9, 0.9, False)
+    # 10 chunks, three spellings of one text (precomposed vs decomposed, whitespace): 8 distinct = 0.80, excluded
+    s = ac.repetition_screen(base[:7] + ["caf\u00e9 x", "cafe\u0301 x", "cafe\u0301\n  x"])
+    assert (s["n_chunks"], s["distinct"], s["excluded"]) == (10, 8, True)
+    assert ac.repetition_screen(base[:7] + ["caf\u00e9 x", "caf\u00e9 y", "cafe\u0301\n  x"])["distinct"] == 9
+    assert ac.repetition_screen([])["excluded"] is False
+    assert ac.REPETITION_THRESHOLD == 0.90
+
+
+def test_screen_outcome_rejects_only_accepted_repetitive_papers():
+    ok = ac.Outcome(ok=True, source="jats", n_chunks=100)
+    out = ac.screen_outcome(ok, 0.54)
+    assert not out.ok and out.reason == "repetition_screen" and out.source == "jats" and out.n_chunks == 100
+    assert ac.screen_outcome(ok, 0.90) is ok and ac.screen_outcome(ok, None) is ok
+    c0 = ac.Outcome(ok=False, source="pdf", excluded_c0=True, reason="c0_screen")
+    assert ac.screen_outcome(c0, 0.1) is c0   # the C0 screen comes first
+
+
+def test_repetition_screen_walks_the_neighbour_list_down_and_the_random_order_on():
+    ratio = {"W1": 0.99, "W2": 0.61, "W3": 0.97, "W4": 0.95}
+    raw = {w: ac.Outcome(ok=True, source="pdf", n_chunks=5) for w in ratio}
+
+    def screened(w):
+        return ac.screen_outcome(raw[w], ratio[w])
+
+    ranked = [W(w, type="article") for w in ratio]
+    r = ac.walk_down(ranked, 2, screened)
+    assert r["picked"] == ["W1", "W3"] and ("W2", "repetition_screen") in r["skipped"]
+    assert ac.walk_down(ranked, 2, lambda w: raw[w])["picked"] == ["W1", "W2"]   # unscreened: W2 stays
+    info = dict.fromkeys(ratio, ("article", "pdf", None))
+    m = ac.draw_matched(["W2", "W4", "W1"], {("article", 0, "pdf"): 1}, set(), type_of=lambda w: info[w][0],
+                        klass=lambda w: info[w][1], resolve=screened, band=lambda n: 0)
+    assert [t["wid"] for t in m["took"]] == ["W4"] and m["skipped"] == {"repetition_screen": 1}
+
+
+def test_carry_over_v4_releases_screened_any_and_quota_changed_and_keeps_the_rest_exactly():
+    took = [_take("A", "article", 0, "jats", "strict", ("article", 0, "jats")),
+            _take("B", "article", 5, "pdf", "source", ("article", 5, "jats")),        # repetitive: released
+            _take("C", "review", 4, "jats", "any", ("article", 5, "jats")),           # band relaxed: released
+            _take("D", "article", 2, "pdf", "strict", ("article", 2, "pdf")),         # its slot left the quota
+            _take("E", "review", 1, "jats", "source+type", ("article", 1, "pdf"))]
+    quota = {("article", 0, "jats"): 1, ("article", 5, "jats"): 2, ("article", 1, "pdf"): 1, ("review", 3, "jats"): 1}
+    r = ac.carry_over_v4(took, quota, excluded=lambda w: w == "B")
+    assert r["kept"] == [took[0], took[4]]
+    assert {t["wid"]: t["why"] for t in r["released"]} == {"B": "repetition_screen", "C": "any_nearest_band",
+                                                          "D": "quota_changed"}
+    assert r["open"] == {("article", 5, "jats"): 2, ("review", 3, "jats"): 1}
+    # nothing touched: every take kept, nothing open
+    same = ac.carry_over_v4(took[:1] + took[3:], {("article", 0, "jats"): 1, ("article", 2, "pdf"): 1,
+                                                  ("article", 1, "pdf"): 1}, excluded=lambda w: False)
+    assert len(same["kept"]) == 3 and not same["released"] and not same["open"]
+    assert ac.V4_RELEASE == ("repetition_screen", "any_nearest_band", "quota_changed")
+
+
+def test_study_seed_table_names_the_corpus_random_seeds():
+    import alias_study_common as asc
+
+    assert (asc.SEEDS["random1"], asc.SEEDS["random2"]) == (ac.SEED_RANDOM_V2[1], ac.SEED_RANDOM_V2[2])
+
+
+# ------------------------------------------------------------------ v4 runner: cache writes, Repetition, re-draw step
+
+
+def _run():
+    import alias_corpus_run as run
+    return run
+
+
+def test_openalex_cache_is_written_only_when_changed_and_never_read_only(tmp_path):
+    run = _run()
+    lay = run.Layout(str(tmp_path / "root"))
+    api = run.OpenAlex(lay)
+    assert api.save_if_dirty() is False and not api.cache_path.exists()      # nothing added: no write
+    api.cache["u"], api.dirty = {"results": []}, 1
+    api.read_only = True
+    assert api.save_if_dirty() is False and not api.cache_path.exists()      # dry run: never
+    api.save()
+    assert not api.cache_path.exists()
+    api.read_only = False
+    assert api.save_if_dirty() is True and api.cache_path.exists() and api.dirty == 0
+
+
+def test_neighbour_inputs_does_not_rewrite_an_unchanged_cache(tmp_path, monkeypatch):
+    run = _run()
+    lay = run.Layout(str(tmp_path / "root"))
+    (lay.state / "study.json").write_text('{"study": []}')
+    monkeypatch.setattr(run, "load_oa1000", lambda: (["PMC1"], {"PMC1": "t"}, {}))
+
+    class CachedOnly(run.OpenAlex):
+        def get(self, params):
+            self.hits += 1
+            return {"results": [], "meta": {"count": 0}}
+
+    api = CachedOnly(lay)
+    writes = []
+    monkeypatch.setattr(api, "save", lambda: writes.append(1))
+    run.neighbour_inputs(lay, api)
+    assert api.hits >= 1 and writes == []
+
+
+class _FakeBuilder:
+    def __init__(self, done):
+        self.done = done
+
+
+def _chunk_file(lay, name, texts):
+    import json as _json
+    body = "".join(_json.dumps({"content": t}, ensure_ascii=False) + "\n" for t in texts).encode()
+    (lay.root / "chunks").mkdir(exist_ok=True)
+    (lay.root / "chunks" / name).write_bytes(body)
+    return hashlib.sha256(body).hexdigest()
+
+
+def test_repetition_helper_reads_chunk_files_checks_the_sha_and_screens(tmp_path):
+    run = _run()
+    lay = run.Layout(str(tmp_path / "root"))
+    rep_texts = [f"t{i}" for i in range(7)] + ["dup", "dup", "dup  "]          # 8 / 10 = 0.80
+    ok_texts = [f"u{i}" for i in range(10)] + ["u0 "]                      # U+2028 inside a line
+    done = {"R": {"ok": True, "source": "jats", "n_chunks": 10, "chunk_file": "R.jsonl",
+                  "chunks_sha256": _chunk_file(lay, "R.jsonl", rep_texts)},
+            "K": {"ok": True, "source": "pdf", "n_chunks": 11, "chunk_file": "K.jsonl",
+                  "chunks_sha256": _chunk_file(lay, "K.jsonl", ok_texts)},
+            "F": {"ok": False, "reason": "http_404"}}
+    rep = run.Repetition(lay, _FakeBuilder(done))
+    assert rep.ratio("R") == 0.8 and rep.excluded("R")
+    assert rep.ratio("K") == 10 / 11 and not rep.excluded("K")          # the U+2028 line is not split
+    assert rep.ratio("F") is None and not rep.excluded("F") and rep.ratio("missing") is None
+    o = rep.outcome(done["R"])
+    assert not o.ok and o.reason == "repetition_screen"
+    assert rep.outcome(done["K"]).ok and rep.outcome(done["F"]).reason == "http_404"
+    off = run.Repetition(lay, _FakeBuilder(done), enabled=False)
+    assert not off.excluded("R") and off.outcome(done["R"]).ok
+    done["K"]["chunks_sha256"] = "0" * 64
+    with pytest.raises(SystemExit):
+        run.Repetition(lay, _FakeBuilder(done)).ratio("K")
+
+
+def _rel(wid, why, cell, level="strict"):
+    return {**_take(wid, cell[0], cell[1], cell[2], level, cell), "why": why}
+
+
+def test_v4_redraw_mode_refills_from_the_v3_walk_only_for_pure_any_releases():
+    run = _run()
+    cell = ("article", 5, "jats")
+    anyrel = {"open": {cell: 1}, "released": [_rel("A", "any_nearest_band", cell, "any")], "kept": []}
+    assert run.v4_redraw_mode(anyrel, True) == "nearest_from_v3_walk"
+    assert run.v4_redraw_mode(anyrel, False) == "walk"                      # quota changed: walk
+    mixed = {"open": {cell: 2}, "released": anyrel["released"] + [_rel("B", "repetition_screen", cell)], "kept": []}
+    assert run.v4_redraw_mode(mixed, True) == "walk"
+    for why in ("repetition_screen", "quota_changed"):
+        assert run.v4_redraw_mode({"open": {cell: 1}, "released": [_rel("B", why, cell)], "kept": []}, True) == "walk"
+    # released but nothing open (the slot's cell left the quota): nothing to do
+    assert run.v4_redraw_mode({"open": {}, "released": [_rel("B", "quota_changed", cell)], "kept": []}, False) is None
+    assert run.v4_redraw_mode({"open": {}, "released": [], "kept": []}, True) is None
+
+
+def test_v4_carry_refuses_a_take_that_left_the_candidate_pool():
+    run = _run()
+    took = [_take("A", "article", 0, "jats", "strict", ("article", 0, "jats"))]
+    assert run.v4_carry(took, {"A"}, {("article", 0, "jats"): 1}, lambda w: False)["kept"] == took
+    with pytest.raises(SystemExit):
+        run.v4_carry(took, {"B"}, {("article", 0, "jats"): 1}, lambda w: False)
+
+
+def _step(carry, quota3, quota4, order_p, fetched3, taken, excluded=lambda w: False, info=None):
+    run = _run()
+    calls: list[str] = []
+    took_ids: list[str] = []
+    info = info or {}
+
+    def resolve(w):
+        calls.append(w)
+        return info[w][2]
+    rec = run.v4_study_redraw(carry, quota3, quota4, order_p, fetched3, taken, excluded=excluded,
+                              is_dup=lambda w: False, on_take=took_ids.append,
+                              type_of=lambda w: info[w][0], klass=lambda w: info[w][1], resolve=resolve,
+                              band=lambda n: n // 10)
+    return rec, calls, took_ids
+
+
+def test_v4_study_redraw_refills_from_the_v3_walk_without_fetching():
+    slot = ("article", 5, "jats")
+    kept = [_take("K", "article", 1, "jats", "strict", ("article", 1, "jats"))]
+    carry = {"kept": kept, "released": [_rel("A", "any_nearest_band", slot, "any")], "open": {slot: 1}}
+    quota = {("article", 1, "jats"): 1, slot: 1}
+    fetched3 = {"near_rep": ("article", 4, "jats"), "near_taken": ("article", 4, "jats"),
+                "near_ok": ("article", 4, "pdf"), "far": ("article", 0, "jats")}
+    order_p = ["near_rep", "near_taken", "far", "near_ok", "K"]
+    taken = {"K", "near_taken"}
+    rec, calls, took_ids = _step(carry, quota, quota, order_p, fetched3, taken, excluded=lambda w: w == "near_rep")
+    assert rec["mode"] == "nearest_from_v3_walk" and calls == []          # no walk, no fetch
+    assert [(t["wid"], t["redrawn"]) for t in rec["took"]] == [("K", False), ("near_ok", True)]
+    assert rec["took"][1]["band_distance"] == 1 and rec["took"][1]["level"] == "any"
+    assert took_ids == ["near_ok"] and "near_ok" in taken and rec["shortfall"] == 0 and rec["nearest_pool"] == 3
+    # nothing left to refill from: the slot stays open and is reported
+    rec, _, _ = _step(carry, quota, quota, order_p, {"near_rep": ("article", 4, "jats")}, {"K"},
+                      excluded=lambda w: w == "near_rep")
+    assert rec["unfilled"] == {"article|5|jats": 1} and rec["shortfall"] == 1
+
+
+def test_v4_study_redraw_walks_again_when_the_screen_or_the_quota_released_a_slot():
+    slot = ("article", 2, "jats")
+    info = {"S": ("article", "jats", ac.Outcome(ok=False, reason="repetition_screen")),
+            "T": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=25))}
+    carry = {"kept": [], "released": [_rel("R", "repetition_screen", slot)], "open": {slot: 1}}
+    rec, calls, took_ids = _step(carry, {slot: 1}, {slot: 1}, ["S", "T"], {"X": ("article", 2, "jats")}, set(),
+                                 info=info)
+    assert rec["mode"] == "walk" and calls == ["S", "T"] and took_ids == ["T"]
+    assert [(t["wid"], t["level"], t["redrawn"]) for t in rec["took"]] == [("T", "strict", True)]
+    assert rec["skipped"] == {"repetition_screen": 1} and rec["redraw_budget"] == 40
+    # an any release whose study paper's quota changed walks too (its v3 walk was for the old quota)
+    carry = {"kept": [], "released": [_rel("A", "any_nearest_band", ("article", 5, "pdf"), "any")], "open": {slot: 1}}
+    rec, calls, _ = _step(carry, {("article", 5, "pdf"): 1}, {slot: 1}, ["S", "T"], {"X": ("article", 2, "jats")},
+                          set(), info=info)
+    assert rec["mode"] == "walk" and rec["quota_changed"] and [t["wid"] for t in rec["took"]] == ["T"]
+    # nothing released, nothing open: the kept takes are the record
+    kept = [_take("K", "article", 2, "jats", "strict", slot)]
+    rec, calls, _ = _step({"kept": kept, "released": [], "open": {}}, {slot: 1}, {slot: 1}, ["S"], {}, {"K"}, info=info)
+    assert rec["mode"] is None and calls == [] and [t["wid"] for t in rec["took"]] == ["K"]

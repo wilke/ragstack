@@ -23,7 +23,11 @@ v2 (``run-v2``: chunkcheck-v2, neighbours-v2, random-v2, finalize-v2): neighbour
 filter, matched random draws. v3 (``run-v3``: chunkcheck-v3, random-v3, finalize-v3; owner
 2026-11-02): v2's open top length band split at 80 chunks; only the slots the split moves, or that v2
 filled at a band-relaxed level, are re-drawn (``V3_REDRAW_RULE``); ``random-v3 --dry-run`` replays it
-on memoised outcomes without fetching. Every stage records the provenance captured at launch.
+on memoised outcomes without fetching. v4 (``run-v4``: chunkcheck-v4, neighbours-v4, random-v4,
+finalize-v4; owner 2026-11-03): v3 plus the repetition screen (every arm) and the nearest-band fill at
+the ``any`` level; only the slots those rules touch are re-drawn (``V4_REDRAW_RULE``);
+``neighbours-v4 --dry-run`` and ``random-v4 --dry-run`` replay on memoised outcomes. Every stage
+records the provenance captured at launch.
 
 Safety: downloaded files are untrusted data. They are stored under ``<root>/raw`` (0700 dirs, 0600
 files), parsed with stdlib ElementTree (JATS) or PyMuPDF in a **separate, resource-limited**
@@ -51,6 +55,7 @@ import urllib.parse
 import urllib.request
 import urllib.robotparser
 from collections import Counter, defaultdict
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -162,6 +167,8 @@ class OpenAlex:
         except Exception:
             self.cache = {}
         self.min_interval, self.floor = min_interval, floor
+        #: a dry run sets this: the cache file is then never written, whatever the calls
+        self.read_only = False
         self._last = 0.0
         self.calls = 0
         self.hits = 0
@@ -189,7 +196,20 @@ class OpenAlex:
         self.save()
         return n
 
+    def cached(self, params: dict[str, Any]) -> bool:
+        """True when :meth:`get` would answer ``params`` from the cache (no network call)."""
+        return f"{OPENALEX}?{urllib.parse.urlencode(params, safe=':|,')}" in self.cache
+
+    def save_if_dirty(self) -> bool:
+        """Write the cache only when a response was added since the last write (never when read-only)."""
+        if not self.dirty or self.read_only:
+            return False
+        self.save()
+        return True
+
     def save(self) -> None:
+        if self.read_only:
+            return
         tmp = self.cache_path.with_name(self.cache_path.name + ".tmp")
         with open(tmp, "w") as f:
             json.dump(self.cache, f)
@@ -399,7 +419,7 @@ def neighbour_inputs(lay: Layout, api: OpenAlex) -> dict[str, Any]:
         b = api.get({"filter": f"cites:{sp}", "sort": "publication_date:desc", "per-page": 200,
                      "select": OA_FIELDS})
         citers[p] = (b["results"], b["meta"]["count"], b["meta"]["count"] <= 200)
-    api.save()
+    api.save_if_dirty()   # every input above usually comes from the cache: do not rewrite it unchanged
     return {"oa_pmc": oa_pmc, "still_missing": still_missing, "excl": excl, "study_w": study_w,
             "study_missing": study_missing, "ref_meta": ref_meta, "light": light, "heavy": heavy, "acc": acc,
             "citers": citers}
@@ -439,7 +459,7 @@ def stage_neighbours(lay: Layout, api: OpenAlex) -> dict:
         linked.update(acc[p].keys())
     for p in heavy:
         linked.update(api.all_citers(ac.short_id(study_w[p]["id"])))
-    api.save()
+    api.save_if_dirty()
     order = list(ac.attribution_order(study_w))
     sel = {
         "schema": "alias-corpus-neighbour-selection/1",
@@ -1319,12 +1339,16 @@ V2_RULE = ("per study paper, down the ranked list of references (most cited firs
            "and is added once")
 
 
-def _known_fn(b: Builder, works: dict[str, ac.Work]):
+def _known_fn(b: Builder, works: dict[str, ac.Work], outcome=None):
+    """``outcome``: memoised record -> :class:`ac.Outcome` (default :func:`outcome_of`; v4 passes the
+    repetition-screened one)."""
+    outcome = outcome or outcome_of
+
     def known(wid: str) -> ac.Outcome | None:
         rec = b.done.get(wid)
         if rec is None or b._stale(works[wid], rec):
             return None
-        return outcome_of(rec)
+        return outcome(rec)
     return known
 
 
@@ -1332,7 +1356,13 @@ def load_sel_v2(lay: Layout) -> dict:
     return json.load(open(lay.manifests / "neighbour-selection-v2.json"))
 
 
-def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder) -> dict:
+def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder, version: int = 2, outcome=None,
+                        dry_run: bool = False, rule: str = V2_RULE) -> dict:
+    """The v2 neighbour walk-down. v4 calls it with ``version=4`` and the repetition-screened
+    ``outcome`` (record -> Outcome). ``dry_run`` (v4 only): memoised outcomes and cached OpenAlex
+    responses only — an unknown outcome counts as a failed fetch, an uncached citer page as the end
+    of the list — and the selection goes to ``tmp/neighbour-selection-v<N>.dryrun.json``."""
+    outcome = outcome or outcome_of
     inp = neighbour_inputs(lay, api)
     excl, study_w, ref_meta = inp["excl"], inp["study_w"], inp["ref_meta"]
     saved = json.load(open(lay.state / "exclusion.json"))
@@ -1351,7 +1381,19 @@ def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder) -> dict:
     for lst in ranked.values():
         for x in lst:
             works.setdefault(x.wid, x)
-    known = _known_fn(b, works)
+    known0 = _known_fn(b, works, outcome)
+    dry_unknown: set[str] = set()
+    dry_uncached_pages = 0
+
+    def known(wid: str) -> ac.Outcome | None:
+        if wid in dry_unknown:
+            return ac.Outcome(ok=False, reason="dry_run_unknown")
+        return known0(wid)
+
+    def final_outcome(wid: str) -> ac.Outcome:
+        o = known(wid)
+        return o if o is not None else outcome(b.done[wid])
+
     t0 = time.time()
     rnd = 0
     while True:
@@ -1361,12 +1403,17 @@ def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder) -> dict:
         for (p, side), lst in ranked.items():
             nx = ac.next_to_resolve(lst, V2_CAP[side], known)
             if not nx and side == "citer" and not cit[p]["complete"]:
-                if ac.walk_down(lst, V2_CAP[side], known)["exhausted"]:   # every needed outcome is known here
+                if ac.walk_down(lst, V2_CAP[side], final_outcome)["exhausted"]:   # every needed outcome is known here
                     c = cit[p]
+                    params = {"filter": f"cites:{study_w[p]['id'].rsplit('/', 1)[-1]}",
+                              "sort": "publication_date:desc", "per-page": 200, "page": c["pages"] + 1,
+                              "select": OA_FIELDS}
+                    if dry_run and not api.cached(params):
+                        dry_uncached_pages += 1
+                        c["complete"] = True
+                        continue
                     c["pages"] += 1
-                    body = api.get({"filter": f"cites:{study_w[p]['id'].rsplit('/', 1)[-1]}",
-                                    "sort": "publication_date:desc", "per-page": 200, "page": c["pages"],
-                                    "select": OA_FIELDS})
+                    body = api.get(params)
                     for r in body["results"]:
                         c["raw"].setdefault(ac.short_id(r["id"]), r)
                     c["complete"] = not body["results"] or c["pages"] * 200 >= body["meta"]["count"]
@@ -1379,16 +1426,20 @@ def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder) -> dict:
         want = list(dict.fromkeys(want))
         if not want and not paged:
             break
-        futs = [b.resolve_async(works[w]) for w in want]
-        for f in cf.as_completed(futs):
-            f.result()
-        log(f"neighbours-v2: round {rnd}: resolved {len(want)}, citer pages fetched {paged}, {time.time() - t0:.0f}s")
-    api.save()
+        if dry_run:
+            dry_unknown.update(want)
+        else:
+            futs = [b.resolve_async(works[w]) for w in want]
+            for f in cf.as_completed(futs):
+                f.result()
+        log(f"neighbours-v{version}: round {rnd}: resolved {len(want)}, citer pages fetched {paged}, "
+            f"{time.time() - t0:.0f}s" + (f" (dry run: {len(want)} unknown)" if dry_run else ""))
+    api.save_if_dirty()   # a no-op in a dry run (read-only client) and when nothing was fetched
     picks: dict[str, list[tuple[str, str]]] = {}
     per_study: dict[str, dict] = {}
     skips: dict[str, dict[str, list]] = {}
     for p, w in study_w.items():
-        sides = {s: ac.walk_down(ranked[(p, s)], V2_CAP[s], lambda wid: outcome_of(b.done[wid])) for s in ("ref", "citer")}
+        sides = {s: ac.walk_down(ranked[(p, s)], V2_CAP[s], final_outcome) for s in ("ref", "citer")}
         picks[p] = [(x, "ref") for x in sides["ref"]["picked"]] + [(x, "citer") for x in sides["citer"]["picked"]]
         skips[p] = {s: [list(t) for t in sides[s]["skipped"]] for s in sides}
         sw = ac.work_from_api(w)
@@ -1415,8 +1466,8 @@ def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder) -> dict:
     examined = {wid for p in skips for s in skips[p].values() for wid, _ in s}
     examined |= {wid for v in picks.values() for wid, _ in v}
     sel = {
-        "schema": "alias-corpus-neighbour-selection/2", "version": "v2", "seed": ac.SEED_NEIGHBOURS,
-        "oa_definition": ac.OA_DEFINITION, "type_filter": V2_SCHEMA_TYPE, "rule": V2_RULE, "queried": now(),
+        "schema": f"alias-corpus-neighbour-selection/{version}", "version": f"v{version}", "seed": ac.SEED_NEIGHBOURS,
+        "oa_definition": ac.OA_DEFINITION, "type_filter": V2_SCHEMA_TYPE, "rule": rule, "queried": now(),
         "study_resolved": len(study_w), "study_unresolved": inp["study_missing"],
         "oa1000_resolved": len(inp["oa_pmc"]) - len(inp["still_missing"]), "oa1000_unresolved": len(inp["still_missing"]),
         "order": order, "attributed": attributed, "picks_before_dedupe": sum(len(v) for v in picks.values()),
@@ -1425,11 +1476,15 @@ def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder) -> dict:
         "works": {k: _work_json(works[k]) for k in sorted(examined)},
         "study_works": {p: _work_json(ac.work_from_api(w)) for p, w in study_w.items()},
     }
-    write_json(lay.manifests / "neighbour-selection-v2.json", sel)
+    if version >= 4:
+        sel["dry_run"] = {"unknown_outcomes": len(dry_unknown), "uncached_citer_pages": dry_uncached_pages} if dry_run else None
+        sel["provenance"] = LAUNCH_PROVENANCE
+    name = f"neighbour-selection-v{version}.json"
+    write_json((lay.tmp / name.replace(".json", ".dryrun.json")) if dry_run else (lay.manifests / name), sel)
     n_attr = sum(len(v) for v in attributed.values())
-    log(f"neighbours-v2: picks {sel['picks_before_dedupe']}, shared dropped {dropped}, identity dropped "
+    log(f"neighbours-v{version}: picks {sel['picks_before_dedupe']}, shared dropped {dropped}, identity dropped "
         f"{len(id_dropped)}, attributed {n_attr}, examined {len(examined)}")
-    return {"attributed": n_attr}
+    return {"attributed": n_attr, "sel": sel}
 
 
 def _v2_cuts(sel: dict, b: Builder) -> list[float]:
@@ -1557,10 +1612,11 @@ def _stats(xs: list[int]) -> dict:
             "max": s[-1]}
 
 
-def stage_finalize_v2(lay: Layout, b: Builder, version: int = 2) -> dict:
-    """Per-arm chunk files and counts of version ``version`` (2 or 3: the neighbour arm is v2's in both)."""
+def stage_finalize_v2(lay: Layout, b: Builder, version: int = 2, sel: dict | None = None) -> dict:
+    """Per-arm chunk files and counts of version ``version`` (2 or 3: the neighbour arm is v2's in both;
+    4 passes its own neighbour selection as ``sel``)."""
     sfx = f"-v{version}"
-    sel = load_sel_v2(lay)
+    sel = sel or load_sel_v2(lay)
     draws = {d: json.load(open(lay.manifests / f"random-{d}-draw{sfx}.json")) for d in (1, 2)}
     cuts = draws[1]["matching"]["cuts"]
     wtype = {k: v["type"] for k, v in sel["works"].items()}
@@ -1986,6 +2042,521 @@ def stage_finalize_v3(lay: Layout, b: Builder) -> dict:
     return counts
 
 
+# ====================================================================== v4 (owner, 2026-11-03)
+#
+# v4 = v3 plus two rules. (1) Nearest-band fill at the band-relaxed level ``any``: the slot takes the
+# candidate already fetched by that study paper's walk whose length band is nearest (ties: type
+# match, source match, seeded order), no new fetch. (2) The repetition screen: every added paper in
+# every arm, any source, after the C0 screen, is excluded when its distinct-chunk ratio is below
+# 0.90; excluded neighbours are replaced by the existing walk-down, excluded random takes by
+# continuing the walk. v3 takes the rules do not touch are kept exactly. Same seeds, same bands
+# (v3's cuts, fixed), same budget; v4 writes ``*-v4`` manifests and state.
+
+V4_SCREEN_RULE = ("repetition screen (owner, 2026-11-03): every added paper in every arm (neighbour, random-1, "
+                  "random-2), any source, after the C0 screen; distinct-chunk ratio = distinct chunk texts (exact "
+                  "match after NFC + whitespace collapse) / chunks at fixed_token 512 / overlap 0; excluded when "
+                  f"< {ac.REPETITION_THRESHOLD:.2f}; random arms continue their walk in seeded order, the neighbour "
+                  "arm uses its walk-down")
+V4_NEAREST_RULE = ("nearest-band fill at the 'any' level (owner, 2026-11-03): instead of the first passed-over "
+                   "candidate in seeded order, a study paper's open 'any' slots are filled together from the "
+                   "candidates its walk already fetched and accepted (not taken, not a duplicate): over all (open "
+                   "slot, candidate) pairs, the pair with the smallest key is filled first, then the smallest of the "
+                   "pairs left, and so on (greedy, not a minimum-total assignment); key = band-index distance (over "
+                   "<20/20-26/27-33/34-45/46-79/>=80), then type mismatch, then source (JATS/PDF) mismatch, then the "
+                   "slot's position in the sorted order of the open cells, then the candidate's seeded order; no new "
+                   "fetch")
+V4_REDRAW_RULE = (
+    "per study paper and draw, the v3 takes are carried over in v3 take order (alias_corpus.carry_over_v4): a take "
+    "is released when its paper fails the repetition screen (repetition_screen), when it was matched at the band-"
+    "relaxed level (any_nearest_band), or when its slot has no room in the v4 quota (quota_changed: the study "
+    "paper's neighbours changed under the screen); every other take is kept exactly. A study paper whose only "
+    "released slots are any_nearest_band (quota unchanged) refills them with alias_corpus.nearest_band_fill from "
+    "the candidates its v3 walk fetched before the 'any' level (replayed from memoised outcomes and checked "
+    "take-for-take against the v3 manifest), screened, not taken in the draw: no walk, no fetch. Any other study "
+    "paper with open slots walks again with alias_corpus.draw_matched (any_rule='nearest', repetition-screened "
+    "outcomes) on the same seeded order from the top, skipping candidates taken in the draw; study papers in "
+    "the v3 order")
+V4_BUDGET_RULE = V3_BUDGET_RULE
+
+
+class Repetition:
+    """Distinct-chunk ratio per accepted work, read from its chunk file (sha checked against the record)."""
+
+    def __init__(self, lay: Layout, b: Builder, enabled: bool = True) -> None:
+        self.lay, self.b, self.enabled = lay, b, enabled
+        self.cache: dict[tuple[str, str, str], dict] = {}
+        self.lock = threading.Lock()
+
+    def screen(self, rec: dict) -> dict | None:
+        if not rec or not rec.get("ok"):
+            return None
+        key = (rec.get("chunk_dir", "chunks"), rec["chunk_file"], rec["chunks_sha256"])
+        with self.lock:
+            hit = self.cache.get(key)
+        if hit is not None:
+            return hit
+        path = self.lay.root / key[0] / key[1]
+        data = path.read_bytes()
+        if sha256_bytes(data) != key[2]:
+            raise SystemExit(f"v4: chunk file {key[0]}/{key[1]} differs from its outcome record")
+        texts = [json.loads(x)["content"] for x in data.split(b"\n") if x.strip()]
+        r = ac.repetition_screen(texts)
+        with self.lock:
+            self.cache[key] = r
+        return r
+
+    def outcome(self, rec: dict) -> ac.Outcome:
+        scr = self.screen(rec) if self.enabled else None
+        return ac.screen_outcome(outcome_of(rec), scr["ratio"] if scr else None)
+
+    def ratio(self, wid: str) -> float | None:
+        scr = self.screen(self.b.done.get(wid) or {})
+        return scr["ratio"] if scr else None
+
+    def excluded(self, wid: str) -> bool:
+        r = self.ratio(wid)
+        return self.enabled and r is not None and r < ac.REPETITION_THRESHOLD
+
+
+def _sel_v4(lay: Layout, dry_run: bool = False) -> dict:
+    return json.load(open((lay.tmp / "neighbour-selection-v4.dryrun.json") if dry_run
+                          else (lay.manifests / "neighbour-selection-v4.json")))
+
+
+def stage_neighbours_v4(lay: Layout, api: OpenAlex, b: Builder, dry_run: bool = False,
+                        rep: Repetition | None = None) -> dict:
+    """The v2 walk-down with repetition-screened outcomes; every change against v2 is listed."""
+    rep = rep or Repetition(lay, b)
+    sel2 = load_sel_v2(lay)
+    lines0 = _count_lines(b.out_path)
+    sel = stage_neighbours_v2(lay, api, b, version=4, outcome=rep.outcome, dry_run=dry_run,
+                              rule=V2_RULE + "; v4: " + V4_SCREEN_RULE)["sel"]
+    if sel["order"] != sel2["order"]:
+        raise SystemExit("v4: attribution order differs from v2's")
+    excl2 = [[p, wid, side] for p in sel2["order"] for wid, side in sel2["attributed"][p] if rep.excluded(wid)]
+    changed = {}
+    for p in sel["order"]:
+        a2 = [tuple(x) for x in sel2["attributed"][p]]
+        a4 = [tuple(x) for x in sel["attributed"][p]]
+        if a2 != a4:
+            changed[p] = {"removed": [list(x) for x in a2 if x not in a4], "added": [list(x) for x in a4 if x not in a2]}
+    screened_ids = {wid for _, wid, _ in excl2}
+    cascade = [p for p in changed if not any(w in screened_ids for w, _ in changed[p]["removed"])]
+    arm_ratios = sorted((round(rep.ratio(wid) or 1.0, 4), int(b.done[wid]["n_chunks"]), b.done[wid]["source"])
+                        for p in sel2["order"] for wid, _ in sel2["attributed"][p])
+    sel["v4_changes"] = {
+        "screen_rule": V4_SCREEN_RULE, "v2_attributed_screened_out": excl2, "studies_changed": changed,
+        "studies_changed_without_a_screened_neighbour": cascade,
+        "v2_arm_ratios_below_0.95": [list(x) for x in arm_ratios if x[0] < 0.95],
+        "new_outcomes_this_stage": _count_lines(b.out_path) - lines0}
+    name = "neighbour-selection-v4.json"
+    write_json((lay.tmp / name.replace(".json", ".dryrun.json")) if dry_run else (lay.manifests / name), sel)
+    log(f"neighbours-v4: v2 neighbours screened out {len(excl2)}; studies changed {len(changed)} "
+        f"(without a screened neighbour: {len(cascade)}); new outcomes {sel['v4_changes']['new_outcomes_this_stage']}; "
+        f"v2 arm ratios < 0.95: {sel['v4_changes']['v2_arm_ratios_below_0.95']}")
+    return sel
+
+
+def _random_candidates(pool: dict[str, list[ac.Work]], sel: dict, excl: ac.Exclusion, linked: set[str],
+                       nworks: dict[str, ac.Work]) -> tuple[dict[str, list[str]], dict[str, ac.Work], dict[str, dict]]:
+    """The v2/v3 random candidate rule (stage_random_v3), against the neighbour works ``nworks``."""
+    nexcl = ac.Exclusion()
+    for w in nworks.values():
+        nexcl.add(w)
+    nwids = set(nworks)
+    cands: dict[str, list[str]] = {}
+    stats: dict[str, dict] = {}
+    works: dict[str, ac.Work] = {}
+    for p in sel["order"]:
+        m = sel["per_study"][p]
+        st: Counter = Counter()
+        keep = []
+        for w in pool.get(m["topic"], []):
+            why = ac.eligible_random(w, m["topic"], m["year"], excl, linked, nwids)
+            if why is None and nexcl.reason(w):
+                why = "neighbour_identity"
+            if why is None and ac.type_class(w.type) is None:
+                why = "type"
+            st[why or "eligible"] += 1
+            if why is None:
+                keep.append(w.wid)
+                works[w.wid] = w
+        cands[p] = keep
+        stats[p] = dict(st)
+    return cands, works, stats
+
+
+def _take_key(t: dict) -> tuple:
+    return (t["wid"], t["level"], tuple(t["for_cell"]))
+
+
+def v4_carry(took3: list[dict], candidates: set[str], quota4: Mapping[ac.Cell, int],
+             excluded: Callable[[str], bool]) -> dict[str, Any]:
+    """One study paper's v4 carry-over (:func:`ac.carry_over_v4`), refusing a v3 take that is no longer
+    a random candidate (a v4 neighbour-walk work would leave the pool; none did)."""
+    gone = [t["wid"] for t in took3 if t["wid"] not in candidates]
+    if gone:
+        raise SystemExit(f"v4: v3 takes {gone} are no longer candidates (the v4 neighbour arm)")
+    return ac.carry_over_v4(took3, quota4, excluded)
+
+
+def v4_redraw_mode(carry: Mapping[str, Any], quota_unchanged: bool) -> str | None:
+    """How a study paper's open slots are filled in v4: ``None`` (nothing open), ``nearest_from_v3_walk``
+    (every release is ``any_nearest_band`` and the quota is unchanged: refill from the v3 walk, no fetch)
+    or ``walk`` (anything else: walk again with the v4 rules)."""
+    if not sum(carry["open"].values()):
+        return None
+    if {t["why"] for t in carry["released"]} == {"any_nearest_band"} and quota_unchanged:
+        return "nearest_from_v3_walk"
+    return "walk"
+
+
+def v4_study_redraw(carry: Mapping[str, Any], quota3: Mapping[ac.Cell, int], quota4: Mapping[ac.Cell, int],
+                    order_p: list[str], fetched3: Mapping[str, ac.Cell], taken: set[str], *,
+                    excluded: Callable[[str], bool], is_dup: Callable[[str], bool], on_take: Callable[[str], None],
+                    type_of: Callable[[str], str | None], klass: Callable[[str], str | None],
+                    resolve: Callable[[str], ac.Outcome], band: Callable[[int], int]) -> dict[str, Any]:
+    """One study paper's v4 step after the carry-over: the per-study record of a v4 draw manifest.
+
+    ``fetched3``: the candidates its v3 walk fetched and accepted before the ``any`` level (wid -> cell).
+    ``nearest_from_v3_walk`` refills from them (screened by ``excluded``, not taken, not duplicates)
+    with :func:`ac.nearest_band_fill`; ``walk`` runs :func:`ac.draw_matched` (``any_rule="nearest"``)
+    on ``order_p`` with the budget max(40, 15 x all slots). ``taken`` and ``on_take`` see every take.
+    """
+    c = carry
+    need = sum(quota4.values())
+    need_open = sum(c["open"].values())
+    mode = v4_redraw_mode(c, quota3 == quota4)
+    rec: dict[str, Any] = {
+        "need": need, "kept": len(c["kept"]),
+        "released": [{k: t.get(k) for k in ("wid", "type", "band", "source", "level", "for_cell", "why")}
+                     for t in c["released"]],
+        "open": {"|".join(map(str, k)): n for k, n in c["open"].items()},
+        "quota_changed": quota3 != quota4, "mode": mode}
+    new: list[dict] = []
+    if mode is None:
+        rec.update({"skipped": {}, "resolves": 0, "budget_hit": False, "unfilled": {}})
+    elif mode == "nearest_from_v3_walk":
+        pool_p = {w: cell for w, cell in fetched3.items() if not excluded(w)}
+        rank = {w: i for i, w in enumerate(order_p)}
+        missing = [w for w in pool_p if w not in rank]
+        if missing:
+            raise SystemExit(f"v4: fetched candidates {missing} not in the v4 order")
+
+        def pick(wid: str, cell: ac.Cell, slot: ac.Cell, dist: int) -> None:
+            on_take(wid)
+            new.append({"wid": wid, "type": cell[0], "band": cell[1], "source": cell[2], "level": "any",
+                        "for_cell": list(slot), "band_distance": dist})
+
+        ac.nearest_band_fill(c["open"], pool_p, taken, rank, is_dup, pick)
+        left = Counter(c["open"])
+        for t in new:
+            left[tuple(t["for_cell"])] -= 1
+        rec.update({"nearest_pool": len(pool_p), "skipped": {}, "resolves": 0, "budget_hit": False,
+                    "unfilled": {"|".join(map(str, k)): n for k, n in sorted(left.items()) if n > 0}})
+    else:
+        budget = max(40, 15 * need)
+        r = ac.draw_matched(order_p, c["open"], taken, type_of=type_of, klass=klass, resolve=resolve, band=band,
+                            is_dup=is_dup, on_take=on_take, max_resolves=budget, any_rule="nearest")
+        new = r["took"]
+        rec.update({"redraw_budget": budget, "skipped": r["skipped"], "resolves": r["resolves"],
+                    "resolves_by_phase": r["resolves_by_phase"], "budget_hit": r["budget_hit"],
+                    "relaxed": r["relaxed"], "unfilled": r["unfilled"], "passed_over": r["passed_over"]})
+    took = [{**t, "redrawn": False} for t in c["kept"]] + [{**t, "redrawn": True} for t in new]
+    rec.update({"took": took, "got": len(took), "shortfall": max(0, need - len(took)),
+                "redrawn_slots": need_open, "redrawn_got": len(new),
+                "strict_shortfall": {"|".join(map(str, k)): n for k, n in ac.strict_shortfall(quota4, took).items()}})
+    return rec
+
+
+def stage_random_v4(lay: Layout, b: Builder, dry_run: bool = False, rep: Repetition | None = None) -> dict:
+    """v4 carry-over and re-draw (see :data:`V4_REDRAW_RULE`). ``dry_run``: memoised outcomes only, the
+    dry-run neighbour selection; writes ``tmp/random-*-draw-v4.dryrun.json`` and no manifest."""
+    rep = rep or Repetition(lay, b)
+    sel1 = json.load(open(lay.manifests / "neighbour-selection.json"))
+    sel2 = load_sel_v2(lay)
+    sel4 = _sel_v4(lay, dry_run)
+    if sel4["order"] != sel2["order"]:
+        raise SystemExit("v4: attribution order differs from v2's")
+    order = sel2["order"]
+    v2 = {d: json.load(open(lay.manifests / f"random-{d}-draw-v2.json")) for d in (1, 2)}
+    v3 = {d: json.load(open(lay.manifests / f"random-{d}-draw-v3.json")) for d in (1, 2)}
+    excl = load_exclusion(lay)
+    linked = set(json.load(open(lay.state / "linked.json")))
+    nworks3 = {k: _work_from_json(v) for k, v in {**sel1["works"], **sel2["works"]}.items()}
+    nworks4 = {**nworks3, **{k: _work_from_json(v) for k, v in sel4["works"].items()}}
+    cuts = [float(c) for c in v3[1]["matching"]["cuts"]]
+    if cuts != v3[2]["matching"]["cuts"] or cuts != ac.v3_cuts(_v2_cuts(sel2, b)):
+        raise SystemExit(f"v4: the v3 cuts {cuts} are not reproduced")
+    arm4_n = [int(b.done[w]["n_chunks"]) for p in order for w, _ in sel4["attributed"][p]]
+    cuts_if_recomputed = ac.v3_cuts(ac.length_cuts(arm4_n, V2_BANDS))
+
+    def band(n: int) -> int:
+        return ac.band_of(n, cuts)
+
+    def quota_of(sel: dict) -> dict[str, Counter]:
+        out: dict[str, Counter] = {}
+        for p in order:
+            q: Counter = Counter()
+            for wid, _ in sel["attributed"][p]:
+                r = b.done[wid]
+                q[(ac.type_class(sel["works"][wid]["type"]), band(r["n_chunks"]), r["source"])] += 1
+            out[p] = q
+        return out
+
+    quota3, quota4 = quota_of(sel2), quota_of(sel4)
+    for p in order:
+        if {"|".join(map(str, c)): n for c, n in sorted(quota3[p].items())} != v3[1]["quota"][p]:
+            raise SystemExit(f"v4: v3 quota of {p} not reproduced")
+    pool = load_pool(lay)
+    cands3, works3, stats3 = _random_candidates(pool, sel2, excl, linked, nworks3)
+    if any(stats3[p] != v3[1]["candidates_per_study"][p] for p in order):
+        raise SystemExit("v4: v3 candidate pools not reproduced")
+    cands4, works, stats4 = _random_candidates(pool, sel2, excl, linked, nworks4)
+    cand4_sets = {p: set(v) for p, v in cands4.items()}
+    log(f"random-v4: pool {sum(len(v) for v in pool.values()):,} works; cuts {cuts} (recomputed on the v4 "
+        f"neighbour arm they would be {cuts_if_recomputed}); quotas changed for "
+        f"{sum(1 for p in order if quota3[p] != quota4[p])} study papers; candidate pools changed for "
+        f"{sum(1 for p in order if stats3[p] != stats4[p])}; dry_run={dry_run}")
+    unknown: Counter = Counter()
+
+    def klass_memo(wid: str) -> str | None:
+        w = works3.get(wid) or works[wid]
+        if w.pmcid:
+            m = b.pmc.get(w.pmcid)
+            if m is None or (m.get("in_bucket") and m.get("is_pmc_openaccess")):
+                return "jats"
+        return "pdf" if w.pdf_locations else None
+
+    def memo(wid: str, screened: bool) -> ac.Outcome:
+        w = works3.get(wid) or works[wid]
+        rec = b.done.get(wid)
+        if rec is None or b._stale(w, rec):
+            unknown["outcome"] += 1
+            return ac.Outcome(ok=False, reason="dry_run_unknown")
+        return rep.outcome(rec) if screened else outcome_of(rec)
+
+    def n_chunks(wid: str) -> int:
+        return int(b.done[wid]["n_chunks"])
+
+    # ---- A: replay v3 (v3 rules, memoised outcomes) for the walks' fetched sets; must equal the manifest
+    def replay_v3(d: int) -> tuple[dict[str, dict[str, ac.Cell]], int]:
+        orders = {p: ac.random_order(d, p, cands3[p], seeds=ac.SEED_RANDOM_V2) for p in order}
+        carry = {p: ac.carry_over(v2[d]["per_study"][p]["took"], quota3[p], band, n_chunks) for p in order}
+        taken: set[str] = set()
+        ident = ac.Exclusion()
+        for p in order:
+            for t in carry[p]["kept"]:
+                taken.add(t["wid"])
+                ident.add(ac.Work(wid=t["wid"], pmcid=works3[t["wid"]].pmcid, doi=works3[t["wid"]].doi))
+        fetched: dict[str, dict[str, ac.Cell]] = {}
+        bad = 0
+        for p in order:
+            c = carry[p]
+            new: list[dict] = []
+            if c["open"]:
+                f: dict[str, tuple[ac.Cell, str]] = {}
+                r = ac.draw_matched(
+                    orders[p], c["open"], taken, type_of=lambda wid: works3[wid].type, klass=klass_memo,
+                    resolve=lambda wid: memo(wid, False), band=band,
+                    is_dup=lambda wid: ident.reason(ac.Work(wid="", pmcid=works3[wid].pmcid, doi=works3[wid].doi)) is not None,
+                    on_take=lambda wid: ident.add(ac.Work(wid=wid, pmcid=works3[wid].pmcid, doi=works3[wid].doi)),
+                    max_resolves=max(40, 15 * sum(quota3[p].values())), fetched_out=f)
+                new = r["took"]
+                fetched[p] = {w: cell for w, (cell, lv) in f.items() if lv not in ac.BAND_RELAXED}
+            if [_take_key(t) for t in c["kept"] + new] != [_take_key(t) for t in v3[d]["per_study"][p]["took"]]:
+                bad += 1
+        return fetched, bad
+
+    # ---- B + C: carry over the v3 takes, re-draw the open slots
+    def run_v4(d: int, fetched3: dict[str, dict[str, ac.Cell]]) -> dict:
+        orders = {p: ac.random_order(d, p, cands4[p], seeds=ac.SEED_RANDOM_V2) for p in order}
+        carry = {p: v4_carry(v3[d]["per_study"][p]["took"], cand4_sets[p], quota4[p], rep.excluded) for p in order}
+        taken: set[str] = set()
+        ident = ac.Exclusion()
+
+        def is_dup(wid: str) -> bool:
+            return ident.reason(ac.Work(wid="", pmcid=works[wid].pmcid, doi=works[wid].doi)) is not None
+
+        def on_take(wid: str) -> None:
+            ident.add(ac.Work(wid=wid, pmcid=works[wid].pmcid, doi=works[wid].doi))
+
+        for p in order:
+            for t in carry[p]["kept"]:
+                taken.add(t["wid"])
+                on_take(t["wid"])
+
+        def resolve(wid: str) -> ac.Outcome:
+            if dry_run:
+                return memo(wid, True)
+            return rep.outcome(b.resolve(works[wid]))
+
+        def klass(wid: str) -> str | None:
+            return klass_memo(wid) if dry_run else b.klass_async(works[wid]).result()
+
+        per: dict[str, dict] = {}
+        for p in order:
+            per[p] = v4_study_redraw(
+                carry[p], quota3[p], quota4[p], orders[p], fetched3.get(p, {}), taken, excluded=rep.excluded,
+                is_dup=is_dup, on_take=on_take, type_of=lambda wid: works[wid].type, klass=klass, resolve=resolve,
+                band=band)
+        return per
+
+    lines0 = _count_lines(b.out_path)
+    results: dict[int, dict] = {}
+    replay_bad: dict[int, int] = {}
+    for d in (1, 2):
+        fetched3, replay_bad[d] = replay_v3(d)
+        if replay_bad[d]:
+            raise SystemExit(f"v4: replaying v3 draw {d} differs from its manifest for {replay_bad[d]} study papers")
+        log(f"random-{d}-v4: v3 replay reproduces the manifest take for take ({len(fetched3)} walks)")
+        results[d] = run_v4(d, fetched3)
+    new_fetches = _count_lines(b.out_path) - lines0
+    qtot: Counter = Counter()
+    for p in order:
+        qtot.update(quota4[p])
+    for d in (1, 2):
+        per = results[d]
+        took_all = [t for r in per.values() for t in r["took"]]
+        lv: Counter = Counter(t["level"] for t in took_all)
+        why: Counter = Counter(t["why"] for r in per.values() for t in r["released"])
+        ss: Counter = Counter()
+        for r in per.values():
+            ss.update(r["strict_shortfall"])
+        dist = Counter(t["band_distance"] for t in took_all if t["level"] == "any")
+        rep_skips = sum(r["skipped"].get("repetition_screen", 0) for r in per.values())
+        summary = {
+            "slots_total": sum(r["need"] for r in per.values()), "kept": sum(r["kept"] for r in per.values()),
+            "redrawn_slots": sum(r["redrawn_slots"] for r in per.values()), "released_by_reason": dict(why),
+            "redrawn_got": sum(r["redrawn_got"] for r in per.values()),
+            "studies_with_redraw": sum(1 for r in per.values() if r["redrawn_slots"]),
+            "studies_by_mode": dict(Counter(r["mode"] for r in per.values() if r["mode"])),
+            "redraw_resolves": sum(r["resolves"] for r in per.values()),
+            "redraw_budget_hit_studies": sum(1 for r in per.values() if r["budget_hit"]),
+            "shortfall_total": sum(r["shortfall"] for r in per.values()),
+            "match_level": dict(lv), "strict_share": round(lv["strict"] / max(1, sum(lv.values())), 4),
+            "any_band_distance": {str(k): v for k, v in sorted(dist.items())},
+            "repetition_screen": {"v3_takes_released": why.get("repetition_screen", 0),
+                                  "redraw_walk_candidates_skipped": rep_skips},
+            "strict_shortfall_per_cell": {k: {"quota": qtot[tuple(_cell_of(k))], "short": n} for k, n in sorted(ss.items())},
+            "redraw_skipped": dict(sum((Counter(r["skipped"]) for r in per.values()), Counter())),
+        }
+        if dry_run:
+            summary["dry_run_unknown_outcomes"] = unknown["outcome"]
+        log(f"random-{d}-v4 summary: " + json.dumps({k: v for k, v in summary.items() if k != "strict_shortfall_per_cell"}))
+        doc = {
+            "schema": "alias-corpus-random-draw/4", "version": "v4", "draw": d, "seed": ac.SEED_RANDOM_V2[d],
+            "oa_definition": ac.OA_DEFINITION, "type_filter": V2_SCHEMA_TYPE,
+            "matching": {"cells": "(type class, length band, source) per study paper, from its attributed neighbours (v4 arm)",
+                         "length_bands": "v3's bands, fixed: <20/20-26/27-33/34-45/46-79/>=80", "cuts": cuts,
+                         "cuts_if_recomputed_on_the_v4_neighbour_arm": cuts_if_recomputed,
+                         "relax_order": list(ac.RELAX_ORDER), "relax_rule": "source first, then type, then band last ('any')",
+                         "any_rule": V4_NEAREST_RULE, "screen_rule": V4_SCREEN_RULE,
+                         "max_resolves": V4_BUDGET_RULE, "redraw_rule": V4_REDRAW_RULE},
+            "summary": summary, "new_network_fetches_both_draws": None if dry_run else new_fetches,
+            "v3_replay_mismatched_studies": replay_bad[d],
+            "order": order, "quota": {p: {"|".join(map(str, c)): n for c, n in sorted(quota4[p].items())} for p in order},
+            "quota_changed_studies": [p for p in order if quota3[p] != quota4[p]],
+            "per_study": per, "candidates_per_study": stats4,
+            "works": {t["wid"]: _work_json(works[t["wid"]]) for p in per for t in per[p]["took"]},
+            "provenance": LAUNCH_PROVENANCE, "finished": now()}
+        target = (lay.tmp / f"random-{d}-draw-v4.dryrun.json") if dry_run else (lay.manifests / f"random-{d}-draw-v4.json")
+        write_json(target, doc)
+    log(f"random-v4: both draws written (new network fetches {new_fetches})")
+    return {d: sum(r["got"] for r in results[d].values()) for d in (1, 2)}
+
+
+def _per_band(b: Builder, items: list[str], cuts: list[float]) -> dict[str, dict[str, int]]:
+    out = {str(k): {"papers": 0, "chunks": 0} for k in range(len(cuts) + 1)}
+    for wid in items:
+        n = int(b.done[wid]["n_chunks"])
+        o = out[str(ac.band_of(n, cuts))]
+        o["papers"] += 1
+        o["chunks"] += n
+    return out
+
+
+def stage_finalize_v4(lay: Layout, b: Builder, rep: Repetition | None = None) -> dict:
+    rep = rep or Repetition(lay, b)
+    sel4 = _sel_v4(lay)
+    sel2 = load_sel_v2(lay)
+    counts = stage_finalize_v2(lay, b, version=4, sel=sel4)
+    draws = {d: json.load(open(lay.manifests / f"random-{d}-draw-v4.json")) for d in (1, 2)}
+    draws3 = {d: json.load(open(lay.manifests / f"random-{d}-draw-v3.json")) for d in (1, 2)}
+    c3 = json.load(open(lay.manifests / "counts-v3.json"))
+    cuts = draws[1]["matching"]["cuts"]
+    arms = {"neighbour": [w for p in sel4["order"] for w, _ in sel4["attributed"][p]]}
+    arms3 = {"neighbour": [w for p in sel2["order"] for w, _ in sel2["attributed"][p]]}
+    for d in (1, 2):
+        arms[f"random-{d}"] = [t["wid"] for p in draws[d]["order"] for t in draws[d]["per_study"][p]["took"]]
+        arms3[f"random-{d}"] = [t["wid"] for p in draws3[d]["order"] for t in draws3[d]["per_study"][p]["took"]]
+    nb = len(cuts) + 1
+    counts["band_labels"] = [f"<{cuts[0]:g}"] + [f"{cuts[i - 1]:g}-{cuts[i] - 1:g}" for i in range(1, len(cuts))] + [f">={cuts[-1]:g}"]
+    counts["per_band"] = {a: _per_band(b, v, cuts) for a, v in arms.items()}
+    top = str(nb - 1)
+    counts["top_band_papers_matched"] = all(counts["per_band"][f"random-{d}"][top]["papers"] == counts["per_band"]["neighbour"][top]["papers"]
+                                            for d in (1, 2))
+    cap = 500
+
+    def capped(items: list[str]) -> int:
+        return sum(min(cap, int(b.done[w]["n_chunks"])) for w in items)
+
+    def vs(x: int, y: int) -> float:
+        return round(x / y - 1, 4)
+
+    papers_chunks = {a: sum(int(b.done[w]["n_chunks"]) for w in v) for a, v in arms.items()}
+    capn = {a: capped(v) for a, v in arms.items()}
+    counts["chunks_per_paper_cap"] = {
+        "cap": cap, "note": "chunks per paper summed over the arm's papers (no chunk-id dedupe), uncapped and capped",
+        "uncapped": papers_chunks, "capped": capn,
+        "vs_neighbour_uncapped": {a: vs(papers_chunks[a], papers_chunks["neighbour"]) for a in ("random-1", "random-2")},
+        "vs_neighbour_capped": {a: vs(capn[a], capn["neighbour"]) for a in ("random-1", "random-2")},
+        "papers_above_cap": {a: sum(1 for w in v if int(b.done[w]["n_chunks"]) > cap) for a, v in arms.items()}}
+    # the repetition screen, every arm: ratios below 0.95 (counts only), before (v3 arms) and after
+    def low(items: list[str]) -> list[list]:
+        return [list(x) for x in sorted((round(rep.ratio(w) or 1.0, 4), int(b.done[w]["n_chunks"]), b.done[w]["source"])
+                                        for w in items) if x[0] < 0.95]
+    ch = sel4["v4_changes"]
+    counts["repetition_screen"] = {
+        "rule": V4_SCREEN_RULE, "threshold": ac.REPETITION_THRESHOLD,
+        "v3_arm_ratios_below_0.95": {a: low(v) for a, v in arms3.items()},
+        "v4_arm_ratios_below_0.95": {a: low(v) for a, v in arms.items()},
+        "v3_arm_papers_excluded": {a: sum(1 for w in v if rep.excluded(w)) for a, v in arms3.items()},
+        "v4_arm_papers_excluded": {a: sum(1 for w in v if rep.excluded(w)) for a, v in arms.items()},
+        "neighbour": {"v2_attributed_screened_out": len(ch["v2_attributed_screened_out"]),
+                      "studies_changed": len(ch["studies_changed"]),
+                      "studies_changed_without_a_screened_neighbour": len(ch["studies_changed_without_a_screened_neighbour"]),
+                      "walk_skips_repetition": sum(1 for p in sel4["skips"] for lst in sel4["skips"][p].values()
+                                                   for _, x in lst if x == "repetition_screen")},
+        **{f"random-{d}": draws[d]["summary"]["repetition_screen"] for d in (1, 2)}}
+    for d in (1, 2):
+        D = draws[d]["summary"]
+        counts[f"random-{d}"].update({"v4_redraw": D, "new_network_fetches_both_draws": draws[d]["new_network_fetches_both_draws"],
+                                      "any_band_distance": D["any_band_distance"], "strict_share": D["strict_share"],
+                                      "quota_changed_studies": len(draws[d]["quota_changed_studies"])})
+    counts["neighbour"]["v4_changes"] = {"studies_changed": len(ch["studies_changed"]),
+                                         "new_outcomes_neighbour_stage": ch["new_outcomes_this_stage"]}
+    counts["vs_v3"] = {a: {"v3_chunks": c3[a]["chunks"], "v4_chunks": counts[a]["chunks"],
+                           "v3_vs_neighbour": c3[a].get("chunks_vs_neighbour"), "v4_vs_neighbour": counts[a].get("chunks_vs_neighbour"),
+                           "v3_band_counts": c3[a]["band_counts"], "v4_band_counts": counts[a]["band_counts"],
+                           "v3_pdf_share": c3[a]["pdf_share"], "v4_pdf_share": counts[a]["pdf_share"],
+                           "v3_type_mix": c3[a]["type_mix"], "v4_type_mix": counts[a]["type_mix"],
+                           "papers_added": len(set(arms[a]) - set(arms3[a])), "papers_removed": len(set(arms3[a]) - set(arms[a]))}
+                       for a in arms}
+    counts["rules"] = {"any": V4_NEAREST_RULE, "screen": V4_SCREEN_RULE, "redraw": V4_REDRAW_RULE, "budget": V4_BUDGET_RULE}
+    counts["relax_rule"] = "source first, then type, then band last; each take records its level"
+    st = json.loads((lay.state / "provenance-v4.json").read_text()) if (lay.state / "provenance-v4.json").exists() else {}
+    commits = {k: v.get("commit") for k, v in st.items()}
+    commits["finalize-v4"] = (LAUNCH_PROVENANCE or {}).get("commit")
+    counts["stage_provenance_commits"] = commits
+    counts["stage_provenance_authority"] = ("state/provenance-v4.json (full provenance per stage, written when each "
+                                            "stage's done marker is written); this map repeats its commits")
+    counts["stage_commits_agree"] = len(set(commits.values())) <= 1
+    write_json(lay.manifests / "counts-v4.json", counts)
+    log("finalize-v4: " + json.dumps({a: counts["vs_v3"][a] for a in arms}) + " cap: " + json.dumps(counts["chunks_per_paper_cap"]))
+    return counts
+
+
 # ====================================================================== pdf-extract (subprocess)
 
 
@@ -2008,7 +2579,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("stage", choices=["run", "study", "neighbours", "scan", "neighbours-fetch", "random",
                                       "finalize", "chunkcheck", "pdf-extract", "run-v2", "chunkcheck-v2",
                                       "neighbours-v2", "random-v2", "finalize-v2", "run-v3", "chunkcheck-v3",
-                                      "random-v3", "finalize-v3"])
+                                      "random-v3", "finalize-v3", "run-v4", "chunkcheck-v4", "neighbours-v4",
+                                      "random-v4", "finalize-v4"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--seed-cache", nargs=2, metavar=("CACHE_JSON", "QUERY_LOG"), default=None,
@@ -2016,7 +2588,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scan-workers", type=int, default=32)
     ap.add_argument("--fetch-workers", type=int, default=16)
     ap.add_argument("--dry-run", action="store_true",
-                    help="random-v3 only: memoised outcomes only, no fetch; writes tmp/*.dryrun.json, no manifest")
+                    help="random-v3, neighbours-v4, random-v4: memoised outcomes only, no fetch; writes "
+                         "tmp/*.dryrun.json, no manifest")
     a = ap.parse_args(argv)
     if a.stage == "pdf-extract":
         sys.path.insert(0, str(_PY / "scripts"))
@@ -2030,16 +2603,20 @@ def main(argv: list[str] | None = None) -> int:
     log(f"alias_corpus_run {a.stage}: root {lay.root}; python {sys.executable}; launch commit "
         f"{LAUNCH_PROVENANCE.get('commit')} dirty={LAUNCH_PROVENANCE.get('dirty')}")
     api = OpenAlex(lay)
+    api.read_only = a.dry_run
     if a.seed_cache:
         log(f"openalex: seeded {api.seed(*a.seed_cache)} cached responses")
-    v2 = a.stage.endswith(("-v2", "-v3"))
+    v2 = a.stage.endswith(("-v2", "-v3", "-v4"))
     v3 = a.stage.endswith("-v3")
+    v4 = a.stage.endswith("-v4")
     if a.stage == "run":
         stages = ["study", "neighbours", "scan", "chunkcheck", "neighbours-fetch", "random", "finalize"]
     elif a.stage == "run-v2":
         stages = ["chunkcheck-v2", "neighbours-v2", "random-v2", "finalize-v2"]
     elif a.stage == "run-v3":
         stages = ["chunkcheck-v3", "random-v3", "finalize-v3"]
+    elif a.stage == "run-v4":
+        stages = ["chunkcheck-v4", "neighbours-v4", "random-v4", "finalize-v4"]
     else:
         stages = [a.stage]
     if v2:
@@ -2050,15 +2627,34 @@ def main(argv: list[str] | None = None) -> int:
         for need in ("neighbours-v2", "random-v2", "finalize-v2"):
             if not (lay.state / f"done-{need}").exists():
                 raise SystemExit(f"v3 needs the v2 stage {need} done")
-        if a.dry_run and a.stage != "random-v3":
-            raise SystemExit("--dry-run is for the random-v3 stage only")
+    if v4:
+        for need in ("random-v3", "finalize-v3"):
+            if not (lay.state / f"done-{need}").exists():
+                raise SystemExit(f"v4 needs the v3 stage {need} done")
+    if a.dry_run and a.stage not in ("random-v3", "neighbours-v4", "random-v4"):
+        raise SystemExit("--dry-run is for the random-v3, neighbours-v4 and random-v4 stages only")
     b: Builder | None = None
+    rep: Repetition | None = None
     for st in stages:
         marker = lay.state / f"done-{st}"
-        if a.stage in ("run", "run-v2", "run-v3") and marker.exists():
+        if a.stage in ("run", "run-v2", "run-v3", "run-v4") and marker.exists():
             log(f"{st}: already done")
             continue
-        if st == "chunkcheck-v3":
+        if st.endswith("-v4"):
+            b = b or Builder(lay, a.fetch_workers, version=4)
+            rep = rep or Repetition(lay, b)
+            if st == "chunkcheck-v4":
+                stage_chunkcheck(lay, b, n=5, out_name="chunkcheck-v4.json")
+            elif st == "neighbours-v4":
+                stage_neighbours_v4(lay, api, b, dry_run=a.dry_run, rep=rep)
+            elif st == "random-v4":
+                stage_random_v4(lay, b, dry_run=a.dry_run, rep=rep)
+            else:
+                stage_finalize_v4(lay, b, rep=rep)
+            if a.dry_run:
+                log(f"{st} dry run: no marker, no manifest")
+                continue
+        elif st == "chunkcheck-v3":
             b = b or Builder(lay, a.fetch_workers, version=3)
             stage_chunkcheck(lay, b, n=5, out_name="chunkcheck-v3.json")
         elif st == "random-v3":
@@ -2093,12 +2689,12 @@ def main(argv: list[str] | None = None) -> int:
             {"neighbours-fetch": stage_neighbours_fetch, "random": stage_random, "finalize": stage_finalize,
              "chunkcheck": stage_chunkcheck}[st](lay, b)
         marker.write_text(now())
-        if v3:
-            pp = lay.state / "provenance-v3.json"
+        if v3 or v4:
+            pp = lay.state / f"provenance-v{4 if v4 else 3}.json"
             prov = json.loads(pp.read_text()) if pp.exists() else {}
             prov[st] = {**(LAUNCH_PROVENANCE or {}), "stage_done": now()}
             write_json(pp, prov)
-    api.save()
+    api.save_if_dirty()   # written only when a response was added; never in a dry run (read_only)
     log("done")
     return 0
 
