@@ -1,7 +1,7 @@
 # Pre-registration, alias study (OA-1000) — DRAFT v3, 2026-11-03
 
 **Status: DRAFT — not frozen; owner review pending.** Version 3 folds in the owner's decisions of
-2026-11-03 (R12–R27, the second table below): a C cost rule that reads the point estimate (−1 point) and
+2026-11-03 (R12–R28, the second table below, and the pre-freeze corrections P1–P6 after it): a C cost rule that reads the point estimate (−1 point) and
 the CI's lower bound (−3.6 points, the design's detection limit for C), the judge false-yes bound on H2
 always taking the larger of the random arm's and the pooled limit, *fragile* restricted to named re-tests
 of H1 and H2, a judged-pair spot check of 100 pairs, the corpus build facts of the v3 pass (six length
@@ -12,7 +12,7 @@ norerank cells (retrieval and judging) and the Layer-1 attachments' BM25 cells (
 placebo stripped of each paper's own entries, a bootstrap-t and a Freedman–Lane covariate test as the re-tests behind *fragile*, and *not resolved* for an equivalence reading with zero
 discordant records; and one bench collection per corpus × glossary arm, written once from a single
 embedding per corpus, in place of in-place glossary swaps; and glossary files that carry abbreviation plurals, under fixed rendering
-conventions. Version 2 folded in the changes the owner approved
+conventions; and a pilot blind to outcomes. Version 2 folded in the changes the owner approved
 on 2026-11-02 and 2026-11-03 from an independent methodology review, 2026-11-02 (R1–R11, the second table
 below): two separate families in place of the Holm pair, a harm rule and CI-based cost rules in Layer 2,
 the claims' scope wording, judge reporting, a stratified judged-pair spot check, fixed sensitivities, a
@@ -54,10 +54,10 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 **Owner decisions of 2026-11-02 and 2026-11-03, and where each is written.** R1–R11 were adopted from an
 independent methodology review, 2026-11-02; the review's text is not part of this record, what the owner
-adopted from it is. R12–R27 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
+adopted from it is. R12–R28 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
 bound, the *fragile* rule, the spot check, the corpus build, stage A, the placebo, the re-tests behind
-*fragile*, the equivalence reading, the stage of the BM25 legs, the bench collections and the glossary
-files' plurals and rendering.
+*fragile*, the equivalence reading, the stage of the BM25 legs, the bench collections, the glossary
+files' plurals and rendering, and the pilot's blindness.
 
 | # | decision, in short | where |
 |---|---|---|
@@ -88,6 +88,19 @@ files' plurals and rendering.
 | R25 | **BM25 legs of the Layer-1 attachments retrieved in stage A, judged in stage B**: stage-A retrieval is 19 legs (5 attachments × default, norerank, BM25, plus the 4 noise repeats; 20,729 calls), stage-A judging the default and norerank legs and the repeats (14); each attachment's glossary swapped once in total (**superseded by R26**: no swap at all); the stage-A commit pins the BM25 rows, their labels arrive in stage B; total unchanged | §5.4, §5.7, §6.2, §9.3 |
 | R26 | **no in-place glossary swaps**: each (corpus arm, glossary arm) is its own bench collection, built once and never written again (base × none, merged, placebo; neighbour, random-1, random-2 × none, merged: 9 collections); each corpus embedded once, and its embedding shards loaded once per variant collection with the variant's glossary file (for *none*, an explicit file of empty rows), so no re-embedding and no backfill; each collection written exactly once, with a registry entry and a load receipt with provenance, censused at the start and end of every leg | §5.1, §5.3, §5.7, §9.3, §10, §15 |
 | R27 | **abbreviation plurals in the glossary files**: for every `abbreviation` or `both` entry an added `Xs` entry with the same definitions, because the served renderer matches only the exact token (48 of 600 G records would otherwise get no entry on their gold chunk); and the rendering conventions (one line per alias, the 12-entry cap counting lines, served order, the 1,200-character stop, config, version strings, definition text) | §5.3 |
+| R28 | **the pilot stays blind to outcomes**: in pilot mode no found@10, found@10-gold or RR@10 of any leg is printed, written to a public file or derivable from the pilot report, the baseline C found@10 included; §5.6's per-leg pair count is replaced by judge-pair counts per judging stage plus the registry total | §5.6 |
+
+**Pre-freeze corrections of 2026-11-03, and where each is written.** These correct statements of this
+text against the code and the serving configuration; none changes a decision above.
+
+| # | correction, in short | where |
+|---|---|---|
+| P1 | `/v1/config` pins neither the BM25 glossary boost nor the reranker-field setting; the boost is established by found10's behavioural probe, the reranker field is declared only | §5.2, §9.2 |
+| P2 | H2's U is always read from the frozen stage-A judge summary and cross-checked against the stage-A final rows; outside a dry run a summary without the counts is refused | §3.4 |
+| P3 | the record spot check's draw: the first 40 record ids by seeded hash, not stratified; what the sheet shows | §5.5, §13.4 |
+| P4 | the judged-pair spot check: arm re-split, the shortfall chain, the sheet order, the pool, the public record | §5.5, §13.5 |
+| P5 | the pilot's intervals, the tiebreaker share split three ways, and H2's four discordance readings | §5.6 |
+| P6 | public artifacts carry provenance without host or warnings; the two committed prereg artifacts regenerated so | §11, `artifacts/` |
 
 **Terms.**
 - **Glossary entry:** a pair *alias → primary term* for one paper. The alias is a **symbol** (the round-3
@@ -470,7 +483,11 @@ Opus calls *not*; let U_p be the same limit over the three arms pooled; and let
 **U = max(U_r, U_p)**, always (R13; owner, 2026-11-03). (§6.3's per-arm false-yes rate, per Opus-*not*
 pair, is printed beside it; the bound uses the share among *answers* labels because a hit is made by an
 *answers* label.) Then **B = 100 · U · J_r / 900 points** is an upper limit on how much of H2's net effect
-spurious random-arm hits could account for. U_r, U_p and their n are printed beside B. A scope with no
+spurious random-arm hits could account for. U_r, U_p and their n are printed beside B. **U is always
+read from the frozen stage-A judge summary** (P2), because all of H2's judged pairs are stage A; it is
+cross-checked against the stage-A final rows. Outside a dry run a mismatch is refused, and so is a
+summary that carries no false-yes counts (`alias_study_stats.false_yes_inputs`); only a dry run falls back
+to the rows. A scope with no
 such pair gives no limit; if neither has one, B is *absent*. **Rule:** if |H2's net effect| ≤ B, every
 sentence that quotes H2 carries *within the judge false-yes bound*, and the gold-only change is quoted
 first; B never changes H2's label. *Why the maximum:* the random arm alone may hold few such pairs, so
@@ -526,7 +543,7 @@ every cluster. The 191 records on the 108 unsatisfied papers are run in every ce
 **descriptive leg** and never enter a test or a Layer-2 decision. Satisfaction is a property of the build,
 fixed before any retrieval, so the split cannot depend on an outcome. The 191 are also the **pre-freeze
 pilot** (§5.6): they are retrieved and judged once before the freeze, and their post-freeze descriptive
-leg is quoted as *seen in the pilot*.
+leg is quoted as *retrieved in the pilot*.
 
 ### 4.3 Disclosures about the build
 
@@ -871,9 +888,12 @@ to raise the caps, before the freeze and on the counts alone.
 
 Every request carries `use_graph=false` and `rewrite_strategies ["passthrough"]`, as round 3's
 `FIXED_REQUEST` does. The settings are checked against `/v1/config` where it exposes them and are
-otherwise declared, as in the reranker test §3. **Declared settings:** the bench tenant serves with the
-BM25 glossary boost on and with the reranker reading the glossary field, as in round 3; both are pinned
-by the per-leg admin-config hash (§9.2). **default** is the retriever of every
+otherwise declared, as in the reranker test §3. **Declared settings** (corrected, P1): the bench tenant
+serves with the BM25 glossary boost on and with the reranker reading the glossary field, as in round 3.
+`/v1/config` is an allowlist that includes neither setting, so the per-leg admin-config hash pins
+neither. The boost is established behaviourally by found10's boost probe (§9.2), which reads *active*,
+*inactive* or *mixed*: it proves a boost greater than 0, not its value, and reads `declared` on the
+*none*-arm collections. The reranker field is declared only. **default** is the retriever of every
 Layer-1 member.
 BM25 enters Layer 2 (H3 and the reranker decision). norerank is a Layer-2 secondary and feeds the
 inactive-reranker gate (§9.1), whose cells are run in stage A (R20, §5.7).
@@ -1007,8 +1027,8 @@ draws), it is the **first 8 bytes of sha256(seed string)**, read big-endian as a
 | power | `261101\|alias\|power` | the committed power simulation, §8 (owner, 2026-11-01) |
 | judge order | `261101\|alias\|judge\|order` | the labelling order of deduplicated pairs, §6.2 |
 | drift sample | `261101\|alias\|drift` | the per-batch drift sample (`…\|<batch>`), §6.3 |
-| record spot check | `261101\|alias\|spot\|records` | the 40 records of §13.4 |
-| judged-pair spot check | `261101\|alias\|spot\|judge` | the 100 pairs of §13.5 (`…\|<label stratum>\|<arm>\|<pair>`; R15) |
+| record spot check | `261101\|alias\|spot\|records` | the 40 records of §13.4 (`…\|<record id>`; P3) |
+| judged-pair spot check | `261101\|alias\|spot\|judge` | the 100 pairs of §13.5 (`…\|<label stratum>\|<arm>\|<pair>`; R15) and the sheet order (`…\|sheet\|<pair>`; P4) |
 | placebo glossary | `261101\|alias\|placebo` | the derangement of entry lists across papers (`…\|<paper>`), §5.3 (R7) |
 
 ### 5.6 Pre-freeze pilot on the 191 held-out records (R8)
@@ -1021,9 +1041,24 @@ real collections. No balanced-set record is retrieved or judged by it.
 
 **What it estimates** (each with its n and a 95 % interval, committed as counts before the freeze):
 discordance between the two cells of each Layer-1 contrast (G and C separately for the glossary
-contrast); the baseline C found@10 under base × default × none (the C ceiling, §2 item 4); the share of
-judged pairs labelled *answers*, per arm; the tiebreaker share; the Opus-filtered share of the drift
-sample, per arm; the deduplicated pair count per leg (for the judge caps, §14 O7).
+contrast; for H2, against random-1, against random-2, against either and against both); the share of
+judged pairs labelled *answers*, per arm; the escalated, tiebroken and unjudged shares; the Opus-filtered
+share of the drift sample, per arm; and the judge-pair counts per judging stage plus the registry total
+(for the judge caps, §14 O7). **Intervals** (P5): a paper-cluster percentile bootstrap (seed
+`261101|alias|boot`) for the discordances, a Wilson interval for the pair shares.
+
+**The pilot stays blind to outcomes (owner, 2026-11-03, R28).** In pilot mode **no found@10,
+found@10-gold or RR@10** of any leg is printed, written to a public file, or derivable from the pilot
+report; the estimates above are the only figures it reports, and pair counts are reported per judging
+stage and as the registry total, never per leg. The harness's stage-A commit step, which printed per-leg
+found@10, must not do so in pilot mode (as implemented in the judge's pilot mode, R28 / #923). *Why:* a
+leg's on-demand judge-pair demand equals 10 × (rows − failed − found@10-gold), so per-leg pair counts
+would reveal the gold-only H1 and H2 changes. A baseline C found@10 (base × default × none), with the C
+discordance under merged vs none, would bound the direction of the pilot's C change: gains are at most the
+headroom and losses at most the baseline hits, and C sits near the ceiling (§2 item 4). So the pilot does
+not report it; the main run prints the baseline C found@10 beside the C gate anyway (§3.4). The
+discordances carry no level, so they are direction-free; none of the listed estimates, alone or
+combined, bounds the direction of any contrast.
 
 **Its limits, stated now.** The 191 sit on papers the stop rule did not satisfy (83 G, 108 C), so they are
 not a sample of the balanced set. Their own papers' neighbours are **not** in the neighbour arm (§5.1
@@ -1484,10 +1519,13 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
   list costs one read-only `_count` on the leg's bench index, on the exact tenant scope. The verdicts
   are `exhausted_verified` (scored, not gated), `clamp` (hard stop), `query_mismatch` (hard stop) and
   `under_served` (gated).
-- **Glossary boost:** the round-3 behavioural probe rule. Where the probe is structurally `not_testable`,
-  the boost is declared from the serving release and the label `declared` is printed, never `pass`.
+- **Glossary boost:** the round-3 behavioural probe rule (found10's boost probe: *active*, *inactive* or
+  *mixed*; it proves a boost greater than 0, not its value; *inactive* or *mixed* is a hard stop, below). Where the probe is structurally
+  `not_testable`, as on the *none*-arm collections, the boost is declared from the serving release and the
+  label `declared` is printed, never `pass`. The reranker's glossary field is declared only; the
+  admin-config hash pins neither setting (§5.2, P1).
 - **Hard stops:** more than 2 % failed calls; a `clamp` or `query_mismatch` verdict; a config-hash
-  difference; a served judge model id that is not the requested one; a judge budget stop; a drift alarm
+  difference; a boost probe reading *inactive* or *mixed* (found10 refuses the leg and measures nothing); a served judge model id that is not the requested one; a judge budget stop; a drift alarm
   (§6.3); a frozen-prereg sha mismatch in any stage that reads `prereg.file`.
 
 ### 9.3 Collections written once (R26)
@@ -1549,9 +1587,12 @@ Every output embeds `experiment_provenance()`. A dirty run is not citable.
   labels, the spot-check sheets and keys, and the per-record hits.
 - **Released (public, counts only):** this prereg; `RESULTS.md`; `DEVIATIONS.md`; `artifacts/*.json`
   holding counts, rates, CIs, p values, model ids, version strings, commit shas and sha256 hashes of the
-  private files; per-paper quantities by paper rank only; and the `experiment_provenance()` block, which
-  carries the build host's name, as the existing artifacts already do. A committed check refuses any public artifact
-  that carries record text or ids, in the style of round 3's `string_values` and `--omit-text`.
+  private files; per-paper quantities by paper rank only; and the `experiment_provenance()` block
+  **without its `host` and `warnings` fields** (P6): the statistics and the pilot drop them, and the
+  committed check (`alias_study_common.public_problems`) refuses any host field, as it refuses any public
+  artifact that carries record text or ids, in the style of round 3's `string_values` and `--omit-text`.
+  The two planning artifacts beside this text (`artifacts/c_cost_rule.json`,
+  `artifacts/spot_check_detection.json`) are regenerated without host or warnings, still `citable true`.
 - **External calls.** Neighbour and random selection queries OpenAlex for public bibliographic metadata;
   no record content is sent. Judge C and E run on local endpoints. Argon and Opus run through the gateway
   under its standing terms (`fallback_model ""`, `max_tokens` always, ≤ 4 in flight, size notice per
@@ -1584,15 +1625,19 @@ entry, not a silent retry.
    oversamples *answers* labels (§13.5), mitigate this; they do not remove it. The prompt-paraphrase check
    (§6.6) is reported here.
 4. **Record validity (owner spot check, D9).** The owner labels **40** records drawn from the 900 balanced
-   records (seed `261101|alias|spot|records`), valid / invalid, on a sheet that carries no kind (G / C), arm
-   or record id. **Rule, as round 3's:** validity below **0.85** at the point estimate makes every result
+   records, valid / invalid: the first 40 in ascending order of sha256 of
+   `261101|alias|spot|records|<record id>`, not stratified by kind (P3). The sheet reveals no kind (G / C),
+   arm, paper id or record id; it shows the paper's title, and the passage inevitably shows the short or
+   the spelled-out form. **Rule, as round 3's:** validity below **0.85** at the point estimate makes every result
    sentence carry *validity below threshold*. The Wilson 95 % interval is printed and decides nothing. The
    set is not rebuilt. The labels are committed (as counts, with the sheet's sha) **before any analysis**.
    The verifier's spot-reads found about 1 in 12 current-pipeline G records doubtful (VERIFIER.md).
 5. **Judge validity (owner spot check, D9 as amended by R5 and R15).** The owner labels **100** judged
    pairs (R15; owner, 2026-11-03; about 1.5 h of owner time) drawn from the non-gold pairs labelled in
    **stage A** (§5.7), **stratified by the final judge label**. R5's 30 / 20 / 10 split is scaled to 100,
-   and within a stratum the remainder goes to base, then neighbour:
+   and within a stratum the remainder goes to base, then neighbour. The **pool** is every pair labelled in
+   stage A, including the pairs of the 191 descriptive records and of the norerank and noise-repeat legs
+   (P4); the re-weighting below is to that pool:
 
    | stratum | pairs | per arm (base / neighbour / random) |
    |---|---|---|
@@ -1606,11 +1651,16 @@ entry, not a silent retry.
    (33) estimates false *no*s, which only lower found@10 and were not seen in validation. The tiebroken stratum (17) covers the pairs on which the two primaries
    disagreed, the hardest pairs and the only ones the tiebreaker decides; it is small because those pairs
    are about 2–2.5 % of all (§6.5). Within each stratum the pairs are spread across arms as above, so the
-   neighbour and random papers, which calibration never saw (§6.4), carry two thirds of the sheet. Where
-   an arm × stratum cell has fewer pairs than its share, it is taken whole and the shortfall goes to the
-   other arms of the same stratum, then to *answers*, then to *not*. Within a cell the first pairs in the
-   order sha256 of `261101|alias|spot|judge|<stratum>|<arm>|<pair>` are taken. The sheet is **blind to arm
-   and to the judge's verdict** (the stratum is not on it).
+   neighbour and random papers, which calibration never saw (§6.4), carry two thirds of the sheet.
+   **Shortfalls** (P4): a stratum with fewer pairs than its total passes its shortfall on in a fixed
+   chain: *answers* → *not*; *not* → *answers*; tiebroken → *answers*, then *not*. The tiebroken stratum
+   never receives, so the sheet can hold fewer than 100 pairs while tiebroken pairs remain. Each
+   stratum's **realised total is re-split equally across the arms** (remainder to base, then neighbour);
+   an arm × stratum cell with fewer pairs than its share is taken whole and the rest goes to the other
+   arms of that stratum. Within a cell the first pairs in the order sha256 of
+   `261101|alias|spot|judge|<stratum>|<arm>|<pair>` are taken, and the sheet is ordered by sha256 of
+   `261101|alias|spot|judge|sheet|<pair>`. The sheet is **blind to arm and to the judge's verdict** (the
+   stratum is not on it).
 
    **What 100 pairs detect** (exact binomial at the nominal stratum sizes,
    `artifacts/spot_check_detection.json`). For a judge whose true error rate on *answers* pairs is 10 %,
@@ -1622,8 +1672,8 @@ entry, not a silent retry.
    threshold is caught on the *answers* stratum less often than not (0.35 at 30, 0.38 at 50); that is not
    a property of every n (at 17 pairs, as above, it is 0.52, because 0.90 × 17 is not a whole count).
    What the larger sheet buys is better detection of error rates above the threshold, and narrower
-   intervals. The sizes are nominal: the shortfall rule above moves a short cell's pairs to *answers*
-   after the other arms of its stratum, so the realised *answers* stratum can exceed 50.
+   intervals. The sizes are nominal: the shortfall chain above can move pairs into *answers*, so the
+   realised *answers* stratum can exceed 50.
 
    **Reported:** per-stratum owner–judge agreement with Wilson 95 % intervals, the §6.6 metrics, and the
    agreement **re-weighted to the stage-A label shares** (each stratum × arm cell weighted by its share of
@@ -1631,7 +1681,9 @@ entry, not a silent retry.
    is the estimate of the judge's overall agreement. **Rule:** a re-weighted owner–judge
    agreement below **0.90** at the point estimate, or an *answers*-stratum agreement below 0.90, is stated
    in every result sentence, and found@10-gold is reported alongside each found@10 result as the
-   sensitivity. Nothing is re-labelled. The labels are committed **before any analysis**.
+   sensitivity. Nothing is re-labelled. The labels are committed privately **before any analysis**; the
+   public record of the judged-pair spot check is the sha256 of the ingest JSONL and of the sheet, and the
+   stage-A commit sha (P4).
 
    **Single rater.** The spot check has one rater, the owner, who also designed the study. That is a
    limitation: no inter-rater agreement for the reference exists. Adding a second, independent rater on
@@ -1668,7 +1720,7 @@ entry, not a silent retry.
 
 ## 14. Open decisions for the owner
 
-Only items not settled by D1–D10 and R1–R27.
+Only items not settled by D1–D10 and R1–R28.
 
 | # | decision | proposal in this draft |
 |---|---|---|
@@ -1690,7 +1742,7 @@ Only items not settled by D1–D10 and R1–R27.
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R27 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R28 decided 2026-11-03 and folded in v3, with the pre-freeze corrections P1–P6, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, at `617d28d`) exists and its counts are entered in §5.1, with its private manifests' sha256s; #915 is merged with a merge commit (`a623981`), so `617d28d` is reachable from `main` |
@@ -1703,7 +1755,7 @@ Only items not settled by D1–D10 and R1–R27.
 | 11 | **Owner spot check of the 40 records** (§13.4): may be done before the freeze; must be committed before any analysis | open |
 | 12 | A dry run of the whole chain on base × BM25 × none for **non-study records only** (for example the validation set's), to check the plumbing without reading any study outcome | open |
 | 13 | O1 (the C gate's numeric definition) and O9 (seed base) fixed in the text | done in this draft: rule C (§3.1) and the seed strings (§5.5) |
-| 14 | **The pre-freeze pilot** on the 191 held-out records (§5.6, R8): run after item 5 and item 10, in all 29 legs, judged; its counts committed and entered in *What had been seen before writing*; any consequence recorded with the counts it rests on, and anything beyond the allowed consequences recorded as a deviation before freeze | open |
+| 14 | **The pre-freeze pilot** on the 191 held-out records (§5.6, R8): run after item 5 and item 10, in all 29 legs, judged, blind to outcomes (R28: no per-leg found@10, found@10-gold or RR@10, pair counts per judging stage only); its counts committed and entered in *What had been seen before writing*; any consequence recorded with the counts it rests on, and anything beyond the allowed consequences recorded as a deviation before freeze | open |
 | 15 | **The prompt-paraphrase check** (§6.6, R4): three paraphrases of `alias-judge/2`, committed before they are run, scored on the validation pairs by both primaries; the result recorded in §6.6 and §13.3 | open |
 | 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | open: *to be inserted from the calibration follow-up* |
 | 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
