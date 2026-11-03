@@ -306,3 +306,53 @@ def test_random_order_v2_seeds():
     assert ac.SEED_RANDOM_V2 == {1: "261101|alias|random-1-v2", 2: "261101|alias|random-2-v2"}
     ws = [f"W{i}" for i in range(20)]
     assert ac.random_order(1, "PMC1", ws, seeds=ac.SEED_RANDOM_V2) != ac.random_order(1, "PMC1", ws)
+
+
+def test_v3_cuts_split_the_top_band_at_80():
+    assert ac.v3_cuts([20.0, 27.0, 34.0, 46.0]) == [20.0, 27.0, 34.0, 46.0, 80.0]
+    assert [ac.band_of(n, ac.v3_cuts([20, 27, 34, 46])) for n in (45, 46, 79, 80, 300)] == [3, 4, 4, 5, 5]
+    with pytest.raises(ValueError):
+        ac.v3_cuts([20.0, 90.0])
+
+
+def _take(wid, t, b, s, level, fc):
+    return {"wid": wid, "type": t, "band": b, "source": s, "level": level, "for_cell": list(fc)}
+
+
+def test_carry_over_keeps_unmoved_takes_and_releases_moved_and_band_relaxed():
+    cuts3 = [20.0, 27.0, 34.0, 46.0, 80.0]
+    nch = {"A": 10, "B": 60, "C": 90, "D": 95, "E": 50, "F": 12, "G": 30}
+    took = [_take("A", "article", 0, "jats", "strict", ("article", 0, "jats")),
+            _take("B", "article", 4, "jats", "strict", ("article", 4, "jats")),     # 60: stays band 4
+            _take("C", "article", 4, "jats", "strict", ("article", 4, "jats")),     # 90: -> band 5
+            _take("D", "article", 4, "jats", "strict", ("article", 4, "jats")),     # 95: band 5, no room left
+            _take("E", "review", 4, "jats", "source", ("review", 4, "pdf")),        # source-relaxed, stays band 4
+            _take("F", "article", 0, "pdf", "any", ("article", 3, "pdf")),          # band relaxed: re-drawn
+            _take("G", "article", 2, "jats", "source+type", ("review", 2, "pdf"))]
+    # neighbours: band-4 article/jats cell split 1 (46-79) + 2 (>=80) ... but only one >=80 slot here
+    quota = {("article", 0, "jats"): 1, ("article", 4, "jats"): 2, ("article", 5, "jats"): 1,
+             ("review", 4, "pdf"): 1, ("article", 3, "pdf"): 1, ("review", 2, "pdf"): 1}
+    r = ac.carry_over(took, quota, lambda n: ac.band_of(n, cuts3), nch.__getitem__)
+    kept = {t["wid"]: (t["level"], tuple(t["for_cell"])) for t in r["kept"]}
+    assert kept == {"A": ("strict", ("article", 0, "jats")), "B": ("strict", ("article", 4, "jats")),
+                    "C": ("strict", ("article", 5, "jats")), "E": ("source", ("review", 4, "pdf")),
+                    "G": ("source+type", ("review", 2, "pdf"))}
+    assert {t["wid"]: t["why"] for t in r["released"]} == {"D": "band_assignment_changed", "F": "relaxed_on_band"}
+    # one band-4 slot (D's 95 chunks cannot fill it) and F's slot stay open for the re-draw
+    assert r["open"] == {("article", 3, "pdf"): 1, ("article", 4, "jats"): 1}
+    assert sum(r["open"].values()) == len(r["released"])
+
+
+def test_carry_over_refuses_an_inconsistent_take():
+    bad = [_take("A", "article", 1, "jats", "strict", ("article", 0, "jats"))]
+    with pytest.raises(ValueError):
+        ac.carry_over(bad, {("article", 0, "jats"): 1}, lambda n: 0, lambda w: 5)
+
+
+def test_strict_shortfall_counts_non_strict_slots_per_cell():
+    quota = {("article", 0, "jats"): 2, ("review", 5, "pdf"): 1}
+    took = [_take("A", "article", 0, "jats", "strict", ("article", 0, "jats")),
+            _take("B", "article", 0, "pdf", "source", ("article", 0, "jats")),
+            _take("C", "review", 5, "pdf", "strict", ("review", 5, "pdf"))]
+    assert ac.strict_shortfall(quota, took) == {("article", 0, "jats"): 1}
+    assert ac.RELAX_ORDER == ("strict", "source", "source+type", "any") and ac.BAND_RELAXED == {"any"}
