@@ -12,12 +12,15 @@ the owner's count of disagreements X is Binomial(n, e) (the owner taken as truth
 independent), and the rule fires when (n - X) / n < 0.90, i.e. X > 0.1 n. The **detection
 probability** is P(X > 0.1 n).
 
-**What is computed.** The *answers* stratum alone (a false *yes* is what inflates found@10, and
-that stratum is read on its own by the rule): 30 pairs on the 60-pair sheet of R5, 50 pairs on the
-100-pair sheet of R15 (R5's 30 / 20 / 10 split scaled to 100: 50 / 33 / 17). Also the whole sheet
-read as one unweighted sample (60 and 100), for comparison only: the rule's overall figure is
-re-weighted to the stage-A label shares, which do not exist before stage A. True error rates
-0.10 (the threshold itself), 0.15 and 0.20.
+**What is computed.** Every stratum of both sheets at its nominal size: R5's 60-pair sheet
+(30 *answers* / 20 *not* / 10 tiebroken) and R15's 100-pair sheet (50 / 33 / 17). The *answers*
+stratum is the one the rule reads on its own (a false *yes* is what inflates found@10); the *not*
+and tiebroken strata are shown at their own sizes for comparison. Also the whole sheet read as
+one unweighted sample (60 and 100), for comparison only: the rule's overall figure is re-weighted
+to the stage-A label shares, which do not exist before stage A. True error rates 0.10 (the
+threshold itself), 0.15 and 0.20. The sizes are nominal: §13.5's shortfall rule moves a short
+cell's pairs to the other arms of its stratum, then to *answers*, then to *not*, so the realised
+*answers* stratum can exceed 50.
 
 The provenance block comes from ``ragstack.provenance.experiment_provenance`` of this repository's
 ``python/`` tree when it imports; otherwise it is recorded as absent with the reason.
@@ -35,9 +38,12 @@ from typing import Any
 THRESHOLD = Fraction(9, 10)
 ERROR_RATES = (0.10, 0.15, 0.20)
 SHEETS = {
-    "R5_60_pairs": {"answers_stratum": 30, "whole_sheet": 60, "split": [30, 20, 10]},
-    "R15_100_pairs": {"answers_stratum": 50, "whole_sheet": 100, "split": [50, 33, 17]},
+    "R5_60_pairs": {"answers_stratum": 30, "not_stratum": 20, "tiebroken_stratum": 10, "whole_sheet": 60,
+                    "split": [30, 20, 10]},
+    "R15_100_pairs": {"answers_stratum": 50, "not_stratum": 33, "tiebroken_stratum": 17, "whole_sheet": 100,
+                      "split": [50, 33, 17]},
 }
+PARTS = ("answers_stratum", "not_stratum", "tiebroken_stratum", "whole_sheet")
 REPO = Path(__file__).resolve().parents[6]
 
 
@@ -68,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     out: dict[str, Any] = {}
     for name, sh in SHEETS.items():
         rec: dict[str, Any] = {"split_answers_not_tiebroken": sh["split"]}
-        for part in ("answers_stratum", "whole_sheet"):
+        for part in PARTS:
             n = sh[part]
             rec[part] = {"n": n, "fires_at_disagreements": fires_at(n),
                          "detection": {f"e{e:g}": round(detect(n, e), 4) for e in ERROR_RATES}}
@@ -82,12 +88,15 @@ def main(argv: list[str] | None = None) -> int:
         "model": "X ~ Binomial(n, e), e the judge's true error rate on the stratum, owner labels as truth",
         "sheets": out,
         "detection_at_e0.1_by_n": curve,
-        "note": "at e = 0.10 the true agreement equals the threshold, so detection stays below 0.5 at any n",
+        "note": ("at e = 0.10 the true agreement equals the threshold; detection is below 0.5 at the sheet's "
+                 "answers sizes (30, 50) and whole-sheet sizes (60, 100), but not at every n: at n not a "
+                 "multiple of 10 it can exceed 0.5 (e.g. the 17-pair tiebroken stratum). Sizes are nominal: the "
+                 "shortfall rule of prereg §13.5 can push the answers stratum above 50"),
         "provenance": prov,
     }
     Path(a.out).write_text(json.dumps(doc, indent=1) + "\n")
     for name, rec in out.items():
-        print(name, json.dumps({k: rec[k]["detection"] for k in ("answers_stratum", "whole_sheet")}))
+        print(name, json.dumps({k: rec[k]["detection"] for k in PARTS}))
     print("e=0.10 by n:", curve)
     return 0
 
