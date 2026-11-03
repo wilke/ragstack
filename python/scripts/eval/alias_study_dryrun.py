@@ -15,7 +15,9 @@ legs; registry on demand, batches, C / E / Argon / Opus drift sample with the on
 finalize with the drift alarm, ``commit-stage-a``), then ``alias_study_run.py --stage B`` (the
 other 9 cells and the placebo leg) and the judge on stage B's new pairs (the Layer-1 bm25 legs
 among them), then the analysis gate, a row count of every leg, and ``alias_study_stats.py``
-(Layer 1, Layer 2, sensitivities, the public check). What is fake:
+(Layer 1, Layer 2, sensitivities, the public check). The statistics run twice: in analysis stage
+A right after ``commit-stage-a`` (Layer 1 only, before stage B exists) and in stage B at the end;
+each refuses an empty leg it reads. What is fake:
 
 * **the corpora**: ``base`` is the real chunk export (read only); each expanded arm adds
   ``--added-per-arm`` synthetic papers, copies of base chunks under new chunk ids and paper ids
@@ -334,9 +336,31 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
             if jcodes[f"{b}|finalize"] != 0:
                 raise SystemExit(f"dry run: batch {b} did not finalize: {jcodes}")
 
+    n_g = sum(1 for r in asc.split_records(recs)[0] if r["kind"] == "G")
+
+    def stats(stage: str) -> tuple[int, dict[str, Any]]:
+        """The statistics on the harness's own outputs, in analysis stage ``stage``; every leg the
+        stage reads must be non-empty (an empty leg cannot pass the dry run)."""
+        scfg = {"records": str(records), "runs_dir": str(work / "runs"), "judge_dir": str(work / "judge"),
+                "reach": {"count": n_g, "of": n_g}, "dry_run": True, "n_perm": n_perm, "n_boot": n_boot,
+                "analysis_stage": stage}
+        scfgp = work / f"stats-config-{stage}.json"
+        scfgp.write_text(json.dumps(scfg, indent=1))
+        tag = "stageA" if stage == "A" else "dryrun"
+        rc = ast.main(["--config", str(scfgp), "--out", str(work / f"results-{tag}.json"),
+                       "--public", str(work / f"public-{tag}.json")])
+        res = json.loads((work / f"results-{tag}.json").read_text())
+        need = ar.stage_legs("A") if stage == "A" else ar.study_legs()
+        empty = [asc.leg_id(*lg) for lg in need if not res["legs_read"].get(asc.leg_id(*lg))]
+        if empty or res["analysis"]["stage"] != stage:
+            raise SystemExit(f"dry run: the stage-{stage} statistics read empty legs {empty[:6]}")
+        return rc, res
+
     run_stage("A")
     judge_stage("A")
     jcodes["commit-stage-a"] = judge("commit-stage-a")
+    # Layer 1 after stage A, before stage B exists (§5.7)
+    rc_a, res_a = stats("A")
     run_stage("B")
     judge_stage("B")
     gate = ajd.analysis_gate(work / "runs", dry_run=True)
@@ -350,17 +374,11 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
         leg_rows[asc.leg_id(c, g, r, rep)] = len(rows)
         if len(rows) != len(recs) or any(x.get("failed") for x in rows):
             raise SystemExit(f"dry run: leg {asc.leg_id(c, g, r, rep)} holds {len(rows)} rows for {len(recs)} records")
-    # the statistics
-    n_g = sum(1 for r in asc.split_records(recs)[0] if r["kind"] == "G")
-    scfg = {"records": str(records), "runs_dir": str(work / "runs"), "judge_dir": str(work / "judge"),
-            "reach": {"count": n_g, "of": n_g}, "dry_run": True, "n_perm": n_perm, "n_boot": n_boot}
-    scfgp = work / "stats-config.json"
-    scfgp.write_text(json.dumps(scfg, indent=1))
-    rc = ast.main(["--config", str(scfgp), "--out", str(work / "results-dryrun.json"),
-                   "--public", str(work / "public-dryrun.json")])
-    res = json.loads((work / "results-dryrun.json").read_text())
-    return {"legs": codes, "judge": jcodes, "stats_exit": rc, "retrieve_calls": server.calls, "analysis_gate": gate,
-            "leg_rows": leg_rows,
+    # the statistics, everything (analysis stage B)
+    rc, res = stats("B")
+    return {"legs": codes, "judge": jcodes, "stats_exit": rc, "stats_exit_stage_a": rc_a, "retrieve_calls": server.calls,
+            "analysis_gate": gate, "leg_rows": leg_rows,
+            "layer1_stage_a": {k: res_a["layer1"][k]["status"] for k in ("H1", "H2", "H1b")},
             "judge_calls": fake.calls, "layer1": {k: res["layer1"][k]["status"] for k in ("H1", "H2", "H1b")},
             "records": len(recs), "work": str(work)}
 
@@ -380,7 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     out = dry_run(a.records, a.base_export, a.glossary, a.work, study_records=a.study_records,
                   added_per_arm=a.added_per_arm, batch_size=a.batch_size, n_perm=a.n_perm, n_boot=a.n_boot)
     print(json.dumps(out, indent=1))
-    return 0 if out["stats_exit"] == 0 and not any(out["legs"].values()) else 1
+    return 0 if out["stats_exit"] == 0 and out["stats_exit_stage_a"] == 0 and not any(out["legs"].values()) else 1
 
 
 if __name__ == "__main__":

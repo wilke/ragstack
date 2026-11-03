@@ -659,9 +659,12 @@ def test_leg_outcomes_gold_judged_unjudged_and_rr() -> None:
     labels = {(rid, "X1"): None, (rid, "X2"): 1, (rid, "X3"): 1}
     rows = [{"record_id": rid, "ranked_chunk_ids": ["X1", "X2", "P00-c0"], "failed": False}]
     out = st.leg_outcomes(rows, recs, lambda r, c: labels.get((r, c)), {(rid, "X2"): "P07"})
-    assert out[rid] == {"hit": 1, "hit_gold": 1, "rr": 0.5, "rr_gold": 1 / 3, "kind": "other"}
-    out2 = st.leg_outcomes(rows, recs, lambda r, c: labels.get((r, c)), {(rid, "X2"): "P00"})
-    assert out2[rid]["kind"] == "same"
+    # the gold is in the top 10: the hit rests on the gold, whatever is judged above it (RR@10 sees X2)
+    assert out[rid] == {"hit": 1, "hit_gold": 1, "rr": 0.5, "rr_gold": 1 / 3, "kind": "gold"}
+    judged = [{"record_id": rid, "ranked_chunk_ids": ["X1", "X2", "Z9"], "failed": False}]
+    assert st.leg_outcomes(judged, recs, lambda r, c: labels.get((r, c)), {(rid, "X2"): "P07"})[rid]["kind"] == "other"
+    out2 = st.leg_outcomes(judged, recs, lambda r, c: labels.get((r, c)), {(rid, "X2"): "P00"})
+    assert out2[rid]["kind"] == "same" and out2[rid]["hit_gold"] == 0
     rows3 = [{"record_id": rid, "ranked_chunk_ids": ["X1"] + [f"Y{i}" for i in range(9)] + ["P00-c0"]}]
     o3 = st.leg_outcomes(rows3, recs, lambda r, c: None, {})
     assert o3[rid]["hit"] == 0 and o3[rid]["hit_gold"] == 0          # gold at rank 11; unjudged = no
@@ -672,11 +675,13 @@ def test_labeller_sensitivity_modes() -> None:
     d = st.Data.__new__(st.Data)
     d.final = {("r", "a"): {"source": "unjudged", "label": None, "c_label": 1, "e_label": 0},
                ("r", "b"): {"source": "tiebreak", "label": 1, "c_label": 0, "e_label": 1},
+               ("r", "d"): {"source": "tiebreak_r2", "label": 1, "c_label": 0, "e_label": 1},   # the first version
                ("r", "c"): {"source": "agree", "label": 0, "c_label": 0, "e_label": 0}}
     p, u, c, e = (d.labeller(x) for x in ("primary", "unjudged_yes", "tb_as_c", "tb_as_e"))
     assert (p("r", "a"), u("r", "a"), c("r", "a"), e("r", "a")) == (None, 1, 1, 0)
     assert (p("r", "b"), c("r", "b"), e("r", "b")) == (1, 0, 1)
     assert p("r", "c") == u("r", "c") == c("r", "c") == 0
+    assert (p("r", "d"), c("r", "d"), e("r", "d")) == (1, 0, 1)
 
 
 def test_draw_gap_flag() -> None:
@@ -702,19 +707,92 @@ def write_final(world: fx.World, label: Any, extra_legs: tuple[str, ...] = ()) -
                              "record_id": rec["record_id"], "chunk_id": cid, "arm": "base",
                              "label": label(rec, cid), "source": "agree", "c_label": 0, "e_label": 0,
                              "drift_sampled": True, "opus": 1})
-                pairs.append({"record_id": rec["record_id"], "chunk_id": cid, "c_paper": cid.split("-")[0],
-                              "arm": "base"})
+                pairs.append({"pair_id": f"{rec['record_id']}|{cid}", "record_id": rec["record_id"], "chunk_id": cid,
+                              "c_paper": cid.split("-")[0], "arm": "base"})
     fx.write_jsonl(jdir / "final.jsonl", rows)
     fx.write_jsonl(jdir / "pairs.jsonl", pairs)
 
 
-def write_placebo(world: fx.World) -> None:
-    d = world.runs / "base"
-    rows = [{"record_id": r["record_id"], "condition": "base", "failed": False,
-             "ranked_chunk_ids": world.default_top10(st.PLACEBO_LEG, r)} for r in world.records]
-    fx.write_jsonl(d / "placebo.jsonl", rows)
-    (d / "placebo.summary.json").write_text(json.dumps({"status": "complete", "conditions": {"base": {"gate": None}},
-                                                        "provenance": {"commit": "a" * 40}, "citable": True}))
+def patch_summary(world: fx.World, run: str, fn: Any) -> None:
+    """Edit one run summary (``<corpus>/<label>``) in place, before stage A is committed."""
+    sp = world.runs / f"{run}.summary.json"
+    s = json.loads(sp.read_text())
+    fn(s)
+    sp.write_text(json.dumps(s))
+
+
+def commit_stage_a(world: fx.World, mode: str = "dry_run", runs_mode: str | None = None,
+                   judge_mode: str | None = None, judge_summary: dict[str, Any] | None = None) -> Path:
+    """What the judge's ``commit-stage-a`` leaves behind, enough for ``verify_marker``: the
+    ``STUDY-MODE`` markers, ``stage-a/hits.jsonl`` (computed here independently: gold in the top
+    10, or a top-10 chunk labelled *answers*), the frozen summaries, the commit, its public file
+    and the marker. Returns the judge dir."""
+    import alias_study_judge as aj
+    import alias_study_run as ar
+
+    jdir = world.tmp / "judge"
+    (world.runs / ar.MODE_MARKER).write_text((runs_mode or mode) + "\n")
+    (jdir / ar.MODE_MARKER).write_text((judge_mode or mode) + "\n")
+    fin = {(x["record_id"], x["chunk_id"]): x for x in asc.read_jsonl(jdir / "final.jsonl")}
+    sa = jdir / "stage-a"
+    sa.mkdir(exist_ok=True)
+    hits = []
+    for c, g, r, rep_ in ar.judging_legs("A"):
+        rp, _ = ar.leg_files(world.runs, c, g, r, rep_)
+        for row in asc.read_jsonl(rp):
+            if row["condition"] != asc.RETRIEVERS[r]:
+                continue
+            rec = world.by_id[row["record_id"]]
+            leg = asc.leg_id(c, g, r, rep_)
+            if row.get("failed"):
+                hits.append({"leg": leg, "record_id": rec["record_id"], "failed": True, "hit": None, "hit_gold": None})
+                continue
+            top = row["ranked_chunk_ids"][:10]
+            gold = rec["gold_chunks"][0] in top
+            judged = any((fin.get((rec["record_id"], x)) or {}).get("label") == 1 for x in top)
+            hits.append({"leg": leg, "record_id": rec["record_id"], "failed": False,
+                         "hit": int(gold or judged), "hit_gold": int(gold)})
+    fx.write_jsonl(sa / "hits.jsonl", hits)
+    for c, g, r, rep_ in ar.stage_legs("A"):
+        _, sp = ar.leg_files(world.runs, c, g, r, rep_)
+        (sa / "summaries" / c).mkdir(parents=True, exist_ok=True)
+        (sa / "summaries" / c / sp.name).write_bytes(sp.read_bytes())
+    if judge_summary is not None:
+        for d in (jdir, sa):
+            (d / "judge-summary.json").write_text(json.dumps(judge_summary))
+    (jdir / "batches.json").write_text(json.dumps({"batches": []}))
+    pub = jdir / "stage-a-commit.public.json"
+    files = [aj.file_entry("stage_a_hits", sa / "hits.jsonl", "exact"),
+             aj.file_entry("final", jdir / "final.jsonl", "prefix"), aj.file_entry("pairs", jdir / "pairs.jsonl", "prefix")]
+    cpath = jdir / "stage-a-commit.json"
+    cpath.write_text(json.dumps({"schema": aj.COMMIT_SCHEMA, "mode": mode, "files": files,
+                                 "batches_file": str(jdir / "batches.json"), "batch_numbers_A": [], "batches_A": [],
+                                 "public_file": str(pub)}))
+    sha = asc.sha256_file(cpath)
+    pub.write_text(json.dumps({"commit_sha256": sha}))
+    (world.runs / ar.COMMIT_MARKER).write_text(json.dumps({"commit": str(cpath), "commit_sha256": sha,
+                                                           "public": str(pub)}))
+    return jdir
+
+
+def committed_world(tmp_path: Path, label: Any = None, patch: Any = None, **kw: Any) -> fx.World:
+    """The e2e world: H1's base x none x default G records lose their gold (an unlabelled P99-c0 in
+    its place), every other leg holds the gold at rank 1; final labels; stage A committed."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    w = fx.World(tmp_path)
+
+    def top(leg: str, rec: dict[str, Any]) -> list[str]:
+        t = w.default_top10(leg, rec)
+        if leg == st.L("base", "none", "default") and rec["kind"] == "G":
+            t = [x for x in t if x != rec["gold_chunks"][0]] + ["P99-c0"]
+        return t
+
+    w.write_runs(top10=top)
+    if patch:
+        patch(w)
+    write_final(w, label or (lambda rec, cid: 0))
+    commit_stage_a(w, **kw)
+    return w
 
 
 def e2e_config(w: fx.World, tmp_path: Path, **extra: Any) -> Path:
@@ -725,29 +803,32 @@ def e2e_config(w: fx.World, tmp_path: Path, **extra: Any) -> Path:
     (tmp_path / "cov.json").write_text(json.dumps(cov))
     (tmp_path / "cuts.json").write_text(json.dumps({"citation_count": [30, 70], "text_similarity": [0.3, 0.7]}))
     (tmp_path / "attr.json").write_text(json.dumps({"N00": "P00", "N01": "P01"}))
-    (tmp_path / "coverage.json").write_text(json.dumps({"merged": {"share": 0.18}, "placebo": {"share": 0.05}}))
     cfg = {"records": str(w.records_path), "runs_dir": str(w.runs), "judge_dir": str(tmp_path / "judge"),
            "reach": {"count": n_g, "of": n_g}, "dry_run": True, "n_perm": 2000, "n_boot": 300,
            "paper_covariates": str(tmp_path / "cov.json"), "tercile_cuts": str(tmp_path / "cuts.json"),
-           "neighbour_attribution": str(tmp_path / "attr.json"), "field_coverage": str(tmp_path / "coverage.json"),
-           **extra}
+           "neighbour_attribution": str(tmp_path / "attr.json"), **extra}
     cp = tmp_path / "cfg.json"
     cp.write_text(json.dumps(cfg))
     return cp
 
 
+FIELD_COV = {"merged": {"available": True, "share_with_field": 0.18}, "placebo": {"available": True, "share_with_field": 0.05}}
+
+
+def _e2e_patch(w: fx.World) -> None:
+    def study(fc: dict[str, Any], extra: dict[str, Any] | None = None) -> Any:
+        def f(s: dict[str, Any]) -> None:
+            s["study"] = {"mode": "dry_run", "field_coverage": fc, **(extra or {})}
+            s["census"] = {"source": "load_receipt", "collection_build": {"collection": "bench-x", "n_chunks": 52}}
+        return f
+    patch_summary(w, "base/merged", study(FIELD_COV["merged"]))
+    patch_summary(w, "base/placebo", study(FIELD_COV["placebo"], {
+        "stage": "B", "stage_a_commit": {"verified": True},
+        "placebo_glossary": {"counts": {"placebo_dropped_own_entries": 7}}}))
+
+
 def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
-    w = fx.World(tmp_path)
-
-    def top(leg: str, rec: dict[str, Any]) -> list[str]:
-        t = w.default_top10(leg, rec)
-        if leg == st.L("base", "none", "default") and rec["kind"] == "G":
-            t = [x for x in t if x != rec["gold_chunks"][0]] + ["P99-c0"]
-        return t
-
-    w.write_runs(top10=top)
-    write_placebo(w)
-    write_final(w, lambda rec, cid: 0, extra_legs=(st.PLACEBO_LEG,))
+    w = committed_world(tmp_path, patch=_e2e_patch)
     cp = e2e_config(w, tmp_path)
     assert st.main(["--config", str(cp), "--out", str(tmp_path / "res.json"), "--public", str(tmp_path / "pub.json")]) == 0
     res = json.loads((tmp_path / "res.json").read_text())
@@ -772,13 +853,23 @@ def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
     assert inp["judge"]["pairs.jsonl"] == asc.sha256_file(jdir / "pairs.jsonl") and inp["judge"]["judge-summary.json"] is None
     assert len(inp["runs"]) == 13 and all(v["rows_sha256"] and v["summary_sha256"] for v in inp["runs"].values())
     assert inp["runs"]["base/placebo"]["rows_sha256"] == asc.sha256_file(w.runs / "base" / "placebo.jsonl")
-    assert set(inp["files"]) >= {"field_coverage", "paper_covariates", "tercile_cuts", "neighbour_attribution",
-                                 "power_artifact"}
-    assert inp["files"]["field_coverage"] == asc.sha256_file(tmp_path / "coverage.json")
+    assert inp["runs"]["base/merged"]["collection_build_sha256"] == asc.sha_text(
+        json.dumps({"collection": "bench-x", "n_chunks": 52}, sort_keys=True, separators=(",", ":")))
+    assert inp["runs"]["base/merged"]["census_source"] == "load_receipt"
+    assert inp["stage_a"]["stage_a_commit_sha256"] == res["study"]["gate"]["stage_a_commit_sha256"] is not None
+    assert inp["stage_a"]["hits.jsonl"] == asc.sha256_file(jdir / "stage-a" / "hits.jsonl")
+    assert set(inp["files"]) >= {"paper_covariates", "tercile_cuts", "neighbour_attribution", "power_artifact"}
     assert inp["records"] == asc.sha256_file(w.records_path) and inp["config_canonical_sha256"]
-    # the placebo leg, read when the runner wrote it, with the field coverage beside it
+    # the mode, the gate, the stage: recorded; Layer 1 cross-checked against the frozen stage-A hits
+    assert res["study"]["mode"] == "dry_run" and res["study"]["spot_checks_waiver"] == "dry run"
+    assert res["analysis"]["stage"] == "B" and res["analysis"]["needs"] == ["found10", "rr10"]
+    assert res["frozen_stage_a"]["agree"] is True and res["frozen_stage_a"]["legs"] == 14
+    assert len(res["legs_read"]) == 29 and res["legs_read"][st.PLACEBO_LEG] == len(w.records)
+    assert res["runs"]["base/placebo"]["stage_a_commit_verified"] is True
+    # the placebo leg, read through the 29-leg list, with the summaries' field coverage beside it
     plc = res["layer2"]["placebo"]
-    assert plc["G"]["placebo_minus_none"]["net_points"] == 100.0 and plc["field_coverage"]["placebo"]["share"] == 0.05
+    assert plc["G"]["placebo_minus_none"]["net_points"] == 100.0
+    assert plc["field_coverage"] == FIELD_COV and plc["placebo_dropped_own_entries"] == 7
     fs = res["fixed_sensitivities"]
     assert fs["H1"]["bootstrap_t"]["verdict"] == st.CONFIRMED and fs["H1"]["bootstrap_t"]["n_boot"] == 300
     assert "verdict" not in fs["H1"]["studentized_identity_check"] and fs["H1"]["topic_clustering"]["clusters"] == 3
@@ -798,16 +889,7 @@ def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
 
 def test_fragile_annotates_and_never_changes_the_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A bootstrap-t re-test that disagrees makes the confirmed H1 fragile; H1 stays confirmed."""
-    w = fx.World(tmp_path)
-
-    def top(leg: str, rec: dict[str, Any]) -> list[str]:
-        t = w.default_top10(leg, rec)
-        if leg == st.L("base", "none", "default") and rec["kind"] == "G":
-            t = [x for x in t if x != rec["gold_chunks"][0]] + ["P99-c0"]
-        return t
-
-    w.write_runs(top10=top)
-    write_final(w, lambda rec, cid: 0)
+    w = committed_world(tmp_path)
     cfg = json.loads(e2e_config(w, tmp_path).read_text())
     monkeypatch.setattr(st, "bootstrap_t",
                         lambda s, alt, b, seed: {"p": 0.5, "p_method": "stub", "n_boot": b, "min_attainable_p": 1 / (b + 1)})
@@ -817,15 +899,226 @@ def test_fragile_annotates_and_never_changes_the_label(tmp_path: Path, monkeypat
                                               "flipped_by": ["bootstrap_t"], "fragile": True}
 
 
-def test_label_coverage_counts_pairs_without_a_final_label() -> None:
+def test_label_coverage_reads_the_demanded_pairs_only() -> None:
+    """found@10 demands the top 10 only when the gold is outside it; RR@10 the chunks above the
+    gold. A chunk ranked below the gold is never judged, so never missing."""
     rec = {"record_id": "r1", "gold_chunks": ["g"]}
-    rows = {"base|none|default": [{"record_id": "r1", "ranked_chunk_ids": ["g", "a", "b"]}],
+    rows = {"base|none|default": [{"record_id": "r1", "ranked_chunk_ids": ["a", "g", "b"]}],   # b below gold
             "base|none|bm25": [{"record_id": "r1", "ranked_chunk_ids": ["b", "c"]},
                                {"record_id": "r1", "failed": True, "ranked_chunk_ids": None}]}
-    final = {("r1", "a"): {}, ("r1", "b"): {}}
-    cov = st.label_coverage(rows, {"r1": rec}, final)
-    assert cov["pairs_without_final_label"] == 1 and cov["instances_per_leg"] == {"base|none|bm25": 1}
-    assert st.label_coverage(rows, {"r1": rec}, {**final, ("r1", "c"): {}})["pairs_without_final_label"] == 0
+    cov = st.label_coverage(rows, {"r1": rec}, {})
+    assert cov["pairs_without_final_label"] == 3 and cov["instances_per_leg"] == {"base|none|default": 1,
+                                                                                  "base|none|bm25": 2}
+    f10_only = st.label_coverage(rows, {"r1": rec}, {}, needs=("found10",))
+    assert f10_only["instances_per_leg"] == {"base|none|bm25": 2}                  # "a" is an RR@10 pair
+    full = {("r1", "a"): {}, ("r1", "b"): {}, ("r1", "c"): {}}
+    assert st.label_coverage(rows, {"r1": rec}, full)["pairs_without_final_label"] == 0
+
+
+def test_coverage_scope_after_stage_a_and_after_stage_b() -> None:
+    """After stage A only the judging-stage-A legs' found@10 pairs must be labelled: an unlabelled
+    bm25 pair (judged in stage B) is not a hole then, and is one after stage B."""
+    legs_a, needs_a = st.coverage_scope("A")
+    legs_b, needs_b = st.coverage_scope("B")
+    assert len(legs_a) == 14 and needs_a == ("found10",) and st.L("base", "none", "bm25") not in legs_a
+    assert len(legs_b) == 29 and needs_b == ("found10", "rr10")
+    rec = {"record_id": "r1", "gold_chunks": ["g"]}
+    rows = {st.L("base", "none", "bm25"): [{"record_id": "r1", "ranked_chunk_ids": ["x"]}],
+            st.L("base", "none", "default"): [{"record_id": "r1", "ranked_chunk_ids": ["y", "g"]}]}
+    assert st.label_coverage(rows, {"r1": rec}, {}, legs_a, needs_a)["pairs_without_final_label"] == 0
+    assert st.label_coverage(rows, {"r1": rec}, {}, legs_b, needs_b)["pairs_without_final_label"] == 2
+
+
+def test_stage_a_analysis_reads_layer1_only(tmp_path: Path) -> None:
+    w = committed_world(tmp_path)
+    res = st.analyse(json.loads(e2e_config(w, tmp_path, analysis_stage="A").read_text()))
+    assert res["analysis"]["stage"] == "A" and res["analysis"]["coverage_legs"] == 14
+    assert res["layer2"].startswith("absent (analysis stage A") and res["layer1"]["H1"]["status"] == st.CONFIRMED
+    with pytest.raises(SystemExit, match="analysis_stage"):
+        st.study_preflight(json.loads(e2e_config(w, tmp_path, analysis_stage="C").read_text()))
+
+
+def test_the_gate_runs_before_anything_is_read(tmp_path: Path) -> None:
+    """No marker: refused by the analysis gate, before the (here missing) record file is read."""
+    w = fx.World(tmp_path)
+    w.write_runs()
+    write_final(w, lambda rec, cid: 0)
+    import alias_study_run as ar
+
+    for d in (w.runs, tmp_path / "judge"):
+        (d / ar.MODE_MARKER).write_text("dry_run\n")
+    cfg = json.loads(e2e_config(w, tmp_path).read_text())
+    cfg["records"] = str(tmp_path / "no-such-records.jsonl")
+    with pytest.raises(SystemExit, match="no analysis before stage A is committed"):
+        st.Data(cfg)
+
+
+def test_retired_config_keys_are_refused(tmp_path: Path) -> None:
+    w = committed_world(tmp_path)
+    for k in ("spot_records", "spot_judge", "field_coverage"):
+        cfg = json.loads(e2e_config(w, tmp_path, **{k: "x"}).read_text())
+        with pytest.raises(SystemExit, match="retired"):
+            st.study_preflight(cfg)
+
+
+def test_modes_must_agree(tmp_path: Path) -> None:
+    w = committed_world(tmp_path / "a", runs_mode="pilot")
+    with pytest.raises(SystemExit, match="runs_dir/STUDY-MODE is 'pilot'"):
+        st.study_preflight(json.loads(e2e_config(w, tmp_path / "a").read_text()))
+    w2 = committed_world(tmp_path / "b", judge_mode="pilot")
+    with pytest.raises(SystemExit, match="judge_dir/STUDY-MODE is 'pilot'"):
+        st.study_preflight(json.loads(e2e_config(w2, tmp_path / "b").read_text()))
+    w3 = committed_world(tmp_path / "c", patch=lambda w: patch_summary(
+        w, "neighbour/none", lambda s: s.update(study={"mode": "pilot"})))
+    with pytest.raises(SystemExit, match="measured in mode 'pilot'"):
+        st.Data(json.loads(e2e_config(w3, tmp_path / "c").read_text()))
+
+
+def test_judge_dir_must_be_the_committed_one(tmp_path: Path) -> None:
+    import shutil
+
+    w = committed_world(tmp_path)
+    other = tmp_path / "judge-copy"
+    shutil.copytree(tmp_path / "judge", other)
+    cfg = json.loads(e2e_config(w, tmp_path, judge_dir=str(other)).read_text())
+    with pytest.raises(SystemExit, match="not the judge directory stage A was committed from"):
+        st.study_preflight(cfg)
+    assert st.study_preflight(json.loads(e2e_config(w, tmp_path).read_text()))["stage_a_commit"]["verified"]
+
+
+def test_pilot_and_main_spot_check_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pilot waives the spot checks and the waiver is recorded; the main run refuses without
+    them and records their sha256 with them."""
+    import alias_study_judge as aj
+
+    wp = committed_world(tmp_path / "p", mode="pilot")
+    pre = st.study_preflight(json.loads(e2e_config(wp, tmp_path / "p", dry_run=False, pilot=True).read_text()))
+    assert pre["mode"] == "pilot" and pre["spot_checks_waiver"] == "pilot (descriptive, §5.6)"
+    monkeypatch.setattr(aj, "public_tracked_at_head", lambda path, repo=None: True)
+    wm = committed_world(tmp_path / "m", mode="main")
+    cfg = json.loads(e2e_config(wm, tmp_path / "m", dry_run=False).read_text())
+    with pytest.raises(SystemExit, match="spot check"):
+        st.study_preflight(cfg)
+    (tmp_path / "rec.json").write_text(json.dumps({"valid": 38, "n": 40}))
+    fx.write_jsonl(tmp_path / "judge-spot.jsonl", [])
+    cfg["spot_checks"] = {"records": str(tmp_path / "rec.json"), "judge": str(tmp_path / "judge-spot.jsonl")}
+    pre = st.study_preflight(cfg)
+    assert pre["spot_checks_waiver"] is None and pre["gate"]["spot_checks_sha256"]["records"]
+    assert pre["stage_a_commit"]["public_tracked_at_head"] is True
+
+
+def test_frozen_stage_a_cross_check(tmp_path: Path) -> None:
+    """A hit that differs from stage-a/hits.jsonl, a summary that differs from its frozen copy,
+    or a leg missing from the hits: refused."""
+    w = committed_world(tmp_path)
+    cfg = json.loads(e2e_config(w, tmp_path).read_text())
+    d = st.Data(cfg)
+    prim = d.outcomes("primary")
+    jdir = tmp_path / "judge"
+    assert st.check_frozen_stage_a(jdir, w.runs, prim, d.by_id)["agree"]
+    hp = jdir / "stage-a" / "hits.jsonl"
+    orig = hp.read_text()
+    rows = asc.read_jsonl(hp)
+    rows[0]["hit"] = 1 - int(rows[0]["hit"])
+    fx.write_jsonl(hp, rows)
+    with pytest.raises(SystemExit, match="differ from the frozen"):
+        st.check_frozen_stage_a(jdir, w.runs, prim, d.by_id)
+    fx.write_jsonl(hp, [r for r in asc.read_jsonl(jdir / "stage-a" / "hits.jsonl") if r["leg"] != st.L("random2", "none", "default")])
+    with pytest.raises(SystemExit, match="judging-stage-A legs"):
+        st.check_frozen_stage_a(jdir, w.runs, prim, d.by_id)
+    hp.write_text(orig)
+    cp = jdir / "stage-a" / "summaries" / "neighbour" / "none.summary.json"
+    cp.write_text(cp.read_text() + " ")
+    with pytest.raises(SystemExit, match="frozen copies"):
+        st.check_frozen_stage_a(jdir, w.runs, prim, d.by_id)
+
+
+def test_inactive_reranker_gates_the_default_leg(tmp_path: Path) -> None:
+    """found10's identical_to_norerank on every record gates the default leg (H1), not norerank."""
+    def same(s: dict[str, Any]) -> None:
+        s["conditions"]["base"] = {"gate": None, "identical_to_norerank": {"records": 26, "identical": 26}}
+    w = committed_world(tmp_path, patch=lambda w: patch_summary(w, "base/merged", same))
+    d = st.Data(json.loads(e2e_config(w, tmp_path).read_text()))
+    assert d.gates[st.L("base", "merged", "default")] == st.INACTIVE_RERANKER
+    assert d.gates[st.L("base", "merged", "norerank")] is None
+    assert not st._identical_to_norerank({"records": 26, "identical": 25}) and st._identical_to_norerank(True)
+    res = st.layer1(d.bal, d.outcomes(), d.gates, {"count": 24, "of": 24}, AN)
+    assert res["H1"]["status"] == st.GATE and any("inactive reranker" in g for g in res["H1"]["gate_reasons"])
+
+
+def test_false_yes_from_the_judge_summary_and_filters() -> None:
+    js = {"drift": {"scopes": {"overall": {"false_yes_among_answers": {"k": 3, "n": 20}},
+                               "random": {"false_yes_among_answers": {"k": 3, "n": 10}},
+                               "base": {"false_yes_among_answers": {"k": 0, "n": 10}}}}}
+    c = st.false_yes_from_summary(js)
+    assert (c["pooled"]["k"], c["pooled"]["n"]) == (3, 20) and c["random"]["wilson95"] == [0.1077, 0.6033]
+    assert st.false_yes_from_summary({"drift": {"scopes": {"overall": {}}}}) is None
+    rows = frows([("random", 1, 0, 3)])
+    rows[100] = {"arm": "random", "label": 1, "opus": 0, "opus_status": "no_reference", "drift_sampled": True}
+    rows[101] = {"arm": "random", "label": 1, "opus": 0, "drift_sampled": True, "stage": "B"}
+    assert st.false_yes_counts(rows)["random"]["n"] == 4
+    assert st.false_yes_counts(rows, stage="A")["random"]["n"] == 3          # stage-B rows left out
+    # U reads the frozen stage-A summary when it has the counts; the rows are its cross-check
+    cnt, src, same = st.false_yes_inputs(js, rows)
+    assert cnt["random"]["n"] == 10 and src.startswith("stage-a/judge-summary.json") and same is False
+    cnt2, src2, same2 = st.false_yes_inputs({}, rows)
+    assert cnt2["random"]["n"] == 3 and src2.startswith("final.jsonl") and same2 is None
+
+
+def test_agreement_metrics_by_hand() -> None:
+    m6 = st.agreement_metrics(tp=40, fp=10, fn=5, tn=25)
+    assert m6["precision"] == 0.8 and m6["recall"] == pytest.approx(40 / 45) and m6["specificity"] == pytest.approx(25 / 35)
+    po, pe = 65 / 80, (50 * 45 + 30 * 35) / 80 ** 2
+    assert m6["kappa"] == pytest.approx((po - pe) / (1 - pe)) and m6["f1"] == pytest.approx(2 * 0.8 * (40 / 45) / (0.8 + 40 / 45))
+    pi = (50 / 80 + 45 / 80) / 2
+    assert m6["gwet_ac1"] == pytest.approx((po - 2 * pi * (1 - pi)) / (1 - 2 * pi * (1 - pi)))
+
+
+def test_judge_spot_check_r15(tmp_path: Path) -> None:
+    """Strata from the final label (answers / not where C and E agreed, tiebroken where Argon
+    decided), agreement re-weighted to the stage-A label shares, and the < 0.90 rule on the
+    re-weighted agreement or the answers stratum."""
+    d = st.Data.__new__(st.Data)
+    fin = {}
+    for i in range(60):                                 # the 60 sheet pairs: 40 not / 15 answers / 5 tiebroken, base
+        src, lab = ("agree", 0) if i < 40 else (("agree", 1) if i < 55 else ("tiebreak", 1))
+        fin[("r", f"c{i}")] = {"pair_id": f"p{i}", "arm": "base", "source": src, "label": lab, "stage": "A"}
+    for i in range(360):                                # stage A holds many more *not* labels than the sheet
+        fin[("r", f"n{i}")] = {"pair_id": f"n{i}", "arm": "base", "source": "agree", "label": 0, "stage": "A"}
+    fin[("r", "b1")] = {"pair_id": "b1", "arm": "base", "source": "agree", "label": 0, "stage": "B"}   # not stage A
+    fin[("r", "u")] = {"pair_id": "pu", "arm": "base", "source": "unjudged", "label": None, "stage": "A"}
+    d.final = fin
+    spot = [{"pair_id": f"p{i}", "owner_label": (0 if i < 40 else 1)} for i in range(60)]
+    spot[40]["owner_label"] = 0                         # one answers pair the owner calls not
+    spot.append({"pair_id": "pu", "owner_label": 1})
+    fx.write_jsonl(tmp_path / "spot.jsonl", spot)
+    (tmp_path / "rec.json").write_text(json.dumps({"valid": 33, "n": 40}))
+    out = st.spot_flags({"spot_checks": {"records": str(tmp_path / "rec.json"), "judge": str(tmp_path / "spot.jsonl")}}, d)
+    rv = out["record_validity"]
+    assert rv["rate"] == 33 / 40 and rv["below_threshold"] is True                 # 0.825 < 0.85
+    jv = out["judge_validity"]
+    assert jv["strata"]["answers"] == {"agree": 14, "n": 15, "rate": 14 / 15, "wilson95": st._wilson(14, 15)}
+    assert jv["unjudged"] == 1 and jv["n"] == 60
+    assert jv["reweighted_agreement"] == pytest.approx((400 * 1 + 15 * 14 / 15 + 5 * 1) / 420)
+    assert jv["reweighted_agreement"] != pytest.approx(59 / 60)                   # not the raw agreement
+    assert jv["below_threshold"] is False                                         # 0.933 and 0.983
+    spot[41]["owner_label"] = 0                         # answers stratum now 13/15 = 0.867 < 0.90
+    fx.write_jsonl(tmp_path / "spot.jsonl", spot)
+    out2 = st.spot_flags({"spot_checks": {"judge": str(tmp_path / "spot.jsonl")}}, d)
+    assert out2["judge_validity"]["below_threshold"] is True
+    assert out2["record_validity"].startswith("absent")
+
+
+def test_citable_needs_every_check() -> None:
+    ok = {"mode": "main", "runs_citable": True, "prereg_verified": True, "stage_b_runs_commit_verified": True,
+          "stage_a_commit": {"public_tracked_at_head": True}}
+    clean = {"dirty": False, "untracked": 0}
+    assert st.is_citable(ok, clean, False)
+    assert not st.is_citable(ok, clean, True)
+    assert not st.is_citable(ok, {"dirty": True, "untracked": 0}, False)
+    for k, v in (("mode", "pilot"), ("runs_citable", False), ("prereg_verified", False),
+                 ("stage_b_runs_commit_verified", False), ("stage_a_commit", {"public_tracked_at_head": None})):
+        assert not st.is_citable({**ok, k: v}, clean, False), k
 
 
 def GATE_OR_NOT(res: dict[str, Any]) -> str:  # noqa: N802

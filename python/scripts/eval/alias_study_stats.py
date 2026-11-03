@@ -49,9 +49,25 @@ through the equivalence bound, else not resolved. The rules compare unrounded fi
 Layer-1 verdict governs the wording (:func:`serving_statements`); every *attach* statement adds
 that a C cost smaller than about 3.6 points is not ruled out (R12).
 
+**Before anything is read (§5.7, §5.6)** (:func:`study_preflight`): the ``STUDY-MODE`` of
+``runs_dir`` and ``judge_dir`` must be this config's mode, :func:`alias_study_judge.analysis_gate`
+must pass (stage A committed and verified; ``spot_checks: {records, judge}`` present, waived and
+recorded only in a dry run and the pilot), and ``judge_dir`` must be the directory stage A was
+committed from. Legs are read through :func:`alias_study_run.leg_files` (the 29 legs of
+:func:`alias_study_common.all_legs`); a run measured in another mode is refused; found10's
+inactive-reranker verdict gates the default leg.
+
+**Two analysis stages** (``analysis_stage``). ``A``: Layer 1 after stage A (and its
+sensitivities); every found@10 pair the 14 judging-stage-A legs demand
+(:func:`alias_study_judge.demanded`) must carry a final label; no Layer 2. ``B`` (default):
+everything, every found@10 and RR@10 pair of the 29 legs labelled. In both, Layer 1 is
+cross-checked against the frozen ``stage-a/hits.jsonl`` and ``stage-a/summaries/``
+(:func:`check_frozen_stage_a`), and U reads the frozen stage-A judge summary.
+
 **Inputs.** Every file read is hashed into ``inputs`` (:func:`input_hashes`): the records, the
-judge's ``final.jsonl`` / ``pairs.jsonl`` / ``judge-summary.json``, every run summary and row
-file, and every optional file the config names; plus the config's canonical sha256.
+judge's ``final.jsonl`` / ``pairs.jsonl`` / ``judge-summary.json``, the frozen stage-A files and
+the commit's sha256, every run summary and row file with its collection build and census source,
+both spot checks, and every optional file the config names; plus the config's canonical sha256.
 
 **Sensitivities (§7), never deciding.** The declared ones (subsets, judge modes, missing as
 not found, H2 against each draw) and the fixed ones of R6: the studentized sign-flip (H1,
@@ -124,7 +140,7 @@ H2_SPEC: Spec = [(1.0, L("neighbour", "none", "default")), (-0.5, L("random1", "
 H3_SPEC: Spec = [(1.0, L("neighbour", "none", "default")), (-1.0, L("base", "none", "default")),
                  (-1.0, L("neighbour", "none", "bm25")), (1.0, L("base", "none", "bm25"))]
 #: §5.3 (R7): the placebo leg, base x default only; read when the runner wrote it
-PLACEBO_LEG = L("base", "placebo", "default")
+PLACEBO_LEG = L(*asc.PLACEBO_LEG)
 
 
 # ------------------------------------------------------------------ outcomes
@@ -132,7 +148,10 @@ PLACEBO_LEG = L("base", "placebo", "default")
 def leg_outcomes(rows: Sequence[Mapping[str, Any]], records: Mapping[str, Mapping[str, Any]],
                  label: Callable[[str, str], int | None], pair_paper: Mapping[tuple[str, str], str]
                  ) -> dict[str, dict[str, Any] | None]:
-    """Per record: hit, hit_gold, rr, rr_gold, kind, or None for a failed call."""
+    """Per record: hit, hit_gold, rr, rr_gold, kind, or None for a failed call. ``kind`` says
+    what the hit rests on: ``gold`` whenever the gold is in the top 10 (whatever is ranked above
+    it), else the first top-10 chunk labelled *answers*, ``same`` or ``other`` paper. So the
+    split does not move when stage B adds the RR@10 labels above the gold."""
     out: dict[str, dict[str, Any] | None] = {}
     for row in rows:
         rid = row["record_id"]
@@ -146,14 +165,15 @@ def leg_outcomes(rows: Sequence[Mapping[str, Any]], records: Mapping[str, Mappin
         top = (row.get("ranked_chunk_ids") or [])[:asc.FOUND_K]
         rank_gold = next((i for i, c in enumerate(top, 1) if c == gold), None)
         rank_any = None
-        kind = None
+        kind = "gold" if rank_gold is not None else None
         for i, c in enumerate(top, 1):
             if c == gold:
-                rank_any, kind = i, "gold"
+                rank_any = i
                 break
             if label(rid, c) == 1:
                 rank_any = i
-                kind = "same" if pair_paper.get((rid, c)) == rec["paper"] else "other"
+                if kind is None:
+                    kind = "same" if pair_paper.get((rid, c)) == rec["paper"] else "other"
                 break
         out[rid] = {"hit": int(rank_any is not None), "hit_gold": int(rank_gold is not None),
                     "rr": 1.0 / rank_any if rank_any else 0.0, "rr_gold": 1.0 / rank_gold if rank_gold else 0.0,
@@ -499,14 +519,80 @@ def retest_verdict(p: float | None, min_p: float, alpha: float = ALPHA, gold_gat
 
 # ------------------------------------------------------------------ the analysis inputs
 
+ANALYSIS_STAGES = ("A", "B")
+#: config keys of the first version, replaced by ``spot_checks: {records, judge}`` (§5.7, R15)
+RETIRED_KEYS = ("spot_records", "spot_judge", "field_coverage")
+INACTIVE_RERANKER = f"{GATE}: the default ranking equals the norerank ranking on every record (inactive reranker)"
+
+
+def study_preflight(cfg: Mapping[str, Any]) -> dict[str, Any]:
+    """Before any outcome is read (§5.7): the modes agree, the analysis gate passes, and the
+    judge directory is the one stage A was committed from.
+
+    * ``STUDY-MODE`` of ``runs_dir`` and of ``judge_dir`` must both be this config's mode
+      (``dry_run`` / ``pilot`` / ``main``, :func:`alias_study_run.config_mode`): a pilot directory
+      is never analysed as the main run, nor the reverse (§5.6).
+    * :func:`alias_study_judge.analysis_gate` (``spot_checks: {records, judge}``): stage A
+      committed and verified, both owner spot checks present (waived, and recorded, only in a dry
+      run and the pilot). The commit's mode must be this mode.
+    * The commit file, the committed ``final`` and ``pairs`` files and ``stage-a/hits.jsonl``
+      must sit in ``judge_dir`` (and its ``stage-a/``): the labels analysed are the committed ones.
+    Raises SystemExit."""
+    import alias_study_judge as aj
+    import alias_study_run as ar
+
+    old = [k for k in RETIRED_KEYS if k in cfg]
+    if old:
+        raise SystemExit(f"config keys {old} are retired: spot checks are spot_checks: {{records, judge}}, and the "
+                         "field coverage is read from the leg summaries")
+    stage = str(cfg.get("analysis_stage", "B"))
+    if stage not in ANALYSIS_STAGES:
+        raise SystemExit(f"analysis_stage {stage!r}: 'A' (Layer 1 after stage A) or 'B' (everything, after stage B)")
+    runs, jdir = Path(cfg["runs_dir"]), Path(cfg["judge_dir"])
+    mode = ar.config_mode(cfg)
+    for name, d in (("runs_dir", runs), ("judge_dir", jdir)):
+        m = d / ar.MODE_MARKER
+        have = m.read_text(encoding="utf-8").strip() if m.is_file() else None
+        if have != mode:
+            raise SystemExit(f"{name}/{ar.MODE_MARKER} is {have!r}, the statistics config is {mode!r}: a directory of "
+                             "one mode is never analysed as another (§5.6)")
+    gate = aj.analysis_gate(runs, cfg.get("spot_checks"), dry_run=bool(cfg.get("dry_run")))
+    if gate.get("mode") != mode:
+        raise SystemExit(f"stage A was committed in mode {gate.get('mode')!r}, the statistics config is {mode!r}")
+    marker = ar.read_commit_marker(runs) or {}
+    cpath = Path(marker["commit"]).resolve()
+    commit = json.loads(cpath.read_text(encoding="utf-8"))
+    want = jdir.resolve()
+    where = {"commit file": (cpath.parent, want)}
+    for f in commit.get("files") or []:
+        if f["name"] in ("final", "pairs"):
+            where[f["name"]] = (Path(f["path"]).resolve().parent, want)
+        elif f["name"] == "stage_a_hits":
+            where[f["name"]] = (Path(f["path"]).resolve().parent, want / "stage-a")
+    for need in ("final", "pairs", "stage_a_hits"):
+        if need not in where:
+            raise SystemExit(f"the stage-A commit lists no {need!r} file")
+    bad = sorted(k for k, (have, exp) in where.items() if have != exp)
+    if bad:
+        raise SystemExit(f"judge_dir is not the judge directory stage A was committed from ({bad}): the labels "
+                         "analysed must be the committed ones")
+    return {"mode": mode, "analysis_stage": stage, "gate": gate,
+            "stage_a_commit": {"sha256": gate["stage_a_commit_sha256"], "verified": True,
+                               "public_tracked_at_head": gate.get("public_tracked_at_head")},
+            "spot_checks_waiver": gate.get("spot_checks_waiver")}
+
+
 class Data:
-    """Records, the legs' outcomes and gates, the judge's labels."""
+    """Records, the legs' outcomes and gates, the judge's labels. :func:`study_preflight` runs
+    first: nothing is read before the gate passes."""
 
     def __init__(self, cfg: Mapping[str, Any]) -> None:
         import alias_study_run as ar
         import found10 as f10
 
         self.cfg = cfg
+        self.preflight = study_preflight(cfg)
+        self.stage = self.preflight["analysis_stage"]
         self.records = asc.load_records(cfg["records"])
         if cfg.get("dry_run"):
             self.identity: dict[str, Any] = {"dry_run": True, "records_sha256": asc.sha256_file(cfg["records"])}
@@ -519,31 +605,47 @@ class Data:
         self.gates: dict[str, str | None] = {}
         self.runs: dict[str, Any] = {}
         status = ar.run_status(runs)
-        legs = [(c, g, r, rep, f10.arm_label(g, rep if rep == 2 else None)) for c, g, r, rep in asc.all_legs()]
-        legs.append(("base", "placebo", "default", 1, "placebo"))       # §5.3 (R7), optional
-        for c, g, r, rep, label in legs:
+        for c, g, r, rep in asc.all_legs():                  # the 29 legs, the placebo leg among them
             leg = L(c, g, r, rep)
-            sp = runs / c / f"{label}.summary.json"
+            rp, sp = ar.leg_files(runs, c, g, r, rep)
+            key = f"{c}/{sp.name.removesuffix('.summary.json')}"
             if not sp.is_file():
-                if leg == PLACEBO_LEG:
-                    continue
                 self.gates[leg] = f"{GATE}: leg not run"
                 self.rows[leg] = []
                 continue
             s = json.loads(sp.read_text())
             cond = asc.RETRIEVERS[r]
+            cst = (s.get("conditions") or {}).get(cond) or {}
             gate = None
             if s["status"] != "complete":
-                gate = f"{GATE}: run {c}/{label} is {s['status']}"
-            elif (s["conditions"].get(cond) or {}).get("gate"):
-                gate = s["conditions"][cond]["gate"]
+                gate = f"{GATE}: run {key} is {s['status']}"
+            elif cst.get("gate"):
+                gate = cst["gate"]
+            elif r == "default" and _identical_to_norerank(cst.get("identical_to_norerank")):
+                gate = INACTIVE_RERANKER
             self.gates[leg] = gate
-            self.runs[f"{c}/{label}"] = {"status": s["status"], "citable": s.get("citable"),
-                                         "commit": (s.get("provenance") or {}).get("commit"),
-                                         "summary_sha256": asc.sha256_file(sp)}
-            rp = sp.with_name(f"{label}.jsonl")
-            self.runs[f"{c}/{label}"]["rows_sha256"] = asc.sha256_file(rp) if rp.is_file() else None
-            have = status.get(leg, "complete") != "missing" and rp.is_file()
+            if key not in self.runs:
+                st = s.get("study") or {}
+                if st.get("mode") not in (None, self.preflight["mode"]):
+                    raise SystemExit(f"run {key} was measured in mode {st.get('mode')!r}, the statistics config is "
+                                     f"{self.preflight['mode']!r} (§5.6)")
+                cen = s.get("census") or {}
+                self.runs[key] = {
+                    "status": s["status"], "citable": s.get("citable"),
+                    "commit": (s.get("provenance") or {}).get("commit"), "summary_sha256": asc.sha256_file(sp),
+                    "rows_sha256": asc.sha256_file(rp) if rp.is_file() else None,
+                    "mode": st.get("mode"), "stage": st.get("stage"), "leg_stages": st.get("leg_stages"),
+                    "prereg_verified": bool((st.get("prereg") or {}).get("verified")),
+                    "stage_a_commit_verified": (None if st.get("stage") != "B"
+                                                else bool((st.get("stage_a_commit") or {}).get("verified"))),
+                    "census_source": cen.get("source"),
+                    "collection_build_sha256": (None if cen.get("collection_build") is None else
+                                                asc.sha_text(json.dumps(cen["collection_build"], sort_keys=True,
+                                                                        separators=(",", ":")))),
+                    "field_coverage": st.get("field_coverage"),
+                    "placebo_dropped_own_entries": ((st.get("placebo_glossary") or {}).get("counts") or {}).get(
+                        "placebo_dropped_own_entries")}
+            have = status.get(leg) != "missing" and rp.is_file()
             self.rows[leg] = [x for x in f10.read_jsonl_repair_tail(rp) if x["condition"] == cond] if have else []
         jdir = Path(cfg["judge_dir"])
         self.final: dict[tuple[str, str], dict[str, Any]] = {}
@@ -559,6 +661,9 @@ class Data:
                     self.pair_arm[(p["record_id"], p["chunk_id"])] = p["arm"]
         self.judge_summary = json.loads((jdir / "judge-summary.json").read_text()) \
             if (jdir / "judge-summary.json").is_file() else {}
+        sa = jdir / "stage-a"
+        self.stage_a_judge_summary = json.loads((sa / "judge-summary.json").read_text()) \
+            if (sa / "judge-summary.json").is_file() else {}
 
     def labeller(self, mode: str = "primary") -> Callable[[str, str], int | None]:
         """``primary``: the final label, unjudged = no; ``unjudged_yes``; ``tb_as_c`` / ``tb_as_e``:
@@ -582,24 +687,98 @@ class Data:
         return {leg: leg_outcomes(rows, self.by_id, lab, self.pair_paper) for leg, rows in self.rows.items()}
 
 
+def _identical_to_norerank(x: Any) -> bool:
+    """found10's ``conditions.base.identical_to_norerank`` (``{records, identical}``, or a bare
+    bool): the default top 10 equals norerank's on every record (§9.1)."""
+    if isinstance(x, Mapping):
+        return int(x.get("records") or 0) > 0 and int(x.get("identical") or 0) == int(x["records"])
+    return x is True
+
+
+def coverage_scope(stage: str) -> tuple[list[str], tuple[str, ...]]:
+    """The legs and needs whose demanded pairs must all carry a final label (§6.2): after stage
+    A, the found@10 pairs of the judging-stage-A legs (the bm25 legs and every RR@10 pair are
+    judged in stage B); after stage B, found@10 and RR@10 in all 29 legs."""
+    import alias_study_run as ar
+
+    if stage == "A":
+        return [L(*lg) for lg in ar.judging_legs("A")], ("found10",)
+    return [L(*lg) for lg in asc.all_legs()], ("found10", "rr10")
+
+
 def label_coverage(rows: Mapping[str, Sequence[Mapping[str, Any]]], by_id: Mapping[str, Mapping[str, Any]],
-                   final: Mapping[tuple[str, str], Mapping[str, Any]]) -> dict[str, Any]:
-    """Every top-10 non-gold (record, chunk) of every leg must have a final judge row (§6.2: one
-    final label serves every cell). A pair without one would be scored *not answering* silently,
-    unlike an *unjudged* pair, which the judge counts and flags (§6.3). Returns the counts."""
+                   final: Mapping[tuple[str, str], Mapping[str, Any]], legs: Sequence[str] | None = None,
+                   needs: Sequence[str] = ("found10", "rr10")) -> dict[str, Any]:
+    """Every pair a leg row **demands** (:func:`alias_study_judge.demanded`: ``found10`` the top
+    10 when the gold is outside it; ``rr10`` the chunks ranked above the gold) must have a final
+    judge row. A chunk ranked below the gold is never judged and never asked for. A missing pair
+    would be scored *not answering* silently, unlike an *unjudged* pair, which the judge counts
+    and flags (§6.3). Returns the counts."""
+    import alias_study_judge as aj
+
     missing: set[tuple[str, str]] = set()
     per_leg: Counter[str] = Counter()
-    for leg, rs in rows.items():
-        for row in rs:
+    demanded = 0
+    for leg in (legs if legs is not None else list(rows)):
+        for row in rows.get(leg) or []:
             rec = by_id.get(row["record_id"])
-            if rec is None or row.get("failed"):
+            if rec is None:
                 continue
-            gold = rec["gold_chunks"][0]
-            for c in (row.get("ranked_chunk_ids") or [])[:asc.FOUND_K]:
-                if c != gold and (row["record_id"], c) not in final:
-                    missing.add((row["record_id"], c))
-                    per_leg[leg] += 1
-    return {"pairs_without_final_label": len(missing), "instances_per_leg": dict(per_leg)}
+            for need in needs:
+                for c in aj.demanded(rec, row, need):
+                    demanded += 1
+                    if (row["record_id"], c) not in final:
+                        missing.add((row["record_id"], c))
+                        per_leg[leg] += 1
+    return {"pairs_without_final_label": len(missing), "instances_per_leg": dict(per_leg),
+            "demanded_instances": demanded, "legs": len(legs if legs is not None else rows), "needs": list(needs)}
+
+
+def check_frozen_stage_a(judge_dir: Path, runs_dir: Path, outcomes: Mapping[str, Mapping[str, Any]],
+                         by_id: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Layer 1 against the frozen stage-A files (§5.7): every row of ``stage-a/hits.jsonl`` (hit
+    and gold-only hit per record and judging-stage-A leg, as the judge computed them at the
+    commit) must equal the outcome computed here, and every retrieval-stage-A leg summary read
+    here must be byte-identical to its frozen copy in ``stage-a/summaries/``. Raises SystemExit."""
+    import alias_study_run as ar
+
+    sa = Path(judge_dir) / "stage-a"
+    hp = sa / "hits.jsonl"
+    if not hp.is_file():
+        raise SystemExit("stage-a/hits.jsonl is missing: Layer 1 is cross-checked against the frozen stage-A hits")
+    hits = asc.read_jsonl(hp)
+    bad = 0
+    legs: set[str] = set()
+    for h in hits:
+        if h["record_id"] not in by_id:
+            continue
+        legs.add(h["leg"])
+        o = (outcomes.get(h["leg"]) or {}).get(h["record_id"])
+        if h.get("failed"):
+            ok = o is None
+        else:
+            ok = o is not None and int(o["hit"]) == int(h["hit"]) and int(o["hit_gold"]) == int(h["hit_gold"])
+        bad += int(not ok)
+    want = {L(*lg) for lg in ar.judging_legs("A")}
+    if legs != want:
+        raise SystemExit(f"stage-a/hits.jsonl covers {len(legs)} leg(s), not the {len(want)} judging-stage-A legs")
+    if bad:
+        raise SystemExit(f"{bad} stage-A hit(s) computed here differ from the frozen stage-a/hits.jsonl: the rows or "
+                         "the labels changed after the commit")
+    diff = []
+    seen: set[Path] = set()
+    for c, g, r, rep in ar.stage_legs("A"):
+        _, sp = ar.leg_files(Path(runs_dir), c, g, r, rep)
+        if sp in seen:
+            continue
+        seen.add(sp)
+        cp = sa / "summaries" / c / sp.name
+        if not cp.is_file() or not sp.is_file() or asc.sha256_file(cp) != asc.sha256_file(sp):
+            diff.append(f"{c}/{sp.name}")
+    if diff:
+        raise SystemExit(f"stage-A leg summaries differ from their frozen copies: {diff[:6]}")
+    return {"hits_rows": len(hits), "hits_sha256": asc.sha256_file(hp), "legs": len(legs),
+            "summaries_checked": len(seen), "agree": True}
 
 
 def cell_gates(spec: Spec, gates: Mapping[str, str | None]) -> list[str]:
@@ -716,12 +895,17 @@ def _mde_split(discordant: int, alpha: float) -> list[int] | None:
 
 # ------------------------------------------------------------------ §3.4: the judge false-yes bound on H2
 
-def false_yes_counts(final: Mapping[Any, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+def false_yes_counts(final: Mapping[Any, Mapping[str, Any]], stage: str | None = None) -> dict[str, dict[str, Any]]:
     """§3.4: per scope (each arm and ``pooled``), among the drift-sampled pairs that the final
     label calls *answers* and Opus answers, the share Opus calls *not*, with its Wilson 95 %
-    interval. A pair with no Opus reference (filtered) does not count."""
+    interval. A pair with no Opus reference (``opus_status`` ``no_reference``, filtered) does not
+    count. ``stage``: only the final rows of that judging stage (a row without one is stage A)."""
     cnt: dict[str, Counter[str]] = {s: Counter() for s in (*asc.ARM_GROUPS, "pooled")}
     for x in final.values():
+        if stage is not None and x.get("stage", "A") != stage:
+            continue
+        if x.get("opus_status") == "no_reference":
+            continue
         if not x.get("drift_sampled") or x.get("opus") is None or x.get("label") is None:
             continue
         if int(x["label"]) != 1:
@@ -733,6 +917,34 @@ def false_yes_counts(final: Mapping[Any, Mapping[str, Any]]) -> dict[str, dict[s
                 cnt[s]["k"] += no
     return {s: {"k": int(c["k"]), "n": int(c["n"]), "share": c["k"] / c["n"] if c["n"] else None,
                 "wilson95": _wilson(int(c["k"]), int(c["n"]))} for s, c in cnt.items()}
+
+
+def false_yes_from_summary(js: Mapping[str, Any]) -> dict[str, dict[str, Any]] | None:
+    """The judge summary's per-scope ``false_yes_among_answers`` {k, n} (R13's U_r input),
+    ``overall`` read as ``pooled``; the Wilson interval recomputed here, rounded outward. None
+    when the summary carries none."""
+    scopes = ((js or {}).get("drift") or {}).get("scopes") or {}
+    if not any("false_yes_among_answers" in (v or {}) for v in scopes.values()):
+        return None
+    out = {}
+    for s, src in (*((a, a) for a in asc.ARM_GROUPS), ("pooled", "overall")):
+        f = (scopes.get(src) or {}).get("false_yes_among_answers") or {}
+        k, n = int(f.get("k") or 0), int(f.get("n") or 0)
+        out[s] = {"k": k, "n": n, "share": k / n if n else None, "wilson95": _wilson(k, n)}
+    return out
+
+
+def false_yes_inputs(stage_a_summary: Mapping[str, Any], final: Mapping[Any, Mapping[str, Any]]
+                     ) -> tuple[dict[str, dict[str, Any]], str, bool | None]:
+    """§3.4 (R13): U's counts from the **frozen stage-A judge summary** (H2's judged pairs are all
+    stage A), cross-checked against the stage-A final rows; the rows only when that summary
+    carries no ``false_yes_among_answers``. Returns (counts, source, cross-check equal)."""
+    rows_cnt = false_yes_counts(final, stage="A")
+    sum_cnt = false_yes_from_summary(stage_a_summary)
+    if sum_cnt is None:
+        return rows_cnt, "final.jsonl (stage A rows)", None
+    same = all((sum_cnt[s]["k"], sum_cnt[s]["n"]) == (rows_cnt[s]["k"], rows_cnt[s]["n"]) for s in FALSE_YES_SCOPES)
+    return sum_cnt, "stage-a/judge-summary.json false_yes_among_answers", same
 
 
 def false_yes_bound(h2_net: float | None, counts: Mapping[str, Mapping[str, Any]], j_r: float | None,
@@ -961,7 +1173,7 @@ def layer2(d: Data, outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, 
     out["random1_minus_random2"] = fig(bal, [(1.0, L("random1", "none", "default")),
                                              (-1.0, L("random2", "none", "default"))])
     cells: dict[str, Any] = {}
-    legs = [L(*x) for x in asc.all_legs()] + ([PLACEBO_LEG] if PLACEBO_LEG in outcomes else [])
+    legs = [L(*x) for x in asc.all_legs()]                  # the 29 legs, the placebo leg among them
     for leg in legs:
         o = outcomes.get(leg) or {}
         kinds = Counter((o.get(r["record_id"]) or {}).get("kind") for r in bal if o.get(r["record_id"]) is not None)
@@ -972,16 +1184,17 @@ def layer2(d: Data, outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, 
                                           "found10_gold": found_rate(d.desc, outcomes, leg, "hit_gold")},
                       "gate": gates.get(leg)}
     out["cells"] = cells
-    out["placebo"] = placebo_leg(bal, outcomes, gates, an, d.cfg)
+    out["placebo"] = placebo_leg(bal, outcomes, gates, an, d.runs)
     return out
 
 
 def placebo_leg(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]],
-                gates: Mapping[str, str | None], an: Mapping[str, Any], cfg: Mapping[str, Any]) -> Any:
+                gates: Mapping[str, str | None], an: Mapping[str, Any], runs: Mapping[str, Any]) -> Any:
     """§3.3 / §5.3 (R7), descriptive: base x default x placebo against none and against merged,
-    on G and on C, with the placebo's and merged's field coverage beside it (``field_coverage``
-    in the config: a JSON the backfill census wrote, passed through)."""
-    if PLACEBO_LEG not in outcomes:
+    on G and on C. Beside it, from the leg summaries: ``study.field_coverage`` of base x merged
+    and of base x placebo, and the placebo's ``placebo_dropped_own_entries`` (the entries equal
+    to the receiving paper's own, dropped; owner 2026-11-03)."""
+    if not (outcomes.get(PLACEBO_LEG) or {}):
         return "absent (the placebo leg was not run)"
     out: dict[str, Any] = {"label": "Layer 2, descriptive (placebo glossary leg; enters no test and no decision)"}
     for kind in ("G", "C"):
@@ -993,8 +1206,12 @@ def placebo_leg(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
                                            an, "hit", gates),
             "found10": {leg: found_rate(recs, outcomes, leg)
                         for leg in (L("base", "none", "default"), L("base", "merged", "default"), PLACEBO_LEG)}}
-    fc = cfg.get("field_coverage")
-    out["field_coverage"] = json.loads(Path(fc).read_text()) if fc else "absent (no field-coverage census supplied)"
+    merged, placebo = runs.get("base/merged") or {}, runs.get(f"base/{asc.PLACEBO}") or {}
+    out["field_coverage"] = {"merged": merged.get("field_coverage") or "absent (no study.field_coverage)",
+                             "placebo": placebo.get("field_coverage") or "absent (no study.field_coverage)"}
+    dropped = placebo.get("placebo_dropped_own_entries")
+    out["placebo_dropped_own_entries"] = dropped if dropped is not None else \
+        "absent (no study.placebo_glossary.counts in the placebo leg's summary)"
     return out
 
 
@@ -1009,39 +1226,128 @@ def noise_floor(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
     return out
 
 
+SPOT_RECORDS_N = 40
+SPOT_JUDGE_N = 100
+SPOT_RECORDS_RULE = 0.85
+SPOT_JUDGE_RULE = 0.90
+SPOT_STRATA = ("answers", "not", "tiebroken")
+
+
+def agreement_metrics(tp: int, fp: int, fn: int, tn: int) -> dict[str, Any]:
+    """§6.6: the 2 x 2 table (final label x reference, *answers* / *not*) and from it precision,
+    recall and F1 for *answers*, specificity, Cohen's kappa and Gwet's AC1, with the counts."""
+    n = tp + fp + fn + tn
+
+    def div(a: float, b: float) -> float | None:
+        return a / b if b else None
+
+    prec, rec = div(tp, tp + fp), div(tp, tp + fn)
+    f1 = div(2 * prec * rec, prec + rec) if prec is not None and rec is not None else None
+    po = div(tp + tn, n)
+    kappa = ac1 = None
+    if n:
+        pe = ((tp + fp) * (tp + fn) + (fn + tn) * (fp + tn)) / (n * n)
+        kappa = div(po - pe, 1 - pe) if po is not None else None
+        pi = ((tp + fp) / n + (tp + fn) / n) / 2
+        pe1 = 2 * pi * (1 - pi)
+        ac1 = div(po - pe1, 1 - pe1) if po is not None else None
+    return {"table": {"tp": tp, "fp": fp, "fn": fn, "tn": tn}, "n": n, "agreement": po, "precision": prec,
+            "recall": rec, "f1": f1, "specificity": div(tn, tn + fp), "kappa": kappa, "gwet_ac1": ac1}
+
+
+def _metrics_of(pairs: Sequence[tuple[int, int]]) -> dict[str, Any]:
+    """``(final, reference)`` pairs -> :func:`agreement_metrics`."""
+    c = Counter(pairs)
+    return agreement_metrics(c[(1, 1)], c[(1, 0)], c[(0, 1)], c[(0, 0)])
+
+
+def spot_stratum(f: Mapping[str, Any]) -> str | None:
+    """§13.5: *answers* or *not* where C and E agreed, *tiebroken* where the Argon label is final
+    (either verdict); an unjudged pair is in no stratum."""
+    if f.get("source") == "agree":
+        return "answers" if int(f.get("label") or 0) == 1 else "not"
+    if f.get("source") in ("tiebreak", "tiebreak_r2"):
+        return "tiebroken"
+    return None
+
+
 def spot_flags(cfg: Mapping[str, Any], d: Data) -> dict[str, Any]:
+    """§13.4-13.5 (R15), from ``spot_checks: {records, judge}``. *Records*: a JSON ``{valid, n}``
+    (the 40-record sheet's counts); validity below 0.85 flags every result sentence. *Judge*: one
+    row per owner-labelled pair (``pair_id``, ``owner_label``), 100 pairs drawn from stage A's
+    labels, stratified by the final label: per-stratum agreement with Wilson intervals, the §6.6
+    metrics, per-arm false yes, and the agreement re-weighted to the stage-A label shares (each
+    stratum x arm cell weighted by its share of stage-A labels). Flag: re-weighted agreement
+    below 0.90 or *answers*-stratum agreement below 0.90."""
+    sc = cfg.get("spot_checks") or {}
     out: dict[str, Any] = {}
-    sr = cfg.get("spot_records")
-    if sr:
-        k, n = int(sr["valid"]), int(sr["n"])
-        out["record_validity"] = {"valid": k, "n": n, "rate": k / n, "wilson95": _wilson(k, n),
-                                  "below_threshold": k / n < 0.85}
+    rp = sc.get("records")
+    if rp and Path(rp).is_file():
+        r = json.loads(Path(rp).read_text())
+        k, n = int(r["valid"]), int(r["n"])
+        out["record_validity"] = {"valid": k, "n": n, "n_expected": SPOT_RECORDS_N, "rate": k / n if n else None,
+                                  "wilson95": _wilson(k, n), "below_threshold": bool(n and k / n < SPOT_RECORDS_RULE)}
     else:
         out["record_validity"] = "absent (owner spot check not committed)"
-    sj = cfg.get("spot_judge")
-    if sj:
-        rows = asc.read_jsonl(sj)
-        fin_by_pair = {x["pair_id"]: x for x in d.final.values()}
-        agree = n = 0
-        per_arm: dict[str, Counter[str]] = defaultdict(Counter)
-        for x in rows:
-            f = fin_by_pair.get(x["pair_id"])
-            if f is None:
-                continue
-            fl = int(f["label"] or 0)
-            n += 1
-            agree += int(fl == int(x["owner_label"]))
-            if int(x["owner_label"]) == 0:
-                per_arm[f["arm"]]["no"] += 1
-                per_arm[f["arm"]]["final_yes"] += int(fl == 1)
-        out["judge_validity"] = {"agree": agree, "n": n, "rate": agree / n if n else None,
-                                 "below_threshold": bool(n and agree / n < 0.90),
-                                 "false_yes_per_arm": {a: {"k": c["final_yes"], "n": c["no"],
-                                                           "wilson95": _wilson(c["final_yes"], c["no"])}
-                                                       for a, c in per_arm.items()}}
-    else:
+    jp = sc.get("judge")
+    if not (jp and Path(jp).is_file()):
         out["judge_validity"] = "absent (owner spot check not committed)"
+        return out
+    fin_by_pair = {x["pair_id"]: x for x in d.final.values()}
+    cells: dict[tuple[str, str], list[tuple[int, int]]] = defaultdict(list)
+    no_final = no_stratum = 0
+    per_arm: dict[str, Counter[str]] = defaultdict(Counter)
+    for x in asc.read_jsonl(jp):
+        f = fin_by_pair.get(x["pair_id"])
+        if f is None:
+            no_final += 1
+            continue
+        st = spot_stratum(f)
+        if st is None:
+            no_stratum += 1
+            continue
+        fl, ol = int(f["label"] or 0), int(x["owner_label"])
+        cells[(st, f["arm"])].append((fl, ol))
+        if ol == 0:
+            per_arm[f["arm"]]["no"] += 1
+            per_arm[f["arm"]]["final_yes"] += int(fl == 1)
+    share = Counter((st, f["arm"]) for f in d.final.values()
+                    if f.get("stage", "A") == "A" and (st := spot_stratum(f)) is not None)
+    tot = sum(share.values())
+    strata: dict[str, dict[str, Any]] = {}
+    for st in SPOT_STRATA:
+        prs = [p for (s_, _), v in cells.items() if s_ == st for p in v]
+        a = sum(fl == ol for fl, ol in prs)
+        strata[st] = {"agree": a, "n": len(prs), "rate": a / len(prs) if prs else None, "wilson95": _wilson(a, len(prs))}
+    num = den = 0.0
+    for cell, prs in cells.items():
+        w = share.get(cell, 0) / tot if tot else 0.0
+        num += w * sum(fl == ol for fl, ol in prs) / len(prs)
+        den += w
+    rew = num / den if den else None
+    allp = [p for v in cells.values() for p in v]
+    ans = strata["answers"]["rate"]
+    out["judge_validity"] = {
+        "n": len(allp), "n_expected": SPOT_JUDGE_N, "without_final_label": no_final, "unjudged": no_stratum,
+        "strata": strata, "reweighted_agreement": rew, "reweight_coverage": den,
+        "metrics": _metrics_of(allp),
+        "below_threshold": bool((rew is not None and rew < SPOT_JUDGE_RULE) or (ans is not None and ans < SPOT_JUDGE_RULE)),
+        "false_yes_per_arm": {a: {"k": c["final_yes"], "n": c["no"], "wilson95": _wilson(c["final_yes"], c["no"])}
+                              for a, c in sorted(per_arm.items())}}
     return out
+
+
+def drift_metrics(final: Mapping[Any, Mapping[str, Any]]) -> dict[str, Any]:
+    """§6.6 for the drift reference: the final label against Opus on the Opus-answered drift
+    pairs, per arm and overall (no-reference pairs filtered)."""
+    by: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for x in final.values():
+        if not x.get("drift_sampled") or x.get("opus_status") == "no_reference" or x.get("opus") is None:
+            continue
+        pr = (int(x.get("label") or 0), int(bool(x["opus"])))
+        by[x.get("arm", "?")].append(pr)
+        by["overall"].append(pr)
+    return {k: _metrics_of(v) for k, v in sorted(by.items())}
 
 
 def _wilson(k: int, n: int, z: float = 1.959964) -> list[float] | None:
@@ -1296,8 +1602,7 @@ def origin_counts(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mappi
 
 
 #: config keys naming one optional input file each (hashed into ``inputs.files``)
-INPUT_FILE_KEYS = ("field_coverage", "collision", "spot_judge", "paper_covariates", "tercile_cuts",
-                   "neighbour_attribution", "power_artifact")
+INPUT_FILE_KEYS = ("collision", "paper_covariates", "tercile_cuts", "neighbour_attribution", "power_artifact")
 JUDGE_FILES = ("final.jsonl", "pairs.jsonl", "judge-summary.json")
 
 
@@ -1307,17 +1612,26 @@ def _sha_or_none(p: str | Path | None) -> str | None:
 
 def input_hashes(cfg: Mapping[str, Any], d: Data) -> dict[str, Any]:
     """The sha256 of every input the analysis reads (None when a named file is absent): the
-    record file, the judge's three files, every run summary and row file (``runs``), each
+    record file, the judge's three files and the frozen stage-A files, the stage-A commit (the
+    gate's ``stage_a_commit_sha256``), every run summary and row file with its collection build
+    (``census.collection_build``, canonical JSON) and census source, both spot checks, each
     optional file the config names, each sensitivity-set list, the power artifact H1b's power
     is read from, and the config itself (canonical JSON)."""
     jdir = Path(cfg["judge_dir"])
     files = {k: _sha_or_none(cfg[k]) for k in INPUT_FILE_KEYS if cfg.get(k)}
     files.setdefault("power_artifact", _sha_or_none(POWER_ARTIFACT))
+    pre = getattr(d, "preflight", None) or {}
     return {"config_canonical_sha256": asc.sha_text(json.dumps(cfg, sort_keys=True, separators=(",", ":"))),
             "records": _sha_or_none(cfg["records"]),
             "judge": {name: _sha_or_none(jdir / name) for name in JUDGE_FILES},
-            "runs": {k: {"summary_sha256": v.get("summary_sha256"), "rows_sha256": v.get("rows_sha256")}
+            "stage_a": {"stage_a_commit_sha256": (pre.get("gate") or {}).get("stage_a_commit_sha256"),
+                        "hits.jsonl": _sha_or_none(jdir / "stage-a" / "hits.jsonl"),
+                        "judge-summary.json": _sha_or_none(jdir / "stage-a" / "judge-summary.json")},
+            "runs": {k: {"summary_sha256": v.get("summary_sha256"), "rows_sha256": v.get("rows_sha256"),
+                         "collection_build_sha256": v.get("collection_build_sha256"),
+                         "census_source": v.get("census_source")}
                      for k, v in sorted(d.runs.items())},
+            "spot_checks": {k: _sha_or_none(v) for k, v in sorted((cfg.get("spot_checks") or {}).items())},
             "files": files,
             "sensitivity_sets": {k: _sha_or_none(v) for k, v in sorted((cfg.get("sensitivity_sets") or {}).items())}}
 
@@ -1445,39 +1759,80 @@ def fragile(member: str, primary_status: str, sens: Mapping[str, Any]) -> dict[s
 
 # ------------------------------------------------------------------ the analysis
 
+def study_block(d: Data) -> dict[str, Any]:
+    """§9.2 / §5.6: the study's mode, the analysis stage, the gate, and per run what the harness
+    verified (``study.mode``, ``prereg.verified``, ``stage_a_commit.verified``, ``citable``)."""
+    pre = getattr(d, "preflight", None) or {}
+    runs = d.runs
+    return {"mode": pre.get("mode"), "analysis_stage": pre.get("analysis_stage", "B"), "gate": pre.get("gate"),
+            "stage_a_commit": pre.get("stage_a_commit"), "spot_checks_waiver": pre.get("spot_checks_waiver"),
+            "prereg_verified": bool(runs) and all(r.get("prereg_verified") for r in runs.values()),
+            "stage_b_runs_commit_verified": all(r.get("stage_a_commit_verified") for r in runs.values()
+                                                if r.get("stage") == "B"),
+            "runs_citable": bool(runs) and all(r.get("citable") for r in runs.values())}
+
+
+def is_citable(study: Mapping[str, Any], prov: Mapping[str, Any], dry_run: bool) -> bool:
+    """Citable only for the main run, from a clean tree, with every run citable and its frozen
+    prereg verified, every stage-B run's stage-A commit verified, and the commit's public file
+    tracked at HEAD."""
+    return bool(not dry_run and study.get("mode") == "main" and prov.get("dirty") is False
+                and prov.get("untracked") == 0 and study.get("runs_citable") and study.get("prereg_verified")
+                and study.get("stage_b_runs_commit_verified")
+                and (study.get("stage_a_commit") or {}).get("public_tracked_at_head") is True)
+
+
 def analyse(cfg: Mapping[str, Any], d: Data | None = None) -> dict[str, Any]:
     d = d or Data(cfg)
     an = {"n_perm": int(cfg.get("n_perm", cs.N_FLIPS)), "n_boot": int(cfg.get("n_boot", cs.N_BOOT)),
           "perm_seed": asc.seed_int(asc.SEEDS["perm"]), "boot_seed": asc.seed_int(asc.SEEDS["boot"])}
     if not cfg.get("dry_run") and (an["n_perm"] != 10_000 or an["n_boot"] != 10_000):
         raise SystemExit("n_perm and n_boot are 10,000 (prereg §7); other values only in a dry run")
+    stage = getattr(d, "stage", "B")
     reach = cfg.get("reach")
-    cov = label_coverage(d.rows, d.by_id, d.final)
+    legs, needs = coverage_scope(stage)
+    cov = label_coverage(d.rows, d.by_id, d.final, legs, needs)
     if cov["pairs_without_final_label"] and not cfg.get("dry_run"):
-        raise SystemExit(f"{cov['pairs_without_final_label']} top-10 non-gold pair(s) of the legs have no final judge "
-                         "label (judging not finished, or a leg changed after build-pairs); nothing analysed")
+        raise SystemExit(f"{cov['pairs_without_final_label']} demanded pair(s) of the analysed legs have no final judge "
+                         f"label (analysis stage {stage}: judging not finished, or a leg changed after build-pairs); "
+                         "nothing analysed")
     prim = d.outcomes("primary")
-    res: dict[str, Any] = {"schema": SCHEMA, "record_set": d.identity, "label_coverage": cov,
+    study = study_block(d)
+    res: dict[str, Any] = {"schema": SCHEMA, "record_set": d.identity, "label_coverage": cov, "study": study,
+                           "analysis": {"stage": stage, "coverage_legs": len(legs), "needs": list(needs),
+                                        "reads": "Layer 1 only (stage A)" if stage == "A" else "everything (stage B)"},
                            "seeds": {"perm": asc.SEEDS["perm"], "boot": asc.SEEDS["boot"], "rule": asc.SEED_RULE},
-                           "n_perm": an["n_perm"], "n_boot": an["n_boot"], "leg_gates": dict(d.gates), "runs": d.runs}
+                           "n_perm": an["n_perm"], "n_boot": an["n_boot"], "leg_gates": dict(d.gates), "runs": d.runs,
+                           "legs_read": {leg: len(rows) for leg, rows in d.rows.items()}}
+    if getattr(d, "preflight", None) is not None:
+        res["frozen_stage_a"] = check_frozen_stage_a(Path(cfg["judge_dir"]), Path(cfg["runs_dir"]), prim, d.by_id)
     l1 = layer1(d.bal, prim, d.gates, reach, an, power_artifact=cfg.get("power_artifact"))
     gap = figure(d.bal, prim, [(1.0, L("random1", "none", "default")), (-1.0, L("random2", "none", "default"))], an)
     l1["H2"]["draw_gap_points"] = gap["net_points"]
     l1["H2"]["within_random_draw_variation"] = within_draw_variation(l1["H2"].get("net_points"), gap["net_points"])
     js = d.judge_summary
+    jsa = getattr(d, "stage_a_judge_summary", None) or {}
     l1["H2"]["false_yes_per_arm"] = {a: (js.get("drift", {}).get("scopes", {}).get(a) or {}).get("false_yes")
                                      for a in asc.ARM_GROUPS} if js else "absent (no judge summary)"
-    l1["H2"]["judge_false_yes_bound"] = false_yes_bound(
-        l1["H2"].get("net_points"), false_yes_counts(d.final), judged_only_hits(d.bal, prim), int(l1["H2"].get("n") or 0))
+    counts, source, cross = false_yes_inputs(jsa, d.final)
+    fy = false_yes_bound(l1["H2"].get("net_points"), counts, judged_only_hits(d.bal, prim), int(l1["H2"].get("n") or 0))
+    fy["source"], fy["cross_check_with_final_rows"] = source, cross
+    l1["H2"]["judge_false_yes_bound"] = fy
     fixed = fixed_sensitivities(d, prim, l1, an)
     for h in ("H1", "H2", "H1b"):
         l1[h]["fragile"] = fragile(h, l1[h]["status"], fixed.get(h) or {})
     res["layer1"] = l1
-    res["layer2"] = layer2(d, prim, an)
-    res["layer2"]["serving_statements"] = serving_statements(res["layer2"]["decisions"], l1)
+    if stage == "B":
+        res["layer2"] = layer2(d, prim, an)
+        res["layer2"]["serving_statements"] = serving_statements(res["layer2"]["decisions"], l1)
+    else:
+        res["layer2"] = "absent (analysis stage A: Layer 2 needs stage B's legs and labels)"
     res["noise_floor"] = noise_floor(d.bal, prim)
     res["judge"] = {k: js.get(k) for k in ("pairs_finalized", "sources", "unjudged", "unjudged_share",
-                                           "judge_incomplete", "per_arm_pairs", "drift")} if js else "absent"
+                                           "judge_incomplete", "per_arm_pairs", "opus_no_reference", "stages",
+                                           "drift")} if js else "absent"
+    if isinstance(res["judge"], dict):
+        res["judge"]["metrics_6_6_drift"] = drift_metrics(d.final)
     res["spot_checks"] = spot_flags(cfg, d)
     res["sensitivities"] = sensitivities(cfg, d, an, reach)
     res["fixed_sensitivities"] = fixed
@@ -1554,8 +1909,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prov = {}
     res["provenance"] = prov
     res["dry_run"] = bool(cfg.get("dry_run"))
-    res["citable"] = bool(not cfg.get("dry_run") and prov.get("dirty") is False and prov.get("untracked") == 0
-                          and all(r.get("citable") for r in d.runs.values()))
+    res["citable"] = is_citable(res["study"], prov, bool(cfg.get("dry_run")))
     dst = args.out or Path(cfg["judge_dir"]).parent / "results-alias-study.json"
     dst.write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n", encoding="utf-8")
     if args.public:
