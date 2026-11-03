@@ -1,14 +1,16 @@
 # Pre-registration, alias study (OA-1000) — DRAFT v3, 2026-11-03
 
 **Status: DRAFT — not frozen; owner review pending.** Version 3 folds in the owner's decisions of
-2026-11-03 (R12–R21, the second table below): a C cost rule that reads the point estimate (−1 point) and
+2026-11-03 (R12–R24, the second table below): a C cost rule that reads the point estimate (−1 point) and
 the CI's lower bound (−3.6 points, the design's detection limit for C), the judge false-yes bound on H2
 always taking the larger of the random arm's and the pooled limit, *fragile* restricted to named re-tests
 of H1 and H2, a judged-pair spot check of 100 pairs, the corpus build facts of the v3 pass (six length
 bands, the carry-over re-draw, the fetch budget, the relaxation order), a nearest-band fill at the last
 relaxation level, a repetition screen for every added paper, and the chunk-volume target read as a build
 target covered by H2's chunk-volume covariate; and stage A extended by the inactive-reranker gate's
-norerank cells, and the placebo stripped of each paper's own entries. Version 2 folded in the changes the owner approved
+norerank cells, the placebo stripped of each paper's own entries, a bootstrap-t and a Freedman–Lane
+covariate test as the re-tests behind *fragile*, and *not resolved* for an equivalence reading with zero
+discordant records. Version 2 folded in the changes the owner approved
 on 2026-11-02 and 2026-11-03 from an independent methodology review, 2026-11-02 (R1–R11, the second table
 below): two separate families in place of the Holm pair, a harm rule and CI-based cost rules in Layer 2,
 the claims' scope wording, judge reporting, a stratified judged-pair spot check, fixed sensitivities, a
@@ -50,8 +52,9 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 **Owner decisions of 2026-11-02 and 2026-11-03, and where each is written.** R1–R11 were adopted from an
 independent methodology review, 2026-11-02; the review's text is not part of this record, what the owner
-adopted from it is. R12–R21 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
-bound, the *fragile* rule, the spot check, the corpus build, stage A and the placebo.
+adopted from it is. R12–R24 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
+bound, the *fragile* rule, the spot check, the corpus build, stage A, the placebo, the re-tests behind
+*fragile* and the equivalence reading.
 
 | # | decision, in short | where |
 |---|---|---|
@@ -60,7 +63,7 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A and the pla
 | R3 | **scope wording.** Every claim reads *for questions using the glossary's primary term*; the records are LLM-drafted, LLM-verified, plus the owner check | §3, §13.2 |
 | R4 | **judge reporting.** Precision, recall and F1 for *answers*, specificity, κ and Gwet's AC1 with counts; the false-yes rate's Wilson upper limit carried as a bound on H2 (its limit **amended by R13**); a prompt-paraphrase check before the freeze; the two Qwen primaries' correlated errors stated as a limitation; Opus empties retried at most once | §3.4, §6.3, §6.6, §13.3 |
 | R5 | **judged-pair spot check** of 60 pairs stratified by judge label (30 *answers* / 20 *not* / 10 tiebroken), spread across arms; single rater a limitation (the size **amended by R15**) | §13.5, §14 O12 |
-| R6 | **fixed sensitivities**, never deciding, with a *fragile* label when one flips a verdict (**narrowed by R14**) | §7 |
+| R6 | **fixed sensitivities**, never deciding, with a *fragile* label when one flips a verdict (**narrowed by R14**; the studentized test **replaced by R22**) | §7 |
 | R7 | **placebo glossary leg** (base × default, entries permuted across papers), descriptive (own entries **removed by R21**) | §5.3, §5.4 |
 | R8 | **pre-freeze pilot** on the 191 held-out records, with its allowed consequences fixed now | §5.6 |
 | R9 | **two stages after the freeze** (stage A: the Layer-1 legs; stage B: the rest) and **judging on demand** (stage A **extended by R20**) | §5.7, §6.2 |
@@ -68,7 +71,7 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A and the pla
 | R11 | **H2's estimand** stated | §3.1 |
 | R12 | **C cost rule** (replaces R2's margin-only rule). In the attach decision, step (2) is *do not attach (C cost)* when the point estimate ΔC **< −1 point** or C_lo **< −3.6 points**; *attach* (step 3) needs L ≥ 2, L_lo > 0, ΔC ≥ −1 and C_lo ≥ −3.6. −3.6 is the smallest C change 300 C records detect with 80 % power at 5 % discordance (two-sided 0.05); a C cost smaller than about 3.6 points cannot be ruled out, and this is stated | §3.1, §3.3, §8, §13.9–13.10, §14 O1 |
 | R13 | **false-yes bound on H2**: always U = max(U of the random arm, U pooled over the three arms), not the pooled limit only when an arm has < 30 pairs | §3.4 |
-| R14 | ***fragile*** only for H1 and H2, and only through pre-named re-tests of the same claim: H1, the studentized test and topic clustering; H2, those two and the chunk-volume covariate. Subgroup splits (XML-only, terciles, origin counts, alias kind) are reported and never make anything fragile; H1b is exempt | §3.4, §7 |
+| R14 | ***fragile*** only for H1 and H2, and only through pre-named re-tests of the same claim: H1, the studentized test and topic clustering; H2, those two and the chunk-volume covariate (the studentized test **replaced by R22**, the covariate's test fixed by **R23**). Subgroup splits (XML-only, terciles, origin counts, alias kind) are reported and never make anything fragile; H1b is exempt | §3.4, §7 |
 | R15 | **judged-pair spot check of 100 pairs** (was 60; D9 as amended by R5): stratified by final judge label (50 / 33 / 17), spread across arms; about 1.5 h of owner time. The 40-record check is unchanged | §5.5, §13.5, §14 O12 |
 | R16 | **corpus v3 build facts**: six chunk-length bands at `tok512o0` (< 20 / 20–26 / 27–33 / 34–45 / 46–79 / ≥ 80, the open top band split at 80); v2 takes kept where their cell still matches, only moved and band-relaxed slots re-drawn; seeds unchanged; the fetch budget max(40, 15 × slots) per phase; relaxation source → type → band | §5.1 |
 | R17 | **nearest-band fill** at the last relaxation level (`any`): the already-fetched candidate of nearest band, ties by type, source, seeded order; 0 new fetches | §5.1 |
@@ -76,6 +79,9 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A and the pla
 | R19 | **residual chunk-volume gap accepted**: ±5 % of the neighbour arm's chunks is a build target, not a gate; the gap is covered by H2's pre-named chunk-volume covariate sensitivity (which by R14 can make H2 fragile); the deeper search for ≥ 80-chunk slots declined | §5.1, §7, §13.11 |
 | R20 | **stage A includes the 5 norerank cells** the inactive-reranker gate needs (base × none, base × merged, neighbour × none, random-1 × none, random-2 × none, each × norerank), so every Layer-1 gate is read after stage A alone; stage A is 14 legs, stage B the remaining 14 cells plus the placebo; the total is unchanged | §5.4, §5.7, §6.2, §9.1 |
 | R21 | **placebo self-entries removed**: after the derangement, every entry equal to one of the receiving paper's own merged entries is dropped; drops counted per paper and in total; a paper left empty gets no placebo field and is counted | §5.3 |
+| R22 | **bootstrap-t replaces the studentized randomization test**: a one-sided paper-cluster bootstrap-t (seed `261101\|alias\|boot`). The *fragile* set is H1 = bootstrap-t + topic clustering, and H2 = bootstrap-t + topic clustering + volume covariate. §7's statement about the weak null is corrected | §3.4, §5.5, §7 |
+| R23 | **the H2 volume-covariate re-test** is a Freedman–Lane sign-flip with the studentized intercept (10,000 flips, seed `261101\|alias\|perm`), reusing the primary's unadjusted gold-only gate; closes O13 | §5.5, §7, §14 O13, §15 item 19 |
+| R24 | **equivalence with zero discordant records** prints *not resolved* with the count, never *no effect larger than 0 points*; Wilson upper limits are rounded up | §3.3 |
 
 **Terms.**
 - **Glossary entry:** a pair *alias → primary term* for one paper. The alias is a **symbol** (the round-3
@@ -401,7 +407,14 @@ doi:10.1177/1948550617697177), the sentence reads *no effect larger than δ poin
 realised 80 %-power MDE**: §8's formula (k = 1.960 + 0.842) at the contrast's realised discordance, the
 share of its records whose hit differs between the two cells, printed beside it. At the planning
 discordance q 5 % that is **≈ 2.5 points** for H1 (2.54, 600 G) and ≈ 2.1 points for H2 (900). Otherwise
-the figure is *not resolved*.
+the figure is *not resolved*. **With zero discordant records** (R24; owner, 2026-11-03) the formula gives
+δ = 0, and the reading is *not resolved (0 discordant records)*, never *no effect larger than 0 points*.
+*Why:* round 3 saw 0 discordant records between the served glossary and none (§2 item 1), so the case is
+live, and a zero-width bound is no evidence of equivalence.
+
+**Wilson limits are rounded up.** Wherever a Wilson upper limit is printed or enters a rule (the false-yes
+bound of §3.4, the per-arm false-yes rates of §6.3, the spot checks of §13.4–13.5), the committed
+statistics round it **up**, never to nearest, so rounding can only widen it.
 
 **Other Layer-2 figures, printed with 95 % CIs:**
 - **H3 (moved from Layer 1, D3):** the default retriever's change under neighbour expansion against BM25's,
@@ -434,8 +447,8 @@ gold-only net change (the gate), the draw-to-draw gap, the per-arm judge false-y
 **judge false-yes bound B** (below). If |H2's net effect| is smaller than the draw-to-draw gap
 |found@10(random-1) − found@10(random-2)|, every sentence that quotes H2 carries *within random-draw
 variation*, whatever H2's label. Beside H1 and H2 both: the sensitivities of §7 and, if one of the
-named re-tests flips the verdict (R14: for H1 the studentized test and topic clustering; for H2 those two
-and the chunk-volume covariate), the label *fragile*. H1b carries the same displays and is never labelled
+named re-tests flips the verdict (R14, R22: for H1 the bootstrap-t and topic clustering; for H2 those
+two and the chunk-volume covariate), the label *fragile*. H1b carries the same displays and is never labelled
 *fragile* (R14, §7).
 
 **The judge false-yes bound on H2 (R4).** A false *answers* label adds a spurious hit. In the neighbour
@@ -852,8 +865,8 @@ draws), it is the **first 8 bytes of sha256(seed string)**, read big-endian as a
 | **random draw 1** | `261101\|alias\|random-1-v2` | the candidate order of random-1 (`…\|<study paper>\|<work id>`), §5.1 (owner, 2026-11-01, with the matching rule; replaces `…\|random\|1`) |
 | **random draw 2** | `261101\|alias\|random-2-v2` | the candidate order of random-2, §5.1 (replaces `…\|random\|2`) |
 | **noise repeats** | `261101\|alias\|noise` | the request order of each repeat leg (`…\|<corpus arm>`), so a repeat is not a replay of the first leg's request sequence, §9.4 |
-| **bootstrap** | `261101\|alias\|boot` | every paper-cluster percentile bootstrap: the C gate's CI (§3.1), the CIs beside Layer-1 members (§7) and every Layer-2 CI (§3.3) |
-| permutation | `261101\|alias\|perm` | any Layer-1 test (sign-flip or randomization) where Monte Carlo is used, §7 |
+| **bootstrap** | `261101\|alias\|boot` | every paper-cluster bootstrap: the C gate's CI (§3.1), the CIs beside Layer-1 members (§7), every Layer-2 CI (§3.3) and the bootstrap-t re-test of H1 and H2 (§7, R22) |
+| permutation | `261101\|alias\|perm` | any Layer-1 test (sign-flip or randomization) where Monte Carlo is used, and the Freedman–Lane covariate re-test of H2 (§7, R23) |
 | power | `261101\|alias\|power` | the committed power simulation, §8 (owner, 2026-11-01) |
 | judge order | `261101\|alias\|judge\|order` | the labelling order of deduplicated pairs, §6.2 |
 | drift sample | `261101\|alias\|drift` | the per-batch drift sample (`…\|<batch>`), §6.3 |
@@ -1087,8 +1100,11 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
   attainable value of the discrete null distribution. **What a rejection says.** A rejection of H1 is
   evidence against the sharp null; of H2, against a symmetric per-paper difference, read in the
   claimed direction and confirmed only with the gold-only gate; of H1b, against G / C exchangeability.
-  None of the three tests addresses a weaker null of zero mean effect with a skewed per-cluster
-  distribution.
+  **The weak null (corrected by R22).** For H1's and H2's one-sample sign-flip the permutation variance
+  Σ S_j² estimates Σ E[S_j²] ≥ Var(Σ S_j), so both are already asymptotically valid, and conservative,
+  under the weak null of zero mean effect. What they lack is a finite-sample correction for a skewed
+  per-paper distribution; the bootstrap-t re-test below supplies it. H1b's label randomization tests
+  exchangeability, and nothing here addresses a weaker null for it.
 - **Minimum attainable p** (owner, 2026-11-01) is 2^−k for H1's and H2's exact p. For H1b (owner,
   2026-11-02) it is the null mass of the most extreme value: the product, over the units whose
   relabellings change the statistic, of each unit's share of relabellings at its extreme. For any
@@ -1114,20 +1130,33 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
   (owner, 2026-11-01): the H2 contrast adjusted for the difference in added chunks between the neighbour
   arm and the random average, per study paper, reported as a sensitivity that never decides. It is the
   pre-named cover for the residual chunk-volume gap of §5.1 (R19), and one of H2's re-tests for
-  *fragile* (R14, below); its test form is §14 O13.
+  *fragile* (R14, below); its test is the Freedman–Lane re-test of R23 (below).
 
 - **Fixed sensitivities of R6**, displayed in a fixed table beside H1 and H2 whatever the verdict, never
   deciding:
-  - **Studentized randomization test, H1 and H2:** the paper sign-flip with the studentized statistic
-    (mean paper score over its standard error) in place of the sum, after Wu and Ding (2021,
-    *Randomization Tests for Weak Null Hypotheses in Randomized Experiments*, Journal of the American
-    Statistical Association 116(536):1898–1913, doi:10.1080/01621459.2020.1750415): exact under the same
-    sharp null, and asymptotically conservative under the **weak null** of zero mean effect, which the
-    primary tests do not address (above).
+  - **Bootstrap-t, H1 and H2 (R22; owner, 2026-11-03):** a **one-sided paper-cluster bootstrap-t** of the
+    mean paper score: papers are resampled with replacement (10,000 resamples, seed
+    `261101|alias|boot`), each resample's t* = (mean* − mean) / se* is formed, and p is the share of t*
+    at or beyond the observed t = mean / se in the hypothesised direction. It **replaces the studentized
+    randomization test** of v2. *Why:* with one score per paper, Σ S_j² does not change under sign
+    flips, so the studentized statistic is strictly increasing in the sum and its exact p equals the
+    primary's; it could never flip a verdict, so it was a vacuous re-test. The bootstrap-t adds a
+    finite-sample correction for skew (above). In the #913 reviewer's scratch simulation (k = 300,
+    2,000 replications) its type-I rate was .056 under a skewed mean-zero null, and it disagreed with the
+    primary in 7–8 % of studies at power .55–.75.
   - **Topic-level clustering, H1 and H2:** the same tests with the cluster raised from the paper to the
     study paper's **OpenAlex primary topic** (papers sharing a topic pooled into one cluster score),
     against correlation between papers of one field.
-  - **H2 with the chunk-volume covariate** (above).
+  - **H2 with the chunk-volume covariate** (above), **tested by a Freedman–Lane sign-flip** (R23; owner,
+    2026-11-03; closes §14 O13). Per study paper, x_j is the added-chunk difference (neighbour arm minus
+    the random average) and S_j the H2 paper score. The restricted model S_j = γ x_j is fitted; its
+    residuals are sign-flipped (10,000 flips, seed `261101|alias|perm`), added back to γ̂ x_j, and the
+    full model S_j = α + β x_j is refitted on each; the statistic is the **studentized intercept**
+    t = α̂ / se(α̂), and the one-sided p (in H2's direction, α < 0) is the Monte Carlo
+    (b + 1) / (m + 1). The re-test reuses the primary's **unadjusted gold-only direction gate**. *Why:* a
+    fixed-slope adjustment ignores that the slope is estimated; in the #913 reviewer's scratch
+    simulation its type-I rate was .067 / .148 / .263 at x̄ / s_x = 0.5 / 1 / 2, against .035–.047 for
+    Freedman–Lane. At the realised gap (x̄ / s_x ≈ 0.13–0.22) both hold.
   - **H2 on the XML-only stratum:** H2 recomputed on the study papers whose attributed neighbours and
     whose papers in both random draws are **all** JATS-sourced (§5.1), so that no PDF extraction enters
     the contrast; the stratum's size is printed.
@@ -1142,8 +1171,8 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
 
   **Fragile (R14; owner, 2026-11-03).** *Fragile* applies to **H1 and H2 only**, and only through these
   pre-named sensitivities, each of which re-tests the same claim on the same records at the member's
-  level: for **H1**, the studentized randomization test and topic-level clustering; for **H2**, those two
-  and the chunk-volume covariate. One of them **flips** the verdict when, at the member's level, it gives
+  level: for **H1**, the bootstrap-t and topic-level clustering; for **H2**, those two and the
+  chunk-volume covariate's Freedman–Lane test (R22, R23). One of them **flips** the verdict when, at the member's level, it gives
   the other verdict (*confirmed* ↔ *not confirmed*; for H2 with the gold-only direction gate read as in
   the primary), and the verdict is then labelled ***fragile*** in every sentence that quotes it. Every
   other display in this section is reported and **never makes anything fragile**: the declared
@@ -1325,8 +1354,8 @@ Opus single retry (§6.3) and the on-demand pair selection by stage (§6.2, §5.
 H1b (fixed sequence within Family G) and H2 (two-draw average, gold-only gate), with tests — the
 merged `alias_study_stats.py` still implements v1's Option-B Holm procedure (`layer1_procedure`) and a
 Holm drop-gated sensitivity (`holm_drop_gated`), both replaced by the two families of §3.1 — and the fixed
-sensitivities of §7 (studentized test, topic clustering, the chunk-volume covariate with its test of
-§14 O13, XML-only stratum, terciles, origin counts, the *fragile* rule of R14); the false-yes bound of
+sensitivities of §7 (the bootstrap-t of R22, topic clustering, the chunk-volume covariate with its
+Freedman–Lane test of R23, XML-only stratum, terciles, origin counts, the *fragile* rule of R14); the false-yes bound of
 §3.4 with U = max(U_r, U_p) (R13) and the judge metrics of §6.6; the Layer-2 script (CIs, the decision
 rules of §3.3 with the harm rule, the C cost rule of R12 and the reranker non-inferiority rule, the Layer-1
 wording table and the equivalence bound, RR@10, H3); a glossary-file writer for the merged glossary and
@@ -1460,7 +1489,7 @@ entry, not a silent retry.
 
 ## 14. Open decisions for the owner
 
-Only items not settled by D1–D10 and R1–R21.
+Only items not settled by D1–D10 and R1–R24.
 
 | # | decision | proposal in this draft |
 |---|---|---|
@@ -1476,13 +1505,13 @@ Only items not settled by D1–D10 and R1–R21.
 | O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios, normal approximation at α = 0.05, .987 → .986 and .930 → .925; at the v1 level 0.025 .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
 | O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.7, 0.6 in `alias_study_power`) | **Decided (owner, 2026-11-02): `a = 0.7`**; `a = 0.6` is reported as a sensitivity. Written in §8 |
 | O12 | **A second rater for the judged-pair spot check** (§13.5, R5, R15) | open. As drafted the owner is the single rater, stated as a limitation. A second, independent rater would label the same 100 pairs blind to the owner's labels and to the judge's; their agreement (κ, AC1, §6.6) would then be printed beside the spot-check figures. Who, and whether, is left open |
-| O13 | **The test form of the H2 chunk-volume covariate sensitivity** (§7), which by R14 can make H2 *fragile* (R19) | open. §7 names the adjustment (the per-study-paper difference in added chunks between the neighbour arm and the random average) but not the test that gives the adjusted contrast a verdict at H2's level; it is fixed in this text, and implemented, before the freeze |
+| O13 | **The test form of the H2 chunk-volume covariate sensitivity** (§7), which by R14 can make H2 *fragile* (R19) | **Decided (owner, 2026-11-03, R23):** a Freedman–Lane sign-flip with the studentized intercept (restricted model S = γx, restricted residuals flipped, refit; 10,000 flips, seed `261101\|alias\|perm`; Monte Carlo p), reusing the primary's unadjusted gold-only gate. Written in §7 |
 
 ## 15. What must exist before freeze
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R21 decided 2026-11-03 and folded in v3; O7 (Argon, ceiling), O8, O10, O12 and O13 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R24 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen, both arms where they apply) and its counts table in §5.1 are pending |
@@ -1500,6 +1529,6 @@ Only items not settled by D1–D10 and R1–R21.
 | 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | open: *to be inserted from the calibration follow-up* |
 | 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
 | 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | open |
-| 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | open |
+| 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | decided (R23, §7); implementation open (§10) |
 | 20 | **The stage-A leg list** (R20, §5.7): the 14 legs, with the 5 norerank cells the inactive-reranker gate reads, checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
 

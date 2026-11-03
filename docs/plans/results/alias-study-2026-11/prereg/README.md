@@ -3,7 +3,7 @@
 **Status: DRAFT — not frozen; owner review pending.** No sha is recorded because nothing is frozen yet.
 Current draft: **v3, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1), the changes the owner
 approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), and the owner's
-decisions of 2026-11-03 (R12–R21) folded in. The
+decisions of 2026-11-03 (R12–R24) folded in. The
 record set (§4 of the prereg: 1,091 accepted records, the balanced set of 900 on 300 papers) was built
 before v1. No retrieval has been run on any study record. The pre-freeze pilot (prereg §5.6) will
 retrieve and judge the 191 held-out records before the freeze; the 900 balanced records stay unretrieved
@@ -46,7 +46,6 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
 - the neighbour and two random selection manifests (OpenAlex metadata only) of the **v4** build (the v3
   pass with the nearest-band fill and the repetition screen, prereg R16–R18), their counts entered in
   prereg §5.1, and H2's power recomputed on them, raising the caps if it falls below .80;
-- the test form of the H2 chunk-volume covariate sensitivity (prereg §14 O13);
 - the three expanded corpora, built and censused on bench copies within a management window;
 - glossaries for the added papers in every arm, made by the same pipeline, and the offline reach count;
 - the record-set sha, the balanced set and the overlap counts recomputed by committed code;
@@ -81,14 +80,15 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   retry); the judged-pair spot check stratified by judge label; fixed sensitivities with a *fragile*
   label; a placebo glossary leg; a pre-freeze pilot on the 191 held-out records; two post-freeze stages
   with judging on demand; a signed public freeze tag; H2's estimand stated.
-- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R21). The C cost rule reads the
+- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R24). The C cost rule reads the
   point estimate (*do not attach* when ΔC < −1 point) and the CI's lower bound (C_lo < −3.6 points, the
   smallest C change 300 C records detect with 80 % power at 5 % discordance), with the statement that a
   C cost smaller than about 3.6 points cannot be ruled out; pass rates at 5 % C discordance and a true C
   change of 0 / −1 / −2 points are .16 / .05 / .01 for the v2 rule and .76 / .49 / .22 for the R12 rule
   (`artifacts/c_cost_rule.json`). The H2 false-yes bound always uses U = max(random arm, pooled).
-  *Fragile* applies to H1 and H2 only, through the studentized test, topic clustering and (H2) the
-  chunk-volume covariate; subgroup splits never make anything fragile, and H1b is exempt. The judged-pair
+  *Fragile* applies to H1 and H2 only, through a paper-cluster bootstrap-t (replacing the studentized
+  test, which could not flip a verdict), topic clustering and (H2) the chunk-volume covariate, tested by a
+  Freedman–Lane sign-flip; subgroup splits never make anything fragile, and H1b is exempt. The judged-pair
   spot check grows to 100 pairs (50 / 33 / 17); at a true 10 % error rate the *answers*-stratum rule
   fires with probability .38 (.35 at 60 pairs; `artifacts/spot_check_detection.json`). The corpus
   build's v3 facts (six length bands with the top band split at 80, the carry-over re-draw, seeds
@@ -97,5 +97,6 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   and the ± 5 % chunk-volume target read as a build target covered by the covariate sensitivity, with a
   placeholder for the v4 counts. Stage A now also runs the 5 norerank cells the inactive-reranker gate reads, so every Layer-1 gate is
   read after stage A alone (14 legs; stage B the remaining 14 cells and the placebo); the placebo drops every
-  entry equal to one of the receiving paper's own entries. New open item: the covariate sensitivity's
-  test form (§14 O13).
+  entry equal to one of the receiving paper's own entries. The covariate's test form (§14 O13, opened and
+  closed in this version) is fixed by R23. An equivalence reading with zero discordant records prints
+  *not resolved*, and Wilson upper limits are rounded up.
