@@ -74,7 +74,7 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A and the pla
 | R17 | **nearest-band fill** at the last relaxation level (`any`): the already-fetched candidate of nearest band, ties by type, source, seeded order; 0 new fetches | §5.1 |
 | R18 | **repetition screen**: every added paper in every arm, after the C0 screen; distinct-chunk ratio < 0.90 excluded and replaced like other exclusions | §5.1, §15 |
 | R19 | **residual chunk-volume gap accepted**: ±5 % of the neighbour arm's chunks is a build target, not a gate; the gap is covered by H2's pre-named chunk-volume covariate sensitivity (which by R14 can make H2 fragile); the deeper search for ≥ 80-chunk slots declined | §5.1, §7, §13.11 |
-| R20 | **stage A includes the 4 norerank cells** the inactive-reranker gate needs, so every Layer-1 gate is read after stage A alone; stage A is 13 legs, stage B the remaining legs plus the placebo; the total is unchanged | §5.4, §5.7, §6.2, §9.1 |
+| R20 | **stage A includes the 5 norerank cells** the inactive-reranker gate needs (base × none, base × merged, neighbour × none, random-1 × none, random-2 × none, each × norerank), so every Layer-1 gate is read after stage A alone; stage A is 14 legs, stage B the remaining 14 cells plus the placebo; the total is unchanged | §5.4, §5.7, §6.2, §9.1 |
 | R21 | **placebo self-entries removed**: after the derangement, every entry equal to one of the receiving paper's own merged entries is dropped; drops counted per paper and in total; a paper left empty gets no placebo field and is counted | §5.3 |
 
 **Terms.**
@@ -832,7 +832,7 @@ depend on the glossary arm.
 
 24 cells, plus **one noise repeat per corpus arm** (default × none, run twice; §9.4), plus the **placebo
 leg** (base × default × placebo, §5.3): 29 legs × 1,091 records = **31,639** retrieval calls, at ≤ 4 in
-flight against the bench copies. Moving the 4 norerank cells into stage A (R20, §5.7) changes the order
+flight against the bench copies. Moving the 5 norerank cells into stage A (R20, §5.7) changes the order
 of the calls, not their number. After the freeze the 191 pilot records are run again in every leg as
 the descriptive leg (§4.2). No gateway call is made for retrieval. The pilot (§5.6) adds its own calls
 before the freeze.
@@ -900,16 +900,16 @@ before the freeze, and the freeze commit's text includes them.
 
 - **Stage A, the Layer-1 legs and every Layer-1 gate's cells** (R20; owner, 2026-11-03): base × default
   × none, base × default × merged, neighbour × default × none, random-1 × default × none, random-2 ×
-  default × none, the noise repeat of each corpus arm (default × none, §9.4), and the **4 norerank cells**
-  the inactive-reranker gate reads (§9.1): **13 legs**. *The exact stage-A leg list is pending the run
-  harness (PR #914) and is entered here before the freeze:* `<stage-A leg list: pending #914>`. They are
-  retrieved, their found@10 pairs are judged (§6.2), and the stage-A outputs (hits, pair labels, logs, as
+  default × none, the noise repeat of each corpus arm (default × none, §9.4), and the **5 norerank cells**
+  the inactive-reranker gate reads (§9.1), one for each Layer-1 corpus × glossary condition: base ×
+  norerank × none, base × norerank × merged, neighbour × norerank × none, random-1 × norerank × none,
+  random-2 × norerank × none. In all **14 legs**: 10 cells and 4 noise repeats. They are retrieved, their found@10 pairs are judged (§6.2), and the stage-A outputs (hits, pair labels, logs, as
   private files with public sha256s) are **committed before stage B starts**.
-- **Stage B, everything else**: the remaining cells (15), the placebo leg, and the pairs that only RR@10
+- **Stage B, everything else**: the remaining 14 cells, the placebo leg, and the pairs that only RR@10
   or a descriptive split needs (§6.2).
 - *Why R20:* the inactive-reranker gate is a Layer-1 gate (§9.1), but its norerank cells were in stage B,
   which contradicted "the Layer-1 analysis can be run after stage A". Now every Layer-1 gate is read
-  after stage A alone. The cost: 4 × 1,091 retrieval calls and their found@10 judge pairs move earlier;
+  after stage A alone. The cost: 5 × 1,091 retrieval calls and their found@10 judge pairs move earlier;
   the total is unchanged.
 - **A stage-A label is never changed by stage B.** Pairs are deduplicated across cells (§6.2), so a pair
   that stage B meets again keeps its stage-A label; stage B labels only new pairs. Stage B cannot move a
@@ -931,7 +931,7 @@ is H2's direction gate. **RR@10** (Layer 2) uses the same labels.
 - **Only top-10 non-gold chunks** are judged. The gold chunk is a hit by definition.
 - **Judging on demand (R9).** For found@10, a non-gold pair (record, chunk) is judged **only if the
   record's gold chunk is outside that cell's top 10**: when the gold is in the top 10 the record is a hit
-  whatever the other chunks are. Stage A (§5.7) judges the pairs its 13 legs need this way, first (R20). Stage B
+  whatever the other chunks are. Stage A (§5.7) judges the pairs its 14 legs need this way, first (R20). Stage B
   judges the pairs its own legs need for found@10, then the pairs that **RR@10** needs (non-gold chunks
   ranked **above** the gold in a cell where the gold is in the top 10, stage-A legs included) and those
   the descriptive splits of §3.3 and §7 need. A pair is labelled once, whatever first asked for it.
@@ -1501,4 +1501,5 @@ Only items not settled by D1–D10 and R1–R21.
 | 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
 | 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | open |
 | 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | open |
-| 20 | **The stage-A leg list** (R20, §5.7): the 13 legs, with the 4 norerank cells the inactive-reranker gate reads, entered in §5.7 from the run harness (PR #914) | open: *pending #914* |
+| 20 | **The stage-A leg list** (R20, §5.7): the 14 legs, with the 5 norerank cells the inactive-reranker gate reads, checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
+

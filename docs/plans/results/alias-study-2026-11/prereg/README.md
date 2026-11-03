@@ -95,7 +95,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   unchanged, the fetch budget, relaxation source → type → band), a nearest-band fill at the last
   relaxation level, a repetition screen (distinct-chunk ratio < 0.90 excluded) for every added paper,
   and the ± 5 % chunk-volume target read as a build target covered by the covariate sensitivity, with a
-  placeholder for the v4 counts. Stage A now also runs the 4 norerank cells the inactive-reranker gate reads, so every Layer-1 gate is
-  read after stage A alone (13 legs; the exact list pending the run harness); the placebo drops every
+  placeholder for the v4 counts. Stage A now also runs the 5 norerank cells the inactive-reranker gate reads, so every Layer-1 gate is
+  read after stage A alone (14 legs; stage B the remaining 14 cells and the placebo); the placebo drops every
   entry equal to one of the receiving paper's own entries. New open item: the covariate sensitivity's
   test form (§14 O13).
