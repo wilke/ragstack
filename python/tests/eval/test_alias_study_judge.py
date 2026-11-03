@@ -1091,3 +1091,31 @@ def test_stage_a_batches_cannot_change_nor_be_finalized_again(tmp_path: Path) ->
         fh.write(json.dumps({"k": "batch|1", "batch": 1, "pairs": 0}) + "\n")
     with pytest.raises(SystemExit, match="committed pair or batch"):
         aj.verify_marker(w.runs)
+
+
+def test_pilot_commit_prints_and_records_no_per_leg_outcome(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Owner, 2026-11-03: the pilot stays blind to outcomes. In the pilot, no judge command prints a
+    per-leg outcome, and the stage-A commit (private and public) carries none; hits.jsonl keeps
+    them privately. A dry run (and the main run) is unchanged."""
+    (tmp_path / "p").mkdir()
+    (tmp_path / "d").mkdir()
+    w, cp = strict_stage_a(tmp_path / "p", "pilot")
+    assert main(cp, "status") == 0 and main(cp, "check-analysis-gate") == 0
+    printed = capsys.readouterr().out
+    legs = [asc.leg_id(*lg) for lg in asc.all_legs()]
+    assert printed and not [lg for lg in legs if lg in printed]
+    for k in aj.PILOT_WITHHELD_COUNTS:
+        assert k not in printed
+    out = out_of(w)
+    pub = json.loads((out / "stage-a-commit.public.json").read_text())
+    priv = json.loads((out / "stage-a-commit.json").read_text())
+    for counts in (pub["counts"], priv["counts"]):
+        assert not set(aj.PILOT_WITHHELD_COUNTS) & set(counts) and counts["per_leg_outcomes"].startswith("withheld")
+        assert not [lg for lg in legs if lg in json.dumps(counts)]
+    assert len(asc.read_jsonl(out / "stage-a" / "hits.jsonl")) == 14 * len(w.records)
+    # the dry run keeps them
+    w2, _, _ = through_commit(tmp_path / "d")
+    dpub = json.loads((out_of(w2) / "stage-a-commit.public.json").read_text())
+    assert set(aj.PILOT_WITHHELD_COUNTS) <= set(dpub["counts"]) and "per_leg_outcomes" not in dpub["counts"]
+    assert sum(dpub["counts"]["found10_per_leg"].values()) == sum(
+        int(h["hit"] or 0) for h in asc.read_jsonl(out_of(w2) / "stage-a" / "hits.jsonl"))

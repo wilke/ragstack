@@ -83,7 +83,11 @@ with its byte length and sha256; the stage-A rows files and leg summaries, which
 writes, exactly; the append-only judge files by prefix, and nothing appended to them may name a
 committed pair or batch) and ``stage-a-commit.public.json`` (counts and sha256s only, checked
 by :func:`alias_study_common.public_problems`; this is what the owner commits to the
-repository), and the marker ``<runs_dir>/STAGE-A-COMMITTED``. Stage B's runs and pairs need
+repository), and the marker ``<runs_dir>/STAGE-A-COMMITTED``. **In the pilot** the commit's
+counts carry no per-leg outcome (:data:`PILOT_WITHHELD_COUNTS`: found@10 and found@10-gold per
+leg), neither in the private commit, nor in its public record, nor on the console (owner,
+2026-11-03: the pilot stays blind to outcomes); ``stage-a/hits.jsonl`` keeps them privately for
+the frozen-hits check. Main and dry-run commits are unchanged. Stage B's runs and pairs need
 the marker and a commit that still verifies (:func:`verify_marker`: the marker's sha256, the
 public file's, and in the main run the public file tracked at HEAD in the repository). **No
 analysis before the commit:** :func:`analysis_gate` (``check-analysis-gate``) refuses until the
@@ -190,6 +194,9 @@ GW_ROLE = {"argon": "tiebreak", "opus": "drift_ref"}
 PREFIX_FILE_NAMES = ("labels-qwen-C.jsonl", "labels-qwen-E.jsonl", "labels-gw-argon.jsonl", "labels-gw-opus.jsonl",
                      "attempts-gw-argon.jsonl", "attempts-gw-opus.jsonl", "calls-gw-argon.jsonl", "calls-gw-opus.jsonl",
                      "dispatch-gw-argon.jsonl", "dispatch-gw-opus.jsonl")
+#: per-leg outcome counts the stage-A commit carries in main and dry-run mode and never in the
+#: pilot (owner, 2026-11-03: the pilot stays blind to outcomes, §5.6)
+PILOT_WITHHELD_COUNTS = ("found10_per_leg", "found10_gold_per_leg")
 LABEL_FILES = {"C": "labels-qwen-C.jsonl", "E": "labels-qwen-E.jsonl", "argon": "labels-gw-argon.jsonl",
                "opus": "labels-gw-opus.jsonl"}
 
@@ -1524,6 +1531,13 @@ class Pipeline:
                   "pairs": len(fin), "batches": len(stages["A"]), "sources": summ["sources"],
                   "unjudged": summ["unjudged"], "opus_no_reference": summ["opus_no_reference"],
                   "drift_remedies": len(summ["drift"]["remedies"])}
+        if self.mode == "pilot":
+            # the pilot stays blind to outcomes (owner, 2026-11-03): no per-leg found@10 or
+            # found@10-gold in the commit, its public record or the console; hits.jsonl keeps them
+            # privately for the frozen-hits check
+            for k in PILOT_WITHHELD_COUNTS:
+                counts.pop(k, None)
+            counts["per_leg_outcomes"] = "withheld in the pilot (owner, 2026-11-03)"
         pub_path = self.out / "stage-a-commit.public.json"
         commit = {"schema": COMMIT_SCHEMA, "mode": self.mode, "t": jd.g.now_iso(), "provenance": self.prov,
                   "stage_a_legs": sorted(ar.RETRIEVAL_A_LEGS), "retrieval_A_legs": sorted(ar.RETRIEVAL_A_LEGS),
