@@ -21,7 +21,8 @@ def test_dry_run_end_to_end(tmp_path: Path) -> None:
     w = fx.World(tmp_path / "in", set_="V")
     out = dry.dry_run(w.records_path, w.base_export, w.glossary, tmp_path / "work", added_per_arm=3,
                       batch_size=60, n_perm=500, n_boot=200)
-    # 9 stage-A runs (one per stage-A leg) and 9 stage-B runs (19 cells + the placebo leg)
+    # 9 stage-A runs (14 legs: 5 attachments x default + norerank, 4 repeats) and 9 stage-B runs
+    # (15 cells + the placebo leg)
     assert not any(out["legs"].values()) and len(out["legs"]) == 18
     assert sum(k.startswith("A|") for k in out["legs"]) == 9
     assert out["retrieve_calls"] == len(w.records) * 29
@@ -33,12 +34,13 @@ def test_dry_run_end_to_end(tmp_path: Path) -> None:
     s = json.loads((tmp_path / "work" / "runs" / "base" / "none.summary.json").read_text())
     assert s["study"]["dry_run"] is True and s["study"]["config_hash_identical"] is True
     assert s["manipulation_check"]["glossary_boost"]["status"] == "declared"
-    assert s["study"]["stage"] == "A" and s["study"]["legs"] == ["base|none|default"]
+    assert s["study"]["stage"] == "A" and s["study"]["legs"] == ["base|none|default", "base|none|norerank"]
+    assert s["conditions"]["base"]["identical_to_norerank"]["records"] == len(w.records)
     sb = json.loads((tmp_path / "work" / "runs" / "base" / "none.stageB.summary.json").read_text())
-    assert sb["study"]["stage"] == "B" and sb["study"]["legs"] == ["base|none|bm25", "base|none|norerank"]
-    assert sb["study"]["inactive_reranker"]["gate"] is None and sb["study"]["stage_a_commit"]["verified"]
+    assert sb["study"]["stage"] == "B" and sb["study"]["legs"] == ["base|none|bm25"]
+    assert sb["study"]["stage_a_commit"]["verified"]
     pub = json.loads((tmp_path / "work" / "judge" / "stage-a-commit.public.json").read_text())
-    assert pub["counts"]["legs"] == 9
+    assert pub["counts"]["legs"] == 14
 
 
 def test_dry_run_refuses_study_records(tmp_path: Path) -> None:

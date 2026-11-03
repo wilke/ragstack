@@ -24,20 +24,21 @@ repeat is not a replay of the first leg's request sequence. Every record of the 
 (the 900 balanced and the 191 descriptive) is run in every leg; every call asks ``top_k`` 50,
 so the rows carry the top 10 and the depth-50 pool for diagnostics.
 
-**Two stages (§5.7, R9).** Stage A is the 9 Layer-1 legs (:data:`STAGE_A_LEGS`): base x
-default x none, base x default x merged, neighbour / random-1 / random-2 x default x none,
-and the noise repeat of each corpus arm. Stage B is the other 19 cells and the placebo leg.
+**Two stages (§5.7, R9; owner, 2026-11-03).** Stage A is the 14 legs every Layer-1 member and
+gate reads (:data:`STAGE_A_LEGS`): base x default x none, base x default x merged, neighbour /
+random-1 / random-2 x default x none, the noise repeat of each corpus arm, and the **norerank**
+cell of each of those five attachments, so that the inactive-reranker gate (§9.1) is computed
+by found10 inside the stage-A run (``conditions.base.identical_to_norerank`` and
+``conditions.base.gate``) and every Layer-1 gate is readable after stage A alone. Stage B is
+the other 15 cells and the placebo leg.
 ``run --stage A`` measures only stage-A legs and is refused once stage A is committed (the
 judge's ``commit-stage-a`` writes ``<out_dir>/STAGE-A-COMMITTED``); ``run --stage B`` is
 refused until then, and verifies the commit (every stage-A file still has the bytes it had
 when committed) before it measures anything. A stage-B leg on an attachment that also has a
-stage-A leg (base x none, base x merged, the expanded arms x none) is written to its own files,
-``<corpus>/<glossary>.stageB.{jsonl,summary.json}``, so no stage-A file is ever opened for
-writing again: :func:`leg_files` maps every leg to its files (and still reads a single-file
-layout written before the stages). Because the default leg (stage A) and the norerank leg
-(stage B) of one attachment are measured in different runs, the stage-B run computes the
-inactive-reranker comparison against the committed default rows and records it as
-``study.inactive_reranker`` (it gates the **default** leg, §9.1).
+stage-A leg (the bm25 cell of base x none, base x merged and the expanded arms x none) is
+written to its own files, ``<corpus>/<glossary>.stageB.{jsonl,summary.json}``, so no stage-A
+file is ever opened for writing again: :func:`leg_files` maps every leg to its files (and still
+reads a single-file layout written before the stages).
 
 **Modes.** ``dry_run: true`` (``alias_study_dryrun.py``) skips the record-set identity and
 must name no study record. ``pilot: true`` is the pre-freeze pilot (§5.6): the record set is
@@ -74,7 +75,12 @@ calls a hard stop; PAUSE / SIGTERM / resume; at most 4 in flight; provenance and
    merged glossary's per-paper lists permuted across the base papers that have at least one
    entry, by the derangement ``sha256(261101|alias|placebo|<paper>)`` ascending, each paper
    receiving the list of the paper after it and the last the first's (:func:`placebo_mapping`;
-   no paper keeps its own list). The rows keep the merged file's schema (``paper`` rewritten to
+   no paper keeps its own list). From each received list every entry equal to one of the
+   receiving paper's own merged entries is dropped (owner, 2026-11-03), matched on the merged
+   glossary's own key, the alias and the primary's ``alias_abbrev.words`` (``alias_abbrev.merge``);
+   a paper left with no entry gets no placebo field. The drops are counted per paper (by rank in
+   the placebo order) and in total, in the manifest and, through ``arms.placebo.manifest``, in
+   the placebo leg's summary (``study.placebo_glossary``). The rows keep the merged file's schema (``paper`` rewritten to
    the receiving paper, the source paper's location fields dropped, ``placebo: true`` added) so
    the one glossary-file writer renders both by the same mention rule and caps; the judge
    refuses a glossary file with placebo rows (its definitions block reads the merged glossary in
@@ -124,10 +130,15 @@ NOISE_ORDER_RULE = "sha256('261101|alias|noise|<corpus arm>|<record id>|<conditi
 #: fields of a merged-glossary entry that locate it in its own paper (dropped from placebo rows)
 PLACEBO_DROP_KEYS = frozenset({"doc_id", "def_chunk_id", "def_span", "chunk_id", "chunk_ids"})
 
-#: §5.7 (R9): the 9 Layer-1 legs of stage A; every other leg (19 cells + placebo) is stage B
+#: §5.7 (R9; owner, 2026-11-03): the attachments the Layer-1 members read (H1: base x none /
+#: merged; H2: the expanded arms x none), all at the default retriever
+LAYER1_ATTACHMENTS = (("base", "none"), ("base", "merged"), ("neighbour", "none"), ("random1", "none"),
+                      ("random2", "none"))
+#: stage A: those cells, their norerank cells (the inactive-reranker gate, §9.1) and the noise
+#: repeats; every other leg (15 cells + placebo) is stage B
 STAGES = ("A", "B")
-STAGE_A_LEGS = frozenset([asc.leg_id(c, asc.REPEAT_GLOSSARY, "default") for c in asc.CORPUS_ARMS]
-                         + [asc.leg_id("base", "merged", "default")]
+STAGE_A_LEGS = frozenset([asc.leg_id(c, g, "default") for c, g in LAYER1_ATTACHMENTS]
+                         + [asc.leg_id(c, g, "norerank") for c, g in LAYER1_ATTACHMENTS]
                          + [asc.leg_id(c, asc.REPEAT_GLOSSARY, asc.REPEAT_RETRIEVER, 2) for c in asc.CORPUS_ARMS])
 STAGE_B_LABEL_SUFFIX = ".stageB"
 COMMIT_MARKER = "STAGE-A-COMMITTED"
@@ -391,21 +402,6 @@ def field_coverage(probe_chunks: Sequence[tuple[str, str, str]] | None, unavaila
             "backfill": backfill}
 
 
-def inactive_reranker(default_rows: Sequence[Mapping[str, Any]], norerank_rows: Sequence[Mapping[str, Any]]
-                      ) -> dict[str, Any]:
-    """§9.1 across the stages: default's ranking equal to norerank's on every record (failed
-    calls left out) means the reranker was not active."""
-    d = {r["record_id"]: r.get("ranked_chunk_ids") for r in default_rows if not r.get("failed")}
-    n = {r["record_id"]: r.get("ranked_chunk_ids") for r in norerank_rows if not r.get("failed")}
-    both = sorted(set(d) & set(n))
-    same = sum(d[k] == n[k] for k in both)
-    gate = None
-    if both and same == len(both):
-        gate = (f"{asc.GATE}: the default ranking equals the norerank ranking on every record "
-                f"({same}/{len(both)}): the reranker was not active")
-    return {"records": len(both), "identical": same, "gate": gate}
-
-
 class AliasRunner(f10.Runner):
     """found10's runner with the study's additions (module docstring, items 1 and 4) and the
     stage's file label."""
@@ -447,21 +443,6 @@ class AliasRunner(f10.Runner):
                 "admin /v1/config differs between the start and the end of the leg (or the end read failed): "
                 "the leg is re-run after the cause is found and recorded (§9.2)")
 
-    def _cross_stage_reranker(self, done: Mapping[str, Mapping[str, Any]]) -> dict[str, Any] | None:
-        """A stage-B run holding the norerank leg of an attachment whose default leg is stage A."""
-        if "norerank" not in self.conditions or "base" in self.conditions:
-            return None
-        c, g, rep = self.study["corpus_arm"], self.study["glossary_arm"], int(self.study.get("repeat") or 1)
-        if leg_stage(c, g, "default", rep) != "A":
-            return None
-        rows_a, _ = leg_files(Path(self.cfg["out_dir"]), c, g, "default", rep)
-        default_rows = [r for r in f10.read_jsonl_repair_tail(rows_a) if r["condition"] == "base"] \
-            if rows_a.is_file() else []
-        nr = [r for r in done.values() if r["condition"] == "norerank"]
-        return {"default_leg": asc.leg_id(c, g, "default", rep), "norerank_leg": asc.leg_id(c, g, "norerank", rep),
-                "default_rows_sha256": asc.sha256_file(rows_a) if rows_a.is_file() else None,
-                **inactive_reranker(default_rows, nr)}
-
     def _finish(self, done: dict[str, dict[str, Any]], swap: Mapping[str, Any], census: Mapping[str, Any],
                 live_before: Any, live_after: Any, server: Mapping[str, Any]) -> int:
         per_leg = {}
@@ -480,12 +461,27 @@ class AliasRunner(f10.Runner):
                  "config_sha256_start": server.get("config_sha256_start"),
                  "config_sha256_end": server.get("config_sha256_end"),
                  "config_hash_identical": server.get("config_hash_identical")}
-        xr = self._cross_stage_reranker(done)
-        if xr is not None:
-            study["inactive_reranker"] = xr
         summary["study"] = study
         f10.write_json_atomic(self.summary_path, summary)
         return rc
+
+
+def placebo_manifest_record(cfg: Mapping[str, Any]) -> dict[str, Any] | None:
+    """``arms.placebo.manifest`` (the ``placebo-glossary`` manifest): its placebo file's sha256
+    must be the arm's declared base glossary file; its counts (the dropped own entries among
+    them) go into the placebo leg's summary. Required outside a dry run."""
+    acfg = cfg["arms"].get(PLACEBO) or {}
+    mp = acfg.get("manifest")
+    if not mp:
+        if cfg.get("dry_run"):
+            return None
+        raise f10.Refused("arms.placebo.manifest is not set (the placebo-glossary manifest, §5.3)")
+    man = json.loads(Path(mp).read_text(encoding="utf-8"))
+    want = (acfg.get("glossary_file_sha256") or {}).get("base")
+    if man.get("schema") != PLACEBO_SCHEMA or man.get("placebo_sha256") != want:
+        raise f10.Refused("arms.placebo.manifest is not the manifest of the arm's declared glossary file")
+    return {"manifest_sha256": asc.sha256_file(mp), "placebo_sha256": man["placebo_sha256"],
+            "source_sha256": man.get("source_sha256"), "seed": man.get("seed"), "counts": man.get("counts")}
 
 
 def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: Mapping[str, Any],
@@ -535,6 +531,8 @@ def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: 
     if ccfg.get("restore_point"):
         extra["restore_point"] = check_restore_point(Path(ccfg["restore_point"]), ccfg)
     label = run_label(corpus_arm, glossary, rep, stage)
+    if glossary == PLACEBO:
+        extra["placebo_glossary"] = placebo_manifest_record(cfg)
     try:
         swap_doc = json.loads(Path(swap_record).read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -598,29 +596,42 @@ def build_placebo(entries: Sequence[Mapping[str, Any]], corpus_papers: set[str] 
     mapping = placebo_mapping(list(by))
 
     def key(e: Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
+        """The merged glossary's own entry key without the paper (``alias_abbrev.merge``: the
+        alias as stored, the primary's ``alias_abbrev.words``)."""
         return str(e["alias"]), tuple(aa.words(str(e["primary"])))
 
     rows: list[dict[str, Any]] = []
-    coincide_entries = 0
-    coincide_papers = 0
-    for recv in placebo_order(list(by)):
+    dropped_by_rank: dict[str, int] = {}
+    emptied = 0
+    received = 0
+    for rank, recv in enumerate(placebo_order(list(by)), 1):
         src = mapping[recv]
         own = {key(e) for e in by[recv]}
-        hit = 0
+        drop = 0
+        kept = 0
         for e in by[src]:
+            received += 1
+            # owner, 2026-11-03: an entry equal to one of the receiving paper's own merged
+            # entries is not placebo text; it is dropped and counted
+            if key(e) in own:
+                drop += 1
+                continue
             row = {k: v for k, v in e.items() if k not in PLACEBO_DROP_KEYS}
             row.update({"paper": recv, "placebo": True})
             rows.append(row)
-            hit += int(key(e) in own)
-        coincide_entries += hit
-        coincide_papers += int(hit > 0)
+            kept += 1
+        if drop:
+            dropped_by_rank[str(rank)] = drop
+        emptied += int(kept == 0)
     pairs = "".join(f"{r}\t{s}\n" for r, s in sorted(mapping.items()))
-    counts = {"papers": len(mapping), "entries": len(rows), "fixed_points": sum(r == s for r, s in mapping.items()),
-              "mapping_sha256": asc.sha_text(pairs),
+    counts = {"papers": len(mapping), "entries_received": received, "entries": len(rows),
+              "papers_with_placebo_entries": len(mapping) - emptied,
+              "fixed_points": sum(r == s for r, s in mapping.items()), "mapping_sha256": asc.sha_text(pairs),
               "kinds": dict(Counter(str(r.get("kind")) for r in rows)),
-              # entries a paper receives that equal one of its own (alias, primary words): kept, as
-              # the rule permutes whole lists; counted so the reading of the leg can weigh them
-              "own_entry_coincidences": {"entries": coincide_entries, "papers": coincide_papers}}
+              # per paper by its rank in the placebo order (1-based), never by id (§11)
+              "placebo_dropped_own_entries": {"entries": sum(dropped_by_rank.values()),
+                                              "papers": len(dropped_by_rank), "papers_emptied": emptied,
+                                              "per_paper_by_rank": dropped_by_rank}}
     return rows, counts
 
 

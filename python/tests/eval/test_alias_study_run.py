@@ -112,14 +112,15 @@ def test_complete_leg_with_config_hash(tmp_path: Path) -> None:
     assert run(cfg, swaps, api) == 0
     s = summary(cfg, "base", "none")
     assert s["status"] == "complete" and s["study"]["config_hash_identical"] is True
-    # stage A measures the attachment's stage-A leg only (§5.7)
-    assert s["study"]["retrievers"] == ["default"] and s["study"]["legs"] == ["base|none|default"]
+    # stage A measures the attachment's stage-A legs only: default and norerank (§5.7, owner 2026-11-03)
+    assert s["study"]["retrievers"] == ["default", "norerank"]
+    assert s["study"]["legs"] == ["base|none|default", "base|none|norerank"]
     assert s["study"]["stage"] == "A" and s["study"]["mode"] == "dry_run" and s["study"]["placebo"] is False
     assert s["study"]["gold_presence"]["present"] == len({r["gold_chunks"][0] for r in w.records})
     assert api.config_reads == 2
     assert all(b["use_graph"] is False and b["rewrite_strategies"] == ["passthrough"] for b in api.bodies)
     assert {b["top_k"] for b in api.bodies} == {50}
-    assert len(api.bodies) == len(w.records)
+    assert len(api.bodies) == 2 * len(w.records) and not any(b["retrieval_mode"] == "bm25" for b in api.bodies)
 
 
 def test_config_change_during_leg_is_a_hard_stop(tmp_path: Path) -> None:
@@ -178,21 +179,24 @@ def test_inactive_reranker_gate_still_fires(tmp_path: Path) -> None:
     assert "reranker was not active" in summary(cfg, "neighbour", "merged")["conditions"]["base"]["gate"]
 
 
-def test_inactive_reranker_gate_across_the_stages(tmp_path: Path) -> None:
-    """base x none: default is stage A, norerank stage B; the stage-B run compares them."""
+def test_every_layer1_gate_is_readable_after_stage_a(tmp_path: Path) -> None:
+    """Owner, 2026-11-03: the inactive-reranker gate (§9.1) is computed inside the stage-A run of
+    each of the five Layer-1 attachments, from stage-A legs alone."""
+    attach = {(c, g) for c, g, r, rep in ar.stage_legs("A") if rep == 1}
+    assert attach == set(ar.LAYER1_ATTACHMENTS)
+    for c, g in ar.LAYER1_ATTACHMENTS:
+        assert ar.leg_stage(c, g, "default") == ar.leg_stage(c, g, "norerank") == "A"
     for same in (True, False):
         tmp = tmp_path / str(same)
         tmp.mkdir()
         w, cfg, swaps = setup(tmp)
         api = API(w)
         api.same_rerank = same
-        assert run(cfg, swaps, api) == 0
-        commit_stage_a(cfg, tmp)
-        assert run(cfg, swaps, api, stage="B") == 0
-        s = summary(cfg, "base", "none.stageB")
-        xr = s["study"]["inactive_reranker"]
-        assert xr["default_leg"] == "base|none|default" and xr["records"] == len(w.records)
-        assert (xr["gate"] is not None) is same and ("reranker was not active" in (xr["gate"] or "")) is same
+        for c, g in ar.LAYER1_ATTACHMENTS:
+            assert run(cfg, swaps, api, corpus=c, glossary=g) == 0
+            base = summary(cfg, c, g)["conditions"]["base"]
+            assert base["identical_to_norerank"]["records"] == len(w.records)
+            assert ("reranker was not active" in (base["gate"] or "")) is same
 
 
 def test_census_stamp_mismatch_refused(tmp_path: Path) -> None:
@@ -256,13 +260,13 @@ def test_plan_lists_29_legs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert run(cfg, swaps, API(w)) == 0
     capsys.readouterr()
     st = ar.run_status(Path(cfg["out_dir"]))
-    assert len(st) == 29 and sum(v == "complete" for v in st.values()) == 1
+    assert len(st) == 29 and sum(v == "complete" for v in st.values()) == 2
     assert st["base|none|default"] == "complete" and st["base|placebo|default"] == "missing"
     assert ar.main(["--config", str(write_cfg(tmp_path, cfg)), "plan"]) == 0
     plan = json.loads(capsys.readouterr().out)
     assert plan["legs"] == 29 and plan["stage_a_committed"] is False
-    assert sum(len(r["legs"]) for r in plan["runs"] if r["stage"] == "A") == 9
-    assert sum(len(r["legs"]) for r in plan["runs"] if r["stage"] == "B") == 20
+    assert sum(len(r["legs"]) for r in plan["runs"] if r["stage"] == "A") == 14
+    assert sum(len(r["legs"]) for r in plan["runs"] if r["stage"] == "B") == 15
 
 
 # ------------------------------------------------------------------ stages (§5.7)
@@ -292,10 +296,11 @@ def commit_stage_a(cfg: dict[str, Any], tmp: Path, files: list[tuple[str, Path, 
 def test_stage_legs_are_the_prereg_s() -> None:
     a = {asc.leg_id(*lg) for lg in ar.stage_legs("A")}
     assert a == {"base|none|default", "base|merged|default", "neighbour|none|default", "random1|none|default",
-                 "random2|none|default", "base|none|default#2", "neighbour|none|default#2",
-                 "random1|none|default#2", "random2|none|default#2"}
+                 "random2|none|default", "base|none|norerank", "base|merged|norerank", "neighbour|none|norerank",
+                 "random1|none|norerank", "random2|none|norerank", "base|none|default#2",
+                 "neighbour|none|default#2", "random1|none|default#2", "random2|none|default#2"}
     b = ar.stage_legs("B")
-    assert len(b) == 20 and ("base", "placebo", "default", 1) in b and len(ar.study_legs()) == 29
+    assert len(b) == 15 and ("base", "placebo", "default", 1) in b and len(ar.study_legs()) == 29
 
 
 def test_stage_b_is_refused_before_stage_a_is_committed(tmp_path: Path) -> None:
@@ -338,13 +343,14 @@ def test_stage_b_writes_its_own_files(tmp_path: Path) -> None:
     commit_stage_a(cfg, tmp_path)
     api.bodies.clear()
     assert run(cfg, swaps, api, stage="B") == 0
-    # no default call in stage B, and no stage-A file touched
-    assert {b["retrieval_mode"] for b in api.bodies} == {"bm25", "hybrid"} and not any(b.get("rerank") for b in api.bodies)
+    # only the bm25 cell in stage B, and no stage-A file touched
+    assert {b["retrieval_mode"] for b in api.bodies} == {"bm25"} and len(api.bodies) == len(w.records)
     assert all(asc.sha256_file(out / "base" / n) == sha for n, sha in before.items())
     s = summary(cfg, "base", "none.stageB")
-    assert s["study"]["legs"] == ["base|none|bm25", "base|none|norerank"] and s["study"]["stage_a_commit"]["verified"]
+    assert s["study"]["legs"] == ["base|none|bm25"] and s["study"]["stage_a_commit"]["verified"]
     assert ar.leg_files(out, "base", "none", "bm25")[1].name == "none.stageB.summary.json"
     assert ar.leg_files(out, "base", "none", "default")[1].name == "none.summary.json"
+    assert ar.leg_files(out, "base", "none", "norerank")[1].name == "none.summary.json"
     st = ar.run_status(out)
     assert [st[k] for k in ("base|none|default", "base|none|bm25", "base|none|norerank")] == ["complete"] * 3
 
@@ -368,6 +374,7 @@ def test_placebo_leg_runs_base_default_only(tmp_path: Path) -> None:
     s = summary(cfg, "base", "placebo")
     assert list(s["conditions"]) == ["base"] and s["study"]["placebo"] is True
     assert s["study"]["legs"] == ["base|placebo|default"]
+    assert s["study"]["placebo_glossary"] is None                    # a dry run without a manifest
     with pytest.raises(f10.Refused, match="base x default only"):
         run(cfg, swaps, api, corpus="neighbour", glossary="placebo", stage="B")
     with pytest.raises(f10.Refused, match="no stage-A leg"):
@@ -410,25 +417,42 @@ def test_build_placebo_rows() -> None:
     entries = [{"paper": "A", "alias": "PCR", "primary": "polymerase chain reaction", "kind": "abbreviation",
                 "doc_id": "dA", "def_chunk_id": "A-c1", "def_span": [1, 5]},
                {"paper": "B", "alias": "x", "primary": "the mass", "kind": "symbol", "doc_id": "dB"},
-               {"paper": "B", "alias": "PCR", "primary": "polymerase chain reactions", "kind": "abbreviation"},
                {"paper": "C", "alias": "QQ", "primary": "quality quotient", "kind": "abbreviation"}]
     rows, counts = ar.build_placebo(entries, {"A", "B", "C", "D"})
     m = ar.placebo_mapping(["A", "B", "C"])
-    by_src = {"A": 1, "B": 2, "C": 1}
-    assert counts["papers"] == 3 and counts["entries"] == 4 and counts["fixed_points"] == 0
+    assert counts["papers"] == 3 and counts["entries"] == 3 and counts["fixed_points"] == 0
     for recv, src in m.items():
         got = [r for r in rows if r["paper"] == recv]
-        assert len(got) == by_src[src] and all(r["placebo"] is True for r in got)
-        assert {r["alias"] for r in got} == {e["alias"] for e in entries if e["paper"] == src}
+        assert [r["alias"] for r in got] == [e["alias"] for e in entries if e["paper"] == src]
+        assert all(r["placebo"] is True for r in got)
     assert not any(k in r for r in rows for k in ("doc_id", "def_chunk_id", "def_span"))
-    # A and B share PCR -> polymerase chain reaction(s): whichever receives the other's list keeps a
-    # coincident entry, which the rule does not remove; it is counted
-    coincide = int(m["A"] == "B") + int(m["B"] == "A")
-    assert counts["own_entry_coincidences"]["entries"] == coincide
+    assert counts["placebo_dropped_own_entries"] == {"entries": 0, "papers": 0, "papers_emptied": 0,
+                                                     "per_paper_by_rank": {}}
     with pytest.raises(SystemExit, match="not in the base export"):
         ar.build_placebo(entries, {"A", "B"})
     with pytest.raises(SystemExit, match="already a placebo"):
         ar.build_placebo(rows)
+
+
+def test_placebo_drops_entries_equal_to_the_receiving_paper_s_own() -> None:
+    """Owner, 2026-11-03. Two papers swap lists (a 2-cycle): A and B both define PCR as the
+    polymerase chain reaction (B in the plural and capitalised: the same merged-glossary key,
+    alias + ``alias_abbrev.words`` of the primary). Each drops the other's PCR; B is left with
+    nothing and gets no placebo field."""
+    entries = [{"paper": "A", "alias": "PCR", "primary": "polymerase chain reaction", "kind": "abbreviation"},
+               {"paper": "B", "alias": "x", "primary": "the mass", "kind": "symbol"},
+               {"paper": "B", "alias": "PCR", "primary": "Polymerase Chain Reactions", "kind": "abbreviation"},
+               {"paper": "B", "alias": "pcr", "primary": "polymerase chain reaction", "kind": "abbreviation"}]
+    rows, counts = ar.build_placebo(entries)
+    assert ar.placebo_mapping(["A", "B"]) == {"A": "B", "B": "A"}
+    a = [(r["alias"], r["primary"]) for r in rows if r["paper"] == "A"]
+    assert a == [("x", "the mass"), ("pcr", "polymerase chain reaction")]   # another alias spelling is kept
+    assert not [r for r in rows if r["paper"] == "B"]
+    d = counts["placebo_dropped_own_entries"]
+    rank = {p: str(i) for i, p in enumerate(ar.placebo_order(["A", "B"]), 1)}
+    assert d["entries"] == 2 and d["papers"] == 2 and d["papers_emptied"] == 1
+    assert d["per_paper_by_rank"] == {rank["A"]: 1, rank["B"]: 1}
+    assert counts["entries_received"] == 4 and counts["entries"] == 2 and counts["papers_with_placebo_entries"] == 1
 
 
 def test_placebo_command_writes_file_and_manifest(tmp_path: Path) -> None:
@@ -453,7 +477,7 @@ def test_pilot_runs_the_191_only_and_keeps_its_own_directory(tmp_path: Path, mon
     api = API(w)
     assert run(cfg, swaps, api) == 0
     desc = {r["record_id"] for r in asc.split_records(w.records)[1]}
-    assert {api.q2rec[b["query"]]["record_id"] for b in api.bodies} == desc and len(api.bodies) == len(desc)
+    assert {api.q2rec[b["query"]]["record_id"] for b in api.bodies} == desc and len(api.bodies) == 2 * len(desc)
     s = summary(cfg, "base", "none")
     assert s["study"]["pilot"] is True and s["study"]["mode"] == "pilot"
     assert s["study"]["record_set"]["pilot_records"] == len(desc)
@@ -492,3 +516,25 @@ def test_field_coverage(tmp_path: Path) -> None:
     assert run(cfg, swaps, API(w)) == 0
     s = summary(cfg, "base", "none")["study"]["field_coverage"]
     assert s["available"] is False and s["backfill"] == {}
+
+
+def test_placebo_leg_summary_carries_the_drop_counts(tmp_path: Path) -> None:
+    w, cfg, swaps = setup(tmp_path)
+    pf = tmp_path / "out" / "placebo.jsonl"
+    assert ar.main(["placebo-glossary", "--merged", str(w.glossary), "--base-export", str(w.base_export),
+                    "--out", str(pf)]) == 0
+    mf = pf.with_name(pf.name + ".manifest.json")
+    commit_stage_a(cfg, tmp_path)
+    cfg["arms"]["placebo"]["manifest"] = str(mf)
+    with pytest.raises(f10.Refused, match="manifest"):            # not the arm's declared file
+        run(cfg, swaps, API(w), glossary="placebo", stage="B")
+    cfg["arms"]["placebo"]["glossary_file_sha256"]["base"] = asc.sha256_file(pf)
+    sp = Path(swaps["base-placebo"])
+    sw = json.loads(sp.read_text())
+    sw["glossary_file"]["sha256"] = asc.sha256_file(pf)
+    sp.write_text(json.dumps(sw))
+    assert run(cfg, swaps, API(w), glossary="placebo", stage="B") == 0
+    pg = summary(cfg, "base", "placebo")["study"]["placebo_glossary"]
+    assert pg["placebo_sha256"] == asc.sha256_file(pf)
+    assert set(pg["counts"]["placebo_dropped_own_entries"]) == {"entries", "papers", "papers_emptied",
+                                                                "per_paper_by_rank"}

@@ -108,7 +108,7 @@ def test_demanded_rule() -> None:
     assert aj.demanded(rec, {"failed": True, "ranked_chunk_ids": None}, "found10") == []
 
 
-def test_stage_a_pairs_are_the_found10_demand_of_the_9_legs(tmp_path: Path) -> None:
+def test_stage_a_pairs_are_the_found10_demand_of_the_14_legs(tmp_path: Path) -> None:
     w, cp = world(tmp_path)
     assert main(cp, "build-pairs", "--stage", "A") == 0
     out = out_of(w)
@@ -117,7 +117,8 @@ def test_stage_a_pairs_are_the_found10_demand_of_the_9_legs(tmp_path: Path) -> N
     got = {(p["record_id"], p["chunk_id"]) for p in pairs}
     assert got == expected_demand(w, ar.stage_legs("A"), "found10")
     assert len(pairs) == len(got) == man["stages"]["A"]["counts"]["pairs"]
-    assert man["stages"]["A"]["counts"]["legs"] == 9 and len(man["stages"]["A"]["legs"]) == 9
+    assert man["stages"]["A"]["counts"]["legs"] == 14 and len(man["stages"]["A"]["legs"]) == 14
+    assert {lg.split("|")[2].split("#")[0] for lg in man["stages"]["A"]["legs"]} == {"default", "norerank"}
     assert man["stages"]["A"]["counts"]["instances_before_dedup"] > len(pairs)
     assert all(p["chunk_id"] != w.by_id[p["record_id"]]["gold_chunks"][0] for p in pairs)
     assert {p["stage"] for p in pairs} == {"A"} and {p["need"] for p in pairs} == {"found10"}
@@ -646,7 +647,7 @@ def test_commit_writes_hits_shas_public_file_and_marker(tmp_path: Path) -> None:
     marker = ar.read_commit_marker(w.runs)
     assert marker is not None and marker["commit_sha256"] == asc.sha256_file(out / "stage-a-commit.json")
     hits = asc.read_jsonl(out / "stage-a" / "hits.jsonl")
-    assert len(hits) == 9 * len(w.records)
+    assert len(hits) == 14 * len(w.records)
     fin = {(r["record_id"], r["chunk_id"]): r["label"] for r in asc.read_jsonl(out / "final.jsonl")
            if r["k"].startswith("pair|")}
     for h in hits:
@@ -658,7 +659,7 @@ def test_commit_writes_hits_shas_public_file_and_marker(tmp_path: Path) -> None:
     pub = json.loads((out / "stage-a-commit.public.json").read_text())
     forbidden = [r["record_id"] for r in w.records] + w.papers + list(asc.read_chunk_exports([w.base_export]))
     assert asc.public_problems(pub, forbidden, [r["question"] for r in w.records]) == []
-    assert pub["counts"]["legs"] == 9 and pub["commit_sha256"] == marker["commit_sha256"]
+    assert pub["counts"]["legs"] == 14 and pub["commit_sha256"] == marker["commit_sha256"]
     assert "rows:base|none|default" in pub["files"] and "final" in pub["files"]
     with pytest.raises(SystemExit, match="committed already"):
         main(cp, "commit-stage-a")
