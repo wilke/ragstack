@@ -1,7 +1,7 @@
 # Pre-registration, alias study (OA-1000) — DRAFT v3, 2026-11-03
 
 **Status: DRAFT — not frozen; owner review pending.** Version 3 folds in the owner's decisions of
-2026-11-03 (R12–R25, the second table below): a C cost rule that reads the point estimate (−1 point) and
+2026-11-03 (R12–R26, the second table below): a C cost rule that reads the point estimate (−1 point) and
 the CI's lower bound (−3.6 points, the design's detection limit for C), the judge false-yes bound on H2
 always taking the larger of the random arm's and the pooled limit, *fragile* restricted to named re-tests
 of H1 and H2, a judged-pair spot check of 100 pairs, the corpus build facts of the v3 pass (six length
@@ -10,7 +10,8 @@ relaxation level, a repetition screen for every added paper, and the chunk-volum
 target covered by H2's chunk-volume covariate; and stage A extended by the inactive-reranker gate's
 norerank cells (retrieval and judging) and the Layer-1 attachments' BM25 cells (retrieval only), the
 placebo stripped of each paper's own entries, a bootstrap-t and a Freedman–Lane covariate test as the re-tests behind *fragile*, and *not resolved* for an equivalence reading with zero
-discordant records. Version 2 folded in the changes the owner approved
+discordant records; and one immutable bench collection per corpus × glossary arm in place of
+in-place glossary swaps. Version 2 folded in the changes the owner approved
 on 2026-11-02 and 2026-11-03 from an independent methodology review, 2026-11-02 (R1–R11, the second table
 below): two separate families in place of the Holm pair, a harm rule and CI-based cost rules in Layer 2,
 the claims' scope wording, judge reporting, a stratified judged-pair spot check, fixed sensitivities, a
@@ -52,9 +53,9 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 **Owner decisions of 2026-11-02 and 2026-11-03, and where each is written.** R1–R11 were adopted from an
 independent methodology review, 2026-11-02; the review's text is not part of this record, what the owner
-adopted from it is. R12–R25 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
+adopted from it is. R12–R26 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
 bound, the *fragile* rule, the spot check, the corpus build, stage A, the placebo, the re-tests behind
-*fragile* the equivalence reading and the stage of the BM25 legs.
+*fragile* the equivalence reading, the stage of the BM25 legs and the bench collections.
 
 | # | decision, in short | where |
 |---|---|---|
@@ -83,6 +84,7 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A, the placeb
 | R23 | **the H2 volume-covariate re-test** is a Freedman–Lane sign-flip with the studentized intercept (10,000 flips, seed `261101\|alias\|perm`), reusing the primary's unadjusted gold-only gate; closes O13 | §5.5, §7, §14 O13, §15 item 19 |
 | R24 | **equivalence with zero discordant records** prints *not resolved* with the count, never *no effect larger than 0 points*; Wilson upper limits are rounded up | §3.3 |
 | R25 | **BM25 legs of the Layer-1 attachments retrieved in stage A, judged in stage B**: stage-A retrieval is 19 legs (5 attachments × default, norerank, BM25, plus the 4 noise repeats; 20,729 calls), stage-A judging the default and norerank legs and the repeats (14); each attachment's glossary swapped once in total; the stage-A commit pins the BM25 rows, their labels arrive in stage B; total unchanged | §5.4, §5.7, §6.2, §9.3 |
+| R26 | **no in-place glossary swaps**: each (corpus arm, glossary arm) is its own bench collection, built once and never written again (base × none, merged, placebo; neighbour, random-1, random-2 × none, merged: 9 collections); a variant is a duplicate of its *none* collection with the glossary field backfilled on the copy, with no re-embedding; collections immutable after build, each with a build manifest, censused at the start and end of every leg; the duplication mechanism and the capacity are open live-ops items | §5.1, §5.3, §5.7, §9.3, §10, §15 |
 
 **Terms.**
 - **Glossary entry:** a pair *alias → primary term* for one paper. The alias is a **symbol** (the round-3
@@ -586,7 +588,8 @@ run on base × default only.
 | **random-1**, **random-2** | base + **matched random papers**, two independent draws (rule below) |
 
 Each expanded arm is a new bench collection. Base chunks are copied **with identical chunk ids and
-content**. Each added paper goes through the **same ingest** (chunker `tok512o0`, the same embedder and
+content**. Each corpus arm is loaded once as its glossary-*none* collection; its glossary variants are
+separate collections duplicated from it (R26, §5.3, §9.3). Each added paper goes through the **same ingest** (chunker `tok512o0`, the same embedder and
 version, the same tools image) and the **same glossary pipeline** (§5.3).
 
 **Neighbour selection (D4).** Metadata from OpenAlex only, made before any retrieval. For each study
@@ -871,8 +874,9 @@ carries no entry of the chunk's own paper, so a G gain under merged that the pla
 alias bridge. Because rendering is by mention, a foreign alias renders only where that token happens to
 occur, so the placebo attaches to fewer chunks than merged: its field coverage (share of chunks with a
 field, mean rendered characters) is printed beside merged's, and the comparison is read with it. The
-placebo enters no test and no Layer-2 decision. It is swapped in by the same backfill with its own
-version stamp and census, after stage A (§5.7).
+placebo enters no test and no Layer-2 decision. It is rendered by the same backfill on its own copy of
+the base *none* collection (R26), with its own version stamp and census, and retrieved in stage B
+(§5.7).
 
 **Own entries removed (owner, 2026-11-03, R21).** After the derangement, every entry of a receiving
 paper's placebo list that equals one of that paper's own merged entries (the normalised primary term and
@@ -882,9 +886,19 @@ such papers are counted. All three counts are printed beside the placebo's field
 whole-list permutation can hand a paper one of its own entries, which would break "the placebo carries no
 entry of the chunk's own paper".
 
-The arms are swapped by the backfill on each bench collection, with the round-3 stamp census, and no
-re-indexing. For added papers in **every** expanded arm, the glossaries are generated **by the same
-pipeline at the same versions** (owner, 2026-11-01):
+**Each glossary arm is its own collection (owner, 2026-11-03, R26).** No glossary is swapped in place.
+Each (corpus arm, glossary arm) is a separate bench collection, built once and never written again:
+base × {none, merged, placebo} and {neighbour, random-1, random-2} × {none, merged}, **9 collections**.
+Each *none* collection is loaded first; each variant is a **duplicate** of its *none* collection on which
+the glossary field is rendered by the backfill on the variant's own copy, with the round-3 stamp census.
+The dense vectors are unchanged, so nothing is re-embedded or re-indexed. How a collection is duplicated
+is a live-ops plan item agreed with management, and is open (§15). *Why:* nothing is overwritten,
+nothing has to be restored, the legs do not depend on the order they run in, and a re-run reads the same
+collection. *Cost:* 9 bench collections instead of 4, on the dev tenant; the capacity is to be confirmed
+with management (§15).
+
+For added papers in **every** expanded arm, the glossaries are generated **by the same pipeline at the
+same versions** (owner, 2026-11-01):
 - **Symbol entries:** the Qwen LLM step with the same prompt, model and settings as the OA-1000 round-3
   arm file, version string `llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only`
   (prompt hash `dcb924271b1e`), unioned with round 1's `rules/3` entries, as the base file's symbol part
@@ -982,8 +996,7 @@ random-1 × none, random-2 × none.
   none, §9.4): **19 legs**, 20,729 retrieval calls. The 5 norerank cells are the ones the
   inactive-reranker gate reads (§9.1): base × norerank × none, base × norerank × merged, neighbour ×
   norerank × none, random-1 × norerank × none, random-2 × norerank × none. An attachment's three
-  retriever legs are retrieved **in one run**, with its glossary swapped onto the bench index **once in
-  total** (§9.3); no stage-B re-swap of a Layer-1 attachment is made.
+  retriever legs are retrieved **in one run**, against its own immutable collection (R26, §9.3).
 - **Stage A judging**: the found@10 pairs (§6.2) of the 5 default and 5 norerank cells and the 4 noise
   repeats: **14 legs**. The BM25 legs retrieved in stage A are **not** judged in stage A.
 - **The stage-A commit**: the stage-A outputs (hits, pair labels, logs, as private files with public
@@ -996,10 +1009,9 @@ random-1 × none, random-2 × none.
   which contradicted "the Layer-1 analysis can be run after stage A". Now every Layer-1 gate is read
   after stage A alone. The cost: 5 × 1,091 retrieval calls and their found@10 judge pairs move earlier;
   the total is unchanged.
-- *Why R25:* retrieving the BM25 legs with their attachment's other legs removes the base re-swaps,
-  which are store writes needing management windows (§9.3); it removes a layout in which one
-  attachment's outputs are split across the two stages' files; and the inactive-reranker gate then
-  compares legs from one run. The cost: 5 × 1,091 BM25 calls move earlier; no extra judging comes before
+- *Why R25:* each attachment is retrieved in **one run**, so its outputs are not split across the two
+  stages' files, and the inactive-reranker gate compares legs from that one run. (R25 first also removed
+  base re-swaps; under R26 no glossary is swapped at all.) The cost: 5 × 1,091 BM25 calls move earlier; no extra judging comes before
   the Layer-1 analysis; the total is unchanged.
 - **A stage-A label is never changed by stage B.** Pairs are deduplicated across cells (§6.2), so a pair
   that stage-B judging meets again keeps its stage-A label; stage-B judging labels only new pairs. Stage
@@ -1368,7 +1380,7 @@ is 2^−k, so at α = 0.05 a member needs k ≥ 5. For H1b the floor is the rand
 paper whose relabellings change the statistic contributes 1/3 or 2/3 (2 G + 1 C), or 1/2 (a paper left
 with 1 G + 1 C).
 
-## 9. Gates, stops, and restore points
+## 9. Gates, stops, immutable collections and restore points
 
 ### 9.1 GATE-NOT-EVALUABLE (a third answer, preserved in every table)
 
@@ -1408,15 +1420,19 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
   difference; a served judge model id that is not the requested one; a judge budget stop; a drift alarm
   (§6.3); a frozen-prereg sha mismatch in any stage that reads `prereg.file`.
 
-### 9.3 Restore points
+### 9.3 Immutable collections and restore points (R26)
 
-Every store write is made on a **bench copy**, never on a live collection. Store writes are building the
-three expanded collections and every glossary swap. Each Layer-1 attachment's glossary is swapped onto
-its bench index **once in total**, for all three of its retriever legs in stage-A retrieval, with no
-stage-B re-swap (R25, §5.7). Each write goes inside a management window, under a reviewed live-ops plan. Before each write a **restore point** is recorded: the snapshot id, the chunk
-count and the stamp census. After the write the census must match the plan. At the end of the run every
-collection is restored to its recorded state, and the restore is verified by census. A failed restore
-blocks every later leg until it is repaired.
+Every store write is made on a **bench copy**, never on a live collection. The store writes are the
+builds of the 9 bench collections of §5.3 (R26): the loads of the *none* collections (the base copy and
+the three expanded arms), and the duplication and backfill of each glossary variant. Each write goes
+inside a management window, under a reviewed live-ops plan. **After its build a collection is
+immutable**: nothing writes to it again, and no glossary is swapped in place. Each collection has a
+**build manifest**: its source collection, the backfill version, its census (chunk count and stamp
+census) and its creation time. The census is verified against the build manifest **at the start and the
+end of every leg** (§9.2); a mismatch stops the leg. **Restore points** remain only for the initial loads:
+before each load the snapshot id, the chunk count and the stamp census are recorded, and after it the
+census must match the plan. No restore-to-state step after a leg exists, because no leg changes a
+collection.
 
 ### 9.4 Noise floor (a determinism check, not power)
 
@@ -1448,6 +1464,8 @@ Freedman–Lane test of R23, XML-only stratum, terciles, origin counts, the *fra
 rules of §3.3 with the harm rule, the C cost rule of R12 and the reranker non-inferiority rule, the Layer-1
 wording table and the equivalence bound, RR@10, H3); a glossary-file writer for the merged glossary and
 the placebo glossary that the backfill renders, with render parity tests, and the offline reach count;
+the build of the 9 collections of R26 (the duplication of a *none* collection, the backfill on the copy,
+and a build manifest per collection) and the per-leg census check against the build manifest (§9.3);
 the committed power calculation (§8, the lever at α = 0.05); the public-artifact check (§11).
 
 **Pin.** Every run is from one `main` commit, at or after the merge of the last item above, in a clean
@@ -1580,7 +1598,7 @@ read retrieval, judge or outcome data. The pilot (§5.6) is run
 
 ## 14. Open decisions for the owner
 
-Only items not settled by D1–D10 and R1–R25.
+Only items not settled by D1–D10 and R1–R26.
 
 | # | decision | proposal in this draft |
 |---|---|---|
@@ -1602,11 +1620,11 @@ Only items not settled by D1–D10 and R1–R25.
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R25 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R26 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, run at `1574286`) exists and its counts are entered in §5.1; its private manifests' sha256s are public there; the #915 review is open |
-| 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded | open |
+| 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded; then the **9 collections of R26** (§5.3) built from them, each with its build manifest (§9.3) | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The merged-glossary file the backfill renders, with render parity tests; the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
 | 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, on `main` since `e3b9695`); a run on the v4 counts exists as the private `power-v4.json` (`1574286`, clean, `citable true`; §8), and committing it as the artifact is open. The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
@@ -1622,4 +1640,6 @@ Only items not settled by D1–D10 and R1–R25.
 | 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915 (review open); the v4 build ran on it (item 4) |
 | 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | decided (R23, §7); implementation open (§10) |
 | 20 | **The stage-A leg lists** (R20, R25, §5.7): retrieval 19 legs (the 5 Layer-1 attachments × default, norerank, BM25, and the 4 noise repeats), judging 14 legs (without the BM25 legs), checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
+| 21 | **The duplication plan** (R26): how a *none* collection is duplicated for its glossary variants, as a live-ops plan item agreed with management | open |
+| 22 | **The capacity check** (R26): 9 bench collections instead of 4 on the dev tenant, confirmed with management | open |
 

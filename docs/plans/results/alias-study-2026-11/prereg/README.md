@@ -3,7 +3,7 @@
 **Status: DRAFT — not frozen; owner review pending.** No sha is recorded because nothing is frozen yet.
 Current draft: **v3, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1), the changes the owner
 approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), and the owner's
-decisions of 2026-11-03 (R12–R25) folded in. The
+decisions of 2026-11-03 (R12–R26) folded in. The
 record set (§4 of the prereg: 1,091 accepted records, the balanced set of 900 on 300 papers) was built
 before v1. No retrieval has been run on any study record. The pre-freeze pilot (prereg §5.6) will
 retrieve and judge the 191 held-out records before the freeze; the 900 balanced records stay unretrieved
@@ -47,7 +47,9 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   pass with the nearest-band fill and the repetition screen, prereg R16–R18): built (#915, review open),
   counts entered in prereg §5.1, H2's power recomputed on them (the caps lever does not fire at a = 0.7,
   prereg §8); the power output still to be committed as an artifact;
-- the three expanded corpora, built and censused on bench copies within a management window;
+- the three expanded corpora, built and censused on bench copies within a management window, and the 9
+  immutable bench collections (one per corpus × glossary arm, prereg R26), with the duplication plan and
+  the capacity agreed with management;
 - glossaries for the added papers in every arm, made by the same pipeline, and the offline reach count;
 - the record-set sha, the balanced set and the overlap counts recomputed by committed code;
 - an offline power calculation by committed code;
@@ -81,7 +83,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   retry); the judged-pair spot check stratified by judge label; fixed sensitivities with a *fragile*
   label; a placebo glossary leg; a pre-freeze pilot on the 191 held-out records; two post-freeze stages
   with judging on demand; a signed public freeze tag; H2's estimand stated.
-- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R25). The C cost rule reads the
+- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R26). The C cost rule reads the
   point estimate (*do not attach* when ΔC < −1 point) and the CI's lower bound (C_lo < −3.6 points, the
   smallest C change 300 C records detect with 80 % power at 5 % discordance), with the statement that a
   C cost smaller than about 3.6 points cannot be ruled out; pass rates at 5 % C discordance and a true C
@@ -98,7 +100,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   and the ± 5 % chunk-volume target read as a build target covered by the covariate sensitivity, with a
   placeholder for the v4 counts. Stage A now also runs the 5 norerank cells the inactive-reranker gate reads, so every Layer-1 gate is
   read after stage A alone; stage-A retrieval also takes the Layer-1 attachments' BM25 legs (19 legs,
-  each attachment's glossary swapped once), whose pairs are judged in stage B (stage-A judging 14 legs); the placebo drops every
+  whose pairs are judged in stage B (stage-A judging 14 legs); the placebo drops every
   entry equal to one of the receiving paper's own entries. The covariate's test form (§14 O13, opened and
   closed in this version) is fixed by R23. An equivalence reading with zero discordant records prints
   *not resolved*, and Wilson upper limits are rounded up.
@@ -106,3 +108,6 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   the neighbour arm's chunks; the ≥ 80 band still short), with its carry-over rule quoted verbatim, the
   nearest-band fill's global-greedy order, the repetition screen's 9 hits (7 JATS) disclosed, and §8's
   power on the v4 dose.
+  No glossary is swapped in place: each corpus × glossary arm is its own bench collection (9), built once
+  by duplicating the arm's *none* collection and backfilling the copy, immutable after build and censused
+  against its build manifest at every leg; restore points remain for the initial loads only (R26).
