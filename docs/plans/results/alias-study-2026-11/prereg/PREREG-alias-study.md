@@ -74,7 +74,7 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A, the placeb
 | R14 | ***fragile*** only for H1 and H2, and only through pre-named re-tests of the same claim: H1, the studentized test and topic clustering; H2, those two and the chunk-volume covariate (the studentized test **replaced by R22**, the covariate's test fixed by **R23**). Subgroup splits (XML-only, terciles, origin counts, alias kind) are reported and never make anything fragile; H1b is exempt | §3.4, §7 |
 | R15 | **judged-pair spot check of 100 pairs** (was 60; D9 as amended by R5): stratified by final judge label (50 / 33 / 17), spread across arms; about 1.5 h of owner time. The 40-record check is unchanged | §5.5, §13.5, §14 O12 |
 | R16 | **corpus v3 build facts**: six chunk-length bands at `tok512o0` (< 20 / 20–26 / 27–33 / 34–45 / 46–79 / ≥ 80, the open top band split at 80); v2 takes kept where their cell still matches, only moved and band-relaxed slots re-drawn; seeds unchanged; the fetch budget max(40, 15 × slots) per phase; relaxation source → type → band | §5.1 |
-| R17 | **nearest-band fill** at the last relaxation level (`any`): the already-fetched candidate of nearest band, ties by type, source, seeded order; 0 new fetches | §5.1 |
+| R17 | **nearest-band fill** at the last relaxation level (`any`): the already-fetched candidate of nearest band, ties by type, source, seeded order, assigned by a global greedy over (slot, candidate) pairs; 0 new fetches | §5.1 |
 | R18 | **repetition screen**: every added paper in every arm, after the C0 screen; distinct-chunk ratio < 0.90 excluded and replaced like other exclusions | §5.1, §15 |
 | R19 | **residual chunk-volume gap accepted**: ±5 % of the neighbour arm's chunks is a build target, not a gate; the gap is covered by H2's pre-named chunk-volume covariate sensitivity (which by R14 can make H2 fragile); the deeper search for ≥ 80-chunk slots declined | §5.1, §7, §13.11 |
 | R20 | **stage A includes the 5 norerank cells** the inactive-reranker gate needs (base × none, base × merged, neighbour × none, random-1 × none, random-2 × none, each × norerank), so every Layer-1 gate is read after stage A alone; stage A is 14 legs, stage B the remaining 14 cells plus the placebo; the total is unchanged | §5.4, §5.7, §6.2, §9.1 |
@@ -137,9 +137,12 @@ output. **For version 3** the counts of the corpus build's third pass (*v3*, #91
 `counts-v3.json`, sha256 `44180414…`) were read: papers and chunks per length band and arm, each draw's
 chunk-volume gap against the neighbour arm, the re-draw and relaxation counts, and a scan of the added
 papers' distinct-chunk ratios in all three arms (a scratch scan by the PR #911 reviewer, not a
-committed artifact). They shaped R16–R19 (§5.1, §13.7).
- The v3 pass, like the
-first, read bibliographic metadata and paper full text only. **The pre-freeze pilot (§5.6) will retrieve and judge the 191 held-out records before the
+committed artifact). They shaped R16–R19 (§5.1, §13.7). The v3 pass, like the first, read
+bibliographic metadata and paper full text only. **The v4 build** (#915, run at `1574286`; private
+`counts-v4.json`, sha256 `54776372…`, and `power-v4.json`, sha256 `65040db6…`) was read as counts and
+entered in §5.1 and §8. Its repetition screen excluded **9** papers across the three arms, **7** of them
+JATS papers in which one table chunk repeats across records (§5.1, R18); these 9 hits were seen before
+the freeze (§13.7). The v4 build, too, read bibliographic metadata and paper full text only. **The pre-freeze pilot (§5.6) will retrieve and judge the 191 held-out records before the
 freeze**; its counts are entered here before the freeze, and from then on this paragraph's statement
 that no retrieval has been run holds for the **900 balanced records** only. All of this is disclosed so
 that a reader can weigh it (§13.7).
@@ -691,8 +694,16 @@ references and citers in the neighbour arm.
 removed). A paper whose ratio is **below 0.90 is excluded**, and it is replaced as other exclusions are:
 an excluded neighbour is walked past (the walk-down above), and for a random draw the walk continues in
 its seeded order. Exclusions are counted and printed **per arm and draw**. *Why 0.90:* ordinary papers
-sit near 1.0; the v3 scan found two documents below 0.9 across all three arms (ratios ≈ 0.54 and 0.61),
+sit near 1.0; the v3 scan found two documents below 0.9 across all three arms (ratios ≈ 0.53 and 0.61),
 one of them a broken PDF extraction yielding 2,500 chunks.
+
+*What the screen caught in the v4 build (a disclosure; provisional while the #915 review checks the
+screen).* It excluded **9** papers of the v3 arms (neighbour 3, random-1 4, random-2 2). Two are the
+broken PDF extractions above; **7 are JATS papers** in which one table chunk repeats across records, an
+effect of the JATS-to-text conversion rather than of a broken source. The rule is per paper, as written,
+and is applied to them unchanged. By the same measure **OA-1000 holds 4 papers below 0.90** (0.4 % of
+1,000; a scratch count made for #915, not a committed artifact); the base corpus is not screened, so the
+screen applies to added papers only (§13.7).
 
 **Build facts of the v3 pass (owner, 2026-11-03, R16).** These record how the third build pass reads the
 matching rule above. They are design facts, as the build facts of 2026-11-01 are.
@@ -727,6 +738,10 @@ matching rule above. They are design facts, as the build facts of 2026-11-01 are
   - *Late exact matches.* Relaxation can fetch a candidate the strict pass never reached and, when it
     matches its slot exactly, records the take as level `strict`. A `strict` take is therefore not always
     one the strict pass made.
+  - *The other source's cell at `source`.* At the `source` level a take goes to the first open cell, in
+    sorted cell order, that matches its type and band. When its own exact cell and the other source's
+    cell are both open, it can go to the other source's cell and be recorded at level `source` while its
+    own exact cell stays open.
 
   In every case the choice depends only on metadata, the seeded order and fetch availability; it is
   content-blind. At `any` the budget plays no part, because the nearest-band fill makes no new fetches
@@ -744,6 +759,17 @@ by band-index distance; ties are broken by **type match**, then **source match**
 order**. The level makes **0 new fetches**; a slot with no such candidate left is a printed shortfall.
 Each take at `any` records its band distance, and the distances are counted per draw.
 
+*Fill order when a study paper has several open `any` slots* (`alias_corpus.nearest_band_fill`). The
+assignment is a **global greedy** over all (open slot, already-fetched candidate) pairs of that study
+paper: the pair with the smallest key is filled first, then the smallest of the pairs left, and so on.
+The key is band distance, then type mismatch, then source mismatch, then the slot's position in sorted
+cell order, then the candidate's seeded order. The result is deterministic and does not depend on the
+order in which the slots are listed. It is greedy, **not a minimum-total assignment**: with open slots in
+bands 5 and 3 and candidates in bands 4 and 0, it pairs 3 ↔ 4 first (distance 1, the band-3 slot first
+in cell order) and then 5 ↔ 0, a total band distance of 6, where a minimum-total assignment (5 ↔ 4,
+3 ↔ 0) has 4. On the 8 study papers of the v4 build with several `any` slots, a minimum-total assignment
+gives the same totals as the greedy (checked in the #915 review).
+
 **Chunk volume (owner, 2026-11-03, R19).** Each random draw's total added chunks is targeted at **± 5 %**
 of the neighbour arm's. This is a **build target, not a gate**: a draw outside it is used as built, and
 its gap is printed per draw. The residual gap is covered by the pre-named **H2 chunk-volume covariate**
@@ -751,27 +777,56 @@ sensitivity (§7), which by R14 can make H2 *fragile*. A deeper search for slots
 4,000–8,000 further fetches) was declined.
 
 **What the v3 pass measured** (private `counts-v3.json`, sha256 `44180414…`): the neighbour arm added
-89,180 chunks; random-1 86,573 (−2.9 %) and random-2 84,131 (−5.66 %), each on 2,424 papers. These are
-counts seen before this version was written; they are not a forecast of v4.
+89,180 chunks; random-1 86,573 (−2.9 %) and random-2 84,131 (−5.66 %), each on 2,424 papers. These were
+the counts seen before R16–R19 were written; the v4 counts below supersede them as the build.
 
-> **TODO (pending the corpus v4 builder's answer):** R17's fill order when a study paper has several open
-> `any` slots; and the v4 carry-over: which v3 takes are released, whether R17 reads the v3 walk's
-> fetched candidates, and how neighbour-arm R18 exclusions flow into the random quotas.
+**The v4 carry-over** (the build that applies R17 and R18 to the v3 pass). Verbatim from the v4 draw
+manifests (`redraw_rule`, `alias_corpus_run.V4_REDRAW_RULE`):
 
-**Build counts, v4** (the v3 draws with R17 and R18 applied; the neighbour arm with R18). *Pending the
-v4 build: entered here before the freeze from its private manifests.*
+> per study paper and draw, the v3 takes are carried over in v3 take order (alias_corpus.carry_over_v4):
+> a take is released when its paper fails the repetition screen (repetition_screen), when it was matched
+> at the band-relaxed level (any_nearest_band), or when its slot has no room in the v4 quota
+> (quota_changed: the study paper's neighbours changed under the screen); every other take is kept
+> exactly. A study paper whose only released slots are any_nearest_band (quota unchanged) refills them
+> with alias_corpus.nearest_band_fill from the candidates its v3 walk fetched before the 'any' level
+> (replayed from memoised outcomes and checked take-for-take against the v3 manifest), screened, not
+> taken in the draw: no walk, no fetch. Any other study paper with open slots walks again with
+> alias_corpus.draw_matched (any_rule='nearest', repetition-screened outcomes) on the same seeded order
+> from the top, skipping candidates taken in the draw; study papers in the v3 order
+
+In short: v3 takes are read in take order and released if screen-failed, else if matched at `any`, else
+if their cell has no room in the v4 quota; everything else is kept exactly. A study paper whose only
+releases are `any` takes, with its quota unchanged, refills them from its v3 walk's accepted candidates
+fetched before `any`, with no new walk or fetch; any other study paper with open slots walks again from
+the top of the same seeded order, with the same budget. **A neighbour excluded by the screen** re-runs
+that study paper's walk-down with the screened outcomes, and its random quota is re-derived from the new
+neighbours: a take whose cell lost room is released and not refilled, and a new cell is filled by a
+walk. **Disclosed:** one study paper's walk-down was exhausted after its screened neighbour, so it has
+one neighbour fewer, and each draw one random slot fewer, than in v3 (2,423 papers per arm, from 2,424).
+
+**Build counts, v4** (private `counts-v4.json`, sha256 `54776372…`; draw manifests `random-1-draw-v4.json`
+`5b7b6446…`, `random-2-draw-v4.json` `0bb7b6f5…`; `neighbour-selection-v4.json` `9c1e2511…`; run at
+`1574286`, clean, `citable true`):
 
 | v4 count | neighbour | random-1 | random-2 |
 |---|---|---|---|
-| papers added | *pending the v4 build* | *pending* | *pending* |
-| chunks added | *pending* | *pending* | *pending* |
-| chunks vs neighbour | — | *pending* | *pending* |
-| takes at `strict` / `source` / `source+type` / `any` | — | *pending* | *pending* |
-| band distances at `any` (distribution) | — | *pending* | *pending* |
-| repetition-screen exclusions (R18) | *pending* | *pending* | *pending* |
-| control-character exclusions | *pending* | *pending* | *pending* |
-| shortfall | — | *pending* | *pending* |
-| private manifest sha256 | *pending* | *pending* | *pending* |
+| papers added | 2,423 | 2,423 | 2,423 |
+| chunks added | 88,765 | 84,762 | 84,552 |
+| chunks vs neighbour | — | −4.51 % | −4.75 % |
+| papers per band, < 20 / 20–26 / 27–33 / 34–45 / 46–79 / ≥ 80 | 418 / 520 / 515 / 481 / 371 / 118 | 418 / 520 / 515 / 486 / 385 / 99 | 418 / 520 / 515 / 489 / 381 / 100 |
+| PDF share | 8.34 % | 9.45 % | 9.41 % |
+| article / review | 1,845 / 578 | 1,930 / 493 | 1,927 / 496 |
+| takes at `strict` / `source` / `source+type` / `any` | — | 2,283 / 41 / 77 / 22 | 2,293 / 35 / 74 / 21 |
+| band distance at `any`, 1 / 2 | — | 20 / 2 | 16 / 5 |
+| repetition-screen exclusions (R18), papers of the v3 arm | 3 | 4 | 2 |
+| v3 takes kept / slots re-drawn | — | 2,397 / 26 | 2,399 / 24 |
+| v3 takes released: `any` / screen / quota changed | — | 23 / 4 / 0 | 21 / 2 / 2 |
+| shortfall | — | 0 | 0 |
+| draw-to-draw overlap | — | 201 | 201 |
+
+Both draws are within ± 5 % of the neighbour arm's chunks. The **≥ 80 band is still short** in both
+draws: 118 neighbour papers against 99 and 100. **Fetches:** the first v4 run (`e9379c1`, superseded)
+made 41 paper fetches and 51 PMC metadata lookups; the final run (`1574286`) re-used them and made none.
 
 **Manifests.** Before any retrieval, a manifest per expanded arm records, as counts in public: references
 and citers found, open-access, already in OA-1000, deduplicated, skipped by the walk-down (by reason),
@@ -1204,8 +1259,8 @@ gets d ∈ {−1, 0, +1}: non-zero with probability q, in the hypothesised direc
 
 with z = 1.64485 (one-sided α = 0.05). This treats records as independent and paper-level shares as
 constant. A paper-level spread of p lowers power somewhat; the simulation adds it (below). H2's rows are
-at the **planned dose** (about 2,800 added papers, §5.1), where q is defined, and at the **realised v2
-dose** (2,424 attributed neighbours, dose 0.866; q scaled by it, scratch, below).
+at the **planned dose** (about 2,800 added papers, §5.1), where q is defined, and at the **realised v4
+dose** (2,423 attributed neighbours, dose 0.865; q scaled by it; `power-v4.json`, below).
 
 | member (n), α = 0.05, normal approximation | q .02 | q .03 | q .05 | q .10 | q .20 |
 |---|---|---|---|---|---|
@@ -1213,8 +1268,8 @@ dose** (2,424 attributed neighbours, dose 0.866; q scaled by it, scratch, below)
 | **H1**, p .70 (600) | .40 | .52 | .71 | **.93** | 1.00 |
 | **H2**, p .85 (900), planned dose | .91 | .98 | 1.00 | 1.00 | 1.00 |
 | **H2**, p .70 (900), planned dose | .52 | .67 | .85 | .99 | 1.00 |
-| **H2**, p .85 (900), realised v2 dose | .87 | .96 | 1.00 | 1.00 | 1.00 |
-| **H2**, p .70 (900), realised v2 dose | .47 | .62 | .81 | .97 | 1.00 |
+| **H2**, p .85 (900), realised v4 dose | .87 | .96 | 1.00 | 1.00 | 1.00 |
+| **H2**, p .70 (900), realised v4 dose | .47 | .62 | .81 | .97 | 1.00 |
 
 **The two planning scenarios** are q 5 % / p .85 and q 10 % / p .70. **H1: power ≈ 0.99 and ≈ 0.93**
 (normal approximation; the simulation below gives .99 and .92). The 80 %-power MDE, from
@@ -1223,13 +1278,14 @@ q 5 % (3.6 and 2.9 at q 10 %); it is also the equivalence bound δ of §3.3 at t
 the **300 C records** at q 5 % the same formula, read two-sided, gives **3.57 points**: the C bound of
 §3.3's C cost rule (R12; `artifacts/c_cost_rule.json`).
 
-**Simulation of each member's test (scratch, not citable).** The merged power script
-(`python/scripts/eval/alias_study_power.py` at `692f812`, clean tree) was run for this draft on the
-accepted-record file (sha `09fc5ca4…`, balanced-set id sha `2be86f8c…`) and the v2 neighbour counts
-(the private `neighbour-counts-v2.json`, sha256 `e6bb912e…`: 2,424 attributed, mean 8.08 per study paper,
-min 0, max 10), 2,000 simulated studies per cell, between-paper SD of p .15, seed `261101|alias|power`.
-The output stays outside the repository and is **not citable**; the committed calculation (§15 item 8)
-replaces it. H2 is at the realised dose, with **ρ = 1** (the draws' discordance fully shared, the
+**Simulation of each member's test, on the v4 counts.** The power script
+(`python/scripts/eval/alias_study_power.py` at `1574286`, clean tree, `citable true`) was run on the
+accepted-record file (sha `09fc5ca4…`, balanced-set id sha `2be86f8c…`) and the v4 neighbour counts
+(the private `neighbour-counts-v4.json`, sha256 `ed71fcb9…`: 2,423 attributed, mean 8.08 per study paper,
+min 0, max 10; dose 0.865), 2,000 simulated studies per cell, between-paper SD of p .15, seed
+`261101|alias|power`. Its output is the private `power-v4.json` (sha256 `65040db6…`); committing it as
+the artifact of §15 item 8 is open. (The v2 draft's run on the v2 counts, 2,424 neighbours, gave the
+same table to two decimals except one cell, .58 for .57.) H2 is at the realised dose, with **ρ = 1** (the draws' discordance fully shared, the
 conservative three-valued case) and, in brackets, ρ = 0.5; *confirm* means the judged test rejects **and**
 the gold-only gate passes, at agreement a between the gold-only and judged changes.
 
@@ -1241,12 +1297,20 @@ the gold-only gate passes, at agreement a between the gold-only and judged chang
 | **H1b** label randomization, p .70 (C with no effect) | .14 | .20 | .32 | .54 | .80 |
 | **H2** confirm, **a = 0.7**, p .85 | .73 [.85] | .88 [.93] | **.96** [.98] | 1.00 [1.00] | 1.00 [1.00] |
 | **H2** confirm, **a = 0.7**, p .70 | .34 [.44] | .45 [.59] | .65 [.78] | **.90** [.93] | .98 [.99] |
-| **H2** confirm, a = 0.6 (sensitivity), p .85 | .58 [.67] | .70 [.76] | **.79** [.83] | .88 [.92] | .95 [.97] |
+| **H2** confirm, a = 0.6 (sensitivity), p .85 | .57 [.67] | .70 [.76] | **.79** [.83] | .88 [.92] | .95 [.97] |
 | **H2** confirm, a = 0.6 (sensitivity), p .70 | .26 [.36] | .36 [.47] | .53 [.64] | **.73** [.76] | .83 [.86] |
 
-**H2 at the two planning scenarios, realised v2 dose, ρ = 1:** power to confirm **.96 and .90 at
-a = 0.7**, **.79 and .73 at a = 0.6** (the test alone: 1.00 and .97). At q 5 % / p .70 it is .65
-(a = 0.7). H1b is a fixed-sequence member, tested only after H1 is confirmed; its power is low at the
+**H2 at the realised v4 dose, α = 0.05** (`power-v4.json`). Test alone / confirm at a = 0.7 / confirm
+at a = 0.6:
+
+| scenario | ρ = 1 | ρ = 0.5 |
+|---|---|---|
+| q 5 %, p .85 | .999 / **.958** / .794 | 1.000 / .980 / .829 |
+| q 5 %, p .70 | .763 / .654 / .528 | .883 / .777 / .641 |
+| q 10 %, p .70 | .971 / **.902** / .730 | .989 / .934 / .761 |
+
+So at the two planning scenarios, ρ = 1, the power to confirm is **.96 and .90 at a = 0.7** and .79 and
+.73 at a = 0.6. H1b is a fixed-sequence member, tested only after H1 is confirmed; its power is low at the
 planning scenarios (.67 and .54) and is printed beside it as its floor.
 
 **H2 is approximated conservatively at ρ = 1.** H2 compares the neighbour arm with the **average** of two
@@ -1271,8 +1335,8 @@ raised before the freeze**; that is the lever, and it acts on metadata counts on
 reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test rejects **and** the gold-only
 direction gate passes, not the test's power alone. **The lever reads the agreement level `a = 0.7`, and
 `a = 0.6` is reported as a sensitivity** (owner, 2026-11-02, §14 O11;
-`alias_study_power.LEVER_AGREEMENT`). On the scratch run above the lever does **not** fire at a = 0.7
-(.96); at the a = 0.6 sensitivity it would (.79). **The script reads the lever at α = 0.05**
+`alias_study_power.LEVER_AGREEMENT`). On the v4 counts the lever does **not** fire at a = 0.7 (.958);
+at the a = 0.6 sensitivity it would (.794). **The script reads the lever at α = 0.05**
 (`alias_study_power.LEVER_ALPHA`, changed from the v1 Holm level 0.025 in `e3b9695`; the
 0.025 row stays in its output for comparison, where the a = 0.7 figure is .95).
 
@@ -1470,7 +1534,10 @@ entry, not a silent retry.
    before any retrieval on a study record. Version 3's corpus decisions (R16–R19) are **post hoc to the
    v3 build**: they were made after reading the v3 counts (per band, the chunk-volume gap, the re-draw and
    relaxation counts) and a scan of distinct-chunk ratios over the added papers, which was a scratch scan
-   made by the PR #911 reviewer, not a committed artifact. They read no retrieval, judge or outcome data. The pilot (§5.6) is run
+   made by the PR #911 reviewer, not a committed artifact. The v4 build's 9 repetition-screen hits (7 of
+them JATS papers with one repeated table chunk, §5.1) were seen before the freeze, and so was the
+scratch count of 4 OA-1000 papers below 0.90; the rule was kept per paper, as written. None of this
+read retrieval, judge or outcome data. The pilot (§5.6) is run
    on held-out records before the freeze, and what it may change is fixed in advance. Each is bounded by
    being fixed here before any retrieval on a balanced-set record.
 8. **No study-wide error control across the two families** (§3.1, R1). Family G and Family N are each
@@ -1514,11 +1581,11 @@ Only items not settled by D1–D10 and R1–R24.
 | 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R24 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
-| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen, both arms where they apply) and its counts table in §5.1 are pending |
+| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, run at `1574286`) exists and its counts are entered in §5.1; its private manifests' sha256s are public there; the #915 review is open |
 | 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The merged-glossary file the backfill renders, with render parity tests; the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
-| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, on `main` since `e3b9695`); the committed run reads the v4 counts (item 4). The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
+| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, on `main` since `e3b9695`); a run on the v4 counts exists as the private `power-v4.json` (`1574286`, clean, `citable true`; §8), and committing it as the artifact is open. The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
 | 9 | The committed replay of the composed judge rule on the validation labels (§6.4), replacing the scratch replay | open |
 | 10 | The code of §10 *Must be written*, merged after an independent review | open |
 | 11 | **Owner spot check of the 40 records** (§13.4): may be done before the freeze; must be committed before any analysis | open |
@@ -1528,7 +1595,7 @@ Only items not settled by D1–D10 and R1–R24.
 | 15 | **The prompt-paraphrase check** (§6.6, R4): three paraphrases of `alias-judge/2`, committed before they are run, scored on the validation pairs by both primaries; the result recorded in §6.6 and §13.3 | open |
 | 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | open: *to be inserted from the calibration follow-up* |
 | 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
-| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | open |
+| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915 (review open); the v4 build ran on it (item 4) |
 | 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | decided (R23, §7); implementation open (§10) |
 | 20 | **The stage-A leg list** (R20, §5.7): the 14 legs, with the 5 norerank cells the inactive-reranker gate reads, checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
 

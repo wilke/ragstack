@@ -44,8 +44,9 @@ JUDGE-CALIBRATION, JUDGE-VALIDATION-PLAN, TIEBREAKER-PLAN).
 The prereg's §15 is the checklist. The items that need work outside this repository are:
 
 - the neighbour and two random selection manifests (OpenAlex metadata only) of the **v4** build (the v3
-  pass with the nearest-band fill and the repetition screen, prereg R16–R18), their counts entered in
-  prereg §5.1, and H2's power recomputed on them, raising the caps if it falls below .80;
+  pass with the nearest-band fill and the repetition screen, prereg R16–R18): built (#915, review open),
+  counts entered in prereg §5.1, H2's power recomputed on them (the caps lever does not fire at a = 0.7,
+  prereg §8); the power output still to be committed as an artifact;
 - the three expanded corpora, built and censused on bench copies within a management window;
 - glossaries for the added papers in every arm, made by the same pipeline, and the offline reach count;
 - the record-set sha, the balanced set and the overlap counts recomputed by committed code;
@@ -100,3 +101,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   entry equal to one of the receiving paper's own entries. The covariate's test form (§14 O13, opened and
   closed in this version) is fixed by R23. An equivalence reading with zero discordant records prints
   *not resolved*, and Wilson upper limits are rounded up.
+  The v4 build's counts fill the §5.1 table (2,423 papers per arm; random-1 −4.51 %, random-2 −4.75 % of
+  the neighbour arm's chunks; the ≥ 80 band still short), with its carry-over rule quoted verbatim, the
+  nearest-band fill's global-greedy order, the repetition screen's 9 hits (7 JATS) disclosed, and §8's
+  power on the v4 dose.
