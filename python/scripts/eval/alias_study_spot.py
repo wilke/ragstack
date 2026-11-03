@@ -3,7 +3,8 @@
 
     alias_study_spot.py draw-records --records ACCEPTED.jsonl --chunk-export BASE.jsonl --out-dir DIR
     alias_study_spot.py draw-pairs   --judge-config JUDGE.json --out-dir DIR
-    alias_study_spot.py ingest       --key KEY.json --sheet FILLED.json --out OUT [--judge-config JUDGE.json]
+    alias_study_spot.py ingest       --key KEY.json --sheet FILLED.json --out OUT \\
+                                     (--records ACCEPTED.jsonl --chunk-export BASE.jsonl | --judge-config JUDGE.json)
 
 **draw-records (§13.4).** 40 of the 900 balanced records (the record file must be the frozen one,
 :func:`alias_study_common.verify_record_set`), the first 40 in the order
@@ -29,6 +30,9 @@ what the judge was shown (``alias-judge/2``): the passage paper's title, the sho
 paper defines that occur in the passage, the passage, the term and the question; never the
 label, stratum, arm, leg, retriever, glossary arm or any id. The sheet is ordered by
 ``sha256(261101|alias|spot|judge|sheet|<pair id>)``, so its order says nothing about the stratum.
+The glossary files and chunk exports the judge config names must be the ones the stage-A
+registry was built from (the committed ``pairs-manifest.json``, ``inputs_sha256``), so the
+definitions on the sheet are the judge's; the check is recorded in the key.
 
 **The sheet and its key.** Each draw writes ``spot-<kind>.sheet.json`` (PRIVATE, the only file the
 owner sees: items with an empty ``label`` and ``note``) and ``spot-<kind>.key.json`` (PRIVATE,
@@ -36,13 +40,18 @@ never shown to the rater: item -> record id or pair id, the draw's counts, the s
 sha256 and the input sha256s). The sheet's sha256 is that of its bytes, which are canonical JSON
 (:func:`canonical`). Both go outside the repository.
 
-**ingest.** The filled sheet is accepted only when, with every ``label`` and ``note`` blanked
-again, its canonical JSON has the key's sheet sha256 (same items, same text, same order; only
-``label`` and ``note`` may change), and every item carries a label. Output, exactly what
+**ingest re-derives the draw; it never trusts the key.** The sheet is rebuilt from its sources,
+the frozen record file and the chunk exports (*records*) or the verified stage-A commit and the
+judge config's inputs (*judge*), by the same functions the draw used, and its sha256 must equal
+the key's. The filled sheet is accepted only when, with every ``label`` and ``note`` blanked
+again, its canonical JSON has that sha256 too (same items, same text, same order; only ``label``
+and ``note`` may change), and every item carries a label. Each label is attributed to the record
+or pair the re-derived draw puts at that item, and the key must name the same ones: a key whose
+ids were swapped, or a key and sheet edited together, is refused. Output, exactly what
 ``alias_study_stats.py`` reads under ``spot_checks``: *records* a JSON ``{valid, n,
-sheet_sha256}`` with n = 40; *judge* a JSONL of ``{pair_id, owner_label}`` (1 *answers*, 0
-*not*), each pair re-checked against the stage-A commit, which must be the one the sheet was
-drawn from.
+sheet_sha256}`` with n = 40 (counts only, so it may be written where §13.4 commits it, in the
+repository too); *judge* a JSONL of ``{pair_id, owner_label}`` (1 *answers*, 0 *not*), private
+and refused inside the repository.
 """
 from __future__ import annotations
 
@@ -158,8 +167,9 @@ def record_item(n: int, rec: Mapping[str, Any], chunks: Mapping[str, Mapping[str
             "label": None, "note": ""}
 
 
-def draw_records(records: Path, exports: Sequence[Path], out_dir: Path) -> dict[str, Any]:
-    refuse_in_repo(out_dir, "--out-dir")
+def records_sheet(records: Path, exports: Sequence[Path]) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    """The records sheet from its sources (module docstring): ``(sheet, record ids in item order,
+    the record-set identity)``. The draw and the ingest both call it."""
     recs = asc.load_records(records)
     ident = asc.verify_record_set(records, recs)
     bal, _ = asc.split_records(recs)
@@ -169,6 +179,13 @@ def draw_records(records: Path, exports: Sequence[Path], out_dir: Path) -> dict[
     items = [record_item(i, by_id[rid], chunks) for i, rid in enumerate(picked, 1)]
     sheet = {"schema": SHEET_SCHEMA["records"], "kind": "records", "labels": list(LABELS["records"]),
              "instructions": INSTRUCTIONS["records"], "n": len(items), "items": items}
+    return sheet, picked, ident
+
+
+def draw_records(records: Path, exports: Sequence[Path], out_dir: Path) -> dict[str, Any]:
+    refuse_in_repo(out_dir, "--out-dir")
+    sheet, picked, ident = records_sheet(records, exports)
+    items = sheet["items"]
     data = canonical(sheet)
     sha = asc.sha_text(data.decode("utf-8"))
     key = {"schema": KEY_SCHEMA, "kind": "records", "sheet_sha256": sha, "n": len(items),
@@ -195,8 +212,9 @@ spot_stratum = ast.spot_stratum
 def stratum_totals(sizes: Mapping[str, int]) -> dict[str, int]:
     """§13.5: the pairs each stratum gives, from the pairs it has. A stratum short of its nominal
     size gives what it has; *tiebroken*'s shortfall goes to *answers*, then to *not*;
-    *not*'s to *answers*; *answers*'s to *not*. The sheet is smaller than 100 only when the
-    stage-A labels hold fewer pairs than that."""
+    *not*'s to *answers*; *answers*'s to *not*. *tiebroken* never receives a shortfall: it gives
+    at most its 17, so the sheet is smaller than 100 whenever *answers* and *not* together cannot
+    make up the rest, even while *tiebroken* still holds pairs it does not give."""
     s_a, s_n, s_t = (int(sizes.get(k, 0)) for k in SPOT_STRATA)
     t = min(NOMINAL["tiebroken"], s_t)
     short_t = NOMINAL["tiebroken"] - t
@@ -298,15 +316,38 @@ def committed_stage_a(cfg: Mapping[str, Any]) -> dict[str, Any]:
             data = fh.read(int(f["bytes"]))
         out[name] = [json.loads(x) for x in data.split(b"\n") if x.strip()]
     out["final"] = [x for x in out["final"] if str(x.get("k", "")).startswith("pair|")]
+    mf = files.get("pairs_manifest")
+    if mf is None:
+        raise SystemExit("the stage-A commit holds no pairs_manifest (the registry's inputs)")
+    out["pairs_manifest"] = json.loads(Path(mf["path"]).read_text(encoding="utf-8"))
     return out
 
 
-def draw_pairs(judge_config: Path, out_dir: Path) -> dict[str, Any]:
+def check_judge_inputs(cfg: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """The glossary files and chunk exports of the judge config are the ones the stage-A registry
+    was built from (the committed manifest's ``inputs_sha256``): the sheet's definitions and
+    passages are then the judge's. Raises SystemExit; returns the shas checked."""
     import alias_study_judge as aj
 
-    refuse_in_repo(out_dir, "--out-dir")
-    cfg = aj.load_config(judge_config)
+    want = manifest.get("inputs_sha256") or {}
+    have = {"glossaries": [asc.sha256_file(x) for x in aj.glossary_paths(cfg)],
+            **{f"chunks_{a}": asc.sha256_file(p) for a, p in cfg["chunk_exports"].items()}}
+    bad = sorted(k for k in set(have) | {k for k in want if k.startswith("chunks_") or k == "glossaries"}
+                 if have.get(k) != want.get(k))
+    if bad:
+        raise SystemExit(f"the judge config's {bad} differ from the inputs the stage-A registry was built from (the "
+                         "committed pairs-manifest.json): the sheet would not show what the judge saw")
+    return {"matches_stage_a_pairs_manifest": True, **have}
+
+
+def judge_sheet(cfg: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """The judge sheet from its sources (module docstring): ``(sheet, the drawn final rows in item
+    order, the stage-A commit read, the draw's counts and input check)``. The draw and the ingest
+    both call it."""
+    import alias_study_judge as aj
+
     sa = committed_stage_a(cfg)
+    inputs = check_judge_inputs(cfg, sa["pairs_manifest"])
     picked, counts = draw_pairs_from(sa["final"])
     reg = {p["pair_id"]: p for p in sa["pairs"]}
     missing = [f["pair_id"] for f in picked if f["pair_id"] not in reg]
@@ -315,12 +356,23 @@ def draw_pairs(judge_config: Path, out_dir: Path) -> dict[str, Any]:
     chunks, _ = aj.chunk_arms(cfg)
     glossary = aj.read_glossaries(aj.glossary_paths(cfg))
     items = pair_items([reg[f["pair_id"]] for f in picked], chunks, glossary, str(cfg["out_dir"]))
+    by_pid = {f["pair_id"]: f for f in picked}
+    ordered = [by_pid[p] for p in sheet_order(list(by_pid))]
     sheet = {"schema": SHEET_SCHEMA["judge"], "kind": "judge", "labels": list(LABELS["judge"]),
              "instructions": INSTRUCTIONS["judge"], "n": len(items), "items": items}
+    return sheet, ordered, sa, {"counts": counts, "inputs": inputs}
+
+
+def draw_pairs(judge_config: Path, out_dir: Path) -> dict[str, Any]:
+    import alias_study_judge as aj
+
+    refuse_in_repo(out_dir, "--out-dir")
+    cfg = aj.load_config(judge_config)
+    sheet, ordered, sa, extra = judge_sheet(cfg)
+    items = sheet["items"]
     data = canonical(sheet)
     sha = asc.sha_text(data.decode("utf-8"))
-    by_pid = {f["pair_id"]: f for f in picked}
-    order = sheet_order(list(by_pid))
+    counts = extra["counts"]
     key = {"schema": KEY_SCHEMA, "kind": "judge", "sheet_sha256": sha, "n": len(items), "mode": sa["mode"],
            "seed": asc.SEEDS["spot_judge"],
            "draw_rule": "stratified by the final label (answers 50, not 33, tiebroken 17; arms equal, remainder to "
@@ -328,8 +380,9 @@ def draw_pairs(judge_config: Path, out_dir: Path) -> dict[str, Any]:
                         "a cell sha256('<seed>|<stratum>|<arm>|<pair>') ascending; sheet order "
                         "sha256('<seed>|sheet|<pair>') ascending",
            "stage_a_commit_sha256": sa["commit_sha256"], "counts": counts,
-           "items": {it["item"]: {"pair_id": pid, "stratum": by_pid[pid]["stratum"], "arm": by_pid[pid]["arm"]}
-                     for it, pid in zip(items, order, strict=True)},
+           "judge_inputs": extra["inputs"],
+           "items": {it["item"]: {"pair_id": f["pair_id"], "stratum": f["stratum"], "arm": f["arm"]}
+                     for it, f in zip(items, ordered, strict=True)},
            "inputs": {"judge_config": asc.sha256_file(judge_config)}, "provenance": provenance(),
            "note": "PRIVATE blinding key: never shown to the rater."}
     sp, kp = out_dir / "spot-judge.sheet.json", out_dir / "spot-judge.key.json"
@@ -340,12 +393,17 @@ def draw_pairs(judge_config: Path, out_dir: Path) -> dict[str, Any]:
 
 # ------------------------------------------------------------------ ingest
 
-def check_filled(sheet: Mapping[str, Any], key: Mapping[str, Any]) -> list[int]:
-    """The filled sheet is the drawn one with only ``label`` and ``note`` changed, and every
-    item labelled: returns the labels (1 / 0) in item order. Raises SystemExit."""
+def check_filled(sheet: Mapping[str, Any], key: Mapping[str, Any], rebuilt: Mapping[str, Any]) -> list[int]:
+    """The filled sheet is the re-derived one (``rebuilt``, whose sha256 must also be the key's)
+    with only ``label`` and ``note`` changed, and every item labelled: returns the labels (1 / 0)
+    in item order. Raises SystemExit."""
     kind = key.get("kind")
     if kind not in LABELS or key.get("schema") != KEY_SCHEMA:
         raise SystemExit("not a spot-check key")
+    want = asc.sha_text(canonical(rebuilt).decode("utf-8"))
+    if want != key.get("sheet_sha256"):
+        raise SystemExit("the key's sheet sha256 is not the sheet re-derived from its sources: another draw, or an "
+                         "edited key")
     if sheet.get("schema") != SHEET_SCHEMA[kind]:
         raise SystemExit(f"the sheet is not a {kind} sheet")
     items = sheet.get("items")
@@ -356,12 +414,9 @@ def check_filled(sheet: Mapping[str, Any], key: Mapping[str, Any]) -> list[int]:
     if extra:
         raise SystemExit(f"the filled sheet carries fields {extra}: only label and note may be filled in")
     blank = {**sheet, "items": [{**it, "label": None, "note": ""} for it in items]}
-    if asc.sha_text(canonical(blank).decode("utf-8")) != key["sheet_sha256"]:
+    if asc.sha_text(canonical(blank).decode("utf-8")) != want:
         raise SystemExit("the filled sheet is not the drawn sheet (with label and note blanked its sha256 differs "
-                         "from the key's): items, text or order changed, or another sheet")
-    ids = [it["item"] for it in items]
-    if ids != list(key["items"]):
-        raise SystemExit("the sheet's item ids are not the key's")
+                         "from the re-derived sheet's): items, text or order changed, or another sheet")
     vals = LABELS[kind]
     bad = [it["item"] for it in items if it.get("label") not in vals]
     if bad:
@@ -369,34 +424,56 @@ def check_filled(sheet: Mapping[str, Any], key: Mapping[str, Any]) -> list[int]:
     return [vals[it["label"]] for it in items]
 
 
-def ingest(key_path: Path, sheet_path: Path, out: Path, judge_config: Path | None = None) -> dict[str, Any]:
-    refuse_in_repo(out, "--out")
+def check_key_ids(key: Mapping[str, Any], items: Sequence[Mapping[str, Any]], ids: Sequence[str]) -> None:
+    """The key names, item by item, the records or pairs the re-derived draw puts there."""
+    have = [(v["pair_id"] if isinstance(v, Mapping) else v) for v in (key.get("items") or {}).values()]
+    if list(key.get("items") or {}) != [it["item"] for it in items] or have != list(ids):
+        raise SystemExit("the key's items are not the re-derived draw's (an id swapped or reordered): refused")
+
+
+def write_counts(path: Path, data: bytes) -> None:
+    """The records result (counts and the sheet's sha256 only): may go where §13.4 commits it,
+    in the repository too; written once."""
+    if path.exists() and path.read_bytes() != data:
+        raise SystemExit(f"{path.name} exists with other content")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def ingest(key_path: Path, sheet_path: Path, out: Path, judge_config: Path | None = None,
+           records: Path | None = None, exports: Sequence[Path] = ()) -> dict[str, Any]:
     key = json.loads(key_path.read_text(encoding="utf-8"))
     sheet = json.loads(sheet_path.read_text(encoding="utf-8"))
-    labels = check_filled(sheet, key)
-    if key["kind"] == "records":
+    if key.get("kind") == "records":
+        if records is None or not exports:
+            raise SystemExit("ingest of the records sheet needs --records and --chunk-export: the draw is re-derived")
+        rebuilt, picked, _ = records_sheet(records, exports)
+        labels = check_filled(sheet, key, rebuilt)
+        check_key_ids(key, rebuilt["items"], picked)
         if len(labels) != SPOT_RECORDS_N:
             raise SystemExit(f"{len(labels)} labelled records; the record spot check has n = {SPOT_RECORDS_N} (§13.4)")
         res = {"valid": sum(labels), "n": len(labels), "sheet_sha256": key["sheet_sha256"]}
-        write_private(out, (json.dumps(res, sort_keys=True) + "\n").encode("utf-8"), "--out")
+        write_counts(out, (json.dumps(res, sort_keys=True) + "\n").encode("utf-8"))
         return res
     import alias_study_judge as aj
 
+    if key.get("kind") != "judge":
+        raise SystemExit("not a spot-check key")
     if judge_config is None:
-        raise SystemExit("ingest of the judge sheet needs --judge-config: every pair is re-checked against the "
-                         "stage-A commit")
-    sa = committed_stage_a(aj.load_config(judge_config))
+        raise SystemExit("ingest of the judge sheet needs --judge-config: the draw is re-derived from the stage-A "
+                         "commit")
+    rebuilt, ordered, sa, _ = judge_sheet(aj.load_config(judge_config))
     if sa["commit_sha256"] != key.get("stage_a_commit_sha256"):
         raise SystemExit("the stage-A commit is not the one the sheet was drawn from")
-    strata = {f["pair_id"]: spot_stratum(f) for f in sa["final"]}
-    pids = [key["items"][i]["pair_id"] for i in key["items"]]
-    not_a = [p for p in pids if strata.get(p) is None]
-    if not_a:
-        raise SystemExit(f"{len(not_a)} sheet pair(s) are not stage-A labelled pairs in a stratum (§13.5)")
+    labels = check_filled(sheet, key, rebuilt)
+    pids = [f["pair_id"] for f in ordered]
+    check_key_ids(key, rebuilt["items"], pids)
     rows = [{"pair_id": p, "owner_label": lab} for p, lab in zip(pids, labels, strict=True)]
     write_private(out, "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows).encode("utf-8"), "--out")
     return {"n": len(rows), "n_nominal": SPOT_JUDGE_N, "owner_answers": sum(labels),
-            "per_stratum": dict(Counter(key["items"][i]["stratum"] for i in key["items"]))}
+            "per_stratum": dict(Counter(f["stratum"] for f in ordered))}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -414,6 +491,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ig.add_argument("--sheet", required=True, type=Path)
     ig.add_argument("--out", required=True, type=Path)
     ig.add_argument("--judge-config", type=Path, default=None)
+    ig.add_argument("--records", type=Path, default=None)
+    ig.add_argument("--chunk-export", type=Path, action="append", default=[])
     a = ap.parse_args(argv)
     os.umask(0o077)
     if a.cmd == "draw-records":
@@ -421,7 +500,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif a.cmd == "draw-pairs":
         res = draw_pairs(a.judge_config, a.out_dir)
     else:
-        res = ingest(a.key, a.sheet, a.out, a.judge_config)
+        res = ingest(a.key, a.sheet, a.out, a.judge_config, a.records, a.chunk_export)
     print(json.dumps(res, indent=1))
     return 0
 

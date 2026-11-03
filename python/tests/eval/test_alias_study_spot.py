@@ -47,6 +47,19 @@ def draw_rec(w: fx.World, out: Path) -> dict[str, Any]:
     return spot.draw_records(w.records_path, [w.base_export], out)
 
 
+def ingest_rec(w: fx.World, key: Path, sheet: Path, out: Path) -> dict[str, Any]:
+    return spot.ingest(key, sheet, out, records=w.records_path, exports=[w.base_export])
+
+
+@pytest.fixture()
+def fake_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A temporary directory standing in for the repository, so a guard that fails writes there."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(spot, "REPO", repo)
+    return repo
+
+
 def test_record_draw_is_seeded_and_the_sheet_sha_is_its_bytes(rec_world: fx.World, tmp_path: Path) -> None:
     a = draw_rec(rec_world, tmp_path / "a")
     b = draw_rec(rec_world, tmp_path / "b")
@@ -76,9 +89,11 @@ def test_record_sheet_is_blind_to_kind_arm_and_ids(rec_world: fx.World, tmp_path
     assert spot.record_item(1, r, chunks) == spot.record_item(1, flip, chunks)
 
 
-def test_record_draw_refusals(rec_world: fx.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_record_draw_refusals(rec_world: fx.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                              fake_repo: Path) -> None:
     with pytest.raises(SystemExit, match="inside the repository"):
-        draw_rec(rec_world, _HERE / "spot-out")
+        draw_rec(rec_world, fake_repo / "spot-out")
+    assert not (fake_repo / "spot-out").exists()
     with pytest.raises(SystemExit, match="draws 40"):
         spot.draw_record_ids([f"r{i}" for i in range(39)])
     a = draw_rec(rec_world, tmp_path / "a")
@@ -112,7 +127,7 @@ def fill(sheet_path: Path, out: Path, labels: list[str] | None = None, **edit: A
 def test_ingest_records_writes_what_the_statistics_read(rec_world: fx.World, tmp_path: Path) -> None:
     a = draw_rec(rec_world, tmp_path / "a")
     f = fill(Path(a["sheet"]), tmp_path / "filled.json")
-    res = spot.ingest(Path(a["key"]), f, tmp_path / "records.json")
+    res = ingest_rec(rec_world, Path(a["key"]), f, tmp_path / "records.json")
     labels = [it["label"] for it in json.loads(f.read_text())["items"]]
     assert res == {"valid": labels.count("valid"), "n": 40, "sheet_sha256": a["sheet_sha256"]}
     assert json.loads((tmp_path / "records.json").read_text()) == res
@@ -133,7 +148,7 @@ def test_ingest_records_refusals(rec_world: fx.World, tmp_path: Path, edit: Any,
     a = draw_rec(rec_world, tmp_path / "a")
     f = fill(Path(a["sheet"]), tmp_path / "filled.json", e=edit)
     with pytest.raises(SystemExit, match=match):
-        spot.ingest(Path(a["key"]), f, tmp_path / "records.json")
+        ingest_rec(rec_world, Path(a["key"]), f, tmp_path / "records.json")
     assert not (tmp_path / "records.json").exists()
 
 
@@ -145,26 +160,54 @@ def test_ingest_refuses_a_key_whose_items_differ(rec_world: fx.World, tmp_path: 
     key["items"] = dict(items)
     (tmp_path / "k.json").write_text(json.dumps(key))
     f = fill(Path(a["sheet"]), tmp_path / "filled.json")
-    with pytest.raises(SystemExit, match="item ids are not the key's"):
-        spot.ingest(tmp_path / "k.json", f, tmp_path / "records.json")
+    with pytest.raises(SystemExit, match="not the re-derived draw's"):
+        ingest_rec(rec_world, tmp_path / "k.json", f, tmp_path / "records.json")
+    key = json.loads(Path(a["key"]).read_text())
+    key["items"]["r01"] = next(r["record_id"] for r in asc.split_records(rec_world.records)[0]
+                               if r["record_id"] not in key["items"].values())
+    (tmp_path / "k2.json").write_text(json.dumps(key))
+    with pytest.raises(SystemExit, match="not the re-derived draw's"):
+        ingest_rec(rec_world, tmp_path / "k2.json", f, tmp_path / "records.json")
+    with pytest.raises(SystemExit, match="needs --records"):
+        spot.ingest(Path(a["key"]), f, tmp_path / "records.json")
 
 
-def test_ingest_records_enforces_forty(rec_world: fx.World, tmp_path: Path) -> None:
+def test_ingest_refuses_a_key_and_sheet_edited_together(rec_world: fx.World, tmp_path: Path) -> None:
+    """The reviewer's probe: a key and a sheet forged consistently (any 40 items) are refused,
+    because ingest re-derives the sheet from the frozen record file."""
     a = draw_rec(rec_world, tmp_path / "a")
     sheet = json.loads(Path(a["sheet"]).read_text())
     key = json.loads(Path(a["key"]).read_text())
-    sheet["items"].pop()
-    sheet["n"] = 39
-    key["items"].pop(sheet_last := "r40")
-    assert sheet_last not in key["items"]
+    sheet["items"][0]["question"] = "a different question entirely"
     key["sheet_sha256"] = asc.sha_text(spot.canonical(sheet).decode())
-    Path(a["sheet"]).write_text(spot.canonical(sheet).decode())
-    Path(a["key"]).write_text(json.dumps(key))
+    (tmp_path / "k.json").write_text(json.dumps(key))
+    (tmp_path / "s.json").write_text(spot.canonical(sheet).decode())
+    f = fill(tmp_path / "s.json", tmp_path / "f.json")
+    with pytest.raises(SystemExit, match="not the sheet re-derived from its sources"):
+        ingest_rec(rec_world, tmp_path / "k.json", f, tmp_path / "out.json")
+
+
+def test_ingest_records_enforces_forty(rec_world: fx.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = spot.draw_record_ids
+    monkeypatch.setattr(spot, "draw_record_ids", lambda ids, n=40: real(ids, n)[:39])
+    a = draw_rec(rec_world, tmp_path / "a")
     f = fill(Path(a["sheet"]), tmp_path / "filled.json")
     with pytest.raises(SystemExit, match="n = 40"):
-        spot.ingest(Path(a["key"]), f, tmp_path / "records.json")
+        ingest_rec(rec_world, Path(a["key"]), f, tmp_path / "records.json")
+
+
+def test_records_result_may_be_committed_judge_labels_may_not(rec_world: fx.World, judged: Path, tmp_path: Path,
+                                                             fake_repo: Path) -> None:
+    a = draw_rec(rec_world, tmp_path / "a")
+    f = fill(Path(a["sheet"]), tmp_path / "filled.json")
+    res = ingest_rec(rec_world, Path(a["key"]), f, fake_repo / "spot" / "records.json")
+    assert json.loads((fake_repo / "spot" / "records.json").read_text()) == res == {
+        "n": 40, "sheet_sha256": a["sheet_sha256"], "valid": res["valid"]}
+    r = spot.draw_pairs(jcfg(judged), tmp_path / "s")
+    g = fill(Path(r["sheet"]), tmp_path / "g.json")
     with pytest.raises(SystemExit, match="inside the repository"):
-        spot.ingest(Path(a["key"]), f, _HERE / "records.json")
+        spot.ingest(Path(r["key"]), g, fake_repo / "judge.jsonl", jcfg(judged))
+    assert not (fake_repo / "judge.jsonl").exists()
 
 
 # ------------------------------------------------------------------ the allocation (§13.5, R15)
@@ -376,7 +419,7 @@ def test_ingest_pairs_refusals(judged: Path, tmp_path: Path) -> None:
     bad = json.loads(json.dumps(key))
     bad["items"]["p001"]["pair_id"] = stage_b
     (tmp_path / "bad.key.json").write_text(json.dumps(bad))
-    with pytest.raises(SystemExit, match="not stage-A labelled pairs"):
+    with pytest.raises(SystemExit, match="not the re-derived draw's"):
         spot.ingest(tmp_path / "bad.key.json", f, tmp_path / "j.jsonl", jcfg(judged))
     other = {**key, "stage_a_commit_sha256": "0" * 64}
     (tmp_path / "other.key.json").write_text(json.dumps(other))
@@ -386,3 +429,46 @@ def test_ingest_pairs_refusals(judged: Path, tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="not the drawn sheet"):
         spot.ingest(Path(r["key"]), g, tmp_path / "j.jsonl", jcfg(judged))
     assert not (tmp_path / "j.jsonl").exists()
+
+
+def test_ingest_pairs_refuses_a_swapped_or_forged_key(judged: Path, tmp_path: Path) -> None:
+    """The reviewer's probes: a drawn pair swapped in the key for another stage-A pair, and a key
+    and sheet re-sealed together, are refused (ingest re-derives the draw)."""
+    r = spot.draw_pairs(jcfg(judged), tmp_path / "s")
+    key = json.loads(Path(r["key"]).read_text())
+    sa = spot.committed_stage_a(aj.load_config(jcfg(judged)))
+    drawn = {v["pair_id"] for v in key["items"].values()}
+    other = next(f["pair_id"] for f in sa["final"] if f["pair_id"] not in drawn and ast.spot_stratum(f))
+    swapped = json.loads(json.dumps(key))
+    swapped["items"]["p001"]["pair_id"] = other
+    (tmp_path / "k.json").write_text(json.dumps(swapped))
+    f = fill(Path(r["sheet"]), tmp_path / "f.json")
+    with pytest.raises(SystemExit, match="not the re-derived draw's"):
+        spot.ingest(tmp_path / "k.json", f, tmp_path / "o.jsonl", jcfg(judged))
+    sheet = json.loads(Path(r["sheet"]).read_text())
+    sheet["items"][0]["passage"] = "a passage the judge never saw"
+    forged = {**key, "sheet_sha256": asc.sha_text(spot.canonical(sheet).decode())}
+    (tmp_path / "k2.json").write_text(json.dumps(forged))
+    (tmp_path / "s2.json").write_text(spot.canonical(sheet).decode())
+    g = fill(tmp_path / "s2.json", tmp_path / "g.json")
+    with pytest.raises(SystemExit, match="not the sheet re-derived from its sources"):
+        spot.ingest(tmp_path / "k2.json", g, tmp_path / "o.jsonl", jcfg(judged))
+    assert not (tmp_path / "o.jsonl").exists()
+    # the untouched key and sheet still ingest, the labels attributed to the re-derived pairs
+    res = spot.ingest(Path(r["key"]), f, tmp_path / "o.jsonl", jcfg(judged))
+    assert [x["pair_id"] for x in asc.read_jsonl(tmp_path / "o.jsonl")] == [v["pair_id"] for v in key["items"].values()]
+    assert res["n"] == r["n"]
+
+
+def test_draw_pairs_checks_the_glossaries_against_the_stage_a_manifest(judged: Path, tmp_path: Path) -> None:
+    r = spot.draw_pairs(jcfg(judged), tmp_path / "s")
+    ji = json.loads(Path(r["key"]).read_text())["judge_inputs"]
+    cfg = aj.load_config(jcfg(judged))
+    man = json.loads((judged / "work" / "judge" / "stage-a" / "pairs-manifest.json").read_text())
+    assert ji["matches_stage_a_pairs_manifest"] is True
+    assert ji["glossaries"] == man["inputs_sha256"]["glossaries"] == [asc.sha256_file(cfg["glossary"])]
+    gp = Path(cfg["glossary"])
+    gp.write_text(gp.read_text() + json.dumps({"alias": "QQ", "primary": "quux", "kind": "abbreviation",
+                                               "paper": "P00", "doc_id": "d-P00"}) + "\n")
+    with pytest.raises(SystemExit, match="glossaries"):
+        spot.draw_pairs(jcfg(judged), tmp_path / "t")

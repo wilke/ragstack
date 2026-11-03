@@ -20,8 +20,10 @@ a 95 % interval, as counts that can be committed before the freeze:
 * the **tiebreaker share**: pairs C and E did not settle (sent to the tiebreaker), the pairs
   whose final label is the tiebreaker's, and the unjudged, per arm;
 * the **Opus-filtered** (no-reference) share of the drift sample, per arm (§6.3);
-* the **deduplicated pair count per leg** (found@10 and RR@10 demand, §6.2) and in the
-  registry, and the gateway calls made so far, for the judge caps (§14 O7).
+* the **deduplicated pair count** of the judge's registry, in total and per judging stage, and
+  the gateway calls made so far (:meth:`alias_study_judge.Pipeline.calls_so_far`), for the judge
+  caps (§14 O7). §5.6 asks for the count *per leg*; it is **not** printed per leg (owner,
+  2026-11-03, below).
 
 Pair-level shares carry a Wilson 95 % interval (pairs, not papers, are the unit there).
 
@@ -30,6 +32,18 @@ no p value: a contrast is read only as *discordant or not* per record (:func:`di
 the output is refused when any key names a test quantity (:data:`FORBIDDEN_KEYS`). The pilot's
 records are not a sample of the balanced set (§5.6 *Its limits*); its estimates are added to §8
 as rows, never substituted.
+
+**Blind to outcomes (owner, 2026-11-03).** No figure is printed from which a leg's found@10,
+found@10-gold or RR@10 could be backed out, beyond the ones §5.6 names. In particular the judge
+pairs a leg demands are **not** counted per leg: a found@10 demand is the whole top 10 of every
+record whose gold is outside it, so the per-leg count is 10 x the leg's gold-only misses, and a
+difference of two legs' counts is -10 x their gold-only net. The registry counts (deduplicated
+across legs, per judging stage and in total) and the per-arm judge shares pool every leg. Per leg
+the report holds only the run status, the row count and the failed calls. The outcome-bearing
+figures it does print are §5.6's own: the baseline C found@10 and found@10-gold of one cell (base x
+default x none), and each contrast's unsigned discordant count. A discordant count bounds the
+partner cell's level (within +-d of the other, d of the same parity) and fixes it only at d = 0
+or d = n; nothing more is derivable.
 
 **Refusals (before any outcome is read).** Both directories must carry ``STUDY-MODE`` ``pilot``;
 :func:`alias_study_judge.analysis_gate` must pass and say ``pilot`` (stage A committed and the
@@ -54,6 +68,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -84,8 +99,13 @@ CONTRAST_LEGS = (*GLOSSARY_CELLS, GROWTH_NEIGHBOUR, *GROWTH_DRAWS)
 FORBIDDEN_KEYS = frozenset({"p", "p_value", "pvalue", "p_one_sided", "p_two_sided", "min_p", "statistic",
                             "net", "net_points", "net_exact", "gained", "lost", "direction", "delta", "verdict",
                             "confirmed", "test", "tests", "layer1", "family_g", "family_n", "c_gate"})
-#: provenance keys that would name the host or the environment in a committed file
-PROVENANCE_DROP = ("host", "image", "installed_distribution")
+#: a key named for a Layer-1 member, and string values naming a verdict: refused anywhere in the output
+FORBIDDEN_MEMBERS = frozenset({"H1", "H1b", "H2", "H3"})
+FORBIDDEN_VALUES = ("confirmed", asc.GATE.casefold(), "significant")
+#: provenance keys a committed file drops (the statistics' public copy: the host and the warnings)
+PROVENANCE_DROP = ast.PUBLIC_DROP_PROVENANCE
+#: per leg, only these are reported (module docstring, *Blind to outcomes*)
+LEG_FIELDS = ("run_status", "stages", "rows", "failed")
 
 
 # ------------------------------------------------------------------ before anything is read
@@ -284,51 +304,47 @@ def judge_shares(final: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
             "opus_filtered": by_arm(drift, lambda x: x.get("opus_status") == "no_reference")}
 
 
-def pairs_per_leg(p: Pilot) -> dict[str, Any]:
-    """§5.6 / §14 O7: per leg, the distinct (record, chunk) pairs its rows demand (§6.2), by
-    need; and the registry's deduplicated count across legs."""
-    legs: dict[str, Any] = {}
-    for leg, rows in p.rows.items():
-        if not rows:
-            legs[leg] = None
-            continue
-        need: dict[str, set[tuple[str, str]]] = {n: set() for n in aj.NEEDS}
-        for row in rows:
-            rec = p.by_id[row["record_id"]]
-            for n in aj.NEEDS:
-                need[n].update((row["record_id"], c) for c in aj.demanded(rec, row, n))
-        legs[leg] = {"found10": len(need["found10"]), "rr10": len(need["rr10"]),
-                     "pairs": len(need["found10"] | need["rr10"])}
+def registry_counts(p: Pilot) -> dict[str, Any]:
+    """§14 O7: the judge registry's deduplicated pairs, in total and per judging stage. Never per
+    leg (module docstring, *Blind to outcomes*)."""
     reg = p.registry
-    return {"per_leg": legs, "registry": {"pairs": len(reg), "per_stage": dict(Counter(x.get("stage") for x in reg)),
-                                          "per_need": dict(Counter(x.get("need") for x in reg)),
-                                          "per_arm": dict(Counter(x.get("arm") for x in reg))}}
+    return {"pairs": len(reg), "per_judging_stage": dict(sorted(Counter(str(x.get("stage")) for x in reg).items()))}
 
 
 def gateway_calls(judge_dir: Path, n_pairs: int) -> dict[str, Any]:
-    """Calls per gateway backend as the judge's caps count them
-    (:meth:`alias_study_judge.Pipeline.calls_so_far`: per tag the larger of the calls log and
-    the dispatch log, re-issues included)."""
-    def rows(f: Path) -> int:
-        return sum(1 for x in f.read_text(encoding="utf-8").splitlines() if x.strip()) if f.is_file() else 0
+    """Calls per gateway backend as the judge's caps count them: the judge's own
+    :meth:`alias_study_judge.Pipeline.calls_so_far` (per tag the larger of the calls log and the
+    dispatch log, re-issues included), read without opening a pipeline (which may write)."""
     out: dict[str, Any] = {}
-    for kind, tags in (("argon", ("gw-argon", "gw-argon_r2")), ("opus", ("gw-opus",))):
-        n = sum(max(rows(judge_dir / f"calls-{t}.jsonl"), rows(judge_dir / f"dispatch-{t}.jsonl")) for t in tags)
+    for kind in ("argon", "opus"):
+        n = aj.Pipeline.calls_so_far(SimpleNamespace(out=judge_dir), kind)  # type: ignore[arg-type]
         out[kind] = {"calls": n, "per_registry_pair": round(n / n_pairs, 4) if n_pairs else None}
     return out
 
 
+def _forbidden_key(k: str) -> bool:
+    low = k.casefold()
+    return (low in FORBIDDEN_KEYS or k in FORBIDDEN_MEMBERS or low.startswith(("p_", "net", "verdict", "status_h"))
+            or low.endswith(("_p", "_pvalue")))
+
+
 def no_test_quantities(obj: Any, path: str = "") -> None:
-    """Refuse any key in :data:`FORBIDDEN_KEYS`, at any depth (module docstring)."""
+    """Refuse a key naming a test quantity, a direction or a member (:data:`FORBIDDEN_KEYS`,
+    :data:`FORBIDDEN_MEMBERS`, and the prefixes ``p_``, ``net``, ``verdict``), and a string value
+    naming a verdict (:data:`FORBIDDEN_VALUES`), at any depth (module docstring)."""
+    where = path or "the top level"
     if isinstance(obj, Mapping):
         for k, v in obj.items():
-            if str(k) in FORBIDDEN_KEYS:
-                raise SystemExit(f"the pilot report would carry {path + '.' + str(k) if path else k!r}: no Layer-1 "
-                                 "test quantity is computed or printed by the pilot (§5.6)")
+            if _forbidden_key(str(k)):
+                raise SystemExit(f"the pilot report would carry {path + '.' + str(k) if path else str(k)!r}: no "
+                                 "Layer-1 test quantity is computed or printed by the pilot (§5.6)")
             no_test_quantities(v, f"{path}.{k}" if path else str(k))
     elif isinstance(obj, (list, tuple)):
         for v in obj:
             no_test_quantities(v, path)
+    elif isinstance(obj, str) and any(x in obj.casefold() for x in FORBIDDEN_VALUES):
+        raise SystemExit(f"the pilot report would carry a verdict at {where}: no Layer-1 test quantity is computed or "
+                         "printed by the pilot (§5.6)")
 
 
 def provenance() -> dict[str, Any]:
@@ -357,7 +373,7 @@ def report(records: Path, runs_dir: Path, judge_dir: Path, n_boot: int = N_BOOT,
         "note": "growth: the record's H2 value is non-zero (differs from at least one draw); growth_both_draws: "
                 "differs from both (the shared part, rho in alias_study_power). The pilot papers' own neighbours "
                 "are not in the neighbour arm, so growth understates H2's discordance (§5.6)."}
-    pairs = pairs_per_leg(p)
+    pairs = registry_counts(p)
     res: dict[str, Any] = {
         "schema": SCHEMA, "mode": MODE, "prereg": "DRAFT v3 §5.6 (R8)",
         "reads": "discordance, found@10 levels and judge shares only; no Layer-1 test, net change, direction, gate "
@@ -367,15 +383,16 @@ def report(records: Path, runs_dir: Path, judge_dir: Path, n_boot: int = N_BOOT,
         "record_set": {k: p.identity[k] for k in ("accepted_sha256", "balanced_sha256", "records", "balanced",
                                                    "descriptive")},
         "run_dates_utc": {"first": min(p.utc), "last": max(p.utc)} if p.utc else None,
-        "legs": p.legs,
+        "legs": {leg: {k: v[k] for k in LEG_FIELDS if k in v} for leg, v in p.legs.items()},
         "discordance": disc,
         "baseline_c_found10": {"found10": found_figure(c_recs, out, BASELINE_C, "hit", n_boot, seed),
                                "found10_gold": found_figure(c_recs, out, BASELINE_C, "hit_gold", n_boot, seed)},
         "judge": judge_shares(p.final),
-        "pairs": pairs,
-        "gateway_calls": gateway_calls(judge_dir, pairs["registry"]["pairs"]),
+        "judge_registry": pairs,
+        "gateway_calls": gateway_calls(judge_dir, pairs["pairs"]),
         "intervals": {"discordance_and_found10": "paper-cluster percentile bootstrap, 95 %",
                       "pair_shares": "Wilson score, 95 %", "n_boot": n_boot, "seed": asc.SEEDS["boot"],
+                      "numpy_seed": seed,
                       "seed_rule": asc.SEED_RULE},
         "stage_a_commit_sha256": p.gate["stage_a_commit_sha256"],
         "spot_checks_waiver": p.gate.get("spot_checks_waiver"),
@@ -428,14 +445,11 @@ def markdown(res: Mapping[str, Any]) -> str:
         t = j["tiebreaker"]
         cells = [j["answers"][a], t["escalated"][a], t["tiebroken"][a], t["unjudged"][a], j["opus_filtered"][a]]
         lines.append(f"| {a} | " + " | ".join(f"{c['k']}/{c['n']} ({_pct(c['share'])})" for c in cells) + " |")
-    lines += ["", "| leg | found@10 pairs | RR@10 pairs | pairs |", "|---|---|---|---|"]
-    for leg, x in res["pairs"]["per_leg"].items():
-        lines.append(f"| {leg} | " + (" | ".join(str(x[k]) for k in ("found10", "rr10", "pairs")) if x
-                                       else "not run | – | –") + " |")
-    reg = res["pairs"]["registry"]
+    reg = res["judge_registry"]
     gw = res["gateway_calls"]
-    lines += ["", f"Registry: {reg['pairs']} deduplicated pairs. Gateway calls: Argon {gw['argon']['calls']}, "
-              f"Opus {gw['opus']['calls']}.", "",
+    stages = ", ".join(f"stage {k} {v}" for k, v in reg["per_judging_stage"].items())
+    lines += ["", f"Judge registry: {reg['pairs']} deduplicated pairs ({stages}). Gateway calls: Argon "
+              f"{gw['argon']['calls']}, Opus {gw['opus']['calls']}.", "",
               f"Stage-A commit `{res['stage_a_commit_sha256'][:12]}…`; seed `{res['intervals']['seed']}`, "
               f"{res['intervals']['n_boot']} resamples; citable {str(res['citable']).lower()}.", ""]
     return "\n".join(lines)

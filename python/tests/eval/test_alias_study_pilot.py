@@ -2,12 +2,14 @@
 directory, the estimates, their reproducibility, and every refusal."""
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 _HERE = Path(__file__).resolve().parent
@@ -130,8 +132,10 @@ def test_report_estimates_match_the_frozen_hits(world: Path) -> None:
     assert res["record_set"]["balanced"] == 9 and res["record_set"]["descriptive"] == 26
     # discordance recomputed from the judge's own frozen stage-A hits
     hits: dict[tuple[str, str], int] = {}
+    gold: dict[tuple[str, str], int] = {}
     for x in asc.read_jsonl(world / "work" / "judge" / "stage-a" / "hits.jsonl"):
         hits[(x["leg"], x["record_id"])] = x["hit"]
+        gold[(x["leg"], x["record_id"])] = x["hit_gold"]
     recs = asc.load_records(world / "accepted-full.jsonl")
     desc = asc.split_records(recs)[1]
 
@@ -156,18 +160,41 @@ def test_report_estimates_match_the_frozen_hits(world: Path) -> None:
     assert res["baseline_c_found10"]["found10"]["leg"] == none
     assert c["found"] == sum(hits[(none, r["record_id"])] for r in desc if r["kind"] == "C")
     assert c["n"] == 13 and c["ci95_points"][0] <= c["points"] <= c["ci95_points"][1]
+    cg = res["baseline_c_found10"]["found10_gold"]
+    assert cg["leg"] == none and cg["found"] == sum(gold[(none, r["record_id"])] for r in desc if r["kind"] == "C")
+    # the fixture must tell found@10 from found@10-gold, or the line above proves nothing
+    assert cg["found"] != c["found"]
+    # every interval is the paper bootstrap seeded by 261101|alias|boot, recomputed independently
+    seed = int.from_bytes(hashlib.sha256(b"261101|alias|boot").digest()[:8], "big")
+    assert res["intervals"]["numpy_seed"] == seed      # the seed the intervals were drawn with
+    c_recs = [r for r in desc if r["kind"] == "C"]
+    assert c["ci95_points"] == indep_boot([r["paper"] for r in c_recs],
+                                          [hits[(none, r["record_id"])] for r in c_recs], seed, 100.0)
+    assert cg["ci95_points"] == indep_boot([r["paper"] for r in c_recs],
+                                           [gold[(none, r["record_id"])] for r in c_recs], seed, 100.0)
+    g_recs = [r for r in desc if r["kind"] == "G"]
+    assert d["glossary_G"]["ci95"] == indep_boot(
+        [r["paper"] for r in g_recs], [int(hits[(merged, r["record_id"])] != hits[(none, r["record_id"])])
+                                       for r in g_recs], seed)
     # judge shares recomputed from final.jsonl
     fin = [x for x in asc.read_jsonl(world / "work" / "judge" / "final.jsonl") if x["k"].startswith("pair|")]
     j = res["judge"]
     assert j["pairs_finalized"] == len(fin)
     assert j["answers"]["overall"]["k"] == sum(x["label"] == 1 for x in fin)
     assert j["tiebreaker"]["escalated"]["overall"]["k"] == sum(x["source"] != "agree" for x in fin)
+    assert j["tiebreaker"]["tiebroken"]["overall"]["k"] == sum(x["source"] in ("tiebreak", "tiebreak_r2") for x in fin)
+    assert j["tiebreaker"]["unjudged"]["overall"]["k"] == sum(x["source"] == "unjudged" for x in fin)
+    assert j["opus_filtered"]["overall"]["k"] == sum(x["opus_status"] == "no_reference" for x in fin)
     assert j["opus_filtered"]["overall"]["n"] == sum(bool(x["drift_sampled"]) for x in fin)
     assert sum(j["answers"][a]["n"] for a in asc.ARM_GROUPS) == len(fin)
-    # pairs per leg: all 29 legs, and the registry's deduplicated total
-    assert len(res["pairs"]["per_leg"]) == 29 and all(res["pairs"]["per_leg"].values())
-    assert res["pairs"]["registry"]["pairs"] == len(asc.read_jsonl(world / "work" / "judge" / "pairs.jsonl"))
-    assert res["gateway_calls"]["argon"]["calls"] > 0
+    # the registry: deduplicated, in total and per judging stage, never per leg
+    reg = asc.read_jsonl(world / "work" / "judge" / "pairs.jsonl")
+    assert res["judge_registry"] == {"pairs": len(reg), "per_judging_stage": {
+        "A": sum(x["stage"] == "A" for x in reg), "B": sum(x["stage"] == "B" for x in reg)}}
+    def calls(tag: str) -> int:
+        return max(len(asc.read_jsonl(world / "work" / "judge" / f"{k}-gw-{tag}.jsonl")) for k in ("calls", "dispatch"))
+    assert res["gateway_calls"]["argon"]["calls"] == calls("argon") > 0
+    assert res["gateway_calls"]["opus"]["calls"] == calls("opus") > 0
     assert set(res["inputs"]) >= {"records", "judge/final.jsonl", "runs/base/none.jsonl"}
     assert res["citable"] is True and res["intervals"]["seed"] == "261101|alias|boot"
 
@@ -186,6 +213,70 @@ def test_report_is_seeded_and_carries_no_test_quantity(world: Path, tmp_path: Pa
                        "--judge-dir", str(world / "work" / "judge"), "--out", str(out), "--md",
                        str(tmp_path / "p.md"), "--n-boot", "50"]) == 0
     assert json.loads(out.read_text())["schema"] == pilot.SCHEMA and (tmp_path / "p.md").is_file()
+
+
+def indep_boot(clusters: list[str], flags: list[int], seed: int, scale: float = 1.0) -> list[float]:
+    """A paper bootstrap written here from scratch (not chunktrial_stats)."""
+    papers = list(dict.fromkeys(clusters))
+    s = np.array([sum(f for c, f in zip(clusters, flags, strict=True) if c == q) for q in papers], float)
+    n = np.array([sum(c == q for c in clusters) for q in papers], float)
+    idx = np.random.default_rng(seed).integers(0, len(papers), size=(N_BOOT, len(papers)))
+    return [round(scale * float(x), 4) for x in np.percentile(s[idx].sum(1) / n[idx].sum(1), [2.5, 97.5])]
+
+
+def test_judge_shares_definitions() -> None:
+    """The three shares on rows that tell the definitions apart (each source and Opus status)."""
+    rows = [{"arm": "base", "source": "agree", "label": 1, "drift_sampled": True, "opus_status": "answered"},
+            {"arm": "base", "source": "tiebreak", "label": 0, "drift_sampled": True, "opus_status": "no_reference"},
+            {"arm": "neighbour", "source": "tiebreak_r2", "label": 1, "drift_sampled": True, "opus_status": None},
+            {"arm": "random", "source": "unjudged", "label": None, "drift_sampled": False, "opus_status": None},
+            {"arm": "random", "source": "agree", "label": 0, "drift_sampled": True, "opus_status": "answered"}]
+    j = pilot.judge_shares({str(i): r for i, r in enumerate(rows)})
+    assert j["answers"]["overall"]["k"] == 2 and j["answers"]["neighbour"] == {
+        "k": 1, "n": 1, "share": 1.0, "wilson95": j["answers"]["neighbour"]["wilson95"]}
+    t = j["tiebreaker"]
+    assert (t["escalated"]["overall"]["k"], t["tiebroken"]["overall"]["k"], t["unjudged"]["overall"]["k"]) == (3, 2, 1)
+    assert t["tiebroken"]["random"]["k"] == 0 and t["escalated"]["random"]["k"] == 1
+    assert j["opus_filtered"]["overall"] == {**j["opus_filtered"]["overall"], "k": 1, "n": 4}
+    assert j["opus_filtered"]["base"]["k"] == 1 and j["opus_filtered"]["neighbour"]["k"] == 0
+
+
+def perturb_stage_b_leg(w: Path) -> int:
+    """Move the gold out of, or up inside, the top 10 of a stage-B leg's rows (not pinned by the
+    stage-A commit): that leg's found@10-gold, found@10 demand and RR@10 demand all change."""
+    rp = w / "work" / "runs" / "neighbour" / "merged.jsonl"
+    recs = {r["record_id"]: r for r in asc.load_records(w / "accepted-full.jsonl")}
+    rows = asc.read_jsonl(rp)
+    moved = 0
+    for x in rows:
+        top = x.get("ranked_chunk_ids") or []
+        g = recs[x["record_id"]]["gold_chunks"][0]
+        if g in top[:10]:
+            top.remove(g)
+            top.insert(30 if moved % 2 else 0, g)
+            moved += 1
+    rp.write_text("".join(json.dumps(x) + "\n" for x in rows))
+    return moved
+
+
+def test_no_per_leg_outcome_can_be_backed_out(world: Path) -> None:
+    """The reviewer's probe, generalised: change one leg's outcomes (found@10-gold, the pairs it
+    demands for found@10 and RR@10) and the report must not move, except that rows file's sha256.
+    Before the owner's 2026-11-03 decision the per-leg pair counts moved with it (10 x the
+    gold-only misses of the leg)."""
+    a = run(world)
+    assert perturb_stage_b_leg(world) > 0
+    b = run(world)
+    assert a["inputs"].pop("runs/neighbour/merged.jsonl") != b["inputs"].pop("runs/neighbour/merged.jsonl")
+    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+    for leg, v in a["legs"].items():
+        assert set(v) <= set(pilot.LEG_FIELDS), leg
+
+    def keys(o: Any) -> set[str]:
+        if isinstance(o, dict):
+            return set(o) | {k for v in o.values() for k in keys(v)}
+        return {k for v in o for k in keys(v)} if isinstance(o, list) else set()
+    assert not keys(a) & {"per_leg", "found10_per_leg", "found10_gold_per_leg", "pairs_per_leg", "rr10"}
 
 
 def test_discordance_is_unsigned_and_excludes_missing() -> None:
@@ -291,6 +382,10 @@ def test_refuses_an_unlabelled_contrast_pair(world: Path) -> None:
 def test_refuses_a_test_quantity_in_the_output(world: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit, match="no Layer-1 test quantity"):
         pilot.no_test_quantities({"a": [{"b": {"p_value": 0.01}}]})
+    for bad in ({"netchange": 3}, {"p_one": 0.01}, {"H1": 1}, {"x": {"y": "H2 confirmed"}}, {"z": ["significant"]},
+                {"w": "GATE-NOT-EVALUABLE: leg not run"}):
+        with pytest.raises(SystemExit, match="no Layer-1 test quantity"):
+            pilot.no_test_quantities(bad)
     real = pilot.found_figure
     monkeypatch.setattr(pilot, "found_figure", lambda *a, **k: {**real(*a, **k), "net_points": 1.0})
     with pytest.raises(SystemExit, match="net_points"):
