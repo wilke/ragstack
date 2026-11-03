@@ -847,7 +847,7 @@ FIELD_COV = {"merged": {"available": True, "share_with_field": 0.18}, "placebo":
 def _e2e_patch(w: fx.World) -> None:
     def study(fc: dict[str, Any], extra: dict[str, Any] | None = None) -> Any:
         def f(s: dict[str, Any]) -> None:
-            s["study"] = {"mode": "dry_run", "field_coverage": fc, **(extra or {})}
+            s["study"] = {**(s.get("study") or {}), "mode": "dry_run", "field_coverage": fc, **(extra or {})}
             s["census"] = {"source": "load_receipt", "collection_build": {"collection": "bench-x", "n_chunks": 52}}
         return f
     patch_summary(w, "base/merged", study(FIELD_COV["merged"]))
@@ -1017,7 +1017,7 @@ def test_modes_must_agree(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="judge_dir/STUDY-MODE is 'pilot'"):
         st.study_preflight(json.loads(e2e_config(w2, tmp_path / "b").read_text()))
     w3 = committed_world(tmp_path / "c", patch=lambda w: patch_summary(
-        w, "neighbour/none", lambda s: s.update(study={"mode": "pilot"})))
+        w, "neighbour/none", lambda s: s["study"].update(mode="pilot")))
     with pytest.raises(SystemExit, match="measured in mode 'pilot'"):
         st.Data(json.loads(e2e_config(w3, tmp_path / "c").read_text()))
 
@@ -1081,6 +1081,36 @@ def test_pilot_and_main_spot_check_gate(tmp_path: Path, monkeypatch: pytest.Monk
     pre = st.study_preflight(cfg)
     assert pre["spot_checks_waiver"] is None and pre["gate"]["spot_checks_sha256"]["records"]
     assert pre["stage_a_commit"]["public_tracked_at_head"] is True
+
+
+def test_a_stage_b_leg_killed_mid_write_is_refused(tmp_path: Path) -> None:
+    """found10 writes ``status: complete`` before the runner adds the study block; a stage-B leg
+    killed between the two (not pinned by the stage-A commit) is incomplete for the statistics as
+    for the runner (alias_study_run.run_status): its cells are gated, never read as complete. A
+    study block without its mode is the same; a complete run in another mode is refused."""
+    import alias_study_run as ar
+
+    w = committed_world(tmp_path)
+    cfg = json.loads(e2e_config(w, tmp_path).read_text())
+    sp = w.runs / "neighbour" / "merged.summary.json"                 # retrieval stage B
+    assert ar.leg_stage("neighbour", "merged", "default") == "B"
+    orig = json.loads(sp.read_text())
+    legs = [st.L("neighbour", "merged", r) for r in asc.RETRIEVERS]
+    assert all(st.Data(cfg).gates[leg] is None for leg in legs)
+    killed = {k: v for k, v in orig.items() if k != "study"}
+    assert killed["status"] == "complete"
+    for broken in (killed, {**orig, "study": {k: v for k, v in orig["study"].items() if k != "mode"}}):
+        sp.write_text(json.dumps(broken))
+        d = st.Data(cfg)
+        for leg in legs:
+            assert d.gates[leg] == f"{st.GATE}: run neighbour/merged is incomplete", leg
+        assert d.runs["neighbour/merged"]["status"] == "incomplete"
+        res = st.analyse(cfg, d)
+        cg = res["layer2"]["h1_other_cells"]["H1@neighbour|default"]["cell_gates"]
+        assert cg == {st.L("neighbour", "merged", "default"): f"{st.GATE}: run neighbour/merged is incomplete"}
+    sp.write_text(json.dumps({**orig, "study": {**orig["study"], "mode": "main"}}))
+    with pytest.raises(SystemExit, match="measured in mode 'main'"):
+        st.Data(cfg)
 
 
 def test_frozen_stage_a_cross_check(tmp_path: Path) -> None:
