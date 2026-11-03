@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Alias study (OA-1000): the statistics (DRAFT prereg §3, §7, §8, §9.1).
+"""Alias study (OA-1000): the statistics (DRAFT prereg v2 §3, §3.3, §3.4, §6.6, §7, §8, §9.1).
 
     alias_study_stats.py --config CFG [--out results.json] [--public public.json]
 
@@ -15,36 +15,52 @@ chunk whose final label is *answers*; unjudged = no), ``hit_gold`` (gold only), 
 failed call is ``None``; a record failed in any cell of a contrast is excluded from it and
 counted (§7 *Missing data*); ``family_missing_as_not_found`` scores it 0 (a sensitivity).
 
-**Layer 1 (§3.1).** Each member is a linear contrast of cell outcomes per record (H1:
-merged - none on base x default, G records; H2: neighbour - (random-1 + random-2)/2 on
-default x none, all 900; H1b: per paper, the mean of its G records' H1 difference minus its C
-record's), summed per paper. The tests (§7, owner 2026-11-02): **H1 and H2** by the paper sign-flip test
-with the exact conditional p (``chunktrial_stats.sign_flip_test_exact``: enumeration at <= 20
-non-zero papers, lattice convolution above; minimum attainable p 2^-k; H1's null is the sharp null
-per question, H2's the symmetric mean-difference null per paper). **H1b** by the exact G / C label
-randomization test (``chunktrial_stats.cluster_randomization_test``): the G / C labels permuted
-over each paper's records (3 assignments for 2 G + 1 C); the minimum attainable p is the null mass
-of the most extreme value. Monte Carlo, 10,000 draws, seed ``261101|alias|perm``, (b + 1)/(m + 1),
-only beyond the lattice threshold. The members run
-through the Option-B procedure (:func:`layer1_procedure`): H1 and H2 start at 0.025 each and a
-rejected member passes its level to the other (Holm over 2); H1b is tested at 0.05 only when
-both are rejected. A member is GATE-NOT-EVALUABLE (p = 1.0 in the procedure) when its minimum
-attainable p exceeds the level it is being tested at, it has fewer than 8 papers, any of its
-cells is gated by the runner (depth read-back, inactive reranker, boost probe, a run that is
-not ``complete``), or, for H1 and H1b, the C gate fires (rule C) or the reach gate fails
-(fewer than 480 of the 600 G records render their own entry; a reach count not supplied
-fails it). H2 is *confirmed* only when its judged test rejects **and** its gold-only net is
-below 0; otherwise *not confirmed (gold-only direction gate)*, not rejected.
+**Layer 1: two families (§3.1, R1), each at one-sided alpha = 0.05.** No level passes between
+them. *Family G*: **H1** (G records, base x default, merged - none, per-paper sum) by the exact
+conditional paper sign-flip (``chunktrial_stats.sign_flip_test_exact``); **H1b** (per paper,
+the mean of its G records' H1 difference minus its C record's) is tested **only if H1 is
+confirmed**, at 0.05 in fixed sequence, by the exact G / C label randomization
+(``chunktrial_stats.cluster_randomization_test`` over ``cluster_randomization_lattice``);
+otherwise H1b is *absent (not tested)* and only its estimate, CI and power are printed.
+*Family N*: **H2** (all balanced records, default x none, neighbour - mean(random-1,
+random-2), per-paper sum) by the exact sign-flip, *confirmed* only when the test rejects
+**and** the gold-only net is below 0 (the direction gate; otherwise *not confirmed (gold-only
+direction gate)*). A member is **GATE-NOT-EVALUABLE** (a third answer, p = 1.0 in its family)
+when its minimum attainable p exceeds 0.05, it has fewer than 8 papers, any of its cells is
+gated by the runner, or, for H1 (and so H1b), the C gate fires (rule C: evaluated only when
+dG > 0; 95 % paper-cluster bootstrap, seed ``261101|alias|boot``) or the reach gate fails
+(fewer than 80 % of the G records render their own entry; a reach count not supplied fails
+it). Monte Carlo (10,000 draws, seed ``261101|alias|perm``, (b + 1)/(m + 1)) only beyond the
+lattice.
 
-**Layer 2 (§3.3).** Every figure in points with a 95 % paper-bootstrap percentile CI (10,000
-resamples, seed ``261101|alias|boot``), the gate verdicts of its cells printed beside it, and
-the three serving rules applied mechanically (:func:`decision_rules`).
+**Beside H2 (§3.4):** the gold-only net, the draw-to-draw gap and its flag, the per-arm judge
+false-yes rates and the **judge false-yes bound** B = 100 U J_r / N with **U = max(U_random,
+U_pooled)** (owner 2026-11-03), the Wilson 95 % upper limits of the share of Opus-*not* among
+the drift pairs the final label calls *answers*, in the random arm and over the three arms.
+
+**Layer 2 (§3.3), descriptive.** Every figure in points with a 95 % paper-bootstrap percentile
+CI (10,000 resamples, seed ``261101|alias|boot``) and, for found@10 contrasts, the equivalence
+reading (90 % CI within +-delta, delta the realised 80 %-power MDE). The serving rules,
+mechanically (:func:`decision_rules`): *attach* in order harm (L_hi < 0), **C cost (owner
+2026-11-03): do not attach when dC < -1 point or C_lo < -3.6 points**, attach when L >= 2,
+L_lo > 0, dC >= -1 and C_lo >= -3.6, else not resolved; *reranker* non-inferiority at -3
+points; *growth* a concern at <= -3 points with the CI excluding 0. The Layer-1 verdict
+governs the wording (:func:`serving_statements`).
+
+**Sensitivities (§7), never deciding.** The declared ones (subsets, judge modes, missing as
+not found, H2 against each draw) and the fixed ones of R6: the studentized sign-flip (H1,
+H2), topic clustering (H1, H2), H2 with the chunk-volume covariate, the XML-only stratum, H2
+by citation-count and text-similarity tercile (cut points read from a committed file), the
+origin counts and the placebo leg. **Fragile (owner 2026-11-03):** only H1 and H2, and only
+through the studentized test and topic clustering (H1) plus the volume covariate (H2); a
+subgroup never makes anything fragile, H1b is exempt, and *fragile* never changes a label.
 """
 from __future__ import annotations
 
 import argparse
 import itertools
 import json
+import math
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable, Mapping, Sequence
@@ -66,8 +82,27 @@ GATE = asc.GATE
 ALPHA = 0.05
 MIN_CLUSTERS = 8
 REACH_SHARE = 0.80
-SCHEMA = "alias-study-results/1"
+SCHEMA = "alias-study-results/2"
 Spec = list[tuple[float, str]]
+
+#: §3.3 serving rules (thresholds judgement-based, fixed; owner 2026-11-03 for the C cost)
+ATTACH_LIFT_POINTS = 2.0
+C_COST_POINT = -1.0     # do not attach when the dC point estimate is below this (strictly)
+C_COST_LOWER = -3.6     # do not attach when the dC 95 % lower bound is below this (strictly)
+RERANK_MARGIN = -3.0    # non-inferiority margin of default - BM25
+GROWTH_MARGIN = -3.0    # neighbour - random at or below this, with the CI excluding 0
+#: §3.4: U = max(U of the random arm, U pooled over the three arms) (owner 2026-11-03)
+FALSE_YES_SCOPES = ("random", "pooled")
+#: §7 (owner 2026-11-03): the only sensitivities that can make a member fragile
+FRAGILE_BY: dict[str, tuple[str, ...]] = {
+    "H1": ("studentized", "topic_clustering"),
+    "H2": ("studentized", "topic_clustering", "volume_covariate"),
+}
+CONFIRMED = "confirmed"
+NOT_CONFIRMED = "not confirmed"
+NOT_CONFIRMED_GOLD = "not confirmed (gold-only direction gate)"
+NOT_TESTED = "absent (not tested)"
+TERCILE_RULE = "T1: v <= c1; T2: c1 < v <= c2; T3: v > c2 (cut points read, never computed here)"
 
 
 def L(c: str, g: str, r: str, rep: int = 1) -> str:  # noqa: N802 - a cell name, short on purpose
@@ -79,6 +114,8 @@ H2_SPEC: Spec = [(1.0, L("neighbour", "none", "default")), (-0.5, L("random1", "
                  (-0.5, L("random2", "none", "default"))]
 H3_SPEC: Spec = [(1.0, L("neighbour", "none", "default")), (-1.0, L("base", "none", "default")),
                  (-1.0, L("neighbour", "none", "bm25")), (1.0, L("base", "none", "bm25"))]
+#: §5.3 (R7): the placebo leg, base x default only; read when the runner wrote it
+PLACEBO_LEG = L("base", "placebo", "default")
 
 
 # ------------------------------------------------------------------ outcomes
@@ -153,13 +190,37 @@ def cluster_sums(clusters: Sequence[str], vals: Sequence[float]) -> tuple[list[s
     return list(order), sums, cnt
 
 
+def boot_cis(sums: np.ndarray, counts: np.ndarray, n_boot: int, seed: int
+             ) -> tuple[list[float] | None, list[float] | None]:
+    """The 95 % and the 90 % paper-bootstrap percentile CI of 100 x sum / n (points), from the
+    same resamples (seed ``261101|alias|boot``; the 90 % one is the equivalence bound, §3.3)."""
+    if sums.size == 0:
+        return None, None
+    vals = cs._bootstrap_net_shares(np.asarray(sums, float), np.asarray(counts, float), n_boot, seed)
+    lo95, hi95, lo90, hi90 = np.percentile(vals, [2.5, 97.5, 5.0, 95.0])
+    return ([round(100 * float(lo95), 4), round(100 * float(hi95), 4)],
+            [round(100 * float(lo90), 4), round(100 * float(hi90), 4)])
+
+
 def boot_ci(sums: np.ndarray, counts: np.ndarray, n_boot: int, seed: int) -> list[float] | None:
     """95 % paper-bootstrap percentile CI of 100 x sum / n (points)."""
-    if sums.size == 0:
-        return None
-    vals = cs._bootstrap_net_shares(np.asarray(sums, float), np.asarray(counts, float), n_boot, seed)
-    lo, hi = np.percentile(vals, [2.5, 97.5])
-    return [round(100 * float(lo), 4), round(100 * float(hi), 4)]
+    return boot_cis(sums, counts, n_boot, seed)[0]
+
+
+def equivalence(n: int, discordant: int, ci90: list[float] | None) -> dict[str, Any]:
+    """§3.3 *statements of no effect*: the figure may read *no effect larger than delta points*
+    only when its 90 % CI lies within +-delta, delta the realised 80 %-power MDE (§8's formula at
+    the contrast's realised discordance). Otherwise *not resolved*."""
+    if not n or ci90 is None:
+        return {"delta_points": None, "within": False, "reading": "not resolved"}
+    if discordant == 0:
+        return {"delta_points": 0.0, "within": False, "realised_discordance": 0.0,
+                "reading": "not resolved (no discordant records: the MDE is 0)"}
+    q = discordant / n
+    delta = round(apw.mde80_points(n, q), 4)
+    within = -delta <= ci90[0] and ci90[1] <= delta
+    return {"delta_points": delta, "realised_discordance": round(q, 4), "ci90": ci90, "within": bool(within),
+            "reading": f"no effect larger than {delta:g} points" if within else "not resolved"}
 
 
 def figure(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], spec: Spec,
@@ -170,11 +231,13 @@ def figure(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str
     _, sums, cnt = cluster_sums(cl, v)
     n = len(v)
     arr = np.asarray(v)
+    ci95, ci90 = boot_cis(sums, cnt, int(an["n_boot"]), int(an["boot_seed"]))
     out: dict[str, Any] = {"n": n, "missing": miss, "papers": int(sums.size),
-           "net_points": round(100 * float(arr.sum()) / n, 4) if n else None,
-           "ci95": boot_ci(sums, cnt, int(an["n_boot"]), int(an["boot_seed"])),
-           "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()),
-           "cells": [leg for _, leg in spec]}
+                           "net_points": round(100 * float(arr.sum()) / n, 4) if n else None,
+                           "ci95": ci95, "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()),
+                           "cells": [leg for _, leg in spec]}
+    if key in ("hit", "hit_gold"):
+        out["equivalence"] = equivalence(n, out["gained"] + out["lost"], ci90)
     if gates is not None:
         out["cell_gates"] = {leg: gates.get(leg) for _, leg in spec if gates.get(leg)}
     return out
@@ -188,7 +251,7 @@ def found_rate(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
             "points": round(100 * sum(vals) / n, 4) if n else None}
 
 
-# ------------------------------------------------------------------ Layer 1
+# ------------------------------------------------------------------ Layer 1: the tests
 
 def member_test(clusters: Sequence[str], vals: Sequence[float], alternative: str, an: Mapping[str, Any]
                 ) -> dict[str, Any]:
@@ -208,10 +271,11 @@ def member_test(clusters: Sequence[str], vals: Sequence[float], alternative: str
 def member_randomization(clusters: Sequence[str], vals: Sequence[float], supports: Sequence[Sequence[float]],
                          alternative: str, unit: str, an: Mapping[str, Any]) -> dict[str, Any]:
     """H1b's test (§7, owner 2026-11-02): the exact label-exchangeability randomization
-    p (``chunktrial_stats.cluster_randomization_test``; Monte Carlo ``(b + 1)/(m + 1)`` with
-    ``n_perm`` draws, seed ``perm_seed``, only beyond the lattice threshold). ``supports[i]`` is
-    unit ``i``'s statistic under each equally likely relabelling; ``unit`` names the unit
-    (paper for H1b). ``min_attainable_p`` is the test's exact floor."""
+    p (``chunktrial_stats.cluster_randomization_test``, exact by ``cluster_randomization_lattice``;
+    Monte Carlo ``(b + 1)/(m + 1)`` with ``n_perm`` draws, seed ``perm_seed``, only beyond the
+    lattice threshold). ``supports[i]`` is unit ``i``'s statistic under each equally likely
+    relabelling; ``unit`` names the unit (paper for H1b). ``min_attainable_p`` is the test's
+    exact floor."""
     names, sums, cnt = cluster_sums(clusters, vals)
     if sums.size == 0:
         return {"n": 0, "papers": 0, "p": None, "min_attainable_p": 1.0, "n_nonzero": 0}
@@ -227,8 +291,9 @@ def member_randomization(clusters: Sequence[str], vals: Sequence[float], support
 def _member_figures(vals: Sequence[float], sums: np.ndarray, cnt: np.ndarray, alternative: str,
                     an: Mapping[str, Any]) -> dict[str, Any]:
     arr = np.asarray(vals)
+    ci95, ci90 = boot_cis(sums, cnt, int(an["n_boot"]), int(an["boot_seed"]))
     return {"n": len(vals), "papers": int(sums.size), "net_points": round(100 * float(arr.sum()) / len(vals), 4),
-            "ci95": boot_ci(sums, cnt, int(an["n_boot"]), int(an["boot_seed"])),
+            "ci95": ci95, "ci90": ci90,
             "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()), "alternative": alternative}
 
 
@@ -305,7 +370,9 @@ def h1b_values(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
 
 def c_gate(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, Any],
            missing: str = "exclude") -> dict[str, Any]:
-    """Rule C (§3.1)."""
+    """Rule C (§3.1; owner 2026-11-01, O1). Evaluated only when dG > 0 (H1 is one-sided):
+    ``moot`` otherwise. Fires when (a) dC > 0, (b) |dC| >= |dG| / 2 and (c) dC's 95 %
+    paper-cluster bootstrap CI (seed ``261101|alias|boot``) excludes 0."""
     g = [r for r in recs if r["kind"] == "G"]
     c = [r for r in recs if r["kind"] == "C"]
     clg, vg, _ = contrast_values(g, outcomes, H1_SPEC, "hit", missing)
@@ -320,7 +387,9 @@ def c_gate(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str
     half_dg_records = 0.5 * dg / 100 * n_c if n_c else None
     out: dict[str, Any] = {"delta_g_points": round(dg, 4), "delta_c_points": round(dc, 4), "delta_c_ci95": ci,
                            "ratio_c_over_g": round(dc / dg, 4) if dg else None,
-                           "baseline_c_found10": base_c, "headroom_records": headroom_records}
+                           "baseline_c_found10": base_c, "headroom_records": headroom_records,
+                           "headroom_points": round(100 * headroom_records / n_c, 4)
+                           if n_c and headroom_records is not None else None}
     if dg <= 0:
         out.update(verdict="moot", fires=False, note="C gate moot, ΔG ≤ 0")
         return out
@@ -336,92 +405,75 @@ def c_gate(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str
     return out
 
 
-def layer1_procedure(members: Mapping[str, Mapping[str, Any]], alpha: float = ALPHA) -> dict[str, dict[str, Any]]:
-    """Option B (§3.1): Holm over H1, H2 in graphical form (0.025 each, weight 1 to each other),
-    then H1b at ``alpha`` iff both are rejected.
+# ------------------------------------------------------------------ Layer 1: the two families
 
-    ``members[h]``: ``p`` (None = absent), ``gates`` (level-independent gate reasons),
-    ``min_attainable_p``, and for H2 ``gold_gate_pass``. Returns per member ``status``,
-    ``level`` (the level it was finally tested at), ``rejected`` and ``gate_reasons``."""
-    level = {"H1": alpha / 2, "H2": alpha / 2}
-    rejected: set[str] = set()
+def _level_reasons(m: Mapping[str, Any], alpha: float) -> list[str]:
+    """The gate reasons of a member at level ``alpha``: its level-independent gates plus a
+    minimum attainable p above the level (§9.1)."""
+    reasons = list(m.get("gates") or [])
+    if m.get("p") is not None and float(m["min_attainable_p"]) > alpha:
+        reasons.append(f"minimum attainable p {float(m['min_attainable_p']):.4g} > level {alpha:g}")
+    return reasons
 
-    def evaluable(h: str, lvl: float) -> bool:
-        m = members[h]
-        return m.get("p") is not None and not m.get("gates") and float(m["min_attainable_p"]) <= lvl
 
-    changed = True
-    while changed:
-        changed = False
-        for h, other in (("H1", "H2"), ("H2", "H1")):
-            if h in rejected:
-                continue
-            m = members[h]
-            ok = evaluable(h, level[h]) and float(m["p"]) <= level[h]
-            if ok and h == "H2" and not m.get("gold_gate_pass", False):
-                ok = False
-            if ok:
-                rejected.add(h)
-                if other not in rejected:
-                    level[other] += level[h]
-                changed = True
-    out: dict[str, dict[str, Any]] = {}
-    for h in ("H1", "H2"):
-        m = members[h]
-        reasons = list(m.get("gates") or [])
-        if m.get("p") is not None and float(m["min_attainable_p"]) > level[h]:
-            reasons.append(f"minimum attainable p {float(m['min_attainable_p']):.4g} > level {level[h]:g}")
-        if h in rejected:
-            st = "confirmed"
-        elif m.get("p") is None:
-            st = "absent"
-        elif reasons:
-            st = GATE
-        elif h == "H2" and float(m["p"]) <= level[h] and not m.get("gold_gate_pass", False):
-            st = "not confirmed (gold-only direction gate)"
-        else:
-            st = "not confirmed"
-        out[h] = {"status": st, "level": level[h], "rejected": h in rejected, "gate_reasons": reasons,
-                  "p_in_procedure": 1.0 if (m.get("p") is None or reasons) else float(m["p"])}
-    hb = members.get("H1b") or {}
-    if {"H1", "H2"} <= rejected:
-        reasons = list(hb.get("gates") or [])
-        if hb.get("p") is not None and float(hb["min_attainable_p"]) > alpha:
-            reasons.append(f"minimum attainable p {float(hb['min_attainable_p']):.4g} > level {alpha:g}")
-        if hb.get("p") is None:
-            st = "absent"
-        elif reasons:
-            st = GATE
-        else:
-            st = "confirmed" if float(hb["p"]) <= alpha else "not confirmed"
-        out["H1b"] = {"status": st, "level": alpha, "rejected": st == "confirmed", "gate_reasons": reasons,
-                      "tested": True}
+def _status(m: Mapping[str, Any], reasons: Sequence[str], alpha: float, gold_gate: bool | None = None) -> str:
+    if m.get("p") is None:
+        return "absent"
+    if reasons:
+        return GATE
+    if float(m["p"]) > alpha:
+        return NOT_CONFIRMED
+    if gold_gate is not None and not gold_gate:
+        return NOT_CONFIRMED_GOLD
+    return CONFIRMED
+
+
+def family_g(h1: Mapping[str, Any], h1b: Mapping[str, Any], alpha: float = ALPHA) -> dict[str, dict[str, Any]]:
+    """Family G (§3.1, R1): H1 at ``alpha``; H1b at ``alpha`` in fixed sequence, tested **only
+    if H1 is confirmed**. FWER <= alpha in the strong sense by the fixed-sequence argument.
+
+    ``h1`` / ``h1b``: ``p`` (None = absent), ``gates`` (level-independent gate reasons) and
+    ``min_attainable_p``. Returns per member ``status``, ``family``, ``level`` (None when not
+    tested), ``tested``, ``rejected``, ``gate_reasons`` and ``p_in_procedure`` (1.0 for a gated
+    or absent member, never shrinking the family)."""
+    r1 = _level_reasons(h1, alpha)
+    st1 = _status(h1, r1, alpha)
+    out: dict[str, dict[str, Any]] = {
+        "H1": {"status": st1, "family": "G", "level": alpha, "tested": h1.get("p") is not None,
+               "rejected": st1 == CONFIRMED, "gate_reasons": r1,
+               "p_in_procedure": 1.0 if (h1.get("p") is None or r1) else float(h1["p"])}}
+    if st1 == CONFIRMED:
+        rb = _level_reasons(h1b, alpha)
+        stb = _status(h1b, rb, alpha)
+        out["H1b"] = {"status": stb, "family": "G", "level": alpha, "tested": True, "rejected": stb == CONFIRMED,
+                      "gate_reasons": rb,
+                      "p_in_procedure": 1.0 if (h1b.get("p") is None or rb) else float(h1b["p"])}
     else:
-        why = "H1 and H2 not both confirmed"
-        out["H1b"] = {"status": "not tested", "level": 0.0, "rejected": False, "gate_reasons": [], "tested": False,
-                      "note": f"{why}; estimate, CI and power printed descriptively"}
+        out["H1b"] = {"status": NOT_TESTED, "family": "G", "level": None, "tested": False, "rejected": False,
+                      "gate_reasons": [], "p_in_procedure": None,
+                      "note": f"H1 is {st1}: H1b is tested only if H1 is confirmed (fixed sequence, §3.1); "
+                              "its estimate, CI and power at 0.05 are printed descriptively"}
     return out
 
 
-def holm_drop_gated(members: Mapping[str, Mapping[str, Any]], alpha: float = ALPHA) -> dict[str, Any]:
-    """The labelled sensitivity of §7: Holm over the members of {H1, H2} that are not gated
-    or absent (a family of one tests at ``alpha``). Never decides."""
-    live = [h for h in ("H1", "H2") if members[h].get("p") is not None and not members[h].get("gates")]
-    m = len(live)
-    out: dict[str, Any] = {"family": live}
-    ps = sorted(live, key=lambda h: float(members[h]["p"]))
-    stop = False
-    for i, h in enumerate(ps):
-        lvl = alpha / (m - i)
-        rej = not stop and float(members[h]["p"]) <= lvl
-        if h == "H2" and not members[h].get("gold_gate_pass", False):
-            rej = False
-        stop = stop or not rej
-        out[h] = {"level": lvl, "rejected": bool(rej)}
-    return out
+def family_n(h2: Mapping[str, Any], alpha: float = ALPHA) -> dict[str, dict[str, Any]]:
+    """Family N (§3.1, R1): H2 alone at ``alpha``, *confirmed* only when the test rejects and
+    the gold-only direction gate passes (``h2["gold_gate_pass"]``)."""
+    r = _level_reasons(h2, alpha)
+    st = _status(h2, r, alpha, gold_gate=bool(h2.get("gold_gate_pass", False)))
+    return {"H2": {"status": st, "family": "N", "level": alpha, "tested": h2.get("p") is not None,
+                   "rejected": st == CONFIRMED, "gate_reasons": r,
+                   "p_in_procedure": 1.0 if (h2.get("p") is None or r) else float(h2["p"])}}
 
 
-# ------------------------------------------------------------------ the analysis
+def retest_verdict(p: float | None, min_p: float, alpha: float = ALPHA, gold_gate: bool | None = None) -> str:
+    """A sensitivity's own verdict at the member's level (§7): the member's statuses, with
+    GATE-NOT-EVALUABLE when its own minimum attainable p exceeds the level."""
+    m = {"p": p, "min_attainable_p": min_p}
+    return _status(m, _level_reasons(m, alpha), alpha, gold_gate)
+
+
+# ------------------------------------------------------------------ the analysis inputs
 
 class Data:
     """Records, the legs' outcomes and gates, the judge's labels."""
@@ -443,11 +495,14 @@ class Data:
         self.gates: dict[str, str | None] = {}
         self.runs: dict[str, Any] = {}
         status = ar.run_status(runs)
-        for c, g, r, rep in asc.all_legs():
+        legs = [(c, g, r, rep, f10.arm_label(g, rep if rep == 2 else None)) for c, g, r, rep in asc.all_legs()]
+        legs.append(("base", "placebo", "default", 1, "placebo"))       # §5.3 (R7), optional
+        for c, g, r, rep, label in legs:
             leg = L(c, g, r, rep)
-            label = f10.arm_label(g, rep if rep == 2 else None)
             sp = runs / c / f"{label}.summary.json"
             if not sp.is_file():
+                if leg == PLACEBO_LEG:
+                    continue
                 self.gates[leg] = f"{GATE}: leg not run"
                 self.rows[leg] = []
                 continue
@@ -463,17 +518,20 @@ class Data:
                                          "commit": (s.get("provenance") or {}).get("commit"),
                                          "summary_sha256": asc.sha256_file(sp)}
             rp = sp.with_name(f"{label}.jsonl")
-            self.rows[leg] = [x for x in f10.read_jsonl_repair_tail(rp) if x["condition"] == cond] \
-                if status[leg] != "missing" else []
+            have = status.get(leg, "complete") != "missing" and rp.is_file()
+            self.rows[leg] = [x for x in f10.read_jsonl_repair_tail(rp) if x["condition"] == cond] if have else []
         jdir = Path(cfg["judge_dir"])
         self.final: dict[tuple[str, str], dict[str, Any]] = {}
         for x in asc.read_jsonl(jdir / "final.jsonl") if (jdir / "final.jsonl").is_file() else []:
             if str(x.get("k", "")).startswith("pair|"):
                 self.final[(x["record_id"], x["chunk_id"])] = x
         self.pair_paper: dict[tuple[str, str], str] = {}
+        self.pair_arm: dict[tuple[str, str], str] = {}
         if (jdir / "pairs.jsonl").is_file():
             for p in asc.read_jsonl(jdir / "pairs.jsonl"):
                 self.pair_paper[(p["record_id"], p["chunk_id"])] = p["c_paper"]
+                if p.get("arm"):
+                    self.pair_arm[(p["record_id"], p["chunk_id"])] = p["arm"]
         self.judge_summary = json.loads((jdir / "judge-summary.json").read_text()) \
             if (jdir / "judge-summary.json").is_file() else {}
 
@@ -523,6 +581,8 @@ def cell_gates(spec: Spec, gates: Mapping[str, str | None]) -> list[str]:
     return [f"{leg}: {gates[leg]}" for _, leg in spec if gates.get(leg)]
 
 
+# ------------------------------------------------------------------ Layer 1
+
 def layer1(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]],
            gates: Mapping[str, str | None], reach: Mapping[str, Any] | None, an: Mapping[str, Any],
            missing: str = "exclude", h2_spec: Spec = H2_SPEC) -> dict[str, Any]:
@@ -566,23 +626,31 @@ def layer1(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str,
         h2_gates.append(f"{h2['papers']} papers < {MIN_CLUSTERS}")
     members = {"H1": {**h1, "gates": h1_gates}, "H2": {**h2, "gates": h2_gates, "gold_gate_pass": gold_pass},
                "H1b": {**h1b, "gates": h1b_gates}}
-    proc = layer1_procedure(members)
+    proc = {**family_g(members["H1"], members["H1b"]), **family_n(members["H2"])}
     res: dict[str, Any] = {}
     for h in ("H1", "H2", "H1b"):
         m = members[h]
-        res[h] = {**{k: v for k, v in m.items() if k != "gates"}, **proc[h]}
+        res[h] = {**{k: val for k, val in m.items() if k != "gates"}, **proc[h]}
         disc = int(m.get("gained", 0)) + int(m.get("lost", 0))
-        lvl = proc[h]["level"] or ALPHA
-        res[h]["mde_split"] = _mde_split(disc, lvl)
+        res[h]["mde_split"] = _mde_split(disc, ALPHA)
         n = int(m.get("n") or 0)
-        res[h]["power_floor_normal"] = {f"q{q:g}_p{p:g}": round(apw.normal_power(n, q, p, 0.05 if lvl > 0.03 else 0.025), 4)
+        res[h]["power_floor_normal"] = {f"q{q:g}_p{p:g}": round(apw.normal_power(n, q, p, ALPHA), 4)
                                         for q, p in ((0.05, 0.85), (0.10, 0.70))} if n else None
         res[h]["realised_discordance"] = round(disc / n, 4) if n else None
+        if h != "H1b":
+            res[h]["equivalence"] = equivalence(n, disc, m.get("ci90"))
+    if not res["H1b"]["tested"]:
+        # §3.1: an untested H1b carries its estimate, CI and power only, never a p
+        for k in ("p", "p_exact", "p_perm", "p_mid", "p_method", "statistic"):
+            res["H1b"].pop(k, None)
     res["H1"]["c_gate"] = cg
     res["H1"]["reach"] = {"ok": reach_ok, "note": reach_note}
     res["H2"]["gold_gate_pass"] = gold_pass
     res["H1b"]["baseline_c_found10"] = cg["baseline_c_found10"]
-    res["holm_drop_gated"] = holm_drop_gated(members)
+    res["H1b"]["headroom_points"] = cg["headroom_points"]
+    res["families"] = {"G": {"members": ["H1", "H1b"], "alpha": ALPHA, "rule": "H1, then H1b in fixed sequence"},
+                       "N": {"members": ["H2"], "alpha": ALPHA, "rule": "H2 with the gold-only direction gate"},
+                       "note": "no level passes between the families (R1)"}
     return res
 
 
@@ -593,38 +661,170 @@ def _mde_split(discordant: int, alpha: float) -> list[int] | None:
     return None
 
 
-def decision_rules(g_lift: Mapping[str, Any], c_cost: Mapping[str, Any], rr_gap: Mapping[str, Any],
-                   growth: Mapping[str, Any]) -> dict[str, Any]:
-    """§3.3, the three serving rules, thresholds fixed. A rule whose threshold is met at the point
-    estimate but whose CI condition fails reads *not resolved*."""
-    out: dict[str, Any] = {}
-    gl, gci, cc = g_lift.get("net_points"), g_lift.get("ci95"), c_cost.get("net_points")
-    lift_ok = gl is not None and gl >= 2
-    ci_ok = gci is not None and gci[0] > 0
-    cost_ok = cc is not None and cc <= 1
-    fires = lift_ok and ci_ok and cost_ok
-    out["attach_merged_glossary"] = {
-        "fires": fires, "g_lift": gl, "g_lift_ci95": gci, "c_cost": cc,
-        "reading": "attach" if fires else ("not resolved" if lift_ok and cost_ok and not ci_ok
-                                           else "the rule does not fire"),
-        "conditions": {"g_lift_ge_2": lift_ok, "g_lift_ci_lower_gt_0": ci_ok, "c_cost_le_1": cost_ok}}
+# ------------------------------------------------------------------ §3.4: the judge false-yes bound on H2
 
-    def adverse(f: Mapping[str, Any]) -> tuple[bool, bool, Any, Any]:
-        v, ci = f.get("net_points"), f.get("ci95")
-        point = v is not None and v <= -3
-        excl = ci is not None and (ci[0] > 0 or ci[1] < 0)
-        return point and excl, point and not excl, v, ci
+def false_yes_counts(final: Mapping[Any, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """§3.4: per scope (each arm and ``pooled``), among the drift-sampled pairs that the final
+    label calls *answers* and Opus answers, the share Opus calls *not*, with its Wilson 95 %
+    interval. A pair with no Opus reference (filtered) does not count."""
+    cnt: dict[str, Counter[str]] = {s: Counter() for s in (*asc.ARM_GROUPS, "pooled")}
+    for x in final.values():
+        if not x.get("drift_sampled") or x.get("opus") is None or x.get("label") is None:
+            continue
+        if int(x["label"]) != 1:
+            continue
+        no = int(not bool(x["opus"]))
+        for s in (x.get("arm"), "pooled"):
+            if s in cnt:
+                cnt[s]["n"] += 1
+                cnt[s]["k"] += no
+    return {s: {"k": int(c["k"]), "n": int(c["n"]), "share": c["k"] / c["n"] if c["n"] else None,
+                "wilson95": _wilson(int(c["k"]), int(c["n"]))} for s, c in cnt.items()}
 
-    trails, unres, v, ci = adverse(rr_gap)
-    out["keep_reranker_default"] = {
-        "keep": not trails, "default_minus_bm25": v, "ci95": ci,
-        "reading": "default trails BM25 by >= 3 points in the neighbour arm (CI excludes 0)" if trails
-        else ("keep (not resolved)" if unres else "keep")}
-    concern, unres, v, ci = adverse(growth)
-    out["related_paper_growth_concern"] = {
-        "concern": concern, "neighbour_minus_random": v, "ci95": ci,
-        "reading": "a concern" if concern else ("not resolved" if unres else "not a concern by the rule")}
+
+def false_yes_bound(h2_net: float | None, counts: Mapping[str, Mapping[str, Any]], j_r: float | None,
+                    n_records: int) -> dict[str, Any]:
+    """B = 100 U J_r / N (§3.4) with **U = max(U_random, U_pooled), always** (owner
+    2026-11-03): the upper Wilson limits of the random arm's and the three arms' pooled shares.
+    A scope with no pair contributes nothing; with neither, B is absent. *Within the judge
+    false-yes bound* when |H2's net| <= B. B never changes H2's label."""
+    us = {s: (counts.get(s) or {}).get("wilson95") for s in FALSE_YES_SCOPES}
+    have = {s: float(w[1]) for s, w in us.items() if w}
+    out: dict[str, Any] = {"U_random": have.get("random"), "U_pooled": have.get("pooled"),
+                           "rule": "U = max(U_random, U_pooled)", "J_r": j_r, "N": n_records,
+                           "counts": {s: dict(counts.get(s) or {}) for s in FALSE_YES_SCOPES}}
+    if not have or j_r is None or not n_records:
+        out.update(U=None, B_points=None, within_bound=False, note="absent (no drift pair or no J_r)")
+        return out
+    u = max(have.values())
+    b = 100.0 * u * j_r / n_records
+    out.update(U=u, U_from=max(have, key=lambda s: have[s]), B_points=round(b, 4),
+               within_bound=bool(h2_net is not None and abs(h2_net) <= b))
     return out
+
+
+def judged_only_hits(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]]
+                     ) -> float | None:
+    """J_r (§3.4): the records whose hit in a random-draw cell (default x none) rests on judged
+    pairs only (gold outside the top 10), averaged over the two draws."""
+    js = []
+    for draw in ("random1", "random2"):
+        o = outcomes.get(L(draw, "none", "default")) or {}
+        if not o:
+            return None
+        js.append(sum(1 for r in recs if (x := o.get(r["record_id"])) is not None and x["hit"] and not x["hit_gold"]))
+    return sum(js) / len(js)
+
+
+# ------------------------------------------------------------------ Layer 2
+
+def attach_rule(g_lift: Mapping[str, Any], c_change: Mapping[str, Any]) -> dict[str, Any]:
+    """§3.3, the glossary decision, applied in this order:
+
+    1. **harm:** ``L_hi < 0`` -> *harmful, do not attach*;
+    2. **C cost (owner 2026-11-03):** ``dC < -1`` point **or** ``C_lo < -3.6`` points -> *do not
+       attach (C cost)*; both inequalities are strict, so ``dC = -1`` exactly and ``C_lo = -3.6``
+       exactly pass the cost rule;
+    3. ``L >= 2`` **and** ``L_lo > 0`` (and ``dC >= -1`` and ``C_lo >= -3.6``) -> *attach*;
+    4. otherwise *not resolved*.
+
+    dC is merged - none on the C records (the C cost is -dC); all figures in points, compared
+    as printed (rounded to 4 decimals)."""
+    lv, lci = g_lift.get("net_points"), g_lift.get("ci95")
+    dc, cci = c_change.get("net_points"), c_change.get("ci95")
+    out: dict[str, Any] = {"g_lift": lv, "g_lift_ci95": lci, "delta_c": dc, "delta_c_ci95": cci,
+                           "thresholds": {"lift_points": ATTACH_LIFT_POINTS, "c_point": C_COST_POINT,
+                                          "c_lower": C_COST_LOWER},
+                           "label": "Layer 2, descriptive; thresholds judgement-based"}
+    if lv is None or lci is None or dc is None or cci is None:
+        out.update(reading="not resolved", note="a figure is missing")
+        return out
+    harmful = lci[1] < 0
+    c_cost = dc < C_COST_POINT or cci[0] < C_COST_LOWER
+    attach = lv >= ATTACH_LIFT_POINTS and lci[0] > 0 and dc >= C_COST_POINT and cci[0] >= C_COST_LOWER
+    out["conditions"] = {"harm_L_hi_lt_0": harmful, "c_point_lt_-1": dc < C_COST_POINT,
+                         "c_lower_lt_-3.6": cci[0] < C_COST_LOWER, "lift_ge_2": lv >= ATTACH_LIFT_POINTS,
+                         "lift_lower_gt_0": lci[0] > 0}
+    if harmful:
+        out["reading"] = "harmful, do not attach"
+    elif c_cost:
+        out["reading"] = "do not attach (C cost)"
+    elif attach:
+        out["reading"] = "attach"
+    else:
+        out["reading"] = "not resolved"
+    return out
+
+
+def reranker_rule(d: Mapping[str, Any]) -> dict[str, Any]:
+    """§3.3: non-inferiority of default against BM25 at -3 points (neighbour arm, none)."""
+    v, ci = d.get("net_points"), d.get("ci95")
+    out: dict[str, Any] = {"default_minus_bm25": v, "ci95": ci, "margin": RERANK_MARGIN,
+                           "label": "Layer 2, descriptive"}
+    if v is None or ci is None:
+        out["reading"] = "not resolved"
+    elif ci[0] > RERANK_MARGIN:
+        out["reading"] = "keep the default (non-inferior to BM25)"
+    elif ci[1] < RERANK_MARGIN:
+        out["reading"] = "default inferior to BM25 by more than the margin: reconsider"
+    else:
+        out["reading"] = "not resolved"
+    return out
+
+
+def growth_rule(f: Mapping[str, Any]) -> dict[str, Any]:
+    """§3.3: a concern if neighbours cost >= 3 points more than random with the CI excluding 0."""
+    v, ci = f.get("net_points"), f.get("ci95")
+    point = v is not None and v <= GROWTH_MARGIN
+    excl = ci is not None and ci[1] < 0
+    reading = "a concern" if point and excl else ("not resolved" if point else "not a concern by the rule")
+    return {"neighbour_minus_random": v, "ci95": ci, "margin": GROWTH_MARGIN, "concern": bool(point and excl),
+            "reading": reading, "label": "Layer 2, descriptive"}
+
+
+def decision_rules(g_lift: Mapping[str, Any], c_change: Mapping[str, Any], rr_gap: Mapping[str, Any],
+                   growth: Mapping[str, Any]) -> dict[str, Any]:
+    """§3.3, the three serving rules, thresholds fixed."""
+    return {"attach_merged_glossary": attach_rule(g_lift, c_change),
+            "keep_reranker_default": reranker_rule(rr_gap),
+            "related_paper_growth_concern": growth_rule(growth)}
+
+
+def serving_statements(decisions: Mapping[str, Any], l1: Mapping[str, Any]) -> dict[str, Any]:
+    """§3.3 *Layer 1 governs the wording*: each serving statement in the words fixed there,
+    with the Layer-1 verdict beside it. A combination the table does not list reads the
+    Layer-2 phrase with the verdict beside it."""
+    h1, h1b, h2 = (l1[h]["status"] for h in ("H1", "H1b", "H2"))
+    h1_gates = "; ".join(l1["H1"].get("gate_reasons") or [])
+    att = decisions["attach_merged_glossary"]["reading"]
+    not_eval = h1 in (GATE, "absent")
+    if att == "attach" and h1 == CONFIRMED:
+        s = "attach, for questions using the glossary's primary term"
+        if h1b != CONFIRMED:
+            s += " (alias-specificity unresolved)"
+    elif att == "attach" and not_eval:
+        s = "attach provisionally, claim not evaluable" + (f" ({h1_gates})" if h1_gates else "")
+    elif att == "attach":
+        s = "attach provisionally; the confirmatory claim was not confirmed"
+    elif att == "do not attach (C cost)" and h1 == CONFIRMED:
+        s = ("do not attach: the gain on alias questions is confirmed, but the cost on term-bearing passages "
+             f"fails the C cost rule (ΔC < {C_COST_POINT:g} point or C_lo < {C_COST_LOWER:g} points)")
+    else:
+        s = att
+    gro = decisions["related_paper_growth_concern"]["reading"]
+    if gro == "a concern" and h2 == CONFIRMED:
+        g = "related-paper growth is a concern"
+    elif gro == "a concern" and h2 in (GATE, "absent"):
+        g = "a concern provisionally; not evaluable"
+    elif gro == "a concern":
+        g = "a concern provisionally; the confirmatory claim was not confirmed"
+    else:
+        g = gro
+    return {"glossary": {"statement": s, "scope": "for questions using the glossary's primary term",
+                         "layer2_reading": att, "beside": {"H1": h1, "H1b": h1b}},
+            "growth": {"statement": g, "layer2_reading": gro, "beside": {"H2": h2}},
+            "reranker": {"statement": decisions["keep_reranker_default"]["reading"],
+                         "label": "Layer 2, descriptive (no Layer-1 member)"}}
 
 
 def layer2(d: Data, outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, Any]) -> dict[str, Any]:
@@ -639,15 +839,15 @@ def layer2(d: Data, outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, 
             f["gold_only"] = figure(recs, outcomes, spec, an, "hit_gold")
         return f
 
-    c_cost_spec: Spec = [(-a, leg) for a, leg in H1_SPEC]
     rr_spec: Spec = [(1.0, L("neighbour", "none", "default")), (-1.0, L("neighbour", "none", "bm25"))]
     out: dict[str, Any] = {"label": "Layer 2, descriptive"}
     out["g_lift"] = fig(g, H1_SPEC)
-    out["c_cost"] = fig(c, c_cost_spec)
+    out["c_change"] = fig(c, H1_SPEC)
+    out["c_change"]["note"] = "ΔC = merged - none on the C records; the C cost is -ΔC"
     out["default_minus_bm25_neighbour"] = fig(bal, rr_spec)
     out["neighbour_minus_random"] = fig(bal, H2_SPEC)
     out["H3"] = fig(bal, H3_SPEC)
-    out["decisions"] = decision_rules(out["g_lift"], out["c_cost"], out["default_minus_bm25_neighbour"],
+    out["decisions"] = decision_rules(out["g_lift"], out["c_change"], out["default_minus_bm25_neighbour"],
                                       out["neighbour_minus_random"])
     out["rr"] = {name: {"judged": figure(recs, outcomes, spec, an, "rr", gates),
                         "gold_only": figure(recs, outcomes, spec, an, "rr_gold", gates)}
@@ -679,8 +879,8 @@ def layer2(d: Data, outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, 
     out["random1_minus_random2"] = fig(bal, [(1.0, L("random1", "none", "default")),
                                              (-1.0, L("random2", "none", "default"))])
     cells: dict[str, Any] = {}
-    for corp, gl, ret, rep in asc.all_legs():
-        leg = L(corp, gl, ret, rep)
+    legs = [L(*x) for x in asc.all_legs()] + ([PLACEBO_LEG] if PLACEBO_LEG in outcomes else [])
+    for leg in legs:
         o = outcomes.get(leg) or {}
         kinds = Counter((o.get(r["record_id"]) or {}).get("kind") for r in bal if o.get(r["record_id"]) is not None)
         cells[leg] = {"found10": found_rate(bal, outcomes, leg), "found10_gold": found_rate(bal, outcomes, leg, "hit_gold"),
@@ -690,6 +890,29 @@ def layer2(d: Data, outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, 
                                           "found10_gold": found_rate(d.desc, outcomes, leg, "hit_gold")},
                       "gate": gates.get(leg)}
     out["cells"] = cells
+    out["placebo"] = placebo_leg(bal, outcomes, gates, an, d.cfg)
+    return out
+
+
+def placebo_leg(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]],
+                gates: Mapping[str, str | None], an: Mapping[str, Any], cfg: Mapping[str, Any]) -> Any:
+    """§3.3 / §5.3 (R7), descriptive: base x default x placebo against none and against merged,
+    on G and on C, with the placebo's and merged's field coverage beside it (``field_coverage``
+    in the config: a JSON the backfill census wrote, passed through)."""
+    if PLACEBO_LEG not in outcomes:
+        return "absent (the placebo leg was not run)"
+    out: dict[str, Any] = {"label": "Layer 2, descriptive (placebo glossary leg; enters no test and no decision)"}
+    for kind in ("G", "C"):
+        recs = [r for r in bal if r["kind"] == kind]
+        out[kind] = {
+            "placebo_minus_none": figure(recs, outcomes, [(1.0, PLACEBO_LEG), (-1.0, L("base", "none", "default"))],
+                                         an, "hit", gates),
+            "placebo_minus_merged": figure(recs, outcomes, [(1.0, PLACEBO_LEG), (-1.0, L("base", "merged", "default"))],
+                                           an, "hit", gates),
+            "found10": {leg: found_rate(recs, outcomes, leg)
+                        for leg in (L("base", "none", "default"), L("base", "merged", "default"), PLACEBO_LEG)}}
+    fc = cfg.get("field_coverage")
+    out["field_coverage"] = json.loads(Path(fc).read_text()) if fc else "absent (no field-coverage census supplied)"
     return out
 
 
@@ -744,6 +967,299 @@ def _wilson(k: int, n: int) -> list[float] | None:
     return jd.wilson(k, n)
 
 
+# ------------------------------------------------------------------ §7: the fixed sensitivities (R6)
+
+def _tstats(signed: np.ndarray, n: int) -> np.ndarray:
+    """The studentized statistic, mean paper score over its standard error, of each row of
+    ``signed`` (the non-zero paper scores with their signs; the ``n - k`` zero papers count in
+    ``n``). A zero standard error gives +-inf (0 for a zero mean)."""
+    mean = signed.sum(axis=1) / n
+    ss = (signed ** 2).sum(axis=1)
+    var = np.maximum(ss - n * mean ** 2, 0.0) / (n - 1)
+    se = np.sqrt(var / n)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.where(se > 1e-12, mean / np.where(se > 1e-12, se, 1.0), np.sign(mean) * np.inf)
+    return np.where(np.abs(mean) <= 1e-15, 0.0, t)
+
+
+def studentized_sign_flip(sums: Sequence[float] | np.ndarray, alternative: str, an: Mapping[str, Any]) -> dict[str, Any]:
+    """§7 (R6), after Wu and Ding (2021): the paper sign-flip test with the studentized
+    statistic in place of the sum. Ties in the tail at a relative tolerance of 1e-9.
+
+    With one score per paper, ``Σ (ε_j S_j)^2`` does not depend on the signs, so the
+    studentized statistic is a strictly increasing function of the sum over the whole sign
+    group, and its exact p is the sum's. Computed exactly (§7): by enumerating the studentized
+    statistic over the ``2^k`` sign vectors when ``k <= chunktrial_stats.EXACT_MAX_PAGES``
+    (``enumeration``, which also shows the identity); above that by the sum's lattice law
+    (``chunktrial_stats.sign_flip_lattice``, ``lattice (monotone in the sum)``); Monte Carlo
+    (``n_perm`` draws, seed ``perm_seed``, ``(b + 1)/(m + 1)``) only where the lattice is
+    infeasible. Above ``k = 20`` the Monte-Carlo studentized p is always reported as ``p_perm``,
+    a cross-check that never decides: a verdict must not turn *fragile* on Monte-Carlo error."""
+    s = np.asarray(sums, float)
+    n = int(s.size)
+    nz = s[np.abs(s) > 1e-12]
+    k = int(nz.size)
+    if n < 2 or k == 0:
+        return {"p": 1.0 if n else None, "p_method": "degenerate", "statistic": 0.0, "n_nonzero": k,
+                "min_attainable_p": 1.0}
+    t_obs = float(_tstats(nz[None, :], n)[0])
+    tol = 1e-9 * (1.0 if not math.isfinite(t_obs) else max(1.0, abs(t_obs)))
+
+    def tail(t: np.ndarray) -> int:
+        return int(np.count_nonzero(t >= t_obs - tol if alternative == "greater" else t <= t_obs + tol))
+
+    floor = 2.0 ** -k
+    p_perm: float | None = None
+    if k <= cs.EXACT_MAX_PAGES:
+        b = 0
+        total = 1 << k
+        bitpos = np.arange(k)
+        for start in range(0, total, 1 << 16):
+            idx = np.arange(start, min(total, start + (1 << 16)))[:, None]
+            signs = 1.0 - 2.0 * ((idx >> bitpos) & 1)
+            b += tail(_tstats(signs * nz, n))
+        p, method = b / total, "enumeration"
+    else:
+        rng = np.random.default_rng(int(an["perm_seed"]))
+        m = int(an["n_perm"])
+        b = 0
+        step = max(1, 2_000_000 // k)
+        for start in range(0, m, step):
+            mm = min(step, m - start)
+            signs = rng.integers(0, 2, size=(mm, k)).astype(float) * 2 - 1
+            b += tail(_tstats(signs * nz, n))
+        p_perm = (b + 1) / (m + 1)
+        lat = cs.sign_flip_lattice(nz, alternative)  # type: ignore[arg-type]
+        if lat is not None:
+            p, method = float(lat["p"]), "lattice (monotone in the sum)"
+        else:
+            p, method = p_perm, "monte_carlo"
+            floor = max(floor, 1.0 / (m + 1))
+    return {"p": float(p), "p_method": method, "p_perm": p_perm, "statistic": t_obs, "n_nonzero": k,
+            "min_attainable_p": float(floor)}
+
+
+def topic_sums(names: Sequence[str], sums: np.ndarray, topic_of: Mapping[str, Any]) -> tuple[np.ndarray, int, int]:
+    """Paper scores pooled by the study paper's OpenAlex primary topic (one cluster score per
+    topic). A paper with no topic stays its own cluster (counted). Returns (topic sums, number
+    of clusters, papers without a topic)."""
+    by: dict[str, float] = defaultdict(float)
+    no_topic = 0
+    for name, v in zip(names, sums, strict=True):
+        t = topic_of.get(name)
+        if t is None:
+            no_topic += 1
+            t = f"__paper__{len(by)}"
+        by[str(t)] += float(v)
+    arr = np.array(list(by.values()), float)
+    return arr, int(arr.size), no_topic
+
+
+def paper_scores(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], spec: Spec,
+                 key: str = "hit") -> tuple[list[str], np.ndarray, np.ndarray, int]:
+    cl, v, _ = contrast_values(recs, outcomes, spec, key)
+    names, sums, cnt = cluster_sums(cl, v)
+    return names, sums, cnt, len(v)
+
+
+def volume_adjusted(names: Sequence[str], sums: np.ndarray, x_of: Mapping[str, float]
+                    ) -> tuple[np.ndarray, float, int]:
+    """§7: the H2 paper scores adjusted for the added-chunk difference x_j (neighbour - mean of
+    the draws, per study paper): ``S_j - b x_j`` with ``b`` the OLS slope of ``S_j`` on ``x_j``,
+    so the adjusted sum is the effect at equal added volume (x = 0). Papers without ``x`` are
+    left out (counted). Returns (adjusted scores, slope, papers left out)."""
+    keep = [i for i, nm in enumerate(names) if nm in x_of]
+    s = np.asarray([sums[i] for i in keep], float)
+    x = np.asarray([float(x_of[names[i]]) for i in keep], float)
+    if s.size < 2:
+        return s, 0.0, len(names) - len(keep)
+    xc = x - x.mean()
+    sxx = float((xc ** 2).sum())
+    slope = float((xc * (s - s.mean())).sum() / sxx) if sxx > 1e-12 else 0.0
+    return s - slope * x, slope, len(names) - len(keep)
+
+
+def tercile_of(v: float, cuts: Sequence[float]) -> str:
+    """:data:`TERCILE_RULE`."""
+    c1, c2 = float(cuts[0]), float(cuts[1])
+    return "T1" if v <= c1 else ("T2" if v <= c2 else "T3")
+
+
+def _subset_figure(recs: Sequence[Mapping[str, Any]], papers: set[str], outcomes: Mapping[str, Mapping[str, Any]],
+                   spec: Spec, an: Mapping[str, Any]) -> dict[str, Any]:
+    sub = [r for r in recs if str(r["paper"]) in papers]
+    f = figure(sub, outcomes, spec, an)
+    f.pop("equivalence", None)
+    return {**f, "label": "subgroup display (no test at the member's level)"}
+
+
+def origin_counts(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]],
+                  rows: Mapping[str, Sequence[Mapping[str, Any]]], pair_paper: Mapping[tuple[str, str], str],
+                  pair_arm: Mapping[tuple[str, str], str], attribution: Mapping[str, str] | None) -> dict[str, Any]:
+    """§7 / §3.3, descriptive. (a) Hits of each Layer-1 cell by origin: gold, same-paper judged,
+    other-paper judged. (b) For each record that is a hit in a random draw but not in the
+    neighbour arm (H2 contrast < 0), the top-10 chunks of the neighbour cell that outrank its
+    gold, counted as its **own paper's neighbour**, **another study paper's neighbour** or
+    **base** (``attribution``: added paper -> the study paper it was attributed to)."""
+    g = [r for r in bal if r["kind"] == "G"]
+    hits: dict[str, Any] = {}
+    for leg, recs in ((L("base", "none", "default"), g), (L("base", "merged", "default"), g),
+                      (L("neighbour", "none", "default"), bal), (L("random1", "none", "default"), bal),
+                      (L("random2", "none", "default"), bal)):
+        o = outcomes.get(leg) or {}
+        k = Counter((o.get(r["record_id"]) or {}).get("kind") for r in recs if o.get(r["record_id"]) is not None)
+        hits[leg] = {"records": "G" if recs is g else "all", **{x: int(k.get(x, 0)) for x in ("gold", "same", "other")}}
+    out: dict[str, Any] = {"label": "descriptive; cannot flip anything", "hits_by_origin": hits}
+    nb_leg = L("neighbour", "none", "default")
+    nb = outcomes.get(nb_leg) or {}
+    r1, r2 = (outcomes.get(L(x, "none", "default")) or {} for x in ("random1", "random2"))
+    row_of = {row["record_id"]: row for row in rows.get(nb_leg) or [] if not row.get("failed")}
+    disp: Counter[str] = Counter()
+    n_rec = 0
+    for r in bal:
+        rid = r["record_id"]
+        a, b1, b2 = nb.get(rid), r1.get(rid), r2.get(rid)
+        if a is None or b1 is None or b2 is None or a["hit"] or not (b1["hit"] or b2["hit"]):
+            continue
+        n_rec += 1
+        top = (row_of.get(rid) or {}).get("ranked_chunk_ids") or []
+        gold = r["gold_chunks"][0]
+        for cid in top[:asc.FOUND_K]:
+            if cid == gold:
+                break
+            arm = pair_arm.get((rid, cid))
+            if arm == "base":
+                disp["base"] += 1
+            elif arm == "neighbour":
+                if attribution is None:
+                    disp["neighbour (attribution not supplied)"] += 1
+                elif attribution.get(str(pair_paper.get((rid, cid)))) == str(r["paper"]):
+                    disp["own_paper_neighbour"] += 1
+                else:
+                    disp["other_study_paper_neighbour"] += 1
+            else:
+                disp["unknown"] += 1
+    out["displacing_chunks"] = {"records": n_rec, **{k: int(v) for k, v in sorted(disp.items())}}
+    return out
+
+
+def _json_file(cfg: Mapping[str, Any], key: str) -> tuple[Any, dict[str, Any] | None]:
+    p = cfg.get(key)
+    if not p:
+        return None, None
+    return json.loads(Path(p).read_text()), {"sha256": asc.sha256_file(p)}
+
+
+def fixed_sensitivities(d: Data, outcomes: Mapping[str, Mapping[str, Any]], l1: Mapping[str, Any],
+                        an: Mapping[str, Any]) -> dict[str, Any]:
+    """§7 (R6), displayed beside H1 and H2 whatever the verdict, never deciding.
+
+    Inputs read from the config, each optional (``absent`` when not supplied), sha256 recorded:
+    ``paper_covariates`` (private JSON, study paper -> ``topic``, ``citation_count``,
+    ``text_similarity``, ``xml_only``, ``added_chunks`` {``neighbour``, ``random1``,
+    ``random2``}), ``tercile_cuts`` (committed JSON, ``citation_count`` / ``text_similarity``
+    -> [c1, c2], fixed before the stage-A outputs are read) and ``neighbour_attribution``
+    (private JSON, added neighbour paper -> study paper)."""
+    cov, cov_id = _json_file(d.cfg, "paper_covariates")
+    cuts, cuts_id = _json_file(d.cfg, "tercile_cuts")
+    attr, attr_id = _json_file(d.cfg, "neighbour_attribution")
+    out: dict[str, Any] = {"label": "fixed sensitivity (R6), never deciding",
+                           "inputs": {"paper_covariates": cov_id, "tercile_cuts": cuts_id,
+                                      "neighbour_attribution": attr_id}}
+    bal = d.bal
+    g = [r for r in bal if r["kind"] == "G"]
+    gold2 = bool(l1["H2"].get("gold_gate_pass"))
+    members = {"H1": (g, H1_SPEC, "greater", None), "H2": (bal, H2_SPEC, "less", gold2)}
+    scores = {h: paper_scores(recs, outcomes, spec) for h, (recs, spec, _, _) in members.items()}
+    for h, (_, _, alt, gate) in members.items():
+        names, sums, _, n = scores[h]
+        st = studentized_sign_flip(sums, alt, an)
+        out.setdefault(h, {})["studentized"] = {**st, "verdict": retest_verdict(st["p"], st["min_attainable_p"],
+                                                                                gold_gate=gate)}
+        if cov is None:
+            out[h]["topic_clustering"] = "absent (no paper covariates supplied)"
+            continue
+        tsum, k_topics, no_topic = topic_sums(names, sums, {p: (cov.get(p) or {}).get("topic") for p in names})
+        t = cs.sign_flip_test_exact(tsum, n_flips=int(an["n_perm"]), seed=int(an["perm_seed"]),
+                                    alternative=alt)  # type: ignore[arg-type]
+        out[h]["topic_clustering"] = {"p": t["p"], "p_method": t["p_method"], "clusters": k_topics,
+                                      "papers_without_topic": no_topic, "n_nonzero": t["n_pages_nonzero"],
+                                      "min_attainable_p": t["min_attainable_p"],
+                                      "verdict": retest_verdict(t["p"], t["min_attainable_p"], gold_gate=gate)}
+    # H2 only: the chunk-volume covariate, the XML-only stratum, the terciles
+    names, sums, _, n2 = scores["H2"]
+    if cov is None:
+        for k in ("volume_covariate", "xml_only_stratum", "terciles"):
+            out["H2"][k] = "absent (no paper covariates supplied)"
+    else:
+        x_of: dict[str, float] = {}
+        for p in names:
+            ac = (cov.get(p) or {}).get("added_chunks")
+            if ac and all(a in ac for a in ("neighbour", "random1", "random2")):
+                x_of[p] = float(ac["neighbour"]) - 0.5 * (float(ac["random1"]) + float(ac["random2"]))
+        adj, slope, left_out = volume_adjusted(names, sums, x_of)
+        if adj.size:
+            t = cs.sign_flip_test_exact(adj, n_flips=int(an["n_perm"]), seed=int(an["perm_seed"]), alternative="less")
+            n_kept = sum(int(c) for nm, c in zip(names, scores["H2"][2], strict=True) if nm in x_of)
+            out["H2"]["volume_covariate"] = {
+                "p": t["p"], "p_method": t["p_method"], "slope_per_chunk": round(slope, 8), "papers_left_out": left_out,
+                "adjusted_net_points": round(100 * float(adj.sum()) / n_kept, 4) if n_kept else None,
+                "min_attainable_p": t["min_attainable_p"], "gold_gate": "the primary's gold-only direction gate",
+                "verdict": retest_verdict(t["p"], t["min_attainable_p"], gold_gate=gold2)}
+        else:
+            out["H2"]["volume_covariate"] = "absent (no added-chunk counts supplied)"
+        xml = {p for p in names if (cov.get(p) or {}).get("xml_only") is True}
+        out["H2"]["xml_only_stratum"] = {"papers": len(xml), **_subset_figure(bal, xml, outcomes, H2_SPEC, an)}
+        terc: dict[str, Any] = {}
+        for var in ("citation_count", "text_similarity"):
+            cp = (cuts or {}).get(var)
+            if not cp:
+                terc[var] = "absent (no committed cut points)"
+                continue
+            groups: dict[str, set[str]] = {"T1": set(), "T2": set(), "T3": set()}
+            no_val = 0
+            for p in names:
+                v = (cov.get(p) or {}).get(var)
+                if v is None:
+                    no_val += 1
+                    continue
+                groups[tercile_of(float(v), cp)].add(p)
+            terc[var] = {"cuts": list(cp), "rule": TERCILE_RULE, "papers_without_value": no_val,
+                         **{tk: {"papers": len(ps), **_subset_figure(bal, ps, outcomes, H2_SPEC, an)}
+                            for tk, ps in groups.items()}}
+        out["H2"]["terciles"] = terc
+    out["origin"] = origin_counts(bal, outcomes, d.rows, d.pair_paper, d.pair_arm, attr)
+    return out
+
+
+def fragile(member: str, primary_status: str, sens: Mapping[str, Any]) -> dict[str, Any]:
+    """§7, *fragile* (owner 2026-11-03): only H1 and H2 can be fragile, and only through the
+    re-tests named in :data:`FRAGILE_BY` (H1: studentized, topic clustering; H2: those two and the
+    volume covariate). A re-test **flips** the verdict when, at the member's level, it gives the
+    other verdict (confirmed <-> not confirmed); a re-test that is itself GATE-NOT-EVALUABLE or
+    absent flips nothing, a primary that is GATE-NOT-EVALUABLE or absent cannot be flipped.
+    Subgroups never make anything fragile, H1b is exempt, and the label is never changed."""
+    allowed = FRAGILE_BY.get(member, ())
+    out: dict[str, Any] = {"considered": list(allowed), "flipped_by": [], "fragile": False}
+    if not allowed:
+        out["note"] = f"{member} is exempt from fragile (owner 2026-11-03)"
+        return out
+    decided = (CONFIRMED, NOT_CONFIRMED, NOT_CONFIRMED_GOLD)
+    if primary_status not in decided:
+        out["note"] = f"primary verdict {primary_status}: nothing to flip"
+        return out
+    prim = primary_status == CONFIRMED
+    for name in allowed:
+        v = sens.get(name)
+        verdict = v.get("verdict") if isinstance(v, Mapping) else None
+        if verdict in decided and (verdict == CONFIRMED) != prim:
+            out["flipped_by"].append(name)
+    out["fragile"] = bool(out["flipped_by"])
+    return out
+
+
+# ------------------------------------------------------------------ the analysis
+
 def analyse(cfg: Mapping[str, Any], d: Data | None = None) -> dict[str, Any]:
     d = d or Data(cfg)
     an = {"n_perm": int(cfg.get("n_perm", cs.N_FLIPS)), "n_boot": int(cfg.get("n_boot", cs.N_BOOT)),
@@ -761,19 +1277,25 @@ def analyse(cfg: Mapping[str, Any], d: Data | None = None) -> dict[str, Any]:
                            "n_perm": an["n_perm"], "n_boot": an["n_boot"], "leg_gates": dict(d.gates), "runs": d.runs}
     l1 = layer1(d.bal, prim, d.gates, reach, an)
     gap = figure(d.bal, prim, [(1.0, L("random1", "none", "default")), (-1.0, L("random2", "none", "default"))], an)
-    within = within_draw_variation(l1["H2"].get("net_points"), gap["net_points"])
     l1["H2"]["draw_gap_points"] = gap["net_points"]
-    l1["H2"]["within_random_draw_variation"] = within
+    l1["H2"]["within_random_draw_variation"] = within_draw_variation(l1["H2"].get("net_points"), gap["net_points"])
     js = d.judge_summary
     l1["H2"]["false_yes_per_arm"] = {a: (js.get("drift", {}).get("scopes", {}).get(a) or {}).get("false_yes")
                                      for a in asc.ARM_GROUPS} if js else "absent (no judge summary)"
+    l1["H2"]["judge_false_yes_bound"] = false_yes_bound(
+        l1["H2"].get("net_points"), false_yes_counts(d.final), judged_only_hits(d.bal, prim), int(l1["H2"].get("n") or 0))
+    fixed = fixed_sensitivities(d, prim, l1, an)
+    for h in ("H1", "H2", "H1b"):
+        l1[h]["fragile"] = fragile(h, l1[h]["status"], fixed.get(h) or {})
     res["layer1"] = l1
     res["layer2"] = layer2(d, prim, an)
+    res["layer2"]["serving_statements"] = serving_statements(res["layer2"]["decisions"], l1)
     res["noise_floor"] = noise_floor(d.bal, prim)
     res["judge"] = {k: js.get(k) for k in ("pairs_finalized", "sources", "unjudged", "unjudged_share",
                                            "judge_incomplete", "per_arm_pairs", "drift")} if js else "absent"
     res["spot_checks"] = spot_flags(cfg, d)
     res["sensitivities"] = sensitivities(cfg, d, an, reach)
+    res["fixed_sensitivities"] = fixed
     return res
 
 
@@ -800,8 +1322,9 @@ def _brief(l1: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def sensitivities(cfg: Mapping[str, Any], d: Data, an: Mapping[str, Any], reach: Any) -> dict[str, Any]:
-    """§7, declared; printed beside H1, H1b and H2, never deciding."""
-    out: dict[str, Any] = {"label": "sensitivity, never deciding"}
+    """§7, declared; printed beside H1, H1b and H2, never deciding and never making a verdict
+    fragile (owner 2026-11-03: only the re-tests of :data:`FRAGILE_BY` can)."""
+    out: dict[str, Any] = {"label": "declared sensitivity, never deciding, never fragile"}
     prim = d.outcomes("primary")
     for name in ("without_codex_verdicts", "without_calibration_overlap", "without_pilot_papers",
                  "without_validation_papers"):
