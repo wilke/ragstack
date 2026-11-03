@@ -55,6 +55,7 @@ import urllib.parse
 import urllib.request
 import urllib.robotparser
 from collections import Counter, defaultdict
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +167,8 @@ class OpenAlex:
         except Exception:
             self.cache = {}
         self.min_interval, self.floor = min_interval, floor
+        #: a dry run sets this: the cache file is then never written, whatever the calls
+        self.read_only = False
         self._last = 0.0
         self.calls = 0
         self.hits = 0
@@ -197,7 +200,16 @@ class OpenAlex:
         """True when :meth:`get` would answer ``params`` from the cache (no network call)."""
         return f"{OPENALEX}?{urllib.parse.urlencode(params, safe=':|,')}" in self.cache
 
+    def save_if_dirty(self) -> bool:
+        """Write the cache only when a response was added since the last write (never when read-only)."""
+        if not self.dirty or self.read_only:
+            return False
+        self.save()
+        return True
+
     def save(self) -> None:
+        if self.read_only:
+            return
         tmp = self.cache_path.with_name(self.cache_path.name + ".tmp")
         with open(tmp, "w") as f:
             json.dump(self.cache, f)
@@ -407,7 +419,7 @@ def neighbour_inputs(lay: Layout, api: OpenAlex) -> dict[str, Any]:
         b = api.get({"filter": f"cites:{sp}", "sort": "publication_date:desc", "per-page": 200,
                      "select": OA_FIELDS})
         citers[p] = (b["results"], b["meta"]["count"], b["meta"]["count"] <= 200)
-    api.save()
+    api.save_if_dirty()   # every input above usually comes from the cache: do not rewrite it unchanged
     return {"oa_pmc": oa_pmc, "still_missing": still_missing, "excl": excl, "study_w": study_w,
             "study_missing": study_missing, "ref_meta": ref_meta, "light": light, "heavy": heavy, "acc": acc,
             "citers": citers}
@@ -447,7 +459,7 @@ def stage_neighbours(lay: Layout, api: OpenAlex) -> dict:
         linked.update(acc[p].keys())
     for p in heavy:
         linked.update(api.all_citers(ac.short_id(study_w[p]["id"])))
-    api.save()
+    api.save_if_dirty()
     order = list(ac.attribution_order(study_w))
     sel = {
         "schema": "alias-corpus-neighbour-selection/1",
@@ -1422,8 +1434,7 @@ def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder, version: int = 2
                 f.result()
         log(f"neighbours-v{version}: round {rnd}: resolved {len(want)}, citer pages fetched {paged}, "
             f"{time.time() - t0:.0f}s" + (f" (dry run: {len(want)} unknown)" if dry_run else ""))
-    if not dry_run:
-        api.save()
+    api.save_if_dirty()   # a no-op in a dry run (read-only client) and when nothing was fetched
     picks: dict[str, list[tuple[str, str]]] = {}
     per_study: dict[str, dict] = {}
     skips: dict[str, dict[str, list]] = {}
@@ -2047,10 +2058,13 @@ V4_SCREEN_RULE = ("repetition screen (owner, 2026-11-03): every added paper in e
                   f"< {ac.REPETITION_THRESHOLD:.2f}; random arms continue their walk in seeded order, the neighbour "
                   "arm uses its walk-down")
 V4_NEAREST_RULE = ("nearest-band fill at the 'any' level (owner, 2026-11-03): instead of the first passed-over "
-                   "candidate in seeded order, the slot takes the candidate already fetched (and accepted) by that "
-                   "study paper's walk whose length band is nearest (band-index distance over <20/20-26/27-33/"
-                   "34-45/46-79/>=80), ties by type match, then source (JATS/PDF) match, then seeded order; open "
-                   "slots served in sorted cell order; no new fetch")
+                   "candidate in seeded order, a study paper's open 'any' slots are filled together from the "
+                   "candidates its walk already fetched and accepted (not taken, not a duplicate): over all (open "
+                   "slot, candidate) pairs, the pair with the smallest key is filled first, then the smallest of the "
+                   "pairs left, and so on (greedy, not a minimum-total assignment); key = band-index distance (over "
+                   "<20/20-26/27-33/34-45/46-79/>=80), then type mismatch, then source (JATS/PDF) mismatch, then the "
+                   "slot's position in the sorted order of the open cells, then the candidate's seeded order; no new "
+                   "fetch")
 V4_REDRAW_RULE = (
     "per study paper and draw, the v3 takes are carried over in v3 take order (alias_corpus.carry_over_v4): a take "
     "is released when its paper fails the repetition screen (repetition_screen), when it was matched at the band-"
@@ -2176,6 +2190,85 @@ def _take_key(t: dict) -> tuple:
     return (t["wid"], t["level"], tuple(t["for_cell"]))
 
 
+def v4_carry(took3: list[dict], candidates: set[str], quota4: Mapping[ac.Cell, int],
+             excluded: Callable[[str], bool]) -> dict[str, Any]:
+    """One study paper's v4 carry-over (:func:`ac.carry_over_v4`), refusing a v3 take that is no longer
+    a random candidate (a v4 neighbour-walk work would leave the pool; none did)."""
+    gone = [t["wid"] for t in took3 if t["wid"] not in candidates]
+    if gone:
+        raise SystemExit(f"v4: v3 takes {gone} are no longer candidates (the v4 neighbour arm)")
+    return ac.carry_over_v4(took3, quota4, excluded)
+
+
+def v4_redraw_mode(carry: Mapping[str, Any], quota_unchanged: bool) -> str | None:
+    """How a study paper's open slots are filled in v4: ``None`` (nothing open), ``nearest_from_v3_walk``
+    (every release is ``any_nearest_band`` and the quota is unchanged: refill from the v3 walk, no fetch)
+    or ``walk`` (anything else: walk again with the v4 rules)."""
+    if not sum(carry["open"].values()):
+        return None
+    if {t["why"] for t in carry["released"]} == {"any_nearest_band"} and quota_unchanged:
+        return "nearest_from_v3_walk"
+    return "walk"
+
+
+def v4_study_redraw(carry: Mapping[str, Any], quota3: Mapping[ac.Cell, int], quota4: Mapping[ac.Cell, int],
+                    order_p: list[str], fetched3: Mapping[str, ac.Cell], taken: set[str], *,
+                    excluded: Callable[[str], bool], is_dup: Callable[[str], bool], on_take: Callable[[str], None],
+                    type_of: Callable[[str], str | None], klass: Callable[[str], str | None],
+                    resolve: Callable[[str], ac.Outcome], band: Callable[[int], int]) -> dict[str, Any]:
+    """One study paper's v4 step after the carry-over: the per-study record of a v4 draw manifest.
+
+    ``fetched3``: the candidates its v3 walk fetched and accepted before the ``any`` level (wid -> cell).
+    ``nearest_from_v3_walk`` refills from them (screened by ``excluded``, not taken, not duplicates)
+    with :func:`ac.nearest_band_fill`; ``walk`` runs :func:`ac.draw_matched` (``any_rule="nearest"``)
+    on ``order_p`` with the budget max(40, 15 x all slots). ``taken`` and ``on_take`` see every take.
+    """
+    c = carry
+    need = sum(quota4.values())
+    need_open = sum(c["open"].values())
+    mode = v4_redraw_mode(c, quota3 == quota4)
+    rec: dict[str, Any] = {
+        "need": need, "kept": len(c["kept"]),
+        "released": [{k: t.get(k) for k in ("wid", "type", "band", "source", "level", "for_cell", "why")}
+                     for t in c["released"]],
+        "open": {"|".join(map(str, k)): n for k, n in c["open"].items()},
+        "quota_changed": quota3 != quota4, "mode": mode}
+    new: list[dict] = []
+    if mode is None:
+        rec.update({"skipped": {}, "resolves": 0, "budget_hit": False, "unfilled": {}})
+    elif mode == "nearest_from_v3_walk":
+        pool_p = {w: cell for w, cell in fetched3.items() if not excluded(w)}
+        rank = {w: i for i, w in enumerate(order_p)}
+        missing = [w for w in pool_p if w not in rank]
+        if missing:
+            raise SystemExit(f"v4: fetched candidates {missing} not in the v4 order")
+
+        def pick(wid: str, cell: ac.Cell, slot: ac.Cell, dist: int) -> None:
+            on_take(wid)
+            new.append({"wid": wid, "type": cell[0], "band": cell[1], "source": cell[2], "level": "any",
+                        "for_cell": list(slot), "band_distance": dist})
+
+        ac.nearest_band_fill(c["open"], pool_p, taken, rank, is_dup, pick)
+        left = Counter(c["open"])
+        for t in new:
+            left[tuple(t["for_cell"])] -= 1
+        rec.update({"nearest_pool": len(pool_p), "skipped": {}, "resolves": 0, "budget_hit": False,
+                    "unfilled": {"|".join(map(str, k)): n for k, n in sorted(left.items()) if n > 0}})
+    else:
+        budget = max(40, 15 * need)
+        r = ac.draw_matched(order_p, c["open"], taken, type_of=type_of, klass=klass, resolve=resolve, band=band,
+                            is_dup=is_dup, on_take=on_take, max_resolves=budget, any_rule="nearest")
+        new = r["took"]
+        rec.update({"redraw_budget": budget, "skipped": r["skipped"], "resolves": r["resolves"],
+                    "resolves_by_phase": r["resolves_by_phase"], "budget_hit": r["budget_hit"],
+                    "relaxed": r["relaxed"], "unfilled": r["unfilled"], "passed_over": r["passed_over"]})
+    took = [{**t, "redrawn": False} for t in c["kept"]] + [{**t, "redrawn": True} for t in new]
+    rec.update({"took": took, "got": len(took), "shortfall": max(0, need - len(took)),
+                "redrawn_slots": need_open, "redrawn_got": len(new),
+                "strict_shortfall": {"|".join(map(str, k)): n for k, n in ac.strict_shortfall(quota4, took).items()}})
+    return rec
+
+
 def stage_random_v4(lay: Layout, b: Builder, dry_run: bool = False, rep: Repetition | None = None) -> dict:
     """v4 carry-over and re-draw (see :data:`V4_REDRAW_RULE`). ``dry_run``: memoised outcomes only, the
     dry-run neighbour selection; writes ``tmp/random-*-draw-v4.dryrun.json`` and no manifest."""
@@ -2278,13 +2371,7 @@ def stage_random_v4(lay: Layout, b: Builder, dry_run: bool = False, rep: Repetit
     # ---- B + C: carry over the v3 takes, re-draw the open slots
     def run_v4(d: int, fetched3: dict[str, dict[str, ac.Cell]]) -> dict:
         orders = {p: ac.random_order(d, p, cands4[p], seeds=ac.SEED_RANDOM_V2) for p in order}
-        carry = {}
-        for p in order:
-            took3 = v3[d]["per_study"][p]["took"]
-            gone = [t["wid"] for t in took3 if t["wid"] not in cand4_sets[p]]
-            if gone:
-                raise SystemExit(f"v4: v3 takes {gone} of {p} are no longer candidates (the v4 neighbour arm)")
-            carry[p] = ac.carry_over_v4(took3, quota4[p], rep.excluded)
+        carry = {p: v4_carry(v3[d]["per_study"][p]["took"], cand4_sets[p], quota4[p], rep.excluded) for p in order}
         taken: set[str] = set()
         ident = ac.Exclusion()
 
@@ -2309,53 +2396,10 @@ def stage_random_v4(lay: Layout, b: Builder, dry_run: bool = False, rep: Repetit
 
         per: dict[str, dict] = {}
         for p in order:
-            c = carry[p]
-            need = sum(quota4[p].values())
-            need_open = sum(c["open"].values())
-            rec: dict[str, Any] = {
-                "need": need, "kept": len(c["kept"]),
-                "released": [{k: t.get(k) for k in ("wid", "type", "band", "source", "level", "for_cell", "why")}
-                             for t in c["released"]],
-                "open": {"|".join(map(str, k)): n for k, n in c["open"].items()},
-                "quota_changed": quota3[p] != quota4[p]}
-            new: list[dict] = []
-            whys = {t["why"] for t in c["released"]}
-            if not need_open:
-                rec.update({"mode": None, "skipped": {}, "resolves": 0, "budget_hit": False, "unfilled": {}})
-            elif whys == {"any_nearest_band"} and quota3[p] == quota4[p]:
-                pool_p = {w: cell for w, cell in fetched3.get(p, {}).items() if not rep.excluded(w)}
-                rank = {w: i for i, w in enumerate(orders[p])}
-                missing = [w for w in pool_p if w not in rank]
-                if missing:
-                    raise SystemExit(f"v4: fetched candidates {missing} of {p} not in the v4 order")
-
-                def pick(wid: str, cell: ac.Cell, slot: ac.Cell, dist: int, new: list[dict] = new) -> None:
-                    on_take(wid)
-                    new.append({"wid": wid, "type": cell[0], "band": cell[1], "source": cell[2], "level": "any",
-                                "for_cell": list(slot), "band_distance": dist})
-
-                ac.nearest_band_fill(c["open"], pool_p, taken, rank, is_dup, pick)
-                left = Counter(c["open"])
-                for t in new:
-                    left[tuple(t["for_cell"])] -= 1
-                rec.update({"mode": "nearest_from_v3_walk", "nearest_pool": len(pool_p), "skipped": {},
-                            "resolves": 0, "budget_hit": False,
-                            "unfilled": {"|".join(map(str, k)): n for k, n in sorted(left.items()) if n > 0}})
-            else:
-                budget = max(40, 15 * need)
-                r = ac.draw_matched(orders[p], c["open"], taken, type_of=lambda wid: works[wid].type, klass=klass,
-                                    resolve=resolve, band=band, is_dup=is_dup, on_take=on_take,
-                                    max_resolves=budget, any_rule="nearest")
-                new = r["took"]
-                rec.update({"mode": "walk", "redraw_budget": budget, "skipped": r["skipped"], "resolves": r["resolves"],
-                            "resolves_by_phase": r["resolves_by_phase"], "budget_hit": r["budget_hit"],
-                            "relaxed": r["relaxed"], "unfilled": r["unfilled"], "passed_over": r["passed_over"]})
-            took = [{**t, "redrawn": False} for t in c["kept"]] + [{**t, "redrawn": True} for t in new]
-            rec.update({"took": took, "got": len(took), "shortfall": max(0, need - len(took)),
-                        "redrawn_slots": need_open, "redrawn_got": len(new),
-                        "strict_shortfall": {"|".join(map(str, k)): n
-                                             for k, n in ac.strict_shortfall(quota4[p], took).items()}})
-            per[p] = rec
+            per[p] = v4_study_redraw(
+                carry[p], quota3[p], quota4[p], orders[p], fetched3.get(p, {}), taken, excluded=rep.excluded,
+                is_dup=is_dup, on_take=on_take, type_of=lambda wid: works[wid].type, klass=klass, resolve=resolve,
+                band=band)
         return per
 
     lines0 = _count_lines(b.out_path)
@@ -2559,6 +2603,7 @@ def main(argv: list[str] | None = None) -> int:
     log(f"alias_corpus_run {a.stage}: root {lay.root}; python {sys.executable}; launch commit "
         f"{LAUNCH_PROVENANCE.get('commit')} dirty={LAUNCH_PROVENANCE.get('dirty')}")
     api = OpenAlex(lay)
+    api.read_only = a.dry_run
     if a.seed_cache:
         log(f"openalex: seeded {api.seed(*a.seed_cache)} cached responses")
     v2 = a.stage.endswith(("-v2", "-v3", "-v4"))
@@ -2649,8 +2694,7 @@ def main(argv: list[str] | None = None) -> int:
             prov = json.loads(pp.read_text()) if pp.exists() else {}
             prov[st] = {**(LAUNCH_PROVENANCE or {}), "stage_done": now()}
             write_json(pp, prov)
-    if api.dirty:   # an unchanged cache is not rewritten (a dry run leaves it untouched)
-        api.save()
+    api.save_if_dirty()   # written only when a response was added; never in a dry run (read_only)
     log("done")
     return 0
 

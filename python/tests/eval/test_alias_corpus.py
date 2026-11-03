@@ -521,3 +521,164 @@ def test_study_seed_table_names_the_corpus_random_seeds():
     import alias_study_common as asc
 
     assert (asc.SEEDS["random1"], asc.SEEDS["random2"]) == (ac.SEED_RANDOM_V2[1], ac.SEED_RANDOM_V2[2])
+
+
+# ------------------------------------------------------------------ v4 runner: cache writes, Repetition, re-draw step
+
+
+def _run():
+    import alias_corpus_run as run
+    return run
+
+
+def test_openalex_cache_is_written_only_when_changed_and_never_read_only(tmp_path):
+    run = _run()
+    lay = run.Layout(str(tmp_path / "root"))
+    api = run.OpenAlex(lay)
+    assert api.save_if_dirty() is False and not api.cache_path.exists()      # nothing added: no write
+    api.cache["u"], api.dirty = {"results": []}, 1
+    api.read_only = True
+    assert api.save_if_dirty() is False and not api.cache_path.exists()      # dry run: never
+    api.save()
+    assert not api.cache_path.exists()
+    api.read_only = False
+    assert api.save_if_dirty() is True and api.cache_path.exists() and api.dirty == 0
+
+
+def test_neighbour_inputs_does_not_rewrite_an_unchanged_cache(tmp_path, monkeypatch):
+    run = _run()
+    lay = run.Layout(str(tmp_path / "root"))
+    (lay.state / "study.json").write_text('{"study": []}')
+    monkeypatch.setattr(run, "load_oa1000", lambda: (["PMC1"], {"PMC1": "t"}, {}))
+
+    class CachedOnly(run.OpenAlex):
+        def get(self, params):
+            self.hits += 1
+            return {"results": [], "meta": {"count": 0}}
+
+    api = CachedOnly(lay)
+    writes = []
+    monkeypatch.setattr(api, "save", lambda: writes.append(1))
+    run.neighbour_inputs(lay, api)
+    assert api.hits >= 1 and writes == []
+
+
+class _FakeBuilder:
+    def __init__(self, done):
+        self.done = done
+
+
+def _chunk_file(lay, name, texts):
+    import json as _json
+    body = "".join(_json.dumps({"content": t}, ensure_ascii=False) + "\n" for t in texts).encode()
+    (lay.root / "chunks").mkdir(exist_ok=True)
+    (lay.root / "chunks" / name).write_bytes(body)
+    return hashlib.sha256(body).hexdigest()
+
+
+def test_repetition_helper_reads_chunk_files_checks_the_sha_and_screens(tmp_path):
+    run = _run()
+    lay = run.Layout(str(tmp_path / "root"))
+    rep_texts = [f"t{i}" for i in range(7)] + ["dup", "dup", "dup  "]          # 8 / 10 = 0.80
+    ok_texts = [f"u{i}" for i in range(10)] + ["u0 "]                      # U+2028 inside a line
+    done = {"R": {"ok": True, "source": "jats", "n_chunks": 10, "chunk_file": "R.jsonl",
+                  "chunks_sha256": _chunk_file(lay, "R.jsonl", rep_texts)},
+            "K": {"ok": True, "source": "pdf", "n_chunks": 11, "chunk_file": "K.jsonl",
+                  "chunks_sha256": _chunk_file(lay, "K.jsonl", ok_texts)},
+            "F": {"ok": False, "reason": "http_404"}}
+    rep = run.Repetition(lay, _FakeBuilder(done))
+    assert rep.ratio("R") == 0.8 and rep.excluded("R")
+    assert rep.ratio("K") == 10 / 11 and not rep.excluded("K")          # the U+2028 line is not split
+    assert rep.ratio("F") is None and not rep.excluded("F") and rep.ratio("missing") is None
+    o = rep.outcome(done["R"])
+    assert not o.ok and o.reason == "repetition_screen"
+    assert rep.outcome(done["K"]).ok and rep.outcome(done["F"]).reason == "http_404"
+    off = run.Repetition(lay, _FakeBuilder(done), enabled=False)
+    assert not off.excluded("R") and off.outcome(done["R"]).ok
+    done["K"]["chunks_sha256"] = "0" * 64
+    with pytest.raises(SystemExit):
+        run.Repetition(lay, _FakeBuilder(done)).ratio("K")
+
+
+def _rel(wid, why, cell, level="strict"):
+    return {**_take(wid, cell[0], cell[1], cell[2], level, cell), "why": why}
+
+
+def test_v4_redraw_mode_refills_from_the_v3_walk_only_for_pure_any_releases():
+    run = _run()
+    cell = ("article", 5, "jats")
+    anyrel = {"open": {cell: 1}, "released": [_rel("A", "any_nearest_band", cell, "any")], "kept": []}
+    assert run.v4_redraw_mode(anyrel, True) == "nearest_from_v3_walk"
+    assert run.v4_redraw_mode(anyrel, False) == "walk"                      # quota changed: walk
+    mixed = {"open": {cell: 2}, "released": anyrel["released"] + [_rel("B", "repetition_screen", cell)], "kept": []}
+    assert run.v4_redraw_mode(mixed, True) == "walk"
+    for why in ("repetition_screen", "quota_changed"):
+        assert run.v4_redraw_mode({"open": {cell: 1}, "released": [_rel("B", why, cell)], "kept": []}, True) == "walk"
+    # released but nothing open (the slot's cell left the quota): nothing to do
+    assert run.v4_redraw_mode({"open": {}, "released": [_rel("B", "quota_changed", cell)], "kept": []}, False) is None
+    assert run.v4_redraw_mode({"open": {}, "released": [], "kept": []}, True) is None
+
+
+def test_v4_carry_refuses_a_take_that_left_the_candidate_pool():
+    run = _run()
+    took = [_take("A", "article", 0, "jats", "strict", ("article", 0, "jats"))]
+    assert run.v4_carry(took, {"A"}, {("article", 0, "jats"): 1}, lambda w: False)["kept"] == took
+    with pytest.raises(SystemExit):
+        run.v4_carry(took, {"B"}, {("article", 0, "jats"): 1}, lambda w: False)
+
+
+def _step(carry, quota3, quota4, order_p, fetched3, taken, excluded=lambda w: False, info=None):
+    run = _run()
+    calls: list[str] = []
+    took_ids: list[str] = []
+    info = info or {}
+
+    def resolve(w):
+        calls.append(w)
+        return info[w][2]
+    rec = run.v4_study_redraw(carry, quota3, quota4, order_p, fetched3, taken, excluded=excluded,
+                              is_dup=lambda w: False, on_take=took_ids.append,
+                              type_of=lambda w: info[w][0], klass=lambda w: info[w][1], resolve=resolve,
+                              band=lambda n: n // 10)
+    return rec, calls, took_ids
+
+
+def test_v4_study_redraw_refills_from_the_v3_walk_without_fetching():
+    slot = ("article", 5, "jats")
+    kept = [_take("K", "article", 1, "jats", "strict", ("article", 1, "jats"))]
+    carry = {"kept": kept, "released": [_rel("A", "any_nearest_band", slot, "any")], "open": {slot: 1}}
+    quota = {("article", 1, "jats"): 1, slot: 1}
+    fetched3 = {"near_rep": ("article", 4, "jats"), "near_taken": ("article", 4, "jats"),
+                "near_ok": ("article", 4, "pdf"), "far": ("article", 0, "jats")}
+    order_p = ["near_rep", "near_taken", "far", "near_ok", "K"]
+    taken = {"K", "near_taken"}
+    rec, calls, took_ids = _step(carry, quota, quota, order_p, fetched3, taken, excluded=lambda w: w == "near_rep")
+    assert rec["mode"] == "nearest_from_v3_walk" and calls == []          # no walk, no fetch
+    assert [(t["wid"], t["redrawn"]) for t in rec["took"]] == [("K", False), ("near_ok", True)]
+    assert rec["took"][1]["band_distance"] == 1 and rec["took"][1]["level"] == "any"
+    assert took_ids == ["near_ok"] and "near_ok" in taken and rec["shortfall"] == 0 and rec["nearest_pool"] == 3
+    # nothing left to refill from: the slot stays open and is reported
+    rec, _, _ = _step(carry, quota, quota, order_p, {"near_rep": ("article", 4, "jats")}, {"K"},
+                      excluded=lambda w: w == "near_rep")
+    assert rec["unfilled"] == {"article|5|jats": 1} and rec["shortfall"] == 1
+
+
+def test_v4_study_redraw_walks_again_when_the_screen_or_the_quota_released_a_slot():
+    slot = ("article", 2, "jats")
+    info = {"S": ("article", "jats", ac.Outcome(ok=False, reason="repetition_screen")),
+            "T": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=25))}
+    carry = {"kept": [], "released": [_rel("R", "repetition_screen", slot)], "open": {slot: 1}}
+    rec, calls, took_ids = _step(carry, {slot: 1}, {slot: 1}, ["S", "T"], {"X": ("article", 2, "jats")}, set(),
+                                 info=info)
+    assert rec["mode"] == "walk" and calls == ["S", "T"] and took_ids == ["T"]
+    assert [(t["wid"], t["level"], t["redrawn"]) for t in rec["took"]] == [("T", "strict", True)]
+    assert rec["skipped"] == {"repetition_screen": 1} and rec["redraw_budget"] == 40
+    # an any release whose study paper's quota changed walks too (its v3 walk was for the old quota)
+    carry = {"kept": [], "released": [_rel("A", "any_nearest_band", ("article", 5, "pdf"), "any")], "open": {slot: 1}}
+    rec, calls, _ = _step(carry, {("article", 5, "pdf"): 1}, {slot: 1}, ["S", "T"], {"X": ("article", 2, "jats")},
+                          set(), info=info)
+    assert rec["mode"] == "walk" and rec["quota_changed"] and [t["wid"] for t in rec["took"]] == ["T"]
+    # nothing released, nothing open: the kept takes are the record
+    kept = [_take("K", "article", 2, "jats", "strict", slot)]
+    rec, calls, _ = _step({"kept": kept, "released": [], "open": {}}, {slot: 1}, {slot: 1}, ["S"], {}, {"K"}, info=info)
+    assert rec["mode"] is None and calls == [] and [t["wid"] for t in rec["took"]] == ["K"]
