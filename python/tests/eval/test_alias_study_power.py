@@ -96,8 +96,12 @@ def test_compute_refuses_another_layout() -> None:
 
 def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch: pytest.MonkeyPatch) -> None:
     """The lever reads confirm_a<a>, not test_only; a = 0.7 by default (O11); None: undecided."""
-    fake: dict[str, object] = {"0.025": {"test_only": 0.90, "confirm_a1": 0.90, "confirm_a0.8": 0.85, "confirm_a0.6": 0.70,
-                      "confirm_a0.7": 0.79, "confirm_a0.75": 0.81}, "0.05": {}}
+    # the lever reads the family level 0.05 (R1); the 0.025 row (the withdrawn Holm level) would give
+    # the opposite verdict at every a, so reading the wrong row fails every assertion below
+    fake: dict[str, object] = {"0.05": {"test_only": 0.90, "confirm_a1": 0.90, "confirm_a0.8": 0.85, "confirm_a0.6": 0.70,
+                      "confirm_a0.7": 0.79, "confirm_a0.75": 0.81},
+                               "0.025": {"test_only": 0.10, "confirm_a1": 0.10, "confirm_a0.8": 0.10, "confirm_a0.6": 0.95,
+                      "confirm_a0.7": 0.95, "confirm_a0.75": 0.10}}
     monkeypatch.setattr(pw, "simulate_h1", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
     monkeypatch.setattr(pw, "simulate_h1b", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
     seen: list[tuple[float, ...]] = []
@@ -108,7 +112,9 @@ def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch:
     monkeypatch.setattr(pw, "simulate_h2", h2)
     lay = {"clusters": 300, "shapes": [[2, 1]]}
     assert pw.LEVER_AGREEMENT == 0.7
+    assert pw.LEVER_ALPHA == 0.05
     default = pw.compute(lay, None, 10, 10)
+    assert default["caps_lever_alpha"] == 0.05 and default["h2_at_q05_p85_lever"] is fake["0.05"]
     assert default["h2_caps_lever_fires"] is True and default["caps_lever_agreement"] == 0.7  # test_only .90 would not fire
     assert default["caps_lever_by_agreement"] == {"a1": False, "a0.8": False, "a0.7": True, "a0.6": True}
     assert pw.compute(lay, None, 10, 10, lever_agreement=None)["h2_caps_lever_fires"] is None

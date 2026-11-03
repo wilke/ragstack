@@ -9,8 +9,9 @@ file with the committed balanced-set rule when ``--records`` is given, else the 
 
 1. **Normal approximation** (§8): each record gets d in {-1, 0, +1}, non-zero with probability
    q and in the hypothesised direction with probability p; mu = q (2p - 1), sigma^2 = q - mu^2,
-   power = Phi(sqrt(n) mu / sigma - z), z = 1.95996 (one-sided 0.025, the Holm worst case) or
-   1.64485 (0.05, the conditional rows). The 80 %-power MDE is mu = k sqrt(q / (n + k^2)),
+   power = Phi(sqrt(n) mu / sigma - z), z = 1.64485 (one-sided 0.05, the level of every member
+   since the two families of prereg v2, R1) or 1.95996 (0.025, the withdrawn v1 Holm level, kept
+   for comparison). The 80 %-power MDE is mu = k sqrt(q / (n + k^2)),
    k = 1.960 + 0.842, in points.
 2. **Simulation of each member's test** (§8, *The committed calculation*; tests per §7, owner
    2026-11-02): 2,000 simulated studies, the paper's direction share p_j ~ Beta with mean p and
@@ -40,7 +41,9 @@ file with the committed balanced-set rule when ``--records`` is given, else the 
      the gold-only net < 0.
 
 **The caps lever (§8)** reads H2's power to *confirm* (the judged test AND the gold-only gate) at
-q 5 %, p .85, rho 1, level 0.025, at the agreement ``--lever-agreement``; below .80 it fires.
+q 5 %, p .85, rho 1, at the family level ``LEVER_ALPHA`` = 0.05 (prereg v2, R1: Family N, H2 alone
+at one-sided 0.05; the v1 Holm level 0.025 is withdrawn), at the agreement ``--lever-agreement``;
+below .80 it fires.
 **a = 0.7** (owner, 2026-11-02, §14 O11), with a = 0.6 reported as a sensitivity
 (``caps_lever_by_agreement``). ``--lever-agreement`` overrides it; a None lever agreement leaves
 the lever undecided.
@@ -81,6 +84,9 @@ LEVER_AGREEMENT: float | None = 0.7
 LEVER_SENSITIVITY_AGREEMENT = 0.6
 #: §8: the lever fires when H2's simulated power to confirm is below this
 LEVER_POWER = 0.80
+#: §8 / R1: the level the lever's confirm power is read at -- Family N tests H2 alone at one-sided
+#: 0.05 (prereg v2); the v1 Holm level 0.025 is withdrawn and stays in the output for comparison only
+LEVER_ALPHA = 0.05
 #: the share of a record's neighbour-vs-draw discordance that both random draws share: 1.0 is the
 #: prereg's three-valued approximation (the draws identical); 0.5 lets the average cut noise
 RHOS = (1.0, 0.5)
@@ -247,7 +253,7 @@ def layout_from_records(path: Path) -> dict[str, Any]:
 def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: int, n_flips: int,
             lever_agreement: float | None = LEVER_AGREEMENT, dose: float = 1.0) -> dict[str, Any]:
     """Both methods on the layout, and the caps lever (§8): H2's simulated power to *confirm* at
-    q 5 %, p .85, rho 1, level 0.025 -- the judged test rejects AND the gold-only direction gate
+    q 5 %, p .85, rho 1, level ``LEVER_ALPHA`` (0.05, R1) -- the judged test rejects AND the gold-only direction gate
     passes at agreement ``lever_agreement`` (default 0.7, §14 O11) -- below .80 fires it; the
     verdict at every simulated ``a`` (0.6 the declared sensitivity) is in
     ``caps_lever_by_agreement``. With ``lever_agreement`` None ``h2_caps_lever_fires`` is None:
@@ -282,17 +288,18 @@ def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: 
                 sim["H2"].setdefault(f"rho{rho:g}", {})[key] = {k: v for k, v in s2.items() if k in ("0.025", "0.05")}
     mde = {"H1": {f"q{q:g}": round(mde80_points(n_h1, q), 2) for q in QS},
            "H2": {f"q{q:g}": round(mde80_points(n_h2, q), 2) for q in QS}}
-    h2_lever = sim["H2"]["rho1"]["p0.85_q0.05"]["0.025"]
+    h2_lever = sim["H2"]["rho1"]["p0.85_q0.05"][str(LEVER_ALPHA)]
     by_a = {f"a{a:g}": bool(h2_lever[f"confirm_a{a:g}"] < LEVER_POWER) for a in agreements}
     if lever_agreement is None:
         fires: bool | None = None
         lever_note = "no lever agreement given: the lever is undecided; per-a verdicts in caps_lever_by_agreement"
     else:
         fires = by_a[f"a{lever_agreement:g}"]
-        lever_note = (f"confirm power (test and gold-only gate) at a = {lever_agreement:g}; "
+        lever_note = (f"confirm power (test and gold-only gate) at alpha {LEVER_ALPHA:g}, a = {lever_agreement:g}; "
                       f"sensitivity a = {LEVER_SENSITIVITY_AGREEMENT:g}")
     return {"normal_approximation": normal, "simulation": sim, "mde80_points": mde, "h2_dose": dose,
-            "h2_at_q05_p85_alpha025": h2_lever,
+            "h2_at_q05_p85_lever": h2_lever, "caps_lever_alpha": LEVER_ALPHA,
+            "h2_at_q05_p85_alpha025": sim["H2"]["rho1"]["p0.85_q0.05"]["0.025"],
             "caps_lever_agreement": lever_agreement, "caps_lever_by_agreement": by_a,
             "caps_lever_note": lever_note,
             "h2_caps_lever_fires": fires,
@@ -338,7 +345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prov = experiment_provenance()
     except Exception:  # noqa: BLE001
         prov = {}
-    out = {"schema": "alias-study-power/1", "layout": layout, **res,
+    out = {"schema": "alias-study-power/2", "layout": layout, **res,
            "assumptions": {"sd_p_between_papers": SD_P, "planned_added": args.planned_added,
                            "dose_rule": "H2 discordance linear in added papers (q at the planned dose)",
                            "rho_shared_discordance": list(RHOS),
@@ -348,7 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
            "provenance": prov, "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0)}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"H1_sim": res["simulation"]["H1"]["p0.85_q0.05"], "H2_sim": res["h2_at_q05_p85_alpha025"],
+    print(json.dumps({"H1_sim": res["simulation"]["H1"]["p0.85_q0.05"], "H2_sim": res["h2_at_q05_p85_lever"], "lever_alpha": res["caps_lever_alpha"],
                       "caps_lever": res["h2_caps_lever_fires"], "caps_lever_by_agreement": res["caps_lever_by_agreement"]},
                      indent=1))
     return 0
