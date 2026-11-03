@@ -3,7 +3,7 @@
 **Status: DRAFT — not frozen; owner review pending.** No sha is recorded because nothing is frozen yet.
 Current draft: **v3, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1), the changes the owner
 approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), and the owner's
-decisions of 2026-11-03 (R12–R19) folded in. The
+decisions of 2026-11-03 (R12–R21) folded in. The
 record set (§4 of the prereg: 1,091 accepted records, the balanced set of 900 on 300 papers) was built
 before v1. No retrieval has been run on any study record. The pre-freeze pilot (prereg §5.6) will
 retrieve and judge the 191 held-out records before the freeze; the 900 balanced records stay unretrieved
@@ -81,7 +81,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   retry); the judged-pair spot check stratified by judge label; fixed sensitivities with a *fragile*
   label; a placebo glossary leg; a pre-freeze pilot on the 191 held-out records; two post-freeze stages
   with judging on demand; a signed public freeze tag; H2's estimand stated.
-- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R19). The C cost rule reads the
+- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R21). The C cost rule reads the
   point estimate (*do not attach* when ΔC < −1 point) and the CI's lower bound (C_lo < −3.6 points, the
   smallest C change 300 C records detect with 80 % power at 5 % discordance), with the statement that a
   C cost smaller than about 3.6 points cannot be ruled out; pass rates at 5 % C discordance and a true C
@@ -95,4 +95,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   unchanged, the fetch budget, relaxation source → type → band), a nearest-band fill at the last
   relaxation level, a repetition screen (distinct-chunk ratio < 0.90 excluded) for every added paper,
   and the ± 5 % chunk-volume target read as a build target covered by the covariate sensitivity, with a
-  placeholder for the v4 counts. New open item: the covariate sensitivity's test form (§14 O13).
+  placeholder for the v4 counts. Stage A now also runs the 4 norerank cells the inactive-reranker gate reads, so every Layer-1 gate is
+  read after stage A alone (13 legs; the exact list pending the run harness); the placebo drops every
+  entry equal to one of the receiving paper's own entries. New open item: the covariate sensitivity's
+  test form (§14 O13).
