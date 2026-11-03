@@ -1135,8 +1135,12 @@ def test_false_yes_from_the_judge_summary_and_filters() -> None:
     # U reads the frozen stage-A summary when it has the counts; the rows are its cross-check
     cnt, src, same = st.false_yes_inputs(js, rows, strict=False)
     assert cnt["random"]["n"] == 10 and src.startswith("stage-a/judge-summary.json") and same is False
-    cnt2, src2, same2 = st.false_yes_inputs({}, rows)
+    cnt2, src2, same2 = st.false_yes_inputs({}, rows, strict=False)          # a dry run only: the rows
     assert cnt2["random"]["n"] == 3 and src2.startswith("final.jsonl") and same2 is None
+    with pytest.raises(SystemExit, match="carries no false_yes_among_answers"):
+        st.false_yes_inputs({}, rows)                                         # outside a dry run: refused (§3.4, P2)
+    with pytest.raises(SystemExit, match="carries no false_yes_among_answers"):
+        st.false_yes_inputs({"drift": {"scopes": {"overall": {}}}}, rows, strict=True)
     with pytest.raises(SystemExit, match="differs from the stage-A final rows"):
         st.false_yes_inputs(js, rows, strict=True)                          # outside a dry run: refused
     assert st.false_yes_inputs(js, rows, strict=False)[2] is False          # a dry run records it

@@ -18,9 +18,9 @@ stratum is the one the rule reads on its own (a false *yes* is what inflates fou
 and tiebroken strata are shown at their own sizes for comparison. Also the whole sheet read as
 one unweighted sample (60 and 100), for comparison only: the rule's overall figure is re-weighted
 to the stage-A label shares, which do not exist before stage A. True error rates 0.10 (the
-threshold itself), 0.15 and 0.20. The sizes are nominal: §13.5's shortfall rule moves a short
-cell's pairs to the other arms of its stratum, then to *answers*, then to *not*, so the realised
-*answers* stratum can exceed 50.
+threshold itself), 0.15 and 0.20. The sizes are nominal: §13.5's shortfall chain (*answers* ->
+*not*, *not* -> *answers*, tiebroken -> *answers* -> *not*; tiebroken never receives) can move pairs
+into *answers*, so the realised *answers* stratum can exceed 50, and the sheet can hold fewer than 100.
 
 The provenance block comes from ``ragstack.provenance.experiment_provenance`` of this repository's
 ``python/`` tree when it imports, without its ``host`` and ``warnings`` fields (prereg §11); otherwise it is recorded as absent with the reason.

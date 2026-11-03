@@ -938,13 +938,17 @@ def false_yes_from_summary(js: Mapping[str, Any]) -> dict[str, dict[str, Any]] |
 def false_yes_inputs(stage_a_summary: Mapping[str, Any], final: Mapping[Any, Mapping[str, Any]],
                      strict: bool = True) -> tuple[dict[str, dict[str, Any]], str, bool | None]:
     """§3.4 (R13): U's counts from the **frozen stage-A judge summary** (H2's judged pairs are all
-    stage A), cross-checked against the stage-A final rows; the rows only when that summary
-    carries no ``false_yes_among_answers``. Returns (counts, source, cross-check equal). With
-    ``strict`` (every mode but the dry run) a mismatch is refused."""
+    stage A), cross-checked against the stage-A final rows. Returns (counts, source, cross-check
+    equal). With ``strict`` (every mode but the dry run) U is **always** the summary's: a summary
+    without ``false_yes_among_answers`` is refused, and so is a mismatch with the rows. Only a dry
+    run (``strict`` False) falls back to the rows when the summary carries no counts."""
     rows_cnt = false_yes_counts(final, stage="A")
     sum_cnt = false_yes_from_summary(stage_a_summary)
     if sum_cnt is None:
-        return rows_cnt, "final.jsonl (stage A rows)", None
+        if strict:
+            raise SystemExit("the frozen stage-A judge summary carries no false_yes_among_answers (§3.4, R13): U "
+                             "is always read from it outside a dry run; nothing analysed")
+        return rows_cnt, "final.jsonl (stage A rows; dry run only)", None
     same = all((sum_cnt[s]["k"], sum_cnt[s]["n"]) == (rows_cnt[s]["k"], rows_cnt[s]["n"]) for s in FALSE_YES_SCOPES)
     if strict and not same:
         raise SystemExit("the frozen stage-A judge summary's false_yes_among_answers differs from the stage-A final "
