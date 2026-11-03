@@ -469,3 +469,33 @@ def test_randomization_lattice_reduces_to_the_sign_flip_and_handles_asymmetric_s
     r = cs.cluster_randomization_lattice(sup, obs, "greater")
     assert r is not None and r["p"] == pytest.approx(want, abs=1e-12)
     assert r["min_attainable_p"] == pytest.approx(sum(v >= max(allv) - 1e-12 for v in allv) / len(allv))
+
+
+def test_randomization_test_exact_level_fallback_and_floor() -> None:
+    """Label exchangeability with asymmetric supports (H2's single-one / single-zero questions):
+    the exact p holds level; dropping ties would not (non-vacuous); off-lattice -> MC."""
+    rng = np.random.default_rng(5)
+    types = [np.array([1.0, -0.5, -0.5]), np.array([-1.0, 0.5, 0.5])]
+    n_sim, alpha = 3000, 0.05
+    rej = rej_strict = 0
+    for _ in range(n_sim):
+        k = int(rng.integers(8, 30))
+        sup = [types[int(rng.integers(0, 2))] for _ in range(k)]
+        obs = float(sum(s[int(rng.integers(0, 3))] for s in sup))
+        r = cs.cluster_randomization_test(sup, obs, alternative="less")
+        assert r["p_method"] == "lattice"
+        rej += r["p"] <= alpha
+        rej_strict += 2 * r["p_mid"] - r["p"] <= alpha
+    se = (alpha * (1 - alpha) / n_sim) ** 0.5
+    assert rej / n_sim <= alpha + 2 * se and rej_strict / n_sim > alpha + 2 * se
+    sup3 = [[1.0, -0.5, -0.5]] * 3
+    r = cs.cluster_randomization_test(sup3, -1.5, alternative="less")
+    assert r["p"] == pytest.approx((2 / 3) ** 3) and r["min_attainable_p"] == pytest.approx((2 / 3) ** 3)
+    mc = cs.cluster_randomization_test(sup3, -1.5, n_draws=999, alternative="less", max_width=1)
+    assert mc["p_method"] == "monte_carlo" and mc["p_exact"] is None and mc["p"] == mc["p_perm"]
+    assert mc["min_attainable_p"] == pytest.approx((2 / 3) ** 3)          # > 1/1000, so the exact floor
+    assert abs(mc["p"] - (2 / 3) ** 3) < 0.05
+    tiny = cs.cluster_randomization_test([[1.0, -1.0]] * 30, 30.0, n_draws=99, max_width=1)
+    assert tiny["min_attainable_p"] == pytest.approx(1 / 100)              # MC floor 1/(m + 1) dominates 2^-30
+    off = cs.cluster_randomization_test([[1 / 13, -1 / 13]] * 3, 3 / 13, n_draws=99)
+    assert off["p_method"] == "monte_carlo"

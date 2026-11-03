@@ -413,3 +413,61 @@ def test_member_test_uses_the_exact_lattice_p_above_20_papers() -> None:
     # all 30 papers positive: p = 2^-30 is reachable, where the round-3 MC p bottoms at 1/2001
     top = st.member_test([f"P{i}" for i in range(30)], [1.0] * 30, "greater", AN)
     assert top["p"] == pytest.approx(2.0 ** -30) and top["p_perm"] == pytest.approx(1 / 2001)
+
+
+# ------------------------------------------------------------------ H1b / H2: label randomization (§7, 2026-11-02)
+
+def test_h1b_label_supports_by_hand() -> None:
+    recs = recs_balanced(2)
+    none = lambda r: (0, 0)  # noqa: E731
+    merged = lambda r: (1, 1) if r["kind"] == "G" and r["record_id"].endswith("g0") else (0, 0)  # noqa: E731
+    o = outcomes(recs, {st.L("base", "none", "default"): none, st.L("base", "merged", "default"): merged})
+    cl, v, sup, _ = st.h1b_label_supports(recs, o)
+    # D = (1, 0 | C 0): C on the gaining record -> 0 - 1 = -1, else 1/2 - 0
+    assert v == [0.5, 0.5] and [sorted(s) for s in sup] == [[-1.0, 0.5, 0.5]] * 2
+    # one G record excluded: 1 G + 1 C, two assignments, +-D_G
+    gone = next(r for r in recs if r["kind"] == "G" and r["record_id"].endswith("g0"))
+    o[st.L("base", "merged", "default")][gone["record_id"]] = None
+    cl1, v1, sup1, miss = st.h1b_label_supports(recs, o)
+    i = cl1.index(str(gone["paper"]))
+    assert miss == 1 and len(sup1[i]) == 2 and sorted(sup1[i]) == sorted([v1[i], -v1[i]])
+    assert len(sup1[1 - i]) == 3
+
+
+def test_exchange_supports_permute_the_three_arm_labels() -> None:
+    recs = recs_balanced(1)[:1]
+    o = outcomes(recs, {st.L("neighbour", "none", "default"): lambda r: (0, 0),
+                        st.L("random1", "none", "default"): lambda r: (1, 1),
+                        st.L("random2", "none", "default"): lambda r: (1, 1)})
+    (sup,) = st.exchange_supports(recs, o, st.H2_SPEC)
+    assert sorted(sup) == [-1.0, -1.0, 0.5, 0.5, 0.5, 0.5]
+    two = [(1.0, st.L("neighbour", "none", "default")), (-1.0, st.L("random1", "none", "default"))]
+    assert sorted(st.exchange_supports(recs, o, two)[0]) == [-1.0, 1.0]     # two labels: the sign flip
+
+
+def test_layer1_tests_h1b_and_h2_by_label_randomization_and_h1_by_sign_flip() -> None:
+    import chunktrial_stats as cs
+
+    recs, o = h2_world(True)
+    r = st.layer1(recs, o, {}, None, AN)
+    assert "randomization" in r["H2"]["test"] and "question" in r["H2"]["test"]
+    assert "randomization" in r["H1b"]["test"] and "paper" in r["H1b"]["test"]
+    assert "sign-flip" in r["H1"]["test"]
+    sup = st.exchange_supports(recs, o, st.H2_SPEC)
+    _, v, _ = st.contrast_values(recs, o, st.H2_SPEC)
+    want = cs.cluster_randomization_lattice(sup, sum(v), "less")
+    assert want is not None and r["H2"]["p"] == pytest.approx(want["p"], abs=1e-15)
+    assert r["H2"]["min_attainable_p"] == pytest.approx(want["min_attainable_p"])
+    # not the paper sign-flip p it replaced
+    _, sums, _ = st.cluster_sums(*st.contrast_values(recs, o, st.H2_SPEC)[:2])
+    assert r["H2"]["p"] != pytest.approx(cs.sign_flip_test_exact(sums, alternative="less")["p"])
+
+
+def test_randomization_floor_drives_gate_not_evaluable() -> None:
+    """A member's minimum attainable p is its randomization floor: 3 single-one questions under
+    "less" have floor (2/3)^3 ~ 0.30 > 0.05, so H2 is GATE-NOT-EVALUABLE however extreme."""
+    t = st.member_randomization(["P1", "P1", "P2"], [-0.5, -0.5, -0.5], [[1, 1, -0.5, -0.5, -0.5, -0.5]] * 3,
+                                "less", "question", AN)
+    assert t["min_attainable_p"] == pytest.approx((2 / 3) ** 3) and t["p"] == pytest.approx((2 / 3) ** 3)
+    r = st.layer1_procedure({"H1": m(0.001), "H2": {**t, "gates": [], "gold_gate_pass": True}, "H1b": m(0.2)})
+    assert r["H2"]["status"] == st.GATE

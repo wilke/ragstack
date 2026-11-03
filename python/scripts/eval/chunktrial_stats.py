@@ -406,41 +406,154 @@ def sign_flip_test_exact(
     }
 
 
+def _conv_power(kern: np.ndarray, c: int) -> np.ndarray:
+    """``kern`` convolved with itself ``c`` times (binary exponentiation)."""
+    out = np.ones(1)
+    base = kern
+    while c:
+        if c & 1:
+            out = np.convolve(out, base)
+        c >>= 1
+        if c:
+            base = np.convolve(base, base)
+    return out
+
+
+def randomization_law(groups: Sequence[tuple[Sequence[int], int]]) -> tuple[np.ndarray, int]:
+    """The null law of ``T* = Σ`` of independent cluster scores, each uniform on an integer
+    multiset. ``groups`` = ``[(values, count), ...]``: ``count`` clusters share the multiset
+    ``values``. Returns ``(dist, lo)``: ``dist[i] = P(T* = lo + i)``."""
+    dist = np.ones(1)
+    lo = 0
+    for vals, c in groups:
+        v = np.asarray(vals, dtype=np.int64)
+        if c <= 0 or v.size == 0:
+            continue
+        kern = np.bincount(v - v.min()).astype(float) / v.size
+        dist = np.convolve(dist, _conv_power(kern, int(c)))
+        lo += int(v.min()) * int(c)
+    return dist, lo
+
+
+def _group_supports(ints: Sequence[np.ndarray]) -> list[tuple[tuple[int, ...], int]]:
+    """Identical multisets (sorted) grouped with their counts; degenerate ones dropped."""
+    cnt: dict[tuple[int, ...], int] = {}
+    for v in ints:
+        if v.size and v.min() != v.max():
+            key = tuple(sorted(int(x) for x in v))
+            cnt[key] = cnt.get(key, 0) + 1
+    return sorted(cnt.items())
+
+
 def cluster_randomization_lattice(supports: Sequence[Floats], observed: float,
                                   alternative: Alternative = "greater",
                                   max_scale: int = LATTICE_MAX_SCALE,
                                   max_width: int = LATTICE_MAX_WIDTH) -> dict[str, Any] | None:
-    """Exact randomization p for ``T = Σ_j S_j`` when, under the null, cluster ``j``'s score is
+    """Exact randomization p for ``T = Σ_j S_j`` when, under the null, unit ``j``'s score is
     uniform on the finite multiset ``supports[j]`` (its values under every equally likely
-    relabelling of the conditions within the cluster) independently across clusters.
+    relabelling of the conditions within the unit), independently across units.
 
-    The sign flip is the special case ``supports[j] = (S_j, −S_j)``. For a 3-condition contrast
-    (H2's ``n − (r1 + r2)/2``, H1b's ``mean(D_G) − D_C``) the exchangeability null gives each
-    cluster the contrast's values under the permutations of its labels, which is *not* a
-    symmetric set; this is the exact test of that null. Not used by any confirmatory decision.
-    ``p``/``p_mid`` as :func:`sign_flip_lattice`; ``min_attainable_p`` is the null mass of the
-    most extreme value. None when the values are off a ``<= max_scale`` lattice or too wide.
+    The sign flip is the special case ``supports[j] = (S_j, −S_j)``. For a contrast of more
+    than two conditions (H2's ``n − (r1 + r2)/2`` per question, H1b's ``mean(D_G) − D_C`` per
+    paper) the label-exchangeability null gives each unit the contrast's values under the
+    permutations of its labels, which is not a symmetric set; this is the exact test of that
+    null. A unit whose multiset is constant is inert. Units with identical multisets are
+    convolved at once (binary exponentiation). ``p``/``p_mid`` as :func:`sign_flip_lattice`;
+    ``min_attainable_p`` is the null mass of the most extreme value (the product over units of
+    the share of their values at the extreme). None when the values are off a ``<= max_scale``
+    lattice or the half-width exceeds ``max_width``.
     """
     vals = [np.asarray(v, dtype=float) for v in supports]
-    if not vals:
-        return {"p": 1.0, "p_mid": 0.5, "min_attainable_p": 1.0, "scale": 1, "width": 0}
-    m = lattice_scale(np.concatenate([*vals, [observed]]), max_scale)
+    m = lattice_scale(np.concatenate([*vals, [float(observed)]]), max_scale) if vals else 1
     if m is None:
         return None
-    ints = [np.rint(m * v).astype(np.int64) for v in vals]
-    lo = sum(int(v.min()) for v in ints)
-    width = sum(int(v.max() - v.min()) for v in ints)
+    groups = _group_supports([np.rint(m * v).astype(np.int64) for v in vals])
+    k = sum(c for _, c in groups)
+    if k == 0:
+        return {"p": 1.0, "p_mid": 0.5, "min_attainable_p": 1.0, "scale": m, "width": 0, "n_nonzero": 0}
+    width = sum((g[-1] - g[0]) * c for g, c in groups)
     if width > max_width:
         return None
-    dist = np.ones(1)
-    for v in ints:
-        kern = np.bincount(v - v.min()).astype(float) / v.size
-        dist = np.convolve(dist, kern)
+    dist, lo = randomization_law(groups)
     p, p_mid = _lattice_tail(dist, lo, int(np.rint(m * observed)), alternative)
-    hi = lo + width
+    hi = lo + dist.size - 1
     extreme = {"greater": hi, "less": lo}.get(alternative, max(abs(lo), abs(hi)))
     floor = _lattice_tail(dist, lo, extreme, alternative)[0]
-    return {"p": p, "p_mid": p_mid, "min_attainable_p": floor, "scale": m, "width": width}
+    return {"p": p, "p_mid": p_mid, "min_attainable_p": floor, "scale": m, "width": width, "n_nonzero": k}
+
+
+def _randomization_floor(supports: Sequence[np.ndarray], alternative: Alternative) -> float:
+    """One-sided ``P(T* at its extreme)`` = Π over units of the share of values at the unit's
+    extreme (only the all-extreme draw reaches it); two-sided: the larger tail's floor plus the
+    other tail's when its extreme has the same magnitude, bounded by 1."""
+    def side(sign: float) -> tuple[float, float]:
+        logp, ext = 0.0, 0.0
+        for v in supports:
+            e = float(v.max() if sign > 0 else v.min())
+            logp += math.log(float(np.count_nonzero(np.abs(v - e) <= _TOL)) / v.size)
+            ext += e
+        return math.exp(logp), ext
+    if alternative == "greater":
+        return side(1.0)[0]
+    if alternative == "less":
+        return side(-1.0)[0]
+    (fp, ep), (fm, em) = side(1.0), side(-1.0)
+    if abs(abs(ep) - abs(em)) <= _TOL:
+        return min(1.0, fp + fm)
+    return fp if abs(ep) > abs(em) else fm
+
+
+def cluster_randomization_test(
+    supports: Sequence[Floats],
+    observed: float,
+    n_draws: int = N_FLIPS,
+    seed: int = SEED,
+    alternative: Alternative = "greater",
+    max_scale: int = LATTICE_MAX_SCALE,
+    max_width: int = LATTICE_MAX_WIDTH,
+) -> dict[str, Any]:
+    """The alias study's H1b / H2 test (prereg §7, owner 2026-11-02): the exact randomization p
+    of the **label-exchangeability null** (within each unit the condition labels are
+    exchangeable: every relabelling in ``supports[j]`` is equally likely, independently across
+    units). Under it ``P(p <= α) <= α`` exactly.
+
+    Exact by :func:`cluster_randomization_lattice` whenever the values sit on a ``<= max_scale``
+    lattice of half-width ``<= max_width`` (``p_method`` "lattice"); otherwise Monte Carlo over
+    ``n_draws`` independent relabellings with ``p = (b + 1)/(n_draws + 1)`` ("monte_carlo").
+    ``min_attainable_p``: the exact floor (:func:`_randomization_floor`) for the lattice p,
+    max(floor, 1/(n_draws + 1)) for the Monte-Carlo p. ``p_perm`` (the Monte-Carlo p) is
+    computed only on the fallback (None otherwise). ``n_nonzero`` counts the non-inert units.
+    """
+    vals = [np.asarray(v, dtype=float) for v in supports]
+    live = [v for v in vals if v.size and float(v.max() - v.min()) > _TOL]
+    floor = _randomization_floor(live, alternative) if live else 1.0
+    lat = cluster_randomization_lattice(vals, observed, alternative, max_scale, max_width)
+    p_mc: float | None = None
+    pm_mc: float | None = None
+    if lat is None:
+        rng = np.random.default_rng(seed)
+        draws = np.zeros(n_draws)
+        for v in live:
+            draws += v[rng.integers(0, v.size, size=n_draws)]
+        draws += sum(float(v[0]) for v in vals if v.size and float(v.max() - v.min()) <= _TOL)
+        b = _tail_count(draws, float(observed), alternative)
+        p_mc = (1 + b) / (1 + n_draws)
+        pm_mc = _mid_count(draws, float(observed), alternative) / n_draws
+        floor = max(floor, min(1.0, 1.0 / (1 + n_draws)))
+    return {
+        "statistic": float(observed),
+        "p_exact": None if lat is None else float(lat["p"]),
+        "p_perm": p_mc,
+        "p": float(lat["p"] if lat is not None else p_mc),  # type: ignore[arg-type]
+        "p_mid": float(lat["p_mid"] if lat is not None else pm_mc),  # type: ignore[arg-type]
+        "p_method": "lattice" if lat is not None else "monte_carlo",
+        "min_attainable_p": float(floor),
+        "n_units": len(vals),
+        "n_nonzero": len(live),
+        "n_draws": int(n_draws),
+        "seed": int(seed),
+        "alternative": alternative,
+    }
 
 
 # --------------------------------------------------------------------------- #

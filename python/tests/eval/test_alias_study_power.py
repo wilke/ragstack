@@ -47,11 +47,28 @@ def test_simulation_monotone_and_near_the_approximation() -> None:
     assert null < 0.12
 
 
-def test_h2_rho1_matches_the_three_valued_approximation_and_averaging_helps() -> None:
-    three = pw.simulate_h2(300, 3, 0.02, 0.85, rho=1.0, sd_p=0.0, n_sims=600, n_flips=600, seed=4)["0.025"]
-    avg = pw.simulate_h2(300, 3, 0.02, 0.85, rho=0.0, sd_p=0.0, n_sims=600, n_flips=600, seed=4)["0.025"]
-    assert abs(three["test_only"] - pw.normal_power(900, 0.02, 0.85, 0.025)) < 0.06
-    assert avg["test_only"] > three["test_only"]
+def test_h2_randomization_test_level_power_and_what_it_rejects() -> None:
+    """The arm-label randomization test (§7, 2026-11-02): at least the sign-flip approximation's
+    power at q 2 % / p .85; level held when the three arms are exchangeable (no direction and
+    the odd arm equally often each arm: rho = 1/3); and it rejects -- by design of its null --
+    when the neighbour arm merely differs more often with no direction (rho = 1, p = .5)."""
+    power = pw.simulate_h2(300, 3, 0.02, 0.85, rho=1.0, sd_p=0.0, n_sims=600, seed=4)["0.025"]
+    assert power["test_only"] >= pw.normal_power(900, 0.02, 0.85, 0.025) - 0.03
+    exch = pw.simulate_h2(300, 3, 0.05, 0.5, rho=1 / 3, sd_p=0.0, agreements=(1.0,), n_sims=1500, seed=5)
+    assert exch["0.05"]["test_only"] <= 0.05 + 2 * (0.05 * 0.95 / 1500) ** 0.5
+    churn = pw.simulate_h2(300, 3, 0.05, 0.5, rho=1.0, sd_p=0.0, agreements=(1.0,), n_sims=1500, seed=5)
+    assert churn["0.05"]["test_only"] > 0.075
+
+
+def test_h1b_randomization_test_level_and_power() -> None:
+    null = pw.simulate_h1b(300, 0.05, 0.5, sd_p=0.0, n_sims=1500, seed=6)["0.05"]
+    assert null <= 0.05 + 2 * (0.05 * 0.95 / 1500) ** 0.5
+    lo = pw.simulate_h1b(300, 0.05, 0.85, n_sims=400, seed=7)["0.05"]
+    hi = pw.simulate_h1b(300, 0.10, 0.85, n_sims=400, seed=7)["0.05"]
+    assert null < lo < hi
+    # C rising as much as G is not evidence for H1b
+    same = pw.simulate_h1b(300, 0.10, 0.85, p_c=0.85, sd_p=0.0, n_sims=600, seed=8)["0.05"]
+    assert same < 0.09
 
 
 def test_h2_gold_gate_costs_power_when_gold_disagrees() -> None:
@@ -66,10 +83,11 @@ def test_compute_refuses_another_layout() -> None:
 
 
 def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The lever reads confirm_a<a>, not test_only; without an a it is undecided (None)."""
+    """The lever reads confirm_a<a>, not test_only; a = 0.7 by default (O11); None: undecided."""
     fake = {"0.025": {"test_only": 0.90, "confirm_a1": 0.90, "confirm_a0.8": 0.85, "confirm_a0.6": 0.70,
-                      "confirm_a0.7": 0.79}, "0.05": {}}
+                      "confirm_a0.7": 0.79, "confirm_a0.75": 0.81}, "0.05": {}}
     monkeypatch.setattr(pw, "simulate_h1", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
+    monkeypatch.setattr(pw, "simulate_h1b", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
     seen: list[tuple[float, ...]] = []
 
     def h2(*a: object, agreements: tuple[float, ...] = pw.AGREEMENTS, **k: object) -> dict[str, object]:
@@ -77,12 +95,13 @@ def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch:
         return fake
     monkeypatch.setattr(pw, "simulate_h2", h2)
     lay = {"clusters": 300, "shapes": [[2, 1]]}
-    undecided = pw.compute(lay, None, 10, 10)
-    assert undecided["h2_caps_lever_fires"] is None
-    assert undecided["caps_lever_by_agreement"] == {"a1": False, "a0.8": False, "a0.6": True}
+    assert pw.LEVER_AGREEMENT == 0.7
+    default = pw.compute(lay, None, 10, 10)
+    assert default["h2_caps_lever_fires"] is True and default["caps_lever_agreement"] == 0.7  # test_only .90 would not fire
+    assert default["caps_lever_by_agreement"] == {"a1": False, "a0.8": False, "a0.7": True, "a0.6": True}
+    assert pw.compute(lay, None, 10, 10, lever_agreement=None)["h2_caps_lever_fires"] is None
     assert pw.compute(lay, None, 10, 10, lever_agreement=0.8)["h2_caps_lever_fires"] is False
-    assert pw.compute(lay, None, 10, 10, lever_agreement=0.6)["h2_caps_lever_fires"] is True   # test_only .90 would not fire
-    assert pw.compute(lay, None, 10, 10, lever_agreement=0.7)["h2_caps_lever_fires"] is True   # an a outside the grid is simulated
-    assert seen[-1] == (1.0, 0.8, 0.6, 0.7)
+    assert pw.compute(lay, None, 10, 10, lever_agreement=0.75)["h2_caps_lever_fires"] is False  # an a outside the grid
+    assert seen[-1] == (1.0, 0.8, 0.7, 0.6, 0.75)
     with pytest.raises(SystemExit):
         pw.compute(lay, None, 10, 10, lever_agreement=1.5)
