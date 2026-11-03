@@ -116,3 +116,53 @@ class World:
             (d / f"{label}.summary.json").write_text(json.dumps({
                 "status": status.get(f"{c}/{label}", "complete"), "conditions": f["conds"],
                 "provenance": {"commit": "a" * 40, "dirty": False, "untracked": 0}, "citable": True}))
+
+    def mixed_top10(self, leg: str, rec: Mapping[str, Any]) -> list[str]:
+        """A top 10 that exercises judging on demand: per (leg, record), by a hash, the gold is
+        outside the top 10 (its found@10 pairs are judged), at rank 3 (the two chunks above it are
+        RR@10 pairs) or at rank 1 (nothing to judge)."""
+        import hashlib
+
+        p = rec["paper"]
+        gold = rec["gold_chunks"][0]
+        others = [chunk_id(p, i) for i in range(CHUNKS_PER_PAPER) if chunk_id(p, i) != gold]
+        corp = leg.split("|")[0]
+        extra = [chunk_id(x, 0) for x in self.added.get(corp, [])]
+        filler = [c for c in (chunk_id("P00", 3), chunk_id("P01", 3), chunk_id("P02", 1)) if c != gold]
+        pool = [*others, *extra, *filler]
+        k = int(hashlib.sha256(f"{leg}|{rec['record_id']}".encode()).hexdigest()[:8], 16) % 3
+        if k == 0:
+            return pool[:10]
+        if k == 1:
+            return [*pool[:2], gold, *pool[2:]][:10]
+        return [gold, *pool][:10]
+
+    def write_staged_runs(self, stage: str, top10: Callable[[str, Mapping[str, Any]], list[str]] | None = None,
+                          failed: Callable[[str, Mapping[str, Any]], bool] | None = None,
+                          status: Mapping[str, str] | None = None) -> None:
+        """found10-shaped summaries and rows for the legs of one stage (prereg §5.7), in the
+        runner's staged files (``alias_study_run.run_label``)."""
+        import alias_study_run as ar
+
+        top10 = top10 or self.mixed_top10
+        status = status or {}
+        files: dict[tuple[str, str], dict[str, Any]] = {}
+        for c, g, r, rep in ar.stage_legs(stage):
+            label = ar.run_label(c, g, rep, stage)
+            f = files.setdefault((c, label), {"rows": [], "conds": {}, "legs": []})
+            cond = asc.RETRIEVERS[r]
+            leg = asc.leg_id(c, g, r, rep)
+            f["conds"][cond] = {"gate": None}
+            f["legs"].append(leg)
+            for rec in self.records:
+                bad = bool(failed and failed(leg, rec))
+                f["rows"].append({"record_id": rec["record_id"], "condition": cond, "failed": bad,
+                                  "ranked_chunk_ids": None if bad else top10(leg, rec)})
+        for (c, label), f in files.items():
+            d = self.runs / c
+            d.mkdir(parents=True, exist_ok=True)
+            write_jsonl(d / f"{label}.jsonl", f["rows"])
+            (d / f"{label}.summary.json").write_text(json.dumps({
+                "status": status.get(f"{c}/{label}", "complete"), "conditions": f["conds"],
+                "provenance": {"commit": "a" * 40, "dirty": False, "untracked": 0}, "citable": True,
+                "study": {"stage": stage, "legs": f["legs"]}}))

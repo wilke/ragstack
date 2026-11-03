@@ -54,6 +54,9 @@ RETRIEVERS: dict[str, str] = {"default": "base", "bm25": "bm25", "norerank": "no
 CONDITION_TO_RETRIEVER = {v: k for k, v in RETRIEVERS.items()}
 #: §5.4: the noise repeat of each corpus arm is default x none, run a second time
 REPEAT_GLOSSARY, REPEAT_RETRIEVER = "none", "default"
+#: §5.3 (R7): the placebo glossary arm, one leg only (base x default); not a factor level of the 24 cells
+PLACEBO = "placebo"
+PLACEBO_LEG = ("base", PLACEBO, "default", 1)
 #: §2 / §6.2: the arm a pair's passage paper belongs to (drift and spot-check strata)
 ARM_GROUPS = ("base", "neighbour", "random")
 FOUND_K = 10
@@ -96,9 +99,11 @@ def leg_id(corpus: str, glossary: str, retriever: str, repeat: int = 1) -> str:
 
 
 def all_legs() -> list[tuple[str, str, str, int]]:
-    """The 28 legs of §5.4: 24 cells and one noise repeat (default x none) per corpus arm."""
+    """The 29 legs of §5.4 (DRAFT v2): 24 cells, one noise repeat (default x none) per corpus arm,
+    and the placebo leg (base x default x placebo, §5.3, R7), last."""
     legs = [(c, g, r, 1) for c in CORPUS_ARMS for g in GLOSSARY_ARMS for r in RETRIEVERS]
     legs += [(c, REPEAT_GLOSSARY, REPEAT_RETRIEVER, 2) for c in CORPUS_ARMS]
+    legs.append(PLACEBO_LEG)
     return legs
 
 

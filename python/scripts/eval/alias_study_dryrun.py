@@ -6,20 +6,26 @@ item 12), against a fake retriever and fake judges: no store, no gateway, no mod
                           --glossary MERGED.jsonl --work DIR [--study-records ACCEPTED.jsonl] \\
                           [--added-per-arm 60] [--batch-size 300] [--n-perm 2000] [--n-boot 2000]
 
-What runs, unchanged, is the study's code: ``alias_study_run.py`` (all 28 legs, every gate:
-swap-record census, depth read-back, boost probe ``declared``, inactive-reranker gate, the
-admin config hash, gold presence, restore points, per-leg failed calls), then
-``alias_study_judge.py`` (registry, batches, C / E / Argon / its re-issue / Opus drift
-sample, finalize with the drift alarm), then ``alias_study_stats.py`` (Layer 1, Layer 2,
-sensitivities, the public check). What is fake:
+What runs, unchanged, is the study's code, in the prereg's two stages (§5.7, owner decisions of
+2026-11-03): ``alias_study_run.py --stage A`` (retrieval of the 19 stage-A legs: the five
+Layer-1 attachments at every retriever and the four noise repeats, every gate: the load receipt,
+depth read-back, boost probe ``declared``, the admin config hash, gold presence, per-leg failed
+calls, the inactive-reranker gate), ``alias_study_judge.py`` on judging stage A's pairs (14
+legs; registry on demand, batches, C / E / Argon / Opus drift sample with the one-retry cap,
+finalize with the drift alarm, ``commit-stage-a``), then ``alias_study_run.py --stage B`` (the
+other 9 cells and the placebo leg) and the judge on stage B's new pairs (the Layer-1 bm25 legs
+among them), then the analysis gate, a row count of every leg, and ``alias_study_stats.py``
+(Layer 1, Layer 2, sensitivities, the public check). What is fake:
 
 * **the corpora**: ``base`` is the real chunk export (read only); each expanded arm adds
   ``--added-per-arm`` synthetic papers, copies of base chunks under new chunk ids and paper ids
   (``DRY…``), written to ``--work``;
 * **the retriever** (:class:`FakeServer`, an ``httpx.MockTransport``): BM25 over the arm's
   chunks (``glossbench_alias_judge.BM25``), with a seeded perturbation per retriever and per
-  attached glossary arm, so the cells differ; ``/v1/config`` answers a fixed admin config;
-* **the swap records, restore points and glossary-file hashes**, written to ``--work``;
+  glossary arm, so the cells differ; one collection id per attachment; ``/v1/config`` answers a
+  fixed admin config;
+* **the collections' load receipts and glossary-file hashes**, written to ``--work`` (no live
+  census: a dry run has no index);
 * **the judges** (:class:`FakeJudges`): a verdict from a hash of the user message, so the
   judges mostly agree, sometimes disagree (escalations), Argon sometimes answers unparseably
   (the re-issue) and Opus sometimes answers empty (filtered pairs).
@@ -73,11 +79,11 @@ class FakeServer:
     """``/v1/retrieve`` over the arm's chunks: BM25, perturbed per retriever and glossary arm."""
 
     def __init__(self, base: Mapping[str, Mapping[str, Any]], added: Mapping[str, Mapping[str, Mapping[str, Any]]],
-                 collections: Mapping[str, str]) -> None:
+                 collections: Mapping[str, tuple[str, str]]) -> None:
         self.index = {"base": jd.BM25([(c, r["content"]) for c, r in base.items()])}
         self.added = {a: jd.BM25([(c, r["content"]) for c, r in rows.items()]) for a, rows in added.items()}
-        self.arm_of_collection = {v: k for k, v in collections.items()}
-        self.attached: dict[str, str] = {}
+        #: collection id -> (corpus arm, glossary arm): one read-only collection per attachment
+        self.attachment_of = dict(collections)
         self.cache: dict[tuple[str, str], list[str]] = {}
         self.calls = 0
 
@@ -99,11 +105,10 @@ class FakeServer:
         if request.method == "POST" and path == "/v1/retrieve":
             self.calls += 1
             body = json.loads(request.content)
-            arm = self.arm_of_collection[body["collection"]]
-            gl = self.attached[arm]
+            arm, gl = self.attachment_of[body["collection"]]
             ids = list(self.ranked(arm, body["query"]))
             mode = "bm25" if body["retrieval_mode"] == "bm25" else ("rerank" if body.get("rerank") else "rrf")
-            if mode != "bm25" or gl == "merged":
+            if mode != "bm25" or gl != "none":
                 salt = f"{mode}|{gl}|{body['query']}"
                 ids = sorted(ids[:60], key=lambda c: (ids.index(c) + (h(salt, c) % 25))) + ids[60:]
             top = ids[: int(body["top_k"])]
@@ -208,57 +213,67 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
         write_jsonl(exports[a], rows)
     added = {a: {r["chunk_id"]: r for r in rows} for a, rows in added_rows.items()}
     gfiles = {}
-    for g in asc.GLOSSARY_ARMS:
+    for g in ar.STUDY_GLOSSARY_ARMS:
         gf = work / f"glossary-{g}.txt"
         gf.write_text(f"dry-run glossary arm {g}\n")
         gfiles[g] = asc.sha256_file(gf)
-    collections = {a: f"dry_{a}" for a in asc.CORPUS_ARMS}
     expected = {a: len(base) + len(added.get(a, {})) for a in asc.CORPUS_ARMS}
-    corpora: dict[str, Any] = {}
+    corpora: dict[str, Any] = {a: {"expected_chunks": expected[a],
+                                   "chunk_export": [str(base_export)] + ([str(exports[a])] if a in exports else [])}
+                               for a in asc.CORPUS_ARMS}
+    # one collection per attachment, each with the load receipt its (fake) load would write
+    receipts = work / "receipts"
+    receipts.mkdir(exist_ok=True)
+    cols: dict[str, dict[str, Any]] = {}
+    attach: dict[str, tuple[str, str]] = {}
     for a in asc.CORPUS_ARMS:
-        rp = work / f"restore-{a}.json"
-        rp.write_text(json.dumps({"schema": ar.RESTORE_SCHEMA, "index": f"ragstack_lib_bench_dry_{a}",
-                                  "snapshot_id": f"dry-snap-{a}", "total": expected[a],
-                                  "stamps": {stamp("none"): expected[a]}}))
-        corpora[a] = {"collection": collections[a], "index": f"ragstack_lib_bench_dry_{a}",
-                      "expected_chunks": expected[a], "restore_point": str(rp),
-                      "chunk_export": [str(base_export)] + ([str(exports[a])] if a in exports else [])}
+        for g in ar.STUDY_GLOSSARY_ARMS:
+            if g == ar.PLACEBO and a != "base":
+                continue
+            cid = f"bench-dry-{a}-{g}"
+            rp = receipts / f"{a}-{g}.json"
+            rp.write_text(json.dumps({
+                "n_shards": 1, "n_shards_failed": 0, "n_chunks": expected[a], "failed_shards": [], "errors": {},
+                "provenance": {"workflow_id": "dry-run"},
+                # every arm, none included, loaded from an explicit glossary file; none's holds empty rows
+                "glossary_file": {"symbol_glossary": {
+                    "sha256": gfiles[g], "glossary_versions": [f"dry-{g}"],
+                    "counts": {"documents": 1, "with_llm": 0, "degraded": 0,
+                               "merged_entries": 0 if g == "none" else 1}}}}))
+            cols.setdefault(a, {})[g] = {"collection": cid, "index": f"ragstack_lib_bench_dry_{a}_{g}",
+                                         "load_receipt": str(rp)}
+            attach[cid] = (a, g)
     gold_hashes = work / "gold-hashes.json"
     gold_hashes.write_text(json.dumps({r["gold_chunks"][0]: asc.sha_text(base[r["gold_chunks"][0]]["content"])
                                        for r in recs}))
-    run_cfg = {"api": {"base_url": DRY_URL, "retry_backoff_s": 0.0}, "corpora": corpora,
-               "arms": {g: {"stamps": [f"dry-{g}"], "glossary_file_sha256": dict.fromkeys(asc.CORPUS_ARMS, gfiles[g])}
-                        for g in asc.GLOSSARY_ARMS},
-               "records": str(records), "out_dir": str(work / "runs"), "gold_hashes": str(gold_hashes),
+    arms: dict[str, Any] = {}
+    for g in ("none", "merged", ar.PLACEBO):
+        arms[g] = {"stamps": [f"dry-{g}"], "glossary_file_sha256": dict.fromkeys(asc.CORPUS_ARMS, gfiles[g])}
+    run_cfg = {"api": {"base_url": DRY_URL, "retry_backoff_s": 0.0}, "corpora": corpora, "collections": cols,
+               "arms": arms, "records": str(records), "out_dir": str(work / "runs"), "gold_hashes": str(gold_hashes),
                "dry_run": True}
     cfgp = work / "run-config.json"
     cfgp.write_text(json.dumps(run_cfg, indent=1))
-    server = FakeServer(base, added, collections)
-    swaps = work / "swaps"
-    swaps.mkdir(exist_ok=True)
+    server = FakeServer(base, added, attach)
     codes: dict[str, int] = {}
-    for a in asc.CORPUS_ARMS:
-        for g in asc.GLOSSARY_ARMS:
-            sw = swaps / f"{a}-{g}.swap.json"
-            sw.write_text(json.dumps({
-                "schema": "glossbench-swap/1", "arm": g, "index": corpora[a]["index"],
-                "glossary_file": {"sha256": gfiles[g]}, "shuffle_seed": None,
-                "apply": {"dry_run": False, "chunks_to_update": expected[a], "chunks_written": expected[a],
-                          "glossary_file": {"sha256": gfiles[g]}},
-                "census_after": {"total": expected[a], "stamps": {stamp(g): expected[a]}}}))
-            server.attached[a] = g
-            reps = [None, 2] if g == asc.REPEAT_GLOSSARY else [None]
-            for rep in reps:
-                argv = ["--config", str(cfgp), "run", "--corpus-arm", a, "--glossary", g, "--swap-record", str(sw),
-                        "--boost-declared", "1.0"] + (["--repeat", "2"] if rep else [])
-                codes[f"{a}|{g}|{rep or 1}"] = ar.main(argv, client_factory=lambda: httpx.AsyncClient(
-                    transport=httpx.MockTransport(server.handler)))
-    if any(codes.values()):
-        raise SystemExit(f"dry run: a leg did not complete: {codes}")
+
+    def run_stage(stage: str) -> None:
+        done: set[tuple[str, str, int]] = set()
+        for c, g, _r, rep in ar.stage_legs(stage):
+            if (c, g, rep) in done:
+                continue
+            done.add((c, g, rep))
+            argv = ["--config", str(cfgp), "run", "--stage", stage, "--corpus-arm", c, "--glossary", g,
+                    "--boost-declared", "1.0"] + (["--repeat", "2"] if rep == 2 else [])
+            codes[f"{stage}|{c}|{g}|{rep}"] = ar.main(argv, client_factory=lambda: httpx.AsyncClient(
+                transport=httpx.MockTransport(server.handler)))
+        if any(codes.values()):
+            raise SystemExit(f"dry run: a leg did not complete: {codes}")
+
     # the judge
     jcfg = {"out_dir": str(work / "judge"), "runs_dir": str(work / "runs"), "records": str(records),
             "chunk_exports": {"base": str(base_export), **{a: str(p) for a, p in exports.items()}},
-            "glossary": str(glossary), "batch_size": batch_size,
+            "glossary": str(glossary), "batch_size": batch_size, "dry_run": True,
             "caps": {"argon_share": 1.0, "opus_share": 1.0},
             "judge_c": {"base_url": f"{DRY_URL}/c/v1", **{k: v for k, v in ajd.FIXED["C"].items() if k != "variant"}},
             "judge_e": {"base_url": f"{DRY_URL}/e/v1", **{k: v for k, v in ajd.FIXED["E"].items() if k != "variant"}},
@@ -274,16 +289,35 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
     def judge(*a: str) -> int:
         return ajd.main(["--config", str(jcfgp), *a], http_factory=lambda: fake, prov=prov)
 
-    assert judge("build-pairs") == 0
-    n_batches = len(json.loads((work / "judge" / "batches.json").read_text())["batches"])
     jcodes: dict[str, int] = {}
-    for b in range(1, n_batches + 1):
-        for be in ajd.BACKENDS:
-            judge("preflight", "--batch", str(b), "--backend", be)
-            jcodes[f"{b}|{be}"] = judge("label", "--batch", str(b), "--backend", be, "--notice-acknowledged")
-        jcodes[f"{b}|finalize"] = judge("finalize", "--batch", str(b))
-        if jcodes[f"{b}|finalize"] != 0:
-            break
+
+    def judge_stage(stage: str) -> None:
+        assert judge("build-pairs", "--stage", stage) == 0
+        nos = json.loads((work / "judge" / "batches.json").read_text())["stages"][stage]
+        for b in nos:
+            for be in ajd.BACKENDS:
+                judge("preflight", "--batch", str(b), "--backend", be)
+                jcodes[f"{b}|{be}"] = judge("label", "--batch", str(b), "--backend", be, "--notice-acknowledged")
+            jcodes[f"{b}|finalize"] = judge("finalize", "--batch", str(b))
+            if jcodes[f"{b}|finalize"] != 0:
+                raise SystemExit(f"dry run: batch {b} did not finalize: {jcodes}")
+
+    run_stage("A")
+    judge_stage("A")
+    jcodes["commit-stage-a"] = judge("commit-stage-a")
+    run_stage("B")
+    judge_stage("B")
+    gate = ajd.analysis_gate(work / "runs", dry_run=True)
+    # every leg holds one row per record, none failed: an empty leg cannot pass the dry run
+    import found10 as f10
+
+    leg_rows: dict[str, int] = {}
+    for c, g, r, rep in ar.study_legs():
+        rows_path, _ = ar.leg_files(work / "runs", c, g, r, rep)
+        rows = [x for x in f10.read_jsonl_repair_tail(rows_path) if x["condition"] == asc.RETRIEVERS[r]]
+        leg_rows[asc.leg_id(c, g, r, rep)] = len(rows)
+        if len(rows) != len(recs) or any(x.get("failed") for x in rows):
+            raise SystemExit(f"dry run: leg {asc.leg_id(c, g, r, rep)} holds {len(rows)} rows for {len(recs)} records")
     # the statistics
     n_g = sum(1 for r in asc.split_records(recs)[0] if r["kind"] == "G")
     scfg = {"records": str(records), "runs_dir": str(work / "runs"), "judge_dir": str(work / "judge"),
@@ -293,7 +327,8 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
     rc = ast.main(["--config", str(scfgp), "--out", str(work / "results-dryrun.json"),
                    "--public", str(work / "public-dryrun.json")])
     res = json.loads((work / "results-dryrun.json").read_text())
-    return {"legs": codes, "judge": jcodes, "stats_exit": rc, "retrieve_calls": server.calls,
+    return {"legs": codes, "judge": jcodes, "stats_exit": rc, "retrieve_calls": server.calls, "analysis_gate": gate,
+            "leg_rows": leg_rows,
             "judge_calls": fake.calls, "layer1": {k: res["layer1"][k]["status"] for k in ("H1", "H2", "H1b")},
             "records": len(recs), "work": str(work)}
 

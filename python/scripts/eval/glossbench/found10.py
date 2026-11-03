@@ -653,9 +653,21 @@ class Runner:
             self.hard_stop = (f"a served {cond} hit carries stamp(s) {bad} that arm {self.arm!r} does not allow: "
                               "the index does not hold the declared arm")
 
-    async def run(self) -> int:
+    #: what the verified census came from, for the refusal message
+    census_source = "the swap record's"
+
+    def _attachment_census(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        """``(the attachment record, its verified census)``: round 3's swap record (item 1 of
+        the module docstring). The alias study reads a per-collection load receipt instead."""
         swap = json.loads(self.swap_record_path.read_text(encoding="utf-8"))
-        verified = verify_swap_record(swap, self.cfg, self.corpus, self.arm)
+        return swap, verify_swap_record(swap, self.cfg, self.corpus, self.arm)
+
+    def _census_ok(self, live: Mapping[str, Any], census: Mapping[str, Any]) -> bool:
+        """A live census agrees with the verified one (round 3: equal)."""
+        return dict(live) == dict(census)
+
+    async def run(self) -> int:
+        swap, verified = self._attachment_census()
         self.shuffle_suffix = verified["shuffle_suffix"]
         census = {"total": verified["total"], "stamps": verified["stamps"]}
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -670,8 +682,8 @@ class Runner:
         async with self._client_factory() as client, self._census_client_factory() as es_client:
             if census_cfg.get("es_url"):
                 live_before = await live_census(es_client, census_cfg["es_url"], self.ccfg["index"])
-                if live_before != census:
-                    raise Refused(f"live census {live_before} != the swap record's {census}")
+                if not self._census_ok(live_before, census):
+                    raise Refused(f"live census {live_before} != {self.census_source} {census}")
             server = await self._server_info(client)
             self.boost_check = await self._boost_probe(client)
             if self.boost_check["status"] in gbp.STOP:
@@ -717,7 +729,7 @@ class Runner:
                 raise Refused(self.config_error)
             if census_cfg.get("es_url") and not self.stop_reason:
                 live_after = await live_census(es_client, census_cfg["es_url"], self.ccfg["index"])
-                if live_after != census:
+                if not self._census_ok(live_after, census):
                     self.hard_stop = (self.hard_stop or
                                       f"the index changed during the run: census {live_after} != {census}")
             await self._after_jobs(client, server)
