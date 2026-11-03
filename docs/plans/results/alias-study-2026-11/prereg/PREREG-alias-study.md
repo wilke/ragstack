@@ -927,7 +927,14 @@ field shows two lines. The rendering conventions, for every glossary file:
   it are dropped, and no line is truncated;
 - served config `attach_only_with_value` false and `positional` false;
 - each variant has **its own version string**, ending in `+attach=mention`;
-- the definition text is the entry's `display_form` (NFC), with NFKD-cut primaries.
+- **definition text**: an abbreviation's primary term is cut from the paper's **canonical text**
+  (`alias_abbrev.find_definitions` on `symbol_glossary.canonical_text`). That text is NFKD-decomposed
+  character by character, with bar spellings mapped to a combining macron, Greek variant letters unified
+  (`ϕ` → `φ`), LaTeX Greek names and underscore subscripts folded. So the compatibility folds stay folded
+  in the rendered line: the micro sign becomes Greek mu, a ligature becomes separate letters, a
+  math-italic letter a plain one. The whole line is then passed through `symbol_glossary.display_form`
+  (NFC), which recomposes canonical decompositions (an accented letter, a barred letter that has a
+  precomposed form) but undoes none of those folds.
 
 For added papers in **every** expanded arm, the glossaries are generated **by the same pipeline at the
 same versions** (owner, 2026-11-01):
