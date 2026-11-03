@@ -204,3 +204,105 @@ def test_memoised_pdf_outcome_is_stale_once_a_pmcid_is_known():
     assert not run.Builder._stale(ac.Work(wid="W1"), pdf_only)
     tried = {"ok": True, "route": "pdf", "attempts": [{"route": "jats", "reason": "pmc_not_in_oa_subset"}]}
     assert not run.Builder._stale(ac.Work(wid="W1", pmcid="PMC1"), tried)
+
+
+# ------------------------------------------------------------------ v2: walk-down, type filter, matched draws
+
+
+def test_type_filter_keeps_only_articles_and_reviews():
+    assert ac.type_class("article") == "article" and ac.type_class("review") == "review"
+    for t in ("preprint", "letter", "editorial", "erratum", "retraction", "paratext", "peer-review", None, ""):
+        assert ac.type_class(t) is None
+
+
+def test_rank_lists_extend_the_v1_picks():
+    excl = ac.Exclusion()
+    refs = [W(f"W{i}", cited_by_count=100 - i, type="article") for i in range(12)]
+    assert [w.wid for w in ac.rank_references("PMC1", refs, excl)[:5]] == \
+        [w.wid for w in ac.pick_references("PMC1", refs, excl)[0]]
+    cits = [W(f"W{i}", pub_date=f"2020-01-{i + 1:02d}", type="article") for i in range(12)]
+    assert [w.wid for w in ac.rank_citers("PMC1", cits, excl)[:5]] == \
+        [w.wid for w in ac.pick_citers("PMC1", cits, excl)[0]]
+
+
+def test_walk_down_skips_type_failures_and_c0_until_cap():
+    ranked = [W("W1", type="article"), W("W2", type="erratum"), W("W3", type="article"), W("W4", type="review"),
+              W("W5", type="article"), W("W6", type="article"), W("W7", type="article"), W("W8", type="article")]
+    outs = {"W1": ac.Outcome(ok=True, source="jats"), "W3": ac.Outcome(ok=False, reason="robots_disallow"),
+            "W4": ac.Outcome(ok=False, excluded_c0=True), "W5": ac.Outcome(ok=True), "W6": ac.Outcome(ok=True),
+            "W7": ac.Outcome(ok=True), "W8": ac.Outcome(ok=True)}
+    calls = []
+
+    def resolve(wid):
+        calls.append(wid)
+        return outs[wid]
+
+    r = ac.walk_down(ranked, 3, resolve)
+    assert r["picked"] == ["W1", "W5", "W6"] and not r["exhausted"]
+    assert r["skipped"] == [("W2", "type:erratum"), ("W3", "robots_disallow"), ("W4", "c0_screen")]
+    assert "W2" not in calls and "W7" not in calls
+    r = ac.walk_down(ranked[:4], 3, resolve)
+    assert r["exhausted"] and r["picked"] == ["W1"]
+
+
+def test_next_to_resolve_never_over_fetches():
+    ranked = [W(f"W{i}", type="article") for i in range(10)]
+    known = {"W0": ac.Outcome(ok=True), "W1": ac.Outcome(ok=False)}
+    assert ac.next_to_resolve(ranked, 3, known.get) == ["W2", "W3"]
+    known.update({"W2": ac.Outcome(ok=True), "W3": ac.Outcome(ok=True)})
+    assert ac.next_to_resolve(ranked, 3, known.get) == []
+
+
+def test_length_bands():
+    cuts = ac.length_cuts(list(range(1, 101)), 5)
+    assert cuts == [21.0, 41.0, 61.0, 81.0]
+    assert [ac.band_of(n, cuts) for n in (1, 20, 21, 60, 81, 500)] == [0, 0, 1, 2, 4, 4]
+
+
+def _matched(order, quota, info, max_resolves=None, taken=None):
+    """info: wid -> (type, klass, Outcome)."""
+    return ac.draw_matched(order, quota, taken if taken is not None else set(),
+                           type_of=lambda w: info[w][0], klass=lambda w: info[w][1],
+                           resolve=lambda w: info[w][2], band=lambda n: 0 if n < 10 else 1,
+                           max_resolves=max_resolves)
+
+
+def test_draw_matched_fills_cells_strictly_and_rejects_for_band():
+    info = {"A": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=50)),   # band 1, cell full
+            "B": ("letter", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5)),
+            "C": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5)),
+            "D": ("review", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=30)),
+            "E": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=40))}
+    quota = {("article", 0, "jats"): 1, ("article", 1, "jats"): 1, ("review", 1, "pdf"): 1}
+    r = _matched(["A", "B", "C", "D", "E"], quota, info)
+    assert [t["wid"] for t in r["took"]] == ["A", "C", "D"] and r["shortfall"] == 0
+    assert all(t["level"] == "strict" for t in r["took"]) and r["skipped"]["type"] == 1
+    quota = {("article", 0, "jats"): 2}
+    r = _matched(["A", "C", "E"], quota, info)
+    # A, E are band 1: set aside, then the relaxation (source -> source+type -> any) takes one of them at "source+type"? no:
+    # band differs, so only level "any" matches
+    assert r["skipped"]["rejected_for_band"] == 2
+    assert [(t["wid"], t["level"]) for t in r["took"]] == [("C", "strict"), ("A", "any")]
+
+
+def test_draw_matched_relaxes_source_before_type_and_respects_budget():
+    info = {"P": ("article", "pdf", ac.Outcome(ok=True, source="pdf", n_chunks=5)),
+            "J": ("article", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5)),
+            "R": ("review", "jats", ac.Outcome(ok=True, source="jats", n_chunks=5))}
+    quota = {("review", 0, "pdf"): 1, ("article", 0, "jats"): 1}
+    r = _matched(["J", "R", "P"], quota, info)
+    assert [(t["wid"], t["level"]) for t in r["took"]] == [("J", "strict"), ("R", "source")]
+    taken = set()
+    r = _matched(["J", "R", "P"], {("article", 0, "pdf"): 1, ("article", 0, "jats"): 1}, info, max_resolves=1,
+                 taken=taken)
+    # the strict pass stops at its budget; the relaxation (own budget) fetches P, which fits exactly
+    assert r["budget_hit"] and [(t["wid"], t["level"]) for t in r["took"]] == [("J", "strict"), ("P", "strict")]
+    assert taken == {"J", "P"} and r["resolves_by_phase"] == {"strict": 1, "relax": 1}
+    r = _matched(["J", "R", "P"], {("article", 0, "pdf"): 1, ("article", 0, "jats"): 1}, info, max_resolves=0)
+    assert r["got"] == 0 and r["shortfall"] == 2
+
+
+def test_random_order_v2_seeds():
+    assert ac.SEED_RANDOM_V2 == {1: "261101|alias|random-1-v2", 2: "261101|alias|random-2-v2"}
+    ws = [f"W{i}" for i in range(20)]
+    assert ac.random_order(1, "PMC1", ws, seeds=ac.SEED_RANDOM_V2) != ac.random_order(1, "PMC1", ws)

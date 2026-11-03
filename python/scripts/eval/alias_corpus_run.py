@@ -107,7 +107,7 @@ class Layout:
     def __init__(self, root: str) -> None:
         self.root = Path(root)
         for sub in ("raw/jats", "raw/pdf", "text", "chunks", "logs", "meta", "meta/pool-v2",
-                    "manifests", "state", "tmp"):
+                    "manifests", "state", "tmp", "raw-v2/jats", "raw-v2/pdf", "text-v2", "chunks-v2"):
             d = self.root / sub
             d.mkdir(parents=True, exist_ok=True)
             os.chmod(d, 0o700)
@@ -326,7 +326,9 @@ def load_oa1000() -> tuple[list[str], dict[str, str], dict[str, str]]:
     return pm, titles, dois
 
 
-def stage_neighbours(lay: Layout, api: OpenAlex) -> dict:
+def neighbour_inputs(lay: Layout, api: OpenAlex) -> dict[str, Any]:
+    """The OpenAlex inputs of the neighbour rule (cached URLs: a re-run reads the same responses):
+    the OA-1000 exclusion, the study records, reference metadata and the citer lists."""
     study = json.load(open(lay.state / "study.json"))["study"]
     oa_pmc, oa_titles, oa_dois = load_oa1000()
     recs = api.batch("ids.pmcid", [p.replace("PMC", "") for p in oa_pmc])
@@ -390,6 +392,16 @@ def stage_neighbours(lay: Layout, api: OpenAlex) -> dict:
                      "select": OA_FIELDS})
         citers[p] = (b["results"], b["meta"]["count"], b["meta"]["count"] <= 200)
     api.save()
+    return {"oa_pmc": oa_pmc, "still_missing": still_missing, "excl": excl, "study_w": study_w,
+            "study_missing": study_missing, "ref_meta": ref_meta, "light": light, "heavy": heavy, "acc": acc,
+            "citers": citers}
+
+
+def stage_neighbours(lay: Layout, api: OpenAlex) -> dict:
+    inp = neighbour_inputs(lay, api)
+    oa_pmc, still_missing, excl, study_w = inp["oa_pmc"], inp["still_missing"], inp["excl"], inp["study_w"]
+    study_missing, ref_meta, light, heavy = inp["study_missing"], inp["ref_meta"], inp["light"], inp["heavy"]
+    acc, citers = inp["acc"], inp["citers"]
     # picks
     works: dict[str, ac.Work] = {}
     picks: dict[str, list[tuple[str, str]]] = {}
@@ -722,7 +734,10 @@ def http_get(url: str, gate: HostGate | None, max_bytes: int, timeout: int = 60,
 class Builder:
     """Fetch -> convert -> chunk -> screen for one work; memoised, thread-safe, resumable."""
 
-    def __init__(self, lay: Layout, workers: int = 16) -> None:
+    def __init__(self, lay: Layout, workers: int = 16, v2: bool = False) -> None:
+        """``v2``: memoised outcomes are read from the v1 state files and then the v2 ones; every new
+        outcome and file goes to ``state/*-v2.jsonl`` and ``raw-v2/``, ``text-v2/``, ``chunks-v2/``
+        (the v1 files are read, never rewritten). Hosts that refused (403/429) in v1 stay refused."""
         from ragstack.ingestion import jats
         from ragstack.ingestion.boilerplate import filter_from_mode
         from ragstack.ingestion.chunker_config import build_chunker
@@ -747,11 +762,20 @@ class Builder:
         self.futs: dict[str, cf.Future] = {}
         self.kfuts: dict[str, cf.Future] = {}
         self.lock = threading.Lock()
-        self.out_path = lay.state / "outcomes.jsonl"
-        self.pmc_path = lay.state / "pmc-meta.jsonl"
+        self.v2 = v2
+        sfx = "-v2" if v2 else ""
+        self.out_path = lay.state / f"outcomes{sfx}.jsonl"
+        self.pmc_path = lay.state / f"pmc-meta{sfx}.jsonl"
+        self.raw_jats_dir = lay.root / f"raw{sfx}" / "jats"
+        self.raw_pdf_dir = lay.root / f"raw{sfx}" / "pdf"
+        self.text_dir = lay.root / f"text{sfx}"
+        self.chunks_dir = lay.root / f"chunks{sfx}"
         self.done: dict[str, dict] = {}
         self.pmc: dict[str, dict] = {}
-        for path, store in ((self.out_path, self.done), (self.pmc_path, self.pmc)):
+        sources = [(self.out_path, self.done), (self.pmc_path, self.pmc)]
+        if v2:
+            sources = [(lay.state / "outcomes.jsonl", self.done), (lay.state / "pmc-meta.jsonl", self.pmc), *sources]
+        for path, store in sources:
             if path.exists():
                 for line in open(path):
                     try:
@@ -760,6 +784,11 @@ class Builder:
                     except Exception:
                         pass
         self.works: dict[str, ac.Work] = {}
+        if v2:
+            for r in self.done.values():
+                for a in [r, *(r.get("attempts") or [])]:
+                    if (a or {}).get("reason") in ("host_refused_403", "host_refused_429") and a.get("host"):
+                        self.gate.refused.setdefault(a["host"], "v1:" + a["reason"][-3:])
 
     # ---------------------------------------------------------- PMC open-access metadata
     def pmc_meta(self, pmcid: str) -> dict:
@@ -884,13 +913,13 @@ class Builder:
             st, raw, _ = http_get(url, None, 200 << 20, timeout=60)
         if raw is None:
             return {"ok": False, "route": "jats", "reason": f"jats_http_{st}"}
-        rawp = self.lay.raw_jats / f"{w.pmcid}.xml"
+        rawp = self.raw_jats_dir / f"{w.pmcid}.xml"
         write_bytes(rawp, raw)
         try:
             clean = strip_back(raw)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "route": "jats", "reason": "jats_parse_error", "detail": str(e)[:200]}
-        cleanp = self.lay.raw_jats / f"{w.pmcid}.clean.xml"
+        cleanp = self.raw_jats_dir / f"{w.pmcid}.clean.xml"
         write_bytes(cleanp, clean)
         row = {"sha256": sha256_bytes(raw), "source_url": url, "licence": m.get("license_code") or ""}
         recs, skips = self.jats.convert_file(cleanp, w.pmcid, row, count_tokens=self.counter.count)
@@ -920,7 +949,7 @@ class Builder:
             return {**base, "ok": False, "reason": f"http_{st}", "status": st}
         if not body.lstrip()[:5].startswith(b"%PDF"):
             return {**base, "ok": False, "reason": "not_pdf", "status": st}
-        rawp = self.lay.raw_pdf / f"{w.wid}.pdf"
+        rawp = self.raw_pdf_dir / f"{w.wid}.pdf"
         write_bytes(rawp, body)
         outp = self.lay.tmp / f"{w.wid}.pdf.jsonl"
         try:
@@ -944,7 +973,7 @@ class Builder:
         return res
 
     def _chunk(self, w: ac.Work, recs: list[dict], key: str, source: str) -> dict:
-        textp = self.lay.text / f"{key}.jsonl"
+        textp = self.text_dir / f"{key}.jsonl"
         with open(textp, "w", encoding="utf-8") as f:
             for r in recs:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -952,7 +981,7 @@ class Builder:
         with self.chunk_lock:
             prep = asyncio.run(self.pipe.prepare_source(str(textp)))
         rows = [ac.export_row(c) for c in prep.chunks]
-        chunkp = self.lay.chunks / f"{key}.jsonl"
+        chunkp = self.chunks_dir / f"{key}.jsonl"
         with open(chunkp, "w", encoding="utf-8") as f:
             for r in rows:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -961,7 +990,7 @@ class Builder:
         ok = bool(rows) and not scr["excluded"]
         return {"ok": ok, "source": source, "excluded_c0": scr["excluded"], "n_chunks": scr["n_chunks"],
                 "c0_chunks": scr["c0_chunks"], "formfeed_chunks": scr["formfeed_chunks"], "c0_rate": scr["rate"],
-                "source_path": key, "chunk_file": chunkp.name, "chunks_sha256": sha256_file(chunkp),
+                "source_path": key, "chunk_file": chunkp.name, "chunk_dir": chunkp.parent.name, "chunks_sha256": sha256_file(chunkp),
                 "reason": None if ok else ("c0_screen" if scr["excluded"] else "no_chunks")}
 
 
@@ -1213,7 +1242,8 @@ def _provenance() -> dict:
 # ====================================================================== stage: chunkcheck
 
 
-def stage_chunkcheck(lay: Layout, b: Builder, n: int = 3, seed: str = "261101|alias|chunkcheck") -> dict:
+def stage_chunkcheck(lay: Layout, b: Builder, n: int = 3, seed: str = "261101|alias|chunkcheck",
+                     out_name: str = "chunkcheck.json") -> dict:
     """Re-chunk ``n`` OA-1000 papers (seeded pick) from the harvest's ``clean/`` tree through the same
     convert + chunk path as the added papers and diff against the export, row for row."""
     if sha256_file(OA_EXPORT) != OA_EXPORT_SHA:
@@ -1251,9 +1281,376 @@ def stage_chunkcheck(lay: Layout, b: Builder, n: int = 3, seed: str = "261101|al
            "ids_equal": set(ref) == set(mine), "rows_differing": len(diffs), "match": not diffs and bool(ref),
            "strip_back_reproduces_clean_tree": f"{strip_equal}/{n}", "export_sha256": OA_EXPORT_SHA,
            "chunker": "fixed_token 512/0, tokenizer " + TOKENIZER, "t": now()}
-    write_json(lay.manifests / "chunkcheck.json", res)
+    write_json(lay.manifests / out_name, res)
     log(f"chunkcheck: {res}")
     return res
+
+
+# ====================================================================== v2 (owner, 2026-11-01)
+#
+# The v2 rebuild: the neighbour walk-down, the article-type filter in both arms, and random draws
+# matched per study paper on (type, length band, source). Every v1 file is kept; v2 writes
+# ``*-v2`` manifests, chunk files and state, and reuses every v1 fetch outcome.
+
+V2_BANDS = 5
+V2_CAP = {"ref": ac.REF_CAP, "citer": ac.CITER_CAP}
+V2_SCHEMA_TYPE = ("OpenAlex `type` in {article, review} kept (article -> article, review -> review); every other "
+                  "type dropped, both arms; type_crossref not read (absent from the snapshot projection)")
+V2_RULE = ("per study paper, down the ranked list of references (most cited first) and of citers (most recent "
+           "first) with open-access full text, not in OA-1000: skip works whose OpenAlex type is not article/"
+           "review, that fail to fetch (not in the PMC OA subset, robots, 403/429, not a PDF, ...) or that the "
+           "C0 screen excludes, until 5 references and 5 citers are obtained or the list is exhausted; shared "
+           "neighbours attributed to the first study paper in the seeded order (O5, unchanged: a later study "
+           "paper's slot is used and not replaced); another work id with the same PMCID or DOI is the same paper "
+           "and is added once")
+
+
+def _known_fn(b: Builder, works: dict[str, ac.Work]):
+    def known(wid: str) -> ac.Outcome | None:
+        rec = b.done.get(wid)
+        if rec is None or b._stale(works[wid], rec):
+            return None
+        return outcome_of(rec)
+    return known
+
+
+def load_sel_v2(lay: Layout) -> dict:
+    return json.load(open(lay.manifests / "neighbour-selection-v2.json"))
+
+
+def stage_neighbours_v2(lay: Layout, api: OpenAlex, b: Builder) -> dict:
+    inp = neighbour_inputs(lay, api)
+    excl, study_w, ref_meta = inp["excl"], inp["study_w"], inp["ref_meta"]
+    saved = json.load(open(lay.state / "exclusion.json"))
+    if any(set(saved[k]) != getattr(excl, k) for k in ("wids", "pmcids", "dois", "titles")):
+        raise SystemExit("v2: OA-1000 exclusion differs from state/exclusion.json")
+    ranked: dict[tuple[str, str], list[ac.Work]] = {}
+    cit: dict[str, dict[str, Any]] = {}
+    works: dict[str, ac.Work] = {}
+    for p, w in study_w.items():
+        refs = [ac.work_from_api(ref_meta[ac.short_id(r)]) for r in (w.get("referenced_works") or [])
+                if ac.short_id(r) in ref_meta]
+        ranked[(p, "ref")] = ac.rank_references(p, refs, excl)
+        cl, total, complete = inp["citers"][p]
+        cit[p] = {"raw": {ac.short_id(c["id"]): c for c in cl}, "total": total, "complete": complete, "pages": 1}
+        ranked[(p, "citer")] = ac.rank_citers(p, [ac.work_from_api(c) for c in cit[p]["raw"].values()], excl)
+    for lst in ranked.values():
+        for x in lst:
+            works.setdefault(x.wid, x)
+    known = _known_fn(b, works)
+    t0 = time.time()
+    rnd = 0
+    while True:
+        rnd += 1
+        want: list[str] = []
+        paged = 0
+        for (p, side), lst in ranked.items():
+            nx = ac.next_to_resolve(lst, V2_CAP[side], known)
+            if not nx and side == "citer" and not cit[p]["complete"]:
+                if ac.walk_down(lst, V2_CAP[side], known)["exhausted"]:   # every needed outcome is known here
+                    c = cit[p]
+                    c["pages"] += 1
+                    body = api.get({"filter": f"cites:{study_w[p]['id'].rsplit('/', 1)[-1]}",
+                                    "sort": "publication_date:desc", "per-page": 200, "page": c["pages"],
+                                    "select": OA_FIELDS})
+                    for r in body["results"]:
+                        c["raw"].setdefault(ac.short_id(r["id"]), r)
+                    c["complete"] = not body["results"] or c["pages"] * 200 >= body["meta"]["count"]
+                    ranked[(p, side)] = ac.rank_citers(p, [ac.work_from_api(x) for x in c["raw"].values()], excl)
+                    for x in ranked[(p, side)]:
+                        works.setdefault(x.wid, x)
+                    paged += 1
+                    continue
+            want += nx
+        want = list(dict.fromkeys(want))
+        if not want and not paged:
+            break
+        futs = [b.resolve_async(works[w]) for w in want]
+        for f in cf.as_completed(futs):
+            f.result()
+        log(f"neighbours-v2: round {rnd}: resolved {len(want)}, citer pages fetched {paged}, {time.time() - t0:.0f}s")
+    api.save()
+    picks: dict[str, list[tuple[str, str]]] = {}
+    per_study: dict[str, dict] = {}
+    skips: dict[str, dict[str, list]] = {}
+    for p, w in study_w.items():
+        sides = {s: ac.walk_down(ranked[(p, s)], V2_CAP[s], lambda wid: outcome_of(b.done[wid])) for s in ("ref", "citer")}
+        picks[p] = [(x, "ref") for x in sides["ref"]["picked"]] + [(x, "citer") for x in sides["citer"]["picked"]]
+        skips[p] = {s: [list(t) for t in sides[s]["skipped"]] for s in sides}
+        sw = ac.work_from_api(w)
+        per_study[p] = {"wid": sw.wid, "topic": sw.topic, "year": sw.year,
+                        **{s: {"ranked": r["ranked"], "examined": r["examined"], "picked": len(r["picked"]),
+                               "exhausted": r["exhausted"], "skipped": dict(Counter(x for _, x in r["skipped"]))}
+                           for s, r in sides.items()},
+                        "citer_list": {"cited_by_count": cit[p]["total"], "complete": cit[p]["complete"],
+                                       "pages": cit[p]["pages"]}}
+    attributed, dropped = ac.attribute(picks)
+    order = list(ac.attribution_order(study_w))
+    ident = ac.Exclusion()
+    id_dropped: list[list[str]] = []
+    for p in order:
+        keep = []
+        for wid, side in attributed[p]:
+            x = works[wid]
+            if ident.reason(ac.Work(wid="", pmcid=x.pmcid, doi=x.doi)):
+                id_dropped.append([p, wid, side])
+                continue
+            ident.add(ac.Work(wid=wid, pmcid=x.pmcid, doi=x.doi))
+            keep.append((wid, side))
+        attributed[p] = keep
+    examined = {wid for p in skips for s in skips[p].values() for wid, _ in s}
+    examined |= {wid for v in picks.values() for wid, _ in v}
+    sel = {
+        "schema": "alias-corpus-neighbour-selection/2", "version": "v2", "seed": ac.SEED_NEIGHBOURS,
+        "oa_definition": ac.OA_DEFINITION, "type_filter": V2_SCHEMA_TYPE, "rule": V2_RULE, "queried": now(),
+        "study_resolved": len(study_w), "study_unresolved": inp["study_missing"],
+        "oa1000_resolved": len(inp["oa_pmc"]) - len(inp["still_missing"]), "oa1000_unresolved": len(inp["still_missing"]),
+        "order": order, "attributed": attributed, "picks_before_dedupe": sum(len(v) for v in picks.values()),
+        "duplicates_dropped": dropped, "identity_duplicates_dropped": id_dropped, "per_study": per_study,
+        "skips": skips, "rounds": rnd,
+        "works": {k: _work_json(works[k]) for k in sorted(examined)},
+        "study_works": {p: _work_json(ac.work_from_api(w)) for p, w in study_w.items()},
+    }
+    write_json(lay.manifests / "neighbour-selection-v2.json", sel)
+    n_attr = sum(len(v) for v in attributed.values())
+    log(f"neighbours-v2: picks {sel['picks_before_dedupe']}, shared dropped {dropped}, identity dropped "
+        f"{len(id_dropped)}, attributed {n_attr}, examined {len(examined)}")
+    return {"attributed": n_attr}
+
+
+def _v2_cuts(sel: dict, b: Builder) -> list[float]:
+    vals = [b.done[w]["n_chunks"] for p in sel["order"] for w, _ in sel["attributed"][p]]
+    return ac.length_cuts(vals, V2_BANDS)
+
+
+def stage_random_v2(lay: Layout, b: Builder, lookahead: int = 2) -> dict:
+    sel = load_sel_v2(lay)
+    sel1 = json.load(open(lay.manifests / "neighbour-selection.json"))
+    excl = load_exclusion(lay)
+    linked = set(json.load(open(lay.state / "linked.json")))
+    nworks = {k: _work_from_json(v) for k, v in {**sel1["works"], **sel["works"]}.items()}
+    nexcl = ac.Exclusion()
+    for w in nworks.values():
+        nexcl.add(w)
+    nwids = set(nworks)
+    cuts = _v2_cuts(sel, b)
+
+    def band(n: int) -> int:
+        return ac.band_of(n, cuts)
+
+    quota: dict[str, Counter] = {}
+    for p in sel["order"]:
+        q: Counter = Counter()
+        for wid, _ in sel["attributed"][p]:
+            r = b.done[wid]
+            q[(ac.type_class(sel["works"][wid]["type"]), band(r["n_chunks"]), r["source"])] += 1
+        quota[p] = q
+    pool = load_pool(lay)
+    log(f"random-v2: pool {sum(len(v) for v in pool.values()):,} works; length cuts {cuts}")
+    cands: dict[str, list[str]] = {}
+    cand_stats: dict[str, dict] = {}
+    works: dict[str, ac.Work] = {}
+    for p in sel["order"]:
+        m = sel["per_study"][p]
+        st: Counter = Counter()
+        keep = []
+        for w in pool.get(m["topic"], []):
+            why = ac.eligible_random(w, m["topic"], m["year"], excl, linked, nwids)
+            if why is None and nexcl.reason(w):
+                why = "neighbour_identity"
+            if why is None and ac.type_class(w.type) is None:
+                why = "type"
+            st[why or "eligible"] += 1
+            if why is None:
+                keep.append(w.wid)
+                works[w.wid] = w
+        cands[p] = keep
+        cand_stats[p] = dict(st)
+
+    def run_draw(d: int) -> dict:
+        taken: set[str] = set()
+        ident = ac.Exclusion()
+        orders = {p: ac.random_order(d, p, cands[p], seeds=ac.SEED_RANDOM_V2) for p in sel["order"]}
+        per: dict[str, dict] = {}
+
+        def prefetch(p: str) -> None:
+            q = quota[p]
+            need = sum(q.values())
+            if not need:
+                return
+            ts = {(t, s) for t, _, s in q}
+            tt = {t for t, _ in ts}
+            looked = sent = 0
+            for wid in orders[p]:
+                if sent >= 3 * need + 6 or looked >= 12 * need + 40:
+                    break
+                if wid in taken or ac.type_class(works[wid].type) not in tt:
+                    continue
+                looked += 1
+                k = b.klass_async(works[wid]).result()
+                if (ac.type_class(works[wid].type), k) in ts:
+                    sent += 1
+                    b.resolve_async(works[wid])
+
+        order = sel["order"]
+        for i, p in enumerate(order):
+            for q in order[i: i + 1 + lookahead]:
+                if q not in per:
+                    threading.Thread(target=prefetch, args=(q,), daemon=True).start()
+            need = sum(quota[p].values())
+            per[p] = ac.draw_matched(
+                orders[p], quota[p], taken,
+                type_of=lambda wid: works[wid].type,
+                klass=lambda wid: b.klass_async(works[wid]).result(),
+                resolve=lambda wid: outcome_of(b.resolve(works[wid])),
+                band=band,
+                is_dup=lambda wid: ident.reason(ac.Work(wid="", pmcid=works[wid].pmcid, doi=works[wid].doi)) is not None,
+                on_take=lambda wid: ident.add(ac.Work(wid=wid, pmcid=works[wid].pmcid, doi=works[wid].doi)),
+                max_resolves=max(40, 15 * need),
+            )
+            if (i + 1) % 25 == 0:
+                log(f"random-{d}-v2: {i + 1}/{len(order)} study papers; taken {len(taken)}")
+        return per
+
+    results: dict[int, dict] = {}
+    with cf.ThreadPoolExecutor(max_workers=2) as ex:
+        futs = {d: ex.submit(run_draw, d) for d in (1, 2)}
+        for d, f in futs.items():
+            results[d] = f.result()
+    for d in (1, 2):
+        write_json(lay.manifests / f"random-{d}-draw-v2.json", {
+            "schema": "alias-corpus-random-draw/2", "version": "v2", "draw": d, "seed": ac.SEED_RANDOM_V2[d],
+            "oa_definition": ac.OA_DEFINITION, "type_filter": V2_SCHEMA_TYPE,
+            "matching": {"cells": "(type class, length band, source) per study paper, from its attributed neighbours",
+                         "length_bands": f"{V2_BANDS} bands at the quantiles of the neighbour arm's chunks per paper",
+                         "cuts": cuts, "relax_order": list(ac.RELAX_ORDER),
+                         "max_resolves": "max(40, 15 x need) per study paper"},
+            "order": sel["order"], "quota": {p: {"|".join(map(str, c)): n for c, n in sorted(quota[p].items())}
+                                             for p in sel["order"]},
+            "per_study": results[d], "candidates_per_study": cand_stats,
+            "works": {t["wid"]: _work_json(works[t["wid"]]) for p in results[d] for t in results[d][p]["took"]},
+            "finished": now()})
+    log("random-v2: both draws written")
+    return {d: sum(r["got"] for r in results[d].values()) for d in (1, 2)}
+
+
+def _stats(xs: list[int]) -> dict:
+    if not xs:
+        return {"n": 0}
+    s = sorted(xs)
+    return {"n": len(s), "sum": sum(s), "mean": round(sum(s) / len(s), 2), "median": s[len(s) // 2] if len(s) % 2
+            else (s[len(s) // 2 - 1] + s[len(s) // 2]) / 2, "p10": s[len(s) // 10], "p90": s[(9 * len(s)) // 10],
+            "max": s[-1]}
+
+
+def stage_finalize_v2(lay: Layout, b: Builder) -> dict:
+    sel = load_sel_v2(lay)
+    draws = {d: json.load(open(lay.manifests / f"random-{d}-draw-v2.json")) for d in (1, 2)}
+    cuts = draws[1]["matching"]["cuts"]
+    wtype = {k: v["type"] for k, v in sel["works"].items()}
+    for d in (1, 2):
+        wtype.update({k: v["type"] for k, v in draws[d]["works"].items()})
+    arms: dict[str, list[tuple[str, str]]] = {"neighbour": [(p, w) for p in sel["order"] for w, _ in sel["attributed"][p]]}
+    for d in (1, 2):
+        arms[f"random-{d}"] = [(p, t["wid"]) for p in draws[d]["order"] for t in draws[d]["per_study"][p]["took"]]
+    counts: dict[str, Any] = {"schema": "alias-corpus-counts/2", "version": "v2", "public": "counts only",
+                              "finished": now(), "length_cuts": cuts, "type_filter": V2_SCHEMA_TYPE}
+    per_study_chunks: dict[str, dict[str, int]] = {}
+    for arm, items in arms.items():
+        out = lay.root / f"chunks-{arm}-v2.jsonl"
+        ids: set[str] = set()
+        dup = 0
+        n_chunks = 0
+        papers: list[int] = []
+        src: Counter = Counter()
+        typ: Counter = Counter()
+        bands: Counter = Counter()
+        psc: Counter = Counter()
+        with open(out, "w", encoding="utf-8") as f:
+            for p, wid in items:
+                r = b.done[wid]
+                if not r.get("ok"):
+                    raise SystemExit(f"{arm}: {wid} in the arm but not ok")
+                src[r["source"]] += 1
+                typ[ac.type_class(wtype[wid])] += 1
+                bands[ac.band_of(r["n_chunks"], cuts)] += 1
+                papers.append(r["n_chunks"])
+                for line in open(lay.root / r.get("chunk_dir", "chunks") / r["chunk_file"], encoding="utf-8"):
+                    row = json.loads(line)
+                    if row["chunk_id"] in ids:
+                        dup += 1
+                        continue
+                    ids.add(row["chunk_id"])
+                    f.write(line)
+                    n_chunks += 1
+                    psc[p] += 1
+        os.chmod(out, 0o600)
+        per_study_chunks[arm] = dict(psc)
+        counts[arm] = {"papers": len(items), "chunks": n_chunks, "duplicate_chunk_ids": dup,
+                       "chunks_per_paper": _stats(papers), "source": dict(src),
+                       "pdf_share": round(src["pdf"] / len(items), 4) if items else None,
+                       "type_mix": dict(typ), "band_counts": {str(k): v for k, v in sorted(bands.items())},
+                       "chunks_sha256": sha256_file(out)}
+    # neighbour targets, shortfalls, skips
+    tgt = 2 * ac.REF_CAP
+    per_n = Counter()
+    for p in sel["order"]:
+        per_n[p] = len(sel["attributed"][p])
+    sk: dict[str, Counter] = {"ref": Counter(), "citer": Counter()}
+    for p in sel["skips"]:
+        for s, lst in sel["skips"][p].items():
+            sk[s].update(x for _, x in lst)
+    ps = sel["per_study"]
+    counts["neighbour"].update({
+        "target_per_study": tgt, "target_total": tgt * len(sel["order"]),
+        "per_study_attributed_hist": dict(sorted(Counter(per_n[p] for p in sel["order"]).items())),
+        "studies_below_target": sum(1 for p in sel["order"] if per_n[p] < tgt),
+        "picked_before_dedupe": sel["picks_before_dedupe"], "shared_dropped": sel["duplicates_dropped"],
+        "identity_dropped": len(sel["identity_duplicates_dropped"]),
+        "exhausted": {s: sum(1 for p in ps if ps[p][s]["exhausted"]) for s in ("ref", "citer")},
+        "picked_by_side": {s: sum(ps[p][s]["picked"] for p in ps) for s in ("ref", "citer")},
+        "skipped_by_reason": {s: dict(sk[s].most_common()) for s in sk},
+        "citer_pages_beyond_first": sum(ps[p]["citer_list"]["pages"] - 1 for p in ps)})
+    ntot = counts["neighbour"]["chunks"]
+    for d in (1, 2):
+        arm = f"random-{d}"
+        per = draws[d]["per_study"]
+        skd: Counter = Counter()
+        lv: Counter = Counter()
+        for r in per.values():
+            skd.update(r["skipped"])
+            lv.update(t["level"] for t in r["took"])
+        short = {p: r["shortfall"] for p, r in per.items() if r["shortfall"]}
+        counts[arm].update({
+            "target_total": sum(r["need"] for r in per.values()), "shortfall_total": sum(short.values()),
+            "studies_short": len(short), "shortfall_per_study": short,
+            "match_level": dict(lv), "candidates_skipped": dict(skd.most_common()),
+            "rejected_for_band": skd.get("rejected_for_band", 0),
+            "budget_hit_studies": sum(1 for r in per.values() if r["budget_hit"]),
+            "resolves": sum(r["resolves"] for r in per.values()),
+            "pdf_share_minus_neighbour": round((counts[arm]["pdf_share"] or 0) - (counts["neighbour"]["pdf_share"] or 0), 4),
+            "chunks_vs_neighbour": round(counts[arm]["chunks"] / ntot - 1, 4) if ntot else None})
+    tot = (counts["random-1"]["chunks"] + counts["random-2"]["chunks"]) / 2
+    counts["volume_verdict"] = {"neighbour_chunks": ntot, "random_mean_chunks": tot,
+                                "random_mean_vs_neighbour": round(tot / ntot - 1, 4) if ntot else None,
+                                "within_5pct_each_draw": all(abs(counts[f"random-{d}"]["chunks_vs_neighbour"]) <= 0.05
+                                                             for d in (1, 2))}
+    s1 = {w for _, w in arms["random-1"]}
+    s2 = {w for _, w in arms["random-2"]}
+    counts["draw_overlap"] = len(s1 & s2)
+    counts["hosts_refused"] = len(b.gate.refused)
+    counts["disk_bytes"] = {k: _du(lay.root / k) for k in ("raw-v2", "text-v2", "chunks-v2")}
+    counts["disk_bytes"]["arm_chunk_files_v2"] = sum((lay.root / f"chunks-{a}-v2.jsonl").stat().st_size for a in arms)
+    counts["disk_bytes"]["root_total"] = _du(lay.root)
+    counts["seeds"] = {"neighbours": ac.SEED_NEIGHBOURS, "random_1": ac.SEED_RANDOM_V2[1], "random_2": ac.SEED_RANDOM_V2[2]}
+    counts["manifest_sha256"] = {f.name: sha256_file(f) for f in sorted(lay.manifests.glob("*-v2.json"))}
+    counts["provenance"] = _provenance()
+    write_json(lay.manifests / "per-study-chunks-v2.json", per_study_chunks)
+    write_json(lay.manifests / "neighbour-counts-v2.json", {p: len(sel["attributed"][p]) for p in sel["order"]})
+    write_json(lay.manifests / "counts-v2.json", counts)
+    log("finalize-v2: " + json.dumps({a: {k: counts[a].get(k) for k in ("papers", "chunks", "pdf_share")} for a in arms})
+        + " " + json.dumps(counts["volume_verdict"]))
+    return counts
 
 
 # ====================================================================== pdf-extract (subprocess)
@@ -1276,7 +1673,8 @@ def pdf_extract_main(src: str, out: str) -> int:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stage", choices=["run", "study", "neighbours", "scan", "neighbours-fetch", "random",
-                                      "finalize", "chunkcheck", "pdf-extract"])
+                                      "finalize", "chunkcheck", "pdf-extract", "run-v2", "chunkcheck-v2",
+                                      "neighbours-v2", "random-v2", "finalize-v2"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--root", default=DEFAULT_ROOT)
     ap.add_argument("--seed-cache", nargs=2, metavar=("CACHE_JSON", "QUERY_LOG"), default=None,
@@ -1295,14 +1693,36 @@ def main(argv: list[str] | None = None) -> int:
     api = OpenAlex(lay)
     if a.seed_cache:
         log(f"openalex: seeded {api.seed(*a.seed_cache)} cached responses")
-    stages = ["study", "neighbours", "scan", "chunkcheck", "neighbours-fetch", "random", "finalize"] if a.stage == "run" else [a.stage]
+    v2 = a.stage.endswith("-v2")
+    if a.stage == "run":
+        stages = ["study", "neighbours", "scan", "chunkcheck", "neighbours-fetch", "random", "finalize"]
+    elif a.stage == "run-v2":
+        stages = ["chunkcheck-v2", "neighbours-v2", "random-v2", "finalize-v2"]
+    else:
+        stages = [a.stage]
+    if v2:
+        for need in ("study", "neighbours", "scan"):
+            if not (lay.state / f"done-{need}").exists():
+                raise SystemExit(f"v2 needs the v1 stage {need} done")
     b: Builder | None = None
     for st in stages:
         marker = lay.state / f"done-{st}"
-        if a.stage == "run" and marker.exists():
+        if a.stage in ("run", "run-v2") and marker.exists():
             log(f"{st}: already done")
             continue
-        if st == "study":
+        if st == "chunkcheck-v2":
+            b = b or Builder(lay, a.fetch_workers, v2=True)
+            stage_chunkcheck(lay, b, n=5, out_name="chunkcheck-v2.json")
+        elif st == "neighbours-v2":
+            b = b or Builder(lay, a.fetch_workers, v2=True)
+            stage_neighbours_v2(lay, api, b)
+        elif st == "random-v2":
+            b = b or Builder(lay, a.fetch_workers, v2=True)
+            stage_random_v2(lay, b)
+        elif st == "finalize-v2":
+            b = b or Builder(lay, a.fetch_workers, v2=True)
+            stage_finalize_v2(lay, b)
+        elif st == "study":
             stage_study(lay)
         elif st == "neighbours":
             stage_neighbours(lay, api)

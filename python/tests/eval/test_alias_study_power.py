@@ -3,6 +3,7 @@ the simulation behaves (more discordance, more power; the gold-only gate costs p
 gold direction disagrees)."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -95,7 +96,7 @@ def test_compute_refuses_another_layout() -> None:
 
 def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch: pytest.MonkeyPatch) -> None:
     """The lever reads confirm_a<a>, not test_only; a = 0.7 by default (O11); None: undecided."""
-    fake = {"0.025": {"test_only": 0.90, "confirm_a1": 0.90, "confirm_a0.8": 0.85, "confirm_a0.6": 0.70,
+    fake: dict[str, object] = {"0.025": {"test_only": 0.90, "confirm_a1": 0.90, "confirm_a0.8": 0.85, "confirm_a0.6": 0.70,
                       "confirm_a0.7": 0.79, "confirm_a0.75": 0.81}, "0.05": {}}
     monkeypatch.setattr(pw, "simulate_h1", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
     monkeypatch.setattr(pw, "simulate_h1b", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
@@ -116,3 +117,40 @@ def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch:
     assert seen[-1] == (1.0, 0.8, 0.7, 0.6, 0.75)
     with pytest.raises(SystemExit):
         pw.compute(lay, None, 10, 10, lever_agreement=1.5)
+
+
+def test_dose_scales_q_with_realised_added_papers() -> None:
+    papers = [f"P{i}" for i in range(300)]
+    vals, per, dose = pw.dose_scale(dict.fromkeys(papers, 5), papers, 2800)
+    assert per == pytest.approx(2800 / 300) and dose == pytest.approx(1500 / 2800)
+    assert (vals / per).mean() == pytest.approx(dose)   # the average q multiplier is the dose, not 1
+    full = pw.compute({"clusters": 300, "shapes": [[2, 1]]}, None, 20, 20)
+    half = pw.compute({"clusters": 300, "shapes": [[2, 1]]}, list(vals / per), 20, 20, dose=dose)
+    k = "p0.7_q0.05"
+    assert half["normal_approximation"]["H2_at_realised_dose"][k]["0.025"] < full["normal_approximation"]["H2"][k]["0.025"]
+    assert full["normal_approximation"]["H2_at_realised_dose"][k] == full["normal_approximation"]["H2"][k]
+
+
+def test_main_passes_the_dose_scaled_q_to_compute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """main() wires the realised dose into compute(): mean q multiplier = dose, not 1 (the pre-fix
+    n_j / mean n_j survived the unit test above, which never ran main)."""
+    papers = [f"P{i}" for i in range(300)]
+    monkeypatch.setattr(pw, "layout_from_records",
+                        lambda _p: {"source": "t", "clusters": 300, "shapes": [[2, 1]], "records": 900, "papers": list(papers)})
+    seen: dict = {}
+    real = pw.compute
+
+    def fake_compute(layout, q_scale, n_sims, n_flips, lever_agreement=pw.LEVER_AGREEMENT, dose=1.0):
+        seen.update(q_scale=q_scale, dose=dose, lever_agreement=lever_agreement)
+        return real(layout, q_scale, 2, 2, lever_agreement, dose=dose)
+
+    monkeypatch.setattr(pw, "compute", fake_compute)
+    counts = tmp_path / "counts.json"
+    counts.write_text(json.dumps({p: (10 if i % 2 else 4) for i, p in enumerate(papers)}))   # 2,100 added
+    rc = pw.main(["--records", str(tmp_path / "r.jsonl"), "--neighbour-counts", str(counts), "--out",
+                  str(tmp_path / "out.json"), "--sims", "2", "--flips", "2"])
+    assert rc == 0 and seen["dose"] == pytest.approx(2100 / 2800)
+    assert seen["lever_agreement"] == pw.LEVER_AGREEMENT == 0.7   # #907's lever survives the dose wiring
+    assert sum(seen["q_scale"]) / 300 == pytest.approx(2100 / 2800)
+    assert seen["q_scale"][1] == pytest.approx(10 / (2800 / 300))
+    assert json.loads((tmp_path / "out.json").read_text())["h2_dose"] == pytest.approx(0.75)
