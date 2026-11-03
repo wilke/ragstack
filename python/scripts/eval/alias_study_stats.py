@@ -211,7 +211,7 @@ def member_randomization(clusters: Sequence[str], vals: Sequence[float], support
     p (``chunktrial_stats.cluster_randomization_test``; Monte Carlo ``(b + 1)/(m + 1)`` with
     ``n_perm`` draws, seed ``perm_seed``, only beyond the lattice threshold). ``supports[i]`` is
     unit ``i``'s statistic under each equally likely relabelling; ``unit`` names the unit
-    (paper for H1b, question for H2). ``min_attainable_p`` is the test's exact floor."""
+    (paper for H1b). ``min_attainable_p`` is the test's exact floor."""
     names, sums, cnt = cluster_sums(clusters, vals)
     if sums.size == 0:
         return {"n": 0, "papers": 0, "p": None, "min_attainable_p": 1.0, "n_nonzero": 0}
@@ -237,7 +237,9 @@ def exchange_supports(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, 
     """Per record kept by :func:`contrast_values` (same order, same exclusion, a missing outcome
     scored 0 under ``missing != "exclude"``): the contrast ``Σ c_i x_π(i)`` under every
     permutation ``π`` of the spec's leg labels over the record's outcomes ``x`` (H2: the three
-    arm labels, 3! = 6 relabellings, equally likely under label exchangeability)."""
+    arm labels, 3! = 6 relabellings, equally likely under label exchangeability). Not used by
+    :func:`layer1`: the arm-label randomization was decided against for H2 (§7, S8); kept for
+    the test that shows the wired H2 p is not it."""
     out: list[list[float]] = []
     coefs = [c for c, _ in spec]
     for r in recs:

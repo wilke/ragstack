@@ -457,7 +457,8 @@ def cluster_randomization_lattice(supports: Sequence[Floats], observed: float,
     than two conditions (H2's ``n − (r1 + r2)/2`` per question, H1b's ``mean(D_G) − D_C`` per
     paper) the label-exchangeability null gives each unit the contrast's values under the
     permutations of its labels, which is not a symmetric set; this is the exact test of that
-    null. A unit whose multiset is constant is inert. Units with identical multisets are
+    null. A unit whose multiset is constant is inert: it shifts the law by its value (the
+    offset is kept, so ``observed`` may include it). Units with identical multisets are
     convolved at once (binary exponentiation). ``p``/``p_mid`` as :func:`sign_flip_lattice`;
     ``min_attainable_p`` is the null mass of the most extreme value (the product over units of
     the share of their values at the extreme). None when the values are off a ``<= max_scale``
@@ -467,7 +468,9 @@ def cluster_randomization_lattice(supports: Sequence[Floats], observed: float,
     m = lattice_scale(np.concatenate([*vals, [float(observed)]]), max_scale) if vals else 1
     if m is None:
         return None
-    groups = _group_supports([np.rint(m * v).astype(np.int64) for v in vals])
+    ints = [np.rint(m * v).astype(np.int64) for v in vals]
+    groups = _group_supports(ints)
+    offset = sum(int(v[0]) for v in ints if v.size and v.min() == v.max())
     k = sum(c for _, c in groups)
     if k == 0:
         return {"p": 1.0, "p_mid": 0.5, "min_attainable_p": 1.0, "scale": m, "width": 0, "n_nonzero": 0}
@@ -475,6 +478,7 @@ def cluster_randomization_lattice(supports: Sequence[Floats], observed: float,
     if width > max_width:
         return None
     dist, lo = randomization_law(groups)
+    lo += offset                                # the inert units' constant contribution
     p, p_mid = _lattice_tail(dist, lo, int(np.rint(m * observed)), alternative)
     hi = lo + dist.size - 1
     extreme = {"greater": hi, "less": lo}.get(alternative, max(abs(lo), abs(hi)))
@@ -485,7 +489,8 @@ def cluster_randomization_lattice(supports: Sequence[Floats], observed: float,
 def _randomization_floor(supports: Sequence[np.ndarray], alternative: Alternative) -> float:
     """One-sided ``P(T* at its extreme)`` = Π over units of the share of values at the unit's
     extreme (only the all-extreme draw reaches it); two-sided: the larger tail's floor plus the
-    other tail's when its extreme has the same magnitude, bounded by 1."""
+    other tail's when its extreme has the same magnitude, bounded by 1. Constant units count
+    (share 1, but their value moves the two-sided extremes)."""
     def side(sign: float) -> tuple[float, float]:
         logp, ext = 0.0, 0.0
         for v in supports:
@@ -512,7 +517,7 @@ def cluster_randomization_test(
     max_scale: int = LATTICE_MAX_SCALE,
     max_width: int = LATTICE_MAX_WIDTH,
 ) -> dict[str, Any]:
-    """The alias study's H1b / H2 test (prereg §7, owner 2026-11-02): the exact randomization p
+    """The alias study's H1b test (prereg §7, owner 2026-11-02): the exact randomization p
     of the **label-exchangeability null** (within each unit the condition labels are
     exchangeable: every relabelling in ``supports[j]`` is equally likely, independently across
     units). Under it ``P(p <= α) <= α`` exactly.
@@ -526,7 +531,7 @@ def cluster_randomization_test(
     """
     vals = [np.asarray(v, dtype=float) for v in supports]
     live = [v for v in vals if v.size and float(v.max() - v.min()) > _TOL]
-    floor = _randomization_floor(live, alternative) if live else 1.0
+    floor = _randomization_floor([v for v in vals if v.size], alternative) if live else 1.0
     lat = cluster_randomization_lattice(vals, observed, alternative, max_scale, max_width)
     p_mc: float | None = None
     pm_mc: float | None = None

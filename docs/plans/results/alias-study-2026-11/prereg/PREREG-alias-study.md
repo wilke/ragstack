@@ -806,8 +806,8 @@ gold-only direction gate passes, not the test's power alone. **The lever reads t
 
 **Evaluability floor.** For H1 and H2, with k non-zero clusters, the minimum attainable one-sided p
 is 2^−k. At the Holm worst case α/2 a member needs k ≥ 6; at α = 0.05 (after the other is confirmed)
-it needs k ≥ 5. For H1b the floor is the randomization floor of §7: each paper at its extreme
-contributes 1/3 or 2/3.
+it needs k ≥ 5. For H1b the floor is the randomization floor of §7: each paper whose relabellings
+change the statistic contributes 1/3 or 2/3 (2 G + 1 C), or 1/2 (a paper left with 1 G + 1 C).
 
 ## 9. Gates, stops, and restore points
 

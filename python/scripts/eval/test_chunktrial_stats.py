@@ -499,3 +499,46 @@ def test_randomization_test_exact_level_fallback_and_floor() -> None:
     assert tiny["min_attainable_p"] == pytest.approx(1 / 100)              # MC floor 1/(m + 1) dominates 2^-30
     off = cs.cluster_randomization_test([[1 / 13, -1 / 13]] * 3, 3 / 13, n_draws=99)
     assert off["p_method"] == "monte_carlo"
+
+
+def test_randomization_constant_units_shift_the_law() -> None:
+    """Review #907: a unit whose multiset is constant but non-zero is inert yet adds its value to
+    T*; the lattice law must carry that offset (the observed statistic includes it), and the
+    two-sided floor must see it. Brute force over the product of the units' multisets."""
+    import itertools
+    from fractions import Fraction
+
+    rng = np.random.default_rng(907)
+    checked = 0
+    for _ in range(300):
+        sup: list[list[float]] = []
+        for _ in range(int(rng.integers(1, 6))):
+            if rng.random() < 0.4:
+                sup.append([float(rng.integers(-2, 3))] * int(rng.integers(1, 4)))
+            else:
+                sup.append([float(x) for x in rng.integers(-4, 5, size=int(rng.integers(1, 4))) / 2])
+        if all(len(set(v)) == 1 for v in sup):
+            continue
+        obs = float(sum(v[int(rng.integers(0, len(v)))] for v in sup))
+        law: dict[Fraction, Fraction] = {}
+        for combo in itertools.product(*[range(len(v)) for v in sup]):
+            t = sum((Fraction(v[i]) for v, i in zip(sup, combo, strict=True)), Fraction(0))
+            w = Fraction(1)
+            for v in sup:
+                w /= len(v)
+            law[t] = law.get(t, Fraction(0)) + w
+        for alt in ("greater", "less", "two-sided"):
+            def tail(o: Fraction, alt: str = alt, law: dict[Fraction, Fraction] = law) -> float:
+                return float(sum(w for t, w in law.items()
+                                 if (t >= o if alt == "greater" else t <= o if alt == "less" else abs(t) >= abs(o))))
+            ext = max(law) if alt == "greater" else min(law) if alt == "less" else max(abs(t) for t in law)
+            r = cs.cluster_randomization_test(sup, obs, n_draws=50, alternative=alt)  # type: ignore[arg-type]
+            assert r["p_method"] == "lattice"
+            assert r["p"] == pytest.approx(tail(Fraction(obs)), abs=1e-12)
+            assert r["min_attainable_p"] == pytest.approx(tail(ext), abs=1e-12)
+            checked += 1
+    assert checked > 300
+    # the Monte-Carlo fallback agrees on a case with a constant unit
+    mc = cs.cluster_randomization_test([[2.0, 2.0], [1.0, -1.0], [1.0, -1.0]], 4.0, n_draws=4000, seed=1,
+                                       max_width=1)
+    assert mc["p_method"] == "monte_carlo" and abs(mc["p"] - 0.25) < 0.03
