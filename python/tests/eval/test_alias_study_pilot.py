@@ -63,6 +63,10 @@ def to_pilot(work: Path) -> None:
     for sp in runs.glob("*/*.summary.json"):
         s = json.loads(sp.read_text())
         s["study"].update(mode="pilot", dry_run=False, pilot=True)
+        for c in s["conditions"].values():          # as the runner writes a pilot summary (R28)
+            for k in ar.PILOT_WITHHELD_CONDITION_KEYS:
+                c.pop(k, None)
+            c["outcomes"] = "withheld in the pilot (owner, 2026-11-03)"
         sp.write_text(json.dumps(s))
     for name in ("pairs-manifest.json", "judge-summary.json"):
         m = json.loads((judge / name).read_text())
@@ -420,3 +424,25 @@ def test_refuses_a_private_string_in_the_output(world: Path, monkeypatch: pytest
                                                               "x": next(iter(final.values()))["record_id"]})
     with pytest.raises(SystemExit, match="private string"):
         run(world)
+
+
+def test_the_statistics_refuse_a_pilot_directory(world: Path, tmp_path: Path) -> None:
+    """R28: alias_study_stats writes every cell's found@10; a pilot directory is refused before
+    anything is read (without the refusal this pilot world passes the analysis gate, which waives
+    the spot checks in the pilot)."""
+    import alias_study_stats as ast
+
+    cfg = {"records": str(world / "accepted-full.jsonl"), "runs_dir": str(world / "work" / "runs"),
+           "judge_dir": str(world / "work" / "judge"), "pilot": True, "analysis_stage": "A"}
+    assert aj.analysis_gate(world / "work" / "runs")["mode"] == "pilot"
+    with pytest.raises(SystemExit, match="alias_study_pilot.py"):
+        ast.study_preflight(cfg)
+    cp = tmp_path / "stats.json"
+    cp.write_text(json.dumps(cfg))
+    with pytest.raises(SystemExit, match="alias_study_pilot.py"):
+        ast.main(["--config", str(cp), "--out", str(tmp_path / "r.json"), "--public", str(tmp_path / "p.json")])
+    assert not (tmp_path / "r.json").exists() and not (tmp_path / "p.json").exists()
+    # a main or dry-run config pointed at the pilot directory is refused by the mode markers
+    for over in ({"pilot": False}, {"pilot": False, "dry_run": True}):
+        with pytest.raises(SystemExit, match="STUDY-MODE is 'pilot'"):
+            ast.study_preflight({**cfg, **over})

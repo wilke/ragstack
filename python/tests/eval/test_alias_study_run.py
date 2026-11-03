@@ -751,6 +751,31 @@ def test_pilot_runs_the_191_only_and_keeps_its_own_directory(tmp_path: Path, mon
         run(main_cfg, api, repeat=2, census=Census())
 
 
+def test_pilot_leg_summary_carries_no_found10_level(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                   capsys: pytest.CaptureFixture[str]) -> None:
+    """R28 (owner, 2026-11-03): a pilot leg summary carries no per-condition found@10 level, and
+    nothing the run prints does; the rows keep every rank. A dry-run summary keeps found10."""
+    monkeypatch.setattr(asc, "verify_record_set", lambda path, recs: {"accepted_sha256": "x", "records": len(recs)})
+    (tmp_path / "p").mkdir()
+    (tmp_path / "d").mkdir()
+    w, cfg = setup(tmp_path / "p", dry_run=False, pilot=True, census={"es_url": ES})
+    capsys.readouterr()
+    assert run(cfg, API(w), census=Census()) == 0
+    printed = capsys.readouterr().out
+    s = summary(cfg, "base", "none")
+    assert set(s["conditions"]) == {"base", "bm25", "norerank"}
+    for c in s["conditions"].values():
+        assert not set(ar.PILOT_WITHHELD_CONDITION_KEYS) & set(c) and c["outcomes"].startswith("withheld")
+        assert "gate" in c and "rows" in c
+    assert "found10" not in json.dumps(s["conditions"]) and "found10" not in printed
+    rows = [json.loads(x) for x in (Path(cfg["out_dir"]) / "base" / "none.jsonl").read_text().splitlines() if x]
+    assert rows and all("ranked_chunk_ids" in r for r in rows)
+    w2, cfg2 = setup(tmp_path / "d")
+    assert run(cfg2, API(w2)) == 0
+    s2 = summary(cfg2, "base", "none")
+    assert all("found10" in c and "outcomes" not in c for c in s2["conditions"].values())
+
+
 def test_main_run_pins_the_frozen_prereg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(asc, "verify_record_set", lambda path, recs: {"accepted_sha256": "x", "records": len(recs)})
     w, cfg = setup(tmp_path, dry_run=False, census={"es_url": ES})

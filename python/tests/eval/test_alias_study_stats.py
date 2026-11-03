@@ -1061,13 +1061,15 @@ def test_judge_dir_must_be_the_committed_one(tmp_path: Path) -> None:
 
 
 def test_pilot_and_main_spot_check_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The pilot waives the spot checks and the waiver is recorded; the main run refuses without
-    them and records their sha256 with them."""
+    """The statistics refuse a pilot directory outright (R28: the pilot's only reader is
+    alias_study_pilot.py), though the analysis gate itself waives the spot checks there; the main
+    run refuses without them and records their sha256 with them."""
     import alias_study_judge as aj
 
     wp = committed_world(tmp_path / "p", mode="pilot")
-    pre = st.study_preflight(json.loads(e2e_config(wp, tmp_path / "p", dry_run=False, pilot=True).read_text()))
-    assert pre["mode"] == "pilot" and pre["spot_checks_waiver"] == "pilot (descriptive, §5.6)"
+    with pytest.raises(SystemExit, match="alias_study_pilot.py"):
+        st.study_preflight(json.loads(e2e_config(wp, tmp_path / "p", dry_run=False, pilot=True).read_text()))
+    assert aj.analysis_gate(wp.runs)["spot_checks_waiver"] == "pilot (descriptive, §5.6)"
     monkeypatch.setattr(aj, "public_tracked_at_head", lambda path, repo=None: True)
     wm = committed_world(tmp_path / "m", mode="main")
     cfg = json.loads(e2e_config(wm, tmp_path / "m", dry_run=False).read_text())

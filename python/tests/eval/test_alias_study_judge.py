@@ -1119,3 +1119,25 @@ def test_pilot_commit_prints_and_records_no_per_leg_outcome(tmp_path: Path, caps
     assert set(aj.PILOT_WITHHELD_COUNTS) <= set(dpub["counts"]) and "per_leg_outcomes" not in dpub["counts"]
     assert sum(dpub["counts"]["found10_per_leg"].values()) == sum(
         int(h["hit"] or 0) for h in asc.read_jsonl(out_of(w2) / "stage-a" / "hits.jsonl"))
+
+
+def test_pilot_build_pairs_prints_only_the_deduplicated_counts(tmp_path: Path,
+                                                               capsys: pytest.CaptureFixture[str]) -> None:
+    """R28: in the pilot, build-pairs prints pairs, per_need and per_arm only; instance counts,
+    pairs already registered and the number of legs are not printed. A dry run prints them all."""
+    (tmp_path / "p").mkdir()
+    (tmp_path / "d").mkdir()
+    w = fx.World(tmp_path / "p")
+    w.write_staged_runs("A")
+    cp = tmp_path / "p" / "jcfg.json"
+    cp.write_text(json.dumps(strict_config(w, "pilot")))
+    capsys.readouterr()
+    assert main(cp, "build-pairs", "--stage", "A") == 0
+    got = json.loads(capsys.readouterr().out)
+    assert set(got) == set(aj.PILOT_BUILD_PRINT) == {"pairs", "per_need", "per_arm"}
+    man = json.loads((out_of(w) / "pairs-manifest.json").read_text())
+    assert got == {k: man["counts"][k] for k in aj.PILOT_BUILD_PRINT} and got["pairs"] > 0
+    w2, cp2 = world(tmp_path / "d")
+    assert main(cp2, "build-pairs", "--stage", "A") == 0
+    full = json.loads(capsys.readouterr().out)
+    assert {"instances_before_dedup", "instances_per_need", "already_registered", "legs"} <= set(full)
