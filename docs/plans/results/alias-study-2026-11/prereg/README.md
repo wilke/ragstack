@@ -3,7 +3,7 @@
 **Status: DRAFT — not frozen; owner review pending.** No sha is recorded because nothing is frozen yet.
 Current draft: **v3, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1), the changes the owner
 approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), and the owner's
-decisions of 2026-11-03 (R12–R27) folded in. The
+decisions of 2026-11-03 (R12–R28) and the pre-freeze corrections P1–P6 folded in. The
 record set (§4 of the prereg: 1,091 accepted records, the balanced set of 900 on 300 papers) was built
 before v1. No retrieval has been run on any study record. The pre-freeze pilot (prereg §5.6) will
 retrieve and judge the 191 held-out records before the freeze; the 900 balanced records stay unretrieved
@@ -119,3 +119,11 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   every leg (R26). The glossary files carry an added `Xs` entry for every abbreviation, and the rendering
   conventions are fixed (R27). The freeze is now triggered by the first post-freeze study-record
   retrieval, and the signed tag also pins the 9 load receipts' sha256.
+- **v3, pre-freeze corrections, 2026-11-03:** R28, the pilot blind to outcomes (no per-leg found@10,
+  found@10-gold or RR@10 in pilot mode; pair counts per judging stage plus the registry total). P1: the
+  admin-config hash pins neither the BM25 glossary boost nor the reranker field; the boost is shown by the
+  behavioural probe, the reranker field is declared. P2: H2's U from the frozen stage-A judge summary,
+  cross-checked. P3: the record spot check's draw by record id. P4: the judged-pair spot check's arm
+  re-split, shortfall chain, sheet order, pool and public record. P5: the pilot's intervals, the
+  escalated / tiebroken / unjudged shares, H2's four discordance readings. P6: public provenance without
+  host or warnings; `artifacts/c_cost_rule.json` and `artifacts/spot_check_detection.json` regenerated so.

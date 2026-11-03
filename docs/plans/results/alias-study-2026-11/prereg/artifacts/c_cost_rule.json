@@ -227,9 +227,9 @@
  ],
  "provenance": {
   "schema": 1,
-  "version": "v1.6.21+b6f3037",
-  "describe": "v1.6.21-218-gb6f3037",
-  "commit": "b6f30372884e60b7832ee7be3844ddb551121768",
+  "version": "v1.6.21+123ff70",
+  "describe": "v1.6.21-261-g123ff70",
+  "commit": "123ff709c1ab117c9914e0b6a59c7255361f9710",
   "dirty": false,
   "untracked": 0,
   "source": "git",
@@ -251,11 +251,7 @@
    }
   ],
   "python": "3.12.13",
-  "host": "coconut",
-  "recorded_at": "2026-11-03T13:21:53Z",
-  "citable": true,
-  "warnings": [
-   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
-  ]
+  "recorded_at": "2026-11-03T17:56:26Z",
+  "citable": true
  }
 }
