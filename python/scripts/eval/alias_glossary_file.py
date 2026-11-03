@@ -3,8 +3,13 @@
 
 Each bench collection is built once by ``load-embeddings.cwl`` from the corpus's embedding shards
 with a ``glossary_file`` (``ragstack.glossary_file/v1``, :mod:`ragstack.ingestion.glossary_file`).
-This script writes that file for one corpus arm and one glossary arm, with the module's own
-writer, and a manifest with a census beside it. The load renders it with
+A load takes one ``glossary_file``, so there is **one file per collection**, covering every
+document the load writes. For an expanded arm that is the base shards plus the arm's added-paper
+shards: neighbour × merged is the base merged rows plus the added papers' merged rows, and
+neighbour × none is empty rows for all of them. This script writes that file with the module's
+own writer, from the shard list, the chunk export(s) and the merged glossary file(s), which
+are the base file plus, later, the arm's added-paper file. A manifest with a census goes beside
+it. The load renders it with
 ``Glossary.for_chunk`` under the file's header config (``render_chunks``); nothing here renders
 into a store.
 
@@ -469,11 +474,13 @@ def _write_variant(variant: str, corpus_arm: str, *, shards: Sequence[str | Path
     merged_shas = [file_sha256(p) for p in merged]
     built = build(variant, corpus_arm, docs, entries, merged_shas, plural=plural)
     ident = identity_check(built.rows, export_rows)
+    shard_shas = [file_sha256(p) for p in shards]
     prov = dict(provenance) if provenance is not None else g.experiment_provenance()
     producer = (f"scripts/eval/alias_glossary_file.py {variant} --corpus-arm {corpus_arm} "
                 f"({WRITER}; commit {prov.get('commit')}, describe {prov.get('describe')}, dirty {prov.get('dirty')}; "
                 f"merged sha256 {','.join(merged_shas) or '-'}; "
-                f"shards sha256 {','.join(file_sha256(p) for p in shards)})")
+                f"{len(shards)} shard(s), sha256 list digest "
+                f"{hashlib.sha256(''.join(s + chr(10) for s in shard_shas).encode()).hexdigest()})")
     counts = write_glossary_file(out, built.rows, producer=producer, config=config, created=created)
     os.chmod(out, 0o600)
     fields, stamps, verdicts = load_render(out, export_rows)
@@ -492,7 +499,9 @@ def _write_variant(variant: str, corpus_arm: str, *, shards: Sequence[str | Path
                   "order": "forms by codepoint", "caps": "12 lines, 1200 chars incl. newlines; first overflow ends",
                   "text": "NFC per line"},
         "inputs": {"merged": [{"path": str(p), "sha256": s} for p, s in zip(merged, merged_shas, strict=True)],
-                   "shards": [{"path": str(p), "sha256": file_sha256(p)} for p in shards],
+                   "shards": [{"path": str(p), "sha256": s} for p, s in zip(shards, shard_shas, strict=True)],
+                   "shards_count": len(shards),
+                   "shards_digest": hashlib.sha256("".join(s + "\n" for s in shard_shas).encode()).hexdigest(),
                    "chunk_exports": [{"path": str(p), "sha256": file_sha256(p)} for p in chunk_exports]},
         "producer": producer, "provenance": prov, "citable": g.citable(prov),
     }
@@ -586,7 +595,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     w = sub.add_parser("write", help="write one glossary file and its manifest")
     w.add_argument("variant", choices=VARIANTS)
     w.add_argument("--corpus-arm", required=True, choices=CORPUS_ARMS)
-    w.add_argument("--shard", action="append", required=True, help="a shard submitted to embed-bulk (repeat)")
+    w.add_argument("--shard", action="append", default=[], help="a shard submitted to embed-bulk (repeat)")
+    w.add_argument("--shard-list", type=Path, default=None,
+                   help="a file naming one shard path per line (with or instead of --shard)")
     w.add_argument("--chunk-export", action="append", required=True, help="the corpus arm's chunk export(s)")
     w.add_argument("--merged", action="append", default=[], help="merged glossary file(s) (merged / placebo)")
     w.add_argument("--out", required=True, type=Path)
@@ -605,7 +616,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     prov = g.experiment_provenance()
     if not g.citable(prov) and not a.allow_dirty:
         raise SystemExit("tree is dirty/untracked or commit unknown; commit first (or --allow-dirty)")
-    man = write_variant(a.variant, a.corpus_arm, shards=a.shard, chunk_exports=a.chunk_export,
+    shards = list(a.shard)
+    if a.shard_list:
+        shards += [ln.strip() for ln in a.shard_list.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if not shards:
+        raise SystemExit("name the shards submitted to embed-bulk (--shard / --shard-list)")
+    man = write_variant(a.variant, a.corpus_arm, shards=shards, chunk_exports=a.chunk_export,
                         merged=a.merged, out=a.out, created=a.created, provenance=prov)
     print(json.dumps({k: man[k] for k in ("variant", "corpus_arm", "glossary_file_sha256", "version",
                                           "glossary", "census", "identity", "citable")}, indent=1))

@@ -277,6 +277,28 @@ def test_refusals_variant_arm_and_entries(corpus: dict[str, Path], tmp_path: Pat
                           out=_HERE / "x.jsonl", provenance=PROV)
 
 
+def test_cli_shard_list_and_several_exports(corpus: dict[str, Path], tmp_path: Path) -> None:
+    """One file per collection: several shards (base + added) through --shard-list, several exports."""
+    recs = corpus["shard"].read_text(encoding="utf-8").splitlines()
+    rows = corpus["export"].read_text(encoding="utf-8").splitlines()
+    docs = list(JsonlLoader().load(str(corpus["shard"])))
+    added = {d.id for d in docs if d.source.startswith("PD")}
+    (tmp_path / "in" / "s1.jsonl").write_text("\n".join(r for r in recs if not r.count('"PD#')) + "\n")
+    (tmp_path / "in" / "s2.jsonl").write_text("\n".join(r for r in recs if r.count('"PD#')) + "\n")
+    (tmp_path / "in" / "e1.jsonl").write_text("\n".join(r for r in rows if json.loads(r)["doc_id"] not in added) + "\n")
+    (tmp_path / "in" / "e2.jsonl").write_text("\n".join(r for r in rows if json.loads(r)["doc_id"] in added) + "\n")
+    lst = tmp_path / "in" / "shards.txt"
+    lst.write_text(f"{tmp_path / 'in' / 's1.jsonl'}\n{tmp_path / 'in' / 's2.jsonl'}\n")
+    out = corpus["out"] / "neighbour.none.jsonl"
+    assert agf.main(["write", "none", "--corpus-arm", "neighbour", "--shard-list", str(lst),
+                     "--chunk-export", str(tmp_path / "in" / "e1.jsonl"),
+                     "--chunk-export", str(tmp_path / "in" / "e2.jsonl"), "--out", str(out), "--allow-dirty"]) == 0
+    gf = read_glossary_file(out)
+    assert set(gf.rows) == {d.id for d in docs}
+    man = json.loads(Path(str(out) + ".manifest.json").read_text())
+    assert man["inputs"]["shards_count"] == 2 and man["census"]["chunks"] == len(rows)
+
+
 def test_reach_counts_the_records_own_entry() -> None:
     field = "MSCs — mesenchymal stem cell\nQb — breathing flow rate; breathing rate"
     assert agf.renders_entry(field, "MSC", "abbreviation", "mesenchymal stem cell")
