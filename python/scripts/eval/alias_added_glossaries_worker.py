@@ -110,6 +110,40 @@ def _verify_unit_output(out: Path, want_ids: list[str]) -> tuple[bool, str]:
     return True, "ok"
 
 
+def set_aside(path: Path, tag: str) -> Path:
+    """Move ``path`` to ``<name>.<tag>-<time_ns>`` without ever replacing a file: the new name is
+    hard-linked first (``os.link`` refuses an existing target) and only then is ``path``
+    unlinked, so two set-asides in the same second (a no-call unit finishes in well under one)
+    keep both generations. A collision is refused, never resolved by overwriting."""
+    target = path.with_name(f"{path.name}.{tag}-{time.time_ns()}")
+    try:
+        os.link(path, target)
+    except FileExistsError:
+        raise SystemExit(f"refusing to overwrite {target}: set it aside by hand") from None
+    path.unlink()
+    return target
+
+
+def prepare_unit(u: dict[str, Any], rerun: bool) -> bool:
+    """Whether unit ``u`` must run. ``rerun`` (``--rerun`` with ``--only``): its output and summary
+    are set aside as ``*.superseded-<ns>`` and it runs. Otherwise a verified output skips it,
+    and an output that does not verify is set aside as ``*.bad-<ns>``. Nothing is deleted."""
+    out = Path(u["out"])
+    if out.exists() and rerun:
+        for f in (out, Path(u["summary"])):
+            if f.exists():
+                set_aside(f, "superseded")
+        log.info("unit %s: --rerun, previous output moved aside", u["unit"])
+        return True
+    if out.exists():
+        ok, why = _verify_unit_output(out, u["doc_ids"])
+        if ok:
+            return False
+        log.warning("unit %s: existing output does not verify (%s); re-running", u["unit"], why)
+        set_aside(out, "bad")
+    return True
+
+
 async def run(args: argparse.Namespace) -> int:
     plan = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     work = Path(plan["work_dir"])
@@ -130,15 +164,10 @@ async def run(args: argparse.Namespace) -> int:
     todo = []
     skipped = 0
     for u in units:
-        out = Path(u["out"])
-        if out.exists():
-            ok, why = _verify_unit_output(out, u["doc_ids"])
-            if ok:
-                skipped += 1
-                continue
-            log.warning("unit %s: existing output does not verify (%s); re-running", u["unit"], why)
-            out.rename(out.with_suffix(out.suffix + f".bad-{int(time.time())}"))
-        todo.append(u)
+        if prepare_unit(u, args.rerun):
+            todo.append(u)
+        else:
+            skipped += 1
     log.info("units: %d planned, %d already done, %d to run", len(units), skipped, len(todo))
     sem = asyncio.Semaphore(args.units)
     done = 0
@@ -186,7 +215,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--units", type=int, default=4, help="units (so model calls) in flight; <= 4 for this endpoint")
     p.add_argument("--limit", type=int, default=0, help="run only the first N planned units (pilot)")
     p.add_argument("--only", default="", help="a file of unit ids to run (whitespace separated)")
+    p.add_argument("--rerun", action="store_true",
+                   help="with --only: ask the listed units again even when their output verifies "
+                        "(e.g. documents degraded by the transport); the old output and summary are "
+                        "set aside as *.superseded-<time_ns>, never deleted")
     a = p.parse_args(argv)
+    if a.rerun and not a.only:
+        raise SystemExit("--rerun needs --only (it re-asks only the listed units)")
     if not 1 <= a.units <= 4:
         raise SystemExit("--units must be 1..4 (the endpoint admits 4 sequences)")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")

@@ -385,52 +385,58 @@ def _git_head(worktree: str) -> tuple[str, bool]:
     return head, dirty
 
 
-def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool) -> int:
-    out = Path(cfg["out_dir"])
-    work = out / "work"
-    plan = json.loads((work / "plan.json").read_text())
-    if (work / "STOP").exists():
-        raise SystemExit("STOP present: the served model id did not match; nothing is assembled")
-    from ragstack.ingestion.glossary_file import read_glossary_file
+def launch_records(work: Path) -> dict[str, Any]:
+    """Every ``<name>.launch.json`` beside a pid file: the pid, the argv, the worker's sha256 and
+    the commit it was launched from (F7). Records written before the launcher wrote one JSON
+    object (a JSON object, then a ``sha256sum`` line, then a commit line) are read too and
+    marked ``legacy``. The worker's sha256 must equal the file at that commit."""
+    recs: dict[str, Any] = {}
+    for p in sorted(work.glob("*.launch.json")):
+        text = p.read_text(encoding="utf-8")
+        try:
+            obj = json.loads(text)
+            fmt = "json"
+        except json.JSONDecodeError:
+            try:
+                obj, end = json.JSONDecoder().raw_decode(text)
+                rest = text[end:].split()
+                obj = {**obj, "worker_sha256": rest[0], "worker_path": rest[1], "launch_commit": rest[2]}
+            except (json.JSONDecodeError, IndexError):
+                raise SystemExit(f"{p.name}: neither a JSON launch record nor a legacy one") from None
+            fmt = "legacy"
+        missing = [k for k in ("pid", "argv", "worker_sha256", "launch_commit") if k not in obj]
+        if missing:
+            raise SystemExit(f"{p.name}: launch record lacks {missing}")
+        if obj.get("worker_dirty"):
+            raise SystemExit(f"{p.name}: the worker had uncommitted changes at launch")
+        commit = obj["launch_commit"]
+        got = subprocess.run(["git", "-C", str(REPO), "show",
+                              f"{commit}:python/scripts/eval/alias_added_glossaries_worker.py"],
+                             capture_output=True)
+        if got.returncode != 0:
+            raise SystemExit(f"{p.name}: the worker is not readable at launch commit {commit!r} "
+                             f"({got.stderr.decode(errors='replace').strip()[:200]})")
+        blob = got.stdout
+        if hashlib.sha256(blob).hexdigest() != obj["worker_sha256"]:
+            raise SystemExit(f"{p.name}: the worker's sha256 is not the file at the launch commit")
+        recs[p.name.removesuffix(".launch.json")] = {
+            "pid": obj["pid"], "argv": obj["argv"], "worker_sha256": obj["worker_sha256"],
+            "launch_commit": commit, "worker_matches_commit": True, "record_format": fmt,
+            "record_sha256": sha256_file(p)}
+    if not recs:
+        raise SystemExit("no launch record beside the ledger")
+    return recs
 
-    identity = {r["doc_id"]: r for r in chunk_rows(work / "identity.jsonl")}
-    # 1. every unit written, every row's identity equals the plan's (computed from the very
-    #    text the chunks were cut from), degraded documents counted by reason
-    deg: Counter[str] = Counter()
-    deg_docs: list[dict[str, Any]] = []
-    served: Counter[str] = Counter()
-    calls = 0
-    seen: set[str] = set()
-    for u in plan["units"]:
-        gf = read_glossary_file(u["out"])
-        if sorted(gf.rows) != sorted(u["doc_ids"]):
-            raise SystemExit(f"unit {u['unit']}: rows != planned documents")
-        for did, row in gf.rows.items():
-            want = identity[did]
-            got = (row.text_sha256, row.text_chars, row.text_ws_sha256)
-            if got != (want["text_sha256"], want["text_chars"], want["text_ws_sha256"]):
-                raise SystemExit(f"unit {u['unit']}: a row's identity differs from the plan's")
-            if did in seen:
-                raise SystemExit("a document has two rows")
-            seen.add(did)
-            lp = (row.provenance or {}).get("llm") or {}
-            if lp.get("served"):
-                served[json.dumps(lp["served"], sort_keys=True)] += 1
-            calls += len(lp.get("calls") or [])
-            if row.degraded:
-                deg[row.degraded] += 1
-                deg_docs.append({"doc_id": did, "unit": u["unit"], "reason": row.degraded})
-    transport = {k: v for k, v in deg.items() if k != "cut_off"}
-    if transport and not allow_degraded_transport:
-        raise SystemExit(f"degraded by the transport, not the model: {transport}; re-run those units "
-                         "first (or pass --allow-degraded-transport to record them as they are)")
-    if seen != set(identity):
-        raise SystemExit("documents without a row")
+
+def _generate(cfg: Mapping[str, Any], plan: Mapping[str, Any], out: Path, work: Path, step_p: Path,
+              llmonly_p: Path, mention_p: Path, export_p: Path, abbrev_dir: Path,
+              review_dir: Path) -> dict[str, str]:
+    """Steps 2-5 of ``assemble``: merge, the rederive chain, the export, ``alias_abbrev``.
+    Returns the commits that ran."""
     # 2. merge the unit files (the image's merge_files: refuses a doc id in two inputs and
     #    mixed configs; rows in input order; producer merge(<inputs' producers>))
     list_p = work / "unit-files.txt"
     write_private(list_p, "".join(u["out"] + "\n" for u in plan["units"]))
-    step_p = out / "added-v4.qwen36.step.jsonl"
     binds = sorted({str(out), str(Path(cfg["out_dir"]).resolve())})
     code = ("import sys; from ragstack.ingestion.glossary_file import merge_files; "
             "paths=[l.strip() for l in open(sys.argv[1]) if l.strip()]; "
@@ -441,9 +447,7 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool) -> int:
     # 3. the base arm chain: rederive --merge llm-only, then --attach mention, each with the
     #    glossary_file.py of the commit that re-derived the base arm file
     wt = cfg["worktrees"]
-    llmonly_p = out / "added-v4.qwen36p.jsonl"
-    mention_p = out / "added-v4.qwen36p.mention.jsonl"
-    commits = {}
+    commits: dict[str, str] = {}
     for key, args_, src, dst in (("rederive_merge_commit", ["--merge", "llm-only"], step_p, llmonly_p),
                                  ("rederive_attach_commit", ["--attach", "mention"], llmonly_p, mention_p)):
         tree = wt[key]
@@ -455,7 +459,6 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool) -> int:
               str(src), "--out", str(dst)], env=_host_env(tree))
         os.chmod(dst, 0o600)
     # 4. the added papers' chunk export (arm order, a shared paper once; same rows in every arm)
-    export_p = work / "chunks-added-v4.jsonl"
     seen_c: set[str] = set()
     lines: list[str] = []
     root = Path(cfg["corpus_root"])
@@ -472,13 +475,111 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool) -> int:
     if not head.startswith(cfg["abbrev_commit"]) or dirty:
         raise SystemExit("alias_abbrev worktree not clean at the pinned commit")
     commits["abbrev_commit"] = head
-    abbrev_dir = private_dir(out / "abbrev")
-    review_dir = private_dir(out / "review")
+    private_dir(abbrev_dir)
+    private_dir(review_dir)
     _run([cfg["python"], str(Path(tree) / "python/scripts/eval/alias_abbrev.py"), "--export", str(export_p),
           "--arm", str(mention_p), "--out-dir", str(abbrev_dir), "--review-dir", str(review_dir),
           "--paper-key", "path_root"], env=_host_env(tree), cwd=str(abbrev_dir))
     for p in (*abbrev_dir.iterdir(), *review_dir.iterdir()):
         os.chmod(p, 0o600)
+    return commits
+
+
+def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool, manifest_only: bool = False) -> int:
+    out = Path(cfg["out_dir"])
+    work = out / "work"
+    plan = json.loads((work / "plan.json").read_text())
+    if (work / "STOP").exists():
+        raise SystemExit("STOP present: the served model id did not match; nothing is assembled")
+    from ragstack.ingestion.glossary_file import read_glossary_file
+
+    identity = {r["doc_id"]: r for r in chunk_rows(work / "identity.jsonl")}
+    # 1. every unit written, every row's identity equals the plan's (computed from the very
+    #    text the chunks were cut from), degraded documents counted by reason
+    deg: Counter[str] = Counter()
+    deg_docs: list[dict[str, Any]] = []
+    served: Counter[str] = Counter()
+    calls = 0
+    unit_calls: dict[str, int] = {}
+    seen: set[str] = set()
+    for u in plan["units"]:
+        unit_calls[u["unit"]] = 0
+        gf = read_glossary_file(u["out"])
+        if sorted(gf.rows) != sorted(u["doc_ids"]):
+            raise SystemExit(f"unit {u['unit']}: rows != planned documents")
+        for did, row in gf.rows.items():
+            want = identity[did]
+            got = (row.text_sha256, row.text_chars, row.text_ws_sha256)
+            if got != (want["text_sha256"], want["text_chars"], want["text_ws_sha256"]):
+                raise SystemExit(f"unit {u['unit']}: a row's identity differs from the plan's")
+            if did in seen:
+                raise SystemExit("a document has two rows")
+            seen.add(did)
+            lp = (row.provenance or {}).get("llm") or {}
+            if lp.get("served"):
+                served[json.dumps(lp["served"], sort_keys=True)] += 1
+            calls += len(lp.get("calls") or [])
+            unit_calls[u["unit"]] += len(lp.get("calls") or [])
+            if row.degraded:
+                deg[row.degraded] += 1
+                deg_docs.append({"doc_id": did, "unit": u["unit"], "reason": row.degraded})
+    transport = {k: v for k, v in deg.items() if k != "cut_off"}
+    if transport and not allow_degraded_transport:
+        units_ = sorted({d["unit"] for d in deg_docs if d["reason"] != "cut_off"})
+        raise SystemExit(f"degraded by the transport, not the model: {transport} in units {units_}; "
+                         "re-run them first: list the unit ids in a file and run the worker with "
+                         "--only FILE --rerun (their verified outputs are moved aside, not deleted), "
+                         "or pass --allow-degraded-transport to record them as they are")
+    if seen != set(identity):
+        raise SystemExit("documents without a row")
+    # 1b. the ledger (F1): every unit has an ok line whose out_sha256 is the file on disk (the
+    #     last ok line counts: a re-run supersedes), and the replies the worker checked add up
+    #     to the calls the rows record — so no call escaped the served-model check
+    last: dict[str, dict[str, Any]] = {}
+    if (work / "ledger.jsonl").exists():
+        for x in open(work / "ledger.jsonl"):
+            r = json.loads(x)
+            if r.get("ok"):
+                last[r["unit"]] = r
+    missing = [u["unit"] for u in plan["units"] if u["unit"] not in last]
+    if missing:
+        raise SystemExit(f"{len(missing)} unit(s) have no ok ledger line, e.g. {missing[:5]}")
+    stale = [u["unit"] for u in plan["units"] if last[u["unit"]].get("out_sha256") != sha256_file(u["out"])]
+    if stale:
+        raise SystemExit(f"{len(stale)} unit file(s) differ from their ledger sha256, e.g. {stale[:5]}")
+    served_replies: Counter[str] = Counter()
+    for u in plan["units"]:
+        served_replies.update(last[u["unit"]].get("served_replies") or {})
+    mismatched = {k: v for k, v in served_replies.items() if k != cfg["model"]}
+    if mismatched:
+        raise SystemExit(f"replies from another model in the ledger: {mismatched}")
+    off = [u["unit"] for u in plan["units"]
+           if sum((last[u["unit"]].get("served_replies") or {}).values()) != unit_calls[u["unit"]]]
+    if off:
+        raise SystemExit(f"{len(off)} unit(s) whose checked replies != the calls their rows record, "
+                         f"e.g. {off[:5]}")
+    if sum(served_replies.values()) != calls:
+        raise SystemExit(f"checked replies {sum(served_replies.values())} != calls in the rows {calls}")
+    workers = launch_records(work)
+    step_p = out / "added-v4.qwen36.step.jsonl"
+    llmonly_p = out / "added-v4.qwen36p.jsonl"
+    mention_p = out / "added-v4.qwen36p.mention.jsonl"
+    export_p = work / "chunks-added-v4.jsonl"
+    abbrev_dir = out / "abbrev"
+    review_dir = out / "review"
+    commits: dict[str, str] = {}
+    prev: dict[str, Any] | None = None
+    if manifest_only:
+        # F7/F2 additions only: the outputs are not regenerated; they must be byte for byte the
+        # ones the previous manifest recorded, whose pinned commits are carried over
+        if not (out / "manifest.json").is_file():
+            raise SystemExit("--manifest-only: no previous manifest.json to rebuild from")
+        prev = json.loads((out / "manifest.json").read_text())
+        commits = {**prev["chain"]["rederive_commits"],
+                   "abbrev_commit": prev["abbreviation"]["alias_abbrev_commit"]}
+    else:
+        commits = _generate(cfg, plan, out, work, step_p, llmonly_p, mention_p, export_p,
+                            abbrev_dir, review_dir)
     merged_p = abbrev_dir / "merged_glossary.jsonl"
     recount = json.loads((abbrev_dir / "recount.json").read_text())
     # 6. census by kind per added paper (every added paper listed, zeros included)
@@ -501,24 +602,21 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool) -> int:
                        **{k: t[k] for k in kinds}, "entries": sum(t.values())}
     mention_head = json.loads(open(mention_p, encoding="utf-8").readline())
     base_head = json.loads(open(cfg["base_arm"], encoding="utf-8").readline())
-    last: dict[str, dict[str, Any]] = {}
-    if (work / "ledger.jsonl").exists():
-        for x in open(work / "ledger.jsonl"):
-            r = json.loads(x)
-            if r.get("ok"):
-                last[r["unit"]] = r
-    served_replies: Counter[str] = Counter()
-    for r in last.values():
-        served_replies.update(r.get("served_replies") or {})
-    mismatched = {k: v for k, v in served_replies.items() if k != cfg["model"]}
-    if mismatched:
-        raise SystemExit(f"replies from another model in the ledger: {mismatched}")
     outputs = {p.name: sha256_file(p) for p in (step_p, llmonly_p, mention_p)}
     outputs.update({f"abbrev/{p.name}": sha256_file(p) for p in sorted(abbrev_dir.iterdir())})
     outputs.update({f"review/{p.name}": sha256_file(p) for p in sorted(review_dir.iterdir())})
     outputs["work/chunks-added-v4.jsonl"] = sha256_file(export_p)
     outputs["work/identity.jsonl"] = sha256_file(work / "identity.jsonl")
     outputs["work/plan.json"] = sha256_file(work / "plan.json")
+    if prev is not None:
+        if outputs != prev["outputs_sha256"]:
+            changed = sorted(k for k in set(outputs) | set(prev["outputs_sha256"])
+                             if outputs.get(k) != prev["outputs_sha256"].get(k))
+            raise SystemExit(f"--manifest-only: outputs differ from the previous manifest: {changed}")
+        old = out / "manifest.json"
+        keep = out / f"manifest.superseded-{sha256_file(old)[:8]}.json"
+        if not keep.exists():
+            write_private(keep, old.read_bytes())
     versions = set()
     with open(mention_p, encoding="utf-8") as fh:
         fh.readline()
@@ -563,6 +661,16 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool) -> int:
                      "documents_checked": len(seen), "mismatches": 0,
                      "documents_without_chunks": plan["located"].get("documents_without_chunks", 0)},
         "outputs_sha256": outputs,
+        "worker": workers,
+        "per_arm_glossary_files": (
+            "Not written here, by design. Prereg 5.3's per-arm glossary files are the per-collection "
+            "ragstack.glossary_file/v1 files the glossary-file writer builds for each (corpus arm, "
+            "glossary arm) load, covering base and that arm's added documents together; the writer "
+            "records each file's sha256 in its own manifest. They are built from this directory's "
+            "per-document rows and merged glossary, so no separate per-arm slices of these outputs "
+            "are needed. Per-arm counts are in census.by_arm."),
+        "supersedes": (None if prev is None else {"manifest_sha256": sha256_file(out / "manifest.json"),
+                                                   "note": "manifest additions only; outputs byte-identical"}),
     }
     write_json(out / "manifest.json", manifest)
     print(json.dumps({"outputs": outputs, "census": manifest["census"]["totals"], "degraded": dict(deg)}, indent=1))
@@ -575,9 +683,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", required=True, help="the private run config (JSON)")
     ap.add_argument("--allow-degraded-transport", action="store_true",
                     help="assemble even with documents degraded by the transport (recorded)")
+    ap.add_argument("--manifest-only", action="store_true",
+                    help="assemble: rebuild the manifest from the existing outputs (all checks re-run; "
+                         "refused unless every output is byte for byte the previous manifest's)")
     ap.add_argument("--allow-dirty", action="store_true", help="development only: not citable")
     a = ap.parse_args(argv)
     os.umask(0o077)
+    if a.manifest_only and a.command != "assemble":
+        raise SystemExit("--manifest-only applies to assemble only")
+    if a.allow_degraded_transport and a.command != "assemble":
+        raise SystemExit("--allow-degraded-transport applies to assemble only")
     cfg = load_config(a.config)
     if a.command != "status":
         prov = provenance()
@@ -588,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_plan(cfg)
     if a.command == "status":
         return cmd_status(cfg)
-    return cmd_assemble(cfg, a.allow_degraded_transport)
+    return cmd_assemble(cfg, a.allow_degraded_transport, a.manifest_only)
 
 
 if __name__ == "__main__":
