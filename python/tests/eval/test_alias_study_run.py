@@ -331,7 +331,16 @@ def test_no_write_path_is_reachable_from_the_runner(tmp_path: Path) -> None:
     imported = {n.names[0].name for n in ast.walk(tree) if isinstance(n, ast.Import)} | \
         {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
     assert not any("backfill" in m or "swap" in m or "load_embeddings" in m for m in imported)
-    assert "backfill_symbol_glossary" not in sys.modules and "load_embeddings" not in sys.modules
+    # in a fresh interpreter (order-independent): importing the runner, and the judge module its
+    # stage-B gate imports, loads no write path
+    import subprocess
+
+    eval_dir = Path(ar.__file__).resolve().parent
+    code = ("import sys; sys.path[:0] = [{e!r}, {g!r}, {p!r}]; import alias_study_run, alias_study_judge; "
+            "print([m for m in sys.modules if 'backfill' in m or 'load_embeddings' in m or 'swap' in m])"
+            ).format(e=str(eval_dir), g=str(eval_dir / "glossbench"), p=str(eval_dir.parents[1]))
+    out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True, timeout=120)
+    assert out.stdout.strip() == "[]", out.stdout
     with pytest.raises(SystemExit):
         ar.main(["--config", str(tmp_path / "x.json"), "run", "--stage", "A", "--corpus-arm", "base",
                  "--glossary", "none", "--swap-record", "s.json"])
