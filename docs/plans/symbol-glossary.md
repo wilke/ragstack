@@ -528,8 +528,9 @@ whitespace changes moved nothing on this corpus.
   prefers.
 - ~~A reranked, end-to-end measurement before any boost goes above 0 on a tenant.~~
   Done on dev, 2026-10-22: see Dev trial.
-- A setting that makes the reranker read `content` + `symbol_glossary` (Test 3), default
-  off, gated on Tests 1 and 2.
+- ~~A setting that makes the reranker read `content` + `symbol_glossary` (Test 3), default
+  off, gated on Tests 1 and 2.~~ Done (#792, v1.6.14): on by default,
+  `RERANK_INCLUDE_SYMBOL_GLOSSARY=false` opts out.
 - Embedding definitions (option c): evaluate at the open-access re-ingest (owner).
 - The #747 work-level dedup, to counter the crowding.
 - Merge the workers' receipt `enrichment` records into the GoWe-path manifest.
@@ -537,16 +538,19 @@ whitespace changes moved nothing on this corpus.
   (Tests still needed, item 1).
 - rules/3 run-ons: end a definition at `, <token> is the` for symbols `_SYMBOL_BODY`
   cannot read (`u→`, `u′2`, `M w`), and make the appositive phrase non-greedy (#790).
-- A tools tag so GoWe ingests stamp `rules/3`.
+- ~~A tools tag so GoWe ingests stamp `rules/3`.~~ Done (tools tag v1.6.13; the CWLs were
+  restamped in v1.6.14).
 - ~~Return the glossary from the API.~~ Done (#846): `POST /v1/retrieve` takes
   `include_symbol_glossary` and then puts `symbol_glossary` on every source (`""` when the
   chunk has none); see `docs/API.md`. The Go server accepts and ignores it (parity TODO).
-- ~~An English stemmer on the BM25 fields.~~ Tried on a dev scratch index (2026-11-03
-  session, 155 records, answer-quote gold, BM25 only), not adopted. Against the unstemmed
+- ~~An English stemmer on the BM25 fields.~~ Tried on a dev scratch index (2026-11-03;
+  155 records, answer-quote gold, BM25 only; the scratch index's counts differ slightly
+  from Test 2's live index, 85 at boost 1), not adopted. Against the unstemmed
   content + glossary arm (84 found), stemming both fields found 85 (8 gained, 7 lost),
-  stemming only the glossary found 83 (3 gained, 4 lost), and all four fields summed found
-  86 (4 gained, 2 lost, p = 0.69). Stemming `content` alone moved 28 to 30, the same size
-  as the whole gain, so none of it can be credited to the glossary. The example that
-  prompted the trial was not a stemming case: the other extractor's wording for the symbol
-  shares no stem with the query. Wording, not word form, decides these misses, so the lever
+  stemming only the glossary found 83 (3 gained, 4 lost), and summing all four fields
+  (`content` and `symbol_glossary`, each stemmed and unstemmed) found 86 (4 gained, 2
+  lost; exact sign test on the changed records, p = 0.69). Stemming `content` alone moved
+  28 to 30, the same +2 as the best stemmed arm (84 to 86), so that gain needs no glossary
+  field to explain it. The example that prompted the trial was not a stemming case:
+  another extractor's wording for the symbol shares no stem with the query. Wording, not word form, decides these misses, so the lever
   is the extractor's vocabulary (the quantity's standard name first, then paraphrases).
