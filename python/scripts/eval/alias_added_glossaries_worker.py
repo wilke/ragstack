@@ -131,7 +131,14 @@ async def run(args: argparse.Namespace) -> int:
     skipped = 0
     for u in units:
         out = Path(u["out"])
-        if out.exists():
+        if out.exists() and args.rerun:
+            # --rerun (with --only): the listed units are asked again; their outputs are kept
+            stamp = int(time.time())
+            for f in (out, Path(u["summary"])):
+                if f.exists():
+                    f.rename(f.with_name(f.name + f".superseded-{stamp}"))
+            log.info("unit %s: --rerun, previous output moved aside", u["unit"])
+        elif out.exists():
             ok, why = _verify_unit_output(out, u["doc_ids"])
             if ok:
                 skipped += 1
@@ -186,7 +193,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--units", type=int, default=4, help="units (so model calls) in flight; <= 4 for this endpoint")
     p.add_argument("--limit", type=int, default=0, help="run only the first N planned units (pilot)")
     p.add_argument("--only", default="", help="a file of unit ids to run (whitespace separated)")
+    p.add_argument("--rerun", action="store_true",
+                   help="with --only: ask the listed units again even when their output verifies "
+                        "(e.g. documents degraded by the transport); the old output and summary are "
+                        "renamed *.superseded-<time>, never deleted")
     a = p.parse_args(argv)
+    if a.rerun and not a.only:
+        raise SystemExit("--rerun needs --only (it re-asks only the listed units)")
     if not 1 <= a.units <= 4:
         raise SystemExit("--units must be 1..4 (the endpoint admits 4 sequences)")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
