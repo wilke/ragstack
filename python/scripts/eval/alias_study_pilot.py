@@ -14,16 +14,16 @@ a 95 % interval, as counts that can be committed before the freeze:
   draw, against either (the record's H2 value is non-zero) and against both. A record is
   discordant when its found@10 differs between the cells; nothing else is kept. 95 % interval:
   the paper-cluster percentile bootstrap (seed ``261101|alias|boot``, §5.5);
-* the **baseline C found@10** under base x default x none (the C ceiling, §2 item 4), with
-  found@10-gold beside it (§6.1), in points, with the same bootstrap;
 * the share of judged pairs labelled *answers*, per arm (base / neighbour / random, §6.2);
 * the **tiebreaker share**: pairs C and E did not settle (sent to the tiebreaker), the pairs
   whose final label is the tiebreaker's, and the unjudged, per arm;
 * the **Opus-filtered** (no-reference) share of the drift sample, per arm (§6.3);
 * the **deduplicated pair count** of the judge's registry, in total and per judging stage, and
   the gateway calls made so far (:meth:`alias_study_judge.Pipeline.calls_so_far`), for the judge
-  caps (§14 O7). §5.6 asks for the count *per leg*; it is **not** printed per leg (owner,
-  2026-11-03, below).
+  caps (§14 O7).
+
+§5.6's baseline C found@10 is **not** reported, with or without found@10-gold (owner,
+2026-11-03, R28; *Blind to outcomes*).
 
 Pair-level shares carry a Wilson 95 % interval (pairs, not papers, are the unit there).
 
@@ -33,17 +33,14 @@ the output is refused when any key names a test quantity (:data:`FORBIDDEN_KEYS`
 records are not a sample of the balanced set (§5.6 *Its limits*); its estimates are added to §8
 as rows, never substituted.
 
-**Blind to outcomes (owner, 2026-11-03).** No figure is printed from which a leg's found@10,
-found@10-gold or RR@10 could be backed out, beyond the ones §5.6 names. In particular the judge
-pairs a leg demands are **not** counted per leg: a found@10 demand is the whole top 10 of every
-record whose gold is outside it, so the per-leg count is 10 x the leg's gold-only misses, and a
-difference of two legs' counts is -10 x their gold-only net. The registry counts (deduplicated
-across legs, per judging stage and in total) and the per-arm judge shares pool every leg. Per leg
-the report holds only the run status, the row count and the failed calls. The outcome-bearing
-figures it does print are §5.6's own: the baseline C found@10 and found@10-gold of one cell (base x
-default x none), and each contrast's unsigned discordant count. A discordant count bounds the
-partner cell's level (within +-d of the other, d of the same parity) and fixes it only at d = 0
-or d = n; nothing more is derivable.
+**Blind to outcomes (owner, 2026-11-03, R28).** No figure is printed from which a leg's
+found@10, found@10-gold or RR@10 level, or the direction of any contrast, could be read. The
+report prints no single-leg level at all: a level beside a contrast's discordant count would
+bound the direction of that contrast. Its only outcome-bearing figures are the contrasts'
+unsigned discordant counts, which are unchanged when a record's found@10 flips in every cell at
+once. The registry counts (deduplicated across legs, per judging stage and in total) and the
+per-arm judge shares pool every leg; per leg the report holds only the run status, the row count
+and the failed calls.
 
 **Refusals (before any outcome is read).** Both directories must carry ``STUDY-MODE`` ``pilot``;
 :func:`alias_study_judge.analysis_gate` must pass and say ``pilot`` (stage A committed and the
@@ -93,7 +90,6 @@ L = asc.leg_id
 GLOSSARY_CELLS = (L("base", "merged", "default"), L("base", "none", "default"))
 GROWTH_NEIGHBOUR = L("neighbour", "none", "default")
 GROWTH_DRAWS = (L("random1", "none", "default"), L("random2", "none", "default"))
-BASELINE_C = L("base", "none", "default")
 CONTRAST_LEGS = (*GLOSSARY_CELLS, GROWTH_NEIGHBOUR, *GROWTH_DRAWS)
 #: a key that would carry a test quantity, a direction or a verdict: refused anywhere in the output
 FORBIDDEN_KEYS = frozenset({"p", "p_value", "pvalue", "p_one_sided", "p_two_sided", "min_p", "statistic",
@@ -263,20 +259,6 @@ def discordance(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mappin
             "ci95": boot_share_ci(clusters, flags, n_boot, seed)}
 
 
-def found_figure(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], leg: str,
-                 key: str, n_boot: int, seed: int) -> dict[str, Any]:
-    clusters, vals = [], []
-    for r in recs:
-        o = (outcomes.get(leg) or {}).get(r["record_id"])
-        if o is not None:
-            clusters.append(str(r["paper"]))
-            vals.append(int(o[key]))
-    n, k = len(vals), sum(vals)
-    return {"leg": leg, "n": n, "found": k, "points": round(100 * k / n, 4) if n else None,
-            "ci95_points": boot_share_ci(clusters, vals, n_boot, seed, scale=100.0),
-            "missing": len(recs) - n}
-
-
 def share(k: int, n: int) -> dict[str, Any]:
     return {"k": k, "n": n, "share": round(k / n, 4) if n else None, "wilson95": jd.wilson(k, n)}
 
@@ -376,7 +358,7 @@ def report(records: Path, runs_dir: Path, judge_dir: Path, n_boot: int = N_BOOT,
     pairs = registry_counts(p)
     res: dict[str, Any] = {
         "schema": SCHEMA, "mode": MODE, "prereg": "DRAFT v3 §5.6 (R8)",
-        "reads": "discordance, found@10 levels and judge shares only; no Layer-1 test, net change, direction, gate "
+        "reads": "unsigned discordance and judge shares only; no found@10 level, Layer-1 test, net change, direction, gate "
                  "or p value is computed",
         "records": {"pilot": len(p.recs), "G": len(g_recs), "C": len(c_recs),
                     "papers": len({r["paper"] for r in p.recs})},
@@ -385,12 +367,10 @@ def report(records: Path, runs_dir: Path, judge_dir: Path, n_boot: int = N_BOOT,
         "run_dates_utc": {"first": min(p.utc), "last": max(p.utc)} if p.utc else None,
         "legs": {leg: {k: v[k] for k in LEG_FIELDS if k in v} for leg, v in p.legs.items()},
         "discordance": disc,
-        "baseline_c_found10": {"found10": found_figure(c_recs, out, BASELINE_C, "hit", n_boot, seed),
-                               "found10_gold": found_figure(c_recs, out, BASELINE_C, "hit_gold", n_boot, seed)},
         "judge": judge_shares(p.final),
         "judge_registry": pairs,
         "gateway_calls": gateway_calls(judge_dir, pairs["pairs"]),
-        "intervals": {"discordance_and_found10": "paper-cluster percentile bootstrap, 95 %",
+        "intervals": {"discordance": "paper-cluster percentile bootstrap, 95 %",
                       "pair_shares": "Wilson score, 95 %", "n_boot": n_boot, "seed": asc.SEEDS["boot"],
                       "numpy_seed": seed,
                       "seed_rule": asc.SEED_RULE},
@@ -431,12 +411,6 @@ def markdown(res: Mapping[str, Any]) -> str:
     for k in ("glossary_G", "glossary_C", "growth", "growth_both_draws", "growth_vs_random1", "growth_vs_random2"):
         x = d[k]
         lines.append(f"| {k} | {x['n']} | {x['discordant']} | {_pct(x['share'])} | {_ci(x['ci95'])} |")
-    b = res["baseline_c_found10"]
-    lines += ["", "| baseline C (base x default x none) | n | found | points | 95 % CI |", "|---|---|---|---|---|"]
-    for k in ("found10", "found10_gold"):
-        x = b[k]
-        pts = "–" if x["points"] is None else f"{x['points']:.1f}"
-        lines.append(f"| {k} | {x['n']} | {x['found']} | {pts} | {_ci(x['ci95_points'], 1.0)} |")
     j = res["judge"]
     lines += ["", f"Judge: {j['pairs_finalized']} final labels.", "",
               "| arm | answers | escalated | tiebroken | unjudged | Opus filtered (of drift sample) |",

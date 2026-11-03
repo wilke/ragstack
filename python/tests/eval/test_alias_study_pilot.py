@@ -132,10 +132,8 @@ def test_report_estimates_match_the_frozen_hits(world: Path) -> None:
     assert res["record_set"]["balanced"] == 9 and res["record_set"]["descriptive"] == 26
     # discordance recomputed from the judge's own frozen stage-A hits
     hits: dict[tuple[str, str], int] = {}
-    gold: dict[tuple[str, str], int] = {}
     for x in asc.read_jsonl(world / "work" / "judge" / "stage-a" / "hits.jsonl"):
         hits[(x["leg"], x["record_id"])] = x["hit"]
-        gold[(x["leg"], x["record_id"])] = x["hit_gold"]
     recs = asc.load_records(world / "accepted-full.jsonl")
     desc = asc.split_records(recs)[1]
 
@@ -156,26 +154,15 @@ def test_report_estimates_match_the_frozen_hits(world: Path) -> None:
     for k in ("glossary_G", "glossary_C", "growth"):
         lo, hi = d[k]["ci95"]
         assert 0 <= lo <= d[k]["share"] <= hi <= 1
-    c = res["baseline_c_found10"]["found10"]
-    assert res["baseline_c_found10"]["found10"]["leg"] == none
-    assert c["found"] == sum(hits[(none, r["record_id"])] for r in desc if r["kind"] == "C")
-    assert c["n"] == 13 and c["ci95_points"][0] <= c["points"] <= c["ci95_points"][1]
-    cg = res["baseline_c_found10"]["found10_gold"]
-    assert cg["leg"] == none and cg["found"] == sum(gold[(none, r["record_id"])] for r in desc if r["kind"] == "C")
-    # the fixture must tell found@10 from found@10-gold, or the line above proves nothing
-    assert cg["found"] != c["found"]
     # every interval is the paper bootstrap seeded by 261101|alias|boot, recomputed independently
     seed = int.from_bytes(hashlib.sha256(b"261101|alias|boot").digest()[:8], "big")
     assert res["intervals"]["numpy_seed"] == seed      # the seed the intervals were drawn with
-    c_recs = [r for r in desc if r["kind"] == "C"]
-    assert c["ci95_points"] == indep_boot([r["paper"] for r in c_recs],
-                                          [hits[(none, r["record_id"])] for r in c_recs], seed, 100.0)
-    assert cg["ci95_points"] == indep_boot([r["paper"] for r in c_recs],
-                                           [gold[(none, r["record_id"])] for r in c_recs], seed, 100.0)
-    g_recs = [r for r in desc if r["kind"] == "G"]
-    assert d["glossary_G"]["ci95"] == indep_boot(
-        [r["paper"] for r in g_recs], [int(hits[(merged, r["record_id"])] != hits[(none, r["record_id"])])
-                                       for r in g_recs], seed)
+    for key, kind, a, bs in (("glossary_G", "G", merged, (none,)), ("glossary_C", "C", merged, (none,)),
+                             ("growth", None, nb, draws)):
+        rs = [r for r in desc if kind is None or r["kind"] == kind]
+        flags = [int(any(hits[(a, r["record_id"])] != hits[(b, r["record_id"])] for b in bs)) for r in rs]
+        assert d[key]["ci95"] == indep_boot([r["paper"] for r in rs], flags, seed), key
+    assert d["glossary_C"]["ci95"][1] > 0          # a non-degenerate interval, so the check above has teeth
     # judge shares recomputed from final.jsonl
     fin = [x for x in asc.read_jsonl(world / "work" / "judge" / "final.jsonl") if x["k"].startswith("pair|")]
     j = res["judge"]
@@ -277,6 +264,41 @@ def test_no_per_leg_outcome_can_be_backed_out(world: Path) -> None:
             return set(o) | {k for v in o.values() for k in keys(v)}
         return {k for v in o for k in keys(v)} if isinstance(o, list) else set()
     assert not keys(a) & {"per_leg", "found10_per_leg", "found10_gold_per_leg", "pairs_per_leg", "rr10"}
+
+
+def test_no_single_leg_level_can_be_read(world: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R28 (owner, 2026-11-03): the report prints no single-leg found@10 or found@10-gold level.
+    Flipping found@10 (and found@10-gold) of every C record, and then of every record, in all the
+    contrast cells at once moves every leg's level and no discordance: the report must not move.
+    With the baseline C found@10 in the report it moved."""
+    a = run(world)
+    real = pilot.Pilot.outcomes
+
+    def flipped(kinds: set[str]) -> Any:
+        def outcomes(self: Any, legs: Any) -> dict[str, dict[str, Any]]:
+            out = real(self, legs)
+            return {leg: {rid: (None if o is None else {**o, "hit": 1 - o["hit"], "hit_gold": 1 - o["hit_gold"]}
+                               if self.by_id[rid]["kind"] in kinds else o) for rid, o in rows.items()}
+                    for leg, rows in out.items()}
+        return outcomes
+    for kinds in ({"C"}, {"G", "C"}):
+        monkeypatch.setattr(pilot.Pilot, "outcomes", flipped(kinds))
+        assert json.dumps(run(world), sort_keys=True) == json.dumps(a, sort_keys=True), kinds
+    def keys(o: Any) -> set[str]:
+        if isinstance(o, dict):
+            return set(o) | {k for v in o.values() for k in keys(v)}
+        return {k for v in o for k in keys(v)} if isinstance(o, list) else set()
+    bad = [k for k in keys(a) if any(x in k.casefold() for x in ("found", "baseline", "points", "level", "hit", "rr"))]
+    assert not bad and "baseline" not in json.dumps(a)
+    md = pilot.markdown(a)
+    assert "baseline" not in md and "| found" not in md and "points" not in md
+
+
+def test_provenance_drops_the_host_and_the_warnings(world: Path) -> None:
+    res = pilot.report(world / "accepted-full.jsonl", world / "work" / "runs", world / "work" / "judge", n_boot=50)
+    ep = res["experiment_provenance"]
+    assert ep and "commit" in ep and not {"host", "warnings"} & set(ep)
+    assert set(pilot.PROVENANCE_DROP) == {"host", "warnings"} == set(pilot.ast.PUBLIC_DROP_PROVENANCE)
 
 
 def test_discordance_is_unsigned_and_excludes_missing() -> None:
@@ -386,8 +408,8 @@ def test_refuses_a_test_quantity_in_the_output(world: Path, monkeypatch: pytest.
                 {"w": "GATE-NOT-EVALUABLE: leg not run"}):
         with pytest.raises(SystemExit, match="no Layer-1 test quantity"):
             pilot.no_test_quantities(bad)
-    real = pilot.found_figure
-    monkeypatch.setattr(pilot, "found_figure", lambda *a, **k: {**real(*a, **k), "net_points": 1.0})
+    real = pilot.discordance
+    monkeypatch.setattr(pilot, "discordance", lambda *a, **k: {**real(*a, **k), "net_points": 1.0})
     with pytest.raises(SystemExit, match="net_points"):
         run(world)
 
