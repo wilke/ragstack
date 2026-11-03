@@ -3,7 +3,7 @@
 **Status: DRAFT — not frozen; owner review pending.** No sha is recorded because nothing is frozen yet.
 Current draft: **v3, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1), the changes the owner
 approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), and the owner's
-decisions of 2026-11-03 (R12–R26) folded in. The
+decisions of 2026-11-03 (R12–R27) folded in. The
 record set (§4 of the prereg: 1,091 accepted records, the balanced set of 900 on 300 papers) was built
 before v1. No retrieval has been run on any study record. The pre-freeze pilot (prereg §5.6) will
 retrieve and judge the 191 held-out records before the freeze; the 900 balanced records stay unretrieved
@@ -23,16 +23,18 @@ JUDGE-CALIBRATION, JUDGE-VALIDATION-PLAN, TIEBREAKER-PLAN).
 1. The owner says go, in writing, naming the commit of this directory the go applies to. The prereg is
    frozen **as written**, draft status line included. No edit is made to mark it frozen.
 2. In a clean checkout of that commit, `sha256sum PREREG-alias-study.md` and a UTC timestamp go into a
-   **private** `PREREG.sha256` kept with the outputs, **before** any study-record retrieval, any
-   expanded-corpus store write that the run depends on, or any judge call on a study pair.
+   **private** `PREREG.sha256` kept with the outputs, **before the first post-freeze retrieval of a study
+   record**. The 9 bench collections (prereg §5.3, R26) are loaded before the freeze, and the pre-freeze
+   pilot (prereg §5.6) runs on them.
 3. The same sha goes into the private run config (`prereg.file`, `prereg.sha256`), so every stage that
    reads it refuses on a mismatch.
 4. **Signed public tag (R10).** At the commit named in the go, a **signed annotated** git tag
-   `prereg-alias-study-2026-11` is made (`git tag -s`), its message holding the prereg's sha256 and the
-   UTC timestamp of step 2, and it is **pushed to the public repository** before any study-record
-   retrieval, expanded-corpus store write the run depends on, or judge call on a study pair. Anyone can
+   `prereg-alias-study-2026-11` is made (`git tag -s`), its message holding the prereg's sha256, the UTC
+   timestamp of step 2 and the **sha256 of each of the 9 load receipts** (prereg §9.3), and it is
+   **pushed to the public repository** before the first post-freeze retrieval of a study record. Anyone can
    then check the freeze: `git tag -v` verifies the signature, and `sha256sum` of the prereg at the tagged
-   commit must equal the tag message, the private `PREREG.sha256` and the run config's `prereg.sha256`.
+   commit must equal the tag message, the private `PREREG.sha256` and the run config's `prereg.sha256`,
+   and each collection's load receipt must hash to the sha256 the tag pins.
    The tag is never moved or deleted; a tag that cannot be verified blocks the run.
 5. One commit records the freeze **in this README only**: the status line becomes `FROZEN <sha> at <UTC>
    on the owner's go (commit <sha>)`. The prereg file is never touched again. Later changes go to
@@ -44,12 +46,16 @@ JUDGE-CALIBRATION, JUDGE-VALIDATION-PLAN, TIEBREAKER-PLAN).
 The prereg's §15 is the checklist. The items that need work outside this repository are:
 
 - the neighbour and two random selection manifests (OpenAlex metadata only) of the **v4** build (the v3
-  pass with the nearest-band fill and the repetition screen, prereg R16–R18): built (#915, review open),
+  pass with the nearest-band fill and the repetition screen, prereg R16–R18): built (#915, merged),
   counts entered in prereg §5.1, H2's power recomputed on them (the caps lever does not fire at a = 0.7,
   prereg §8); the power output still to be committed as an artifact;
-- the three expanded corpora, built and censused on bench copies within a management window, and the 9
-  bench collections (one per corpus × glossary arm, prereg R26; the count pending owner confirmation),
-  loaded from each corpus's embeddings with the variant's glossary file;
+- the 9 bench collections (one per corpus × glossary arm, prereg R26; the count pending the owner's
+  confirmation), each corpus embedded once and each collection loaded once from those embeddings with its
+  glossary file (an explicit empty-row file for *none*), each with a registry entry and a load receipt;
+  whether the base embeddings can be shared across the four arms (a loader check; otherwise a
+  vector-parity check on the gold chunks);
+- the `glossary_file/v1` writer and its files (merged and placebo with the plural entries of R27, and the
+  empty-row *none* file), with render-parity tests;
 - glossaries for the added papers in every arm, made by the same pipeline, and the offline reach count;
 - the record-set sha, the balanced set and the overlap counts recomputed by committed code;
 - an offline power calculation by committed code;
@@ -83,7 +89,7 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   retry); the judged-pair spot check stratified by judge label; fixed sensitivities with a *fragile*
   label; a placebo glossary leg; a pre-freeze pilot on the 191 held-out records; two post-freeze stages
   with judging on demand; a signed public freeze tag; H2's estimand stated.
-- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R26). The C cost rule reads the
+- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R27). The C cost rule reads the
   point estimate (*do not attach* when ΔC < −1 point) and the CI's lower bound (C_lo < −3.6 points, the
   smallest C change 300 C records detect with 80 % power at 5 % discordance), with the statement that a
   C cost smaller than about 3.6 points cannot be ruled out; pass rates at 5 % C discordance and a true C
@@ -93,14 +99,14 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   test, which could not flip a verdict), topic clustering and (H2) the chunk-volume covariate, tested by a
   Freedman–Lane sign-flip; subgroup splits never make anything fragile, and H1b is exempt. The judged-pair
   spot check grows to 100 pairs (50 / 33 / 17); at a true 10 % error rate the *answers*-stratum rule
-  fires with probability .38 (.35 at 60 pairs; `artifacts/spot_check_detection.json`). The corpus
+  fires with probability .38 (.35 for the 30-pair *answers* stratum of the 60-pair sheet; `artifacts/spot_check_detection.json`). The corpus
   build's v3 facts (six length bands with the top band split at 80, the carry-over re-draw, seeds
   unchanged, the fetch budget, relaxation source → type → band), a nearest-band fill at the last
   relaxation level, a repetition screen (distinct-chunk ratio < 0.90 excluded) for every added paper,
   and the ± 5 % chunk-volume target read as a build target covered by the covariate sensitivity, with a
   placeholder for the v4 counts. Stage A now also runs the 5 norerank cells the inactive-reranker gate reads, so every Layer-1 gate is
-  read after stage A alone; stage-A retrieval also takes the Layer-1 attachments' BM25 legs (19 legs,
-  whose pairs are judged in stage B (stage-A judging 14 legs); the placebo drops every
+  read after stage A alone; stage-A retrieval also takes the Layer-1 attachments' BM25 legs (19 legs
+  retrieved in stage A), whose pairs are judged in stage B (14 legs judged in stage A); the placebo drops every
   entry equal to one of the receiving paper's own entries. The covariate's test form (§14 O13, opened and
   closed in this version) is fixed by R23. An equivalence reading with zero discordant records prints
   *not resolved*, and Wilson upper limits are rounded up.
@@ -108,7 +114,9 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   the neighbour arm's chunks; the ≥ 80 band still short), with its carry-over rule quoted verbatim, the
   nearest-band fill's global-greedy order, the repetition screen's 9 hits (7 JATS) disclosed, and §8's
   power on the v4 dose.
-  No glossary is swapped in place: each corpus × glossary arm is its own bench collection (9, pending
-  owner confirmation), written once by loading the corpus's single embedding with the variant's glossary
-  file (no re-embedding, no backfill), with a registry entry and a load receipt, censused at every leg
-  (R26).
+  No glossary is swapped in place: each corpus × glossary arm is its own bench collection (9), written
+  once by loading the corpus's single embedding with the variant's glossary file (an explicit empty-row
+  file for *none*; no re-embedding, no backfill), with a registry entry and a load receipt, censused at
+  every leg (R26). The glossary files carry an added `Xs` entry for every abbreviation, and the rendering
+  conventions are fixed (R27). The freeze is now triggered by the first post-freeze study-record
+  retrieval, and the signed tag also pins the 9 load receipts' sha256.

@@ -1,7 +1,7 @@
 # Pre-registration, alias study (OA-1000) — DRAFT v3, 2026-11-03
 
 **Status: DRAFT — not frozen; owner review pending.** Version 3 folds in the owner's decisions of
-2026-11-03 (R12–R26, the second table below): a C cost rule that reads the point estimate (−1 point) and
+2026-11-03 (R12–R27, the second table below): a C cost rule that reads the point estimate (−1 point) and
 the CI's lower bound (−3.6 points, the design's detection limit for C), the judge false-yes bound on H2
 always taking the larger of the random arm's and the pooled limit, *fragile* restricted to named re-tests
 of H1 and H2, a judged-pair spot check of 100 pairs, the corpus build facts of the v3 pass (six length
@@ -11,7 +11,8 @@ target covered by H2's chunk-volume covariate; and stage A extended by the inact
 norerank cells (retrieval and judging) and the Layer-1 attachments' BM25 cells (retrieval only), the
 placebo stripped of each paper's own entries, a bootstrap-t and a Freedman–Lane covariate test as the re-tests behind *fragile*, and *not resolved* for an equivalence reading with zero
 discordant records; and one bench collection per corpus × glossary arm, written once from a single
-embedding per corpus, in place of in-place glossary swaps. Version 2 folded in the changes the owner approved
+embedding per corpus, in place of in-place glossary swaps; and glossary files that carry abbreviation plurals, under fixed rendering
+conventions. Version 2 folded in the changes the owner approved
 on 2026-11-02 and 2026-11-03 from an independent methodology review, 2026-11-02 (R1–R11, the second table
 below): two separate families in place of the Holm pair, a harm rule and CI-based cost rules in Layer 2,
 the claims' scope wording, judge reporting, a stratified judged-pair spot check, fixed sensitivities, a
@@ -53,9 +54,10 @@ file is never edited. Any later change is a `DEVIATIONS.md` entry.
 
 **Owner decisions of 2026-11-02 and 2026-11-03, and where each is written.** R1–R11 were adopted from an
 independent methodology review, 2026-11-02; the review's text is not part of this record, what the owner
-adopted from it is. R12–R26 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
+adopted from it is. R12–R27 are the owner's decisions of 2026-11-03 on the C cost rule, the false-yes
 bound, the *fragile* rule, the spot check, the corpus build, stage A, the placebo, the re-tests behind
-*fragile* the equivalence reading, the stage of the BM25 legs and the bench collections.
+*fragile*, the equivalence reading, the stage of the BM25 legs, the bench collections and the glossary
+files' plurals and rendering.
 
 | # | decision, in short | where |
 |---|---|---|
@@ -83,8 +85,9 @@ bound, the *fragile* rule, the spot check, the corpus build, stage A, the placeb
 | R22 | **bootstrap-t replaces the studentized randomization test**: a one-sided paper-cluster bootstrap-t (seed `261101\|alias\|boot`). The *fragile* set is H1 = bootstrap-t + topic clustering, and H2 = bootstrap-t + topic clustering + volume covariate. §7's statement about the weak null is corrected | §3.4, §5.5, §7 |
 | R23 | **the H2 volume-covariate re-test** is a Freedman–Lane sign-flip with the studentized intercept (10,000 flips, seed `261101\|alias\|perm`), reusing the primary's unadjusted gold-only gate; closes O13 | §5.5, §7, §14 O13, §15 item 19 |
 | R24 | **equivalence with zero discordant records** prints *not resolved* with the count, never *no effect larger than 0 points*; Wilson upper limits are rounded up | §3.3 |
-| R25 | **BM25 legs of the Layer-1 attachments retrieved in stage A, judged in stage B**: stage-A retrieval is 19 legs (5 attachments × default, norerank, BM25, plus the 4 noise repeats; 20,729 calls), stage-A judging the default and norerank legs and the repeats (14); each attachment's glossary swapped once in total; the stage-A commit pins the BM25 rows, their labels arrive in stage B; total unchanged | §5.4, §5.7, §6.2, §9.3 |
-| R26 | **no in-place glossary swaps**: each (corpus arm, glossary arm) is its own bench collection, built once and never written again (base × none, merged, placebo; neighbour, random-1, random-2 × none, merged: 9 collections, the count pending owner confirmation); each corpus embedded once, and its embedding shards loaded once per variant collection with the variant's glossary file, so no re-embedding and no backfill; each collection written exactly once, with a registry entry and a load receipt with provenance, censused at the start and end of every leg; the load route and the capacity settled with management | §5.1, §5.3, §5.7, §9.3, §10, §15 |
+| R25 | **BM25 legs of the Layer-1 attachments retrieved in stage A, judged in stage B**: stage-A retrieval is 19 legs (5 attachments × default, norerank, BM25, plus the 4 noise repeats; 20,729 calls), stage-A judging the default and norerank legs and the repeats (14); each attachment's glossary swapped once in total (**superseded by R26**: no swap at all); the stage-A commit pins the BM25 rows, their labels arrive in stage B; total unchanged | §5.4, §5.7, §6.2, §9.3 |
+| R26 | **no in-place glossary swaps**: each (corpus arm, glossary arm) is its own bench collection, built once and never written again (base × none, merged, placebo; neighbour, random-1, random-2 × none, merged: 9 collections); each corpus embedded once, and its embedding shards loaded once per variant collection with the variant's glossary file (for *none*, an explicit file of empty rows), so no re-embedding and no backfill; each collection written exactly once, with a registry entry and a load receipt with provenance, censused at the start and end of every leg | §5.1, §5.3, §5.7, §9.3, §10, §15 |
+| R27 | **abbreviation plurals in the glossary files**: for every `abbreviation` or `both` entry an added `Xs` entry with the same definitions, because the served renderer matches only the exact token (48 of 600 G records would otherwise get no entry on their gold chunk); and the rendering conventions (one line per alias, the 12-entry cap counting lines, served order, the 1,200-character stop, config, version strings, definition text) | §5.3 |
 
 **Terms.**
 - **Glossary entry:** a pair *alias → primary term* for one paper. The alias is a **symbol** (the round-3
@@ -287,8 +290,8 @@ over H1 and H2, with H1b after both) is replaced.
 - A GATE-NOT-EVALUABLE or absent member enters at p = 1.0, and a family is never shrunk (round 3 D14).
 
 **Why two families.** H1/H1b and H2 are separate claims that answer unrelated questions: a serving
-decision about attaching a glossary field (base corpus, glossary arms swapped), and a property of corpus
-growth (corpus arms swapped, no glossary). They compare disjoint pairs of cells, feed different
+decision about attaching a glossary field (base corpus, glossary arms varied), and a property of corpus
+growth (corpus arms varied, no glossary). They compare disjoint pairs of cells, feed different
 decisions in Layer 2 (§3.3), and no conclusion of this study is drawn from their conjunction: no sentence
 says "the glossary helps **and** neighbours hurt" as one finding. Each family is therefore controlled on
 its own. **Within Family G** the family-wise error is ≤ 0.05 in the strong sense by the fixed-sequence
@@ -583,13 +586,14 @@ run on base × default only.
 
 | arm | content |
 |---|---|
-| **base** | OA-1000 as it stands (32,765 chunks): the existing OA-1000 bench copy, never the live collection |
+| **base** | OA-1000 as it stands (32,765 chunks), embedded once; base × {none, merged, placebo} are new bench collections loaded from those embeddings (R26, §5.3), never the live collection |
 | **neighbour** | base + the **citation neighbours** of the 300 satisfied papers (rule below) |
 | **random-1**, **random-2** | base + **matched random papers**, two independent draws (rule below) |
 
 Each expanded arm is a new bench collection. Base chunks are copied **with identical chunk ids and
-content**. Each corpus arm is embedded once; its glossary variants are separate collections loaded from
-the same embeddings (R26, §5.3, §9.3). Each added paper goes through the **same ingest** (chunker `tok512o0`, the same embedder and
+content**. Base chunks are embedded once and shared by the four corpus arms, and each added paper is
+embedded once; each arm's collections load the base shards plus that arm's added-paper shards, and its
+glossary variants are separate collections loaded from the same embeddings (R26, §5.3, §9.3). Each added paper goes through the **same ingest** (chunker `tok512o0`, the same embedder and
 version, the same tools image) and the **same glossary pipeline** (§5.3).
 
 **Neighbour selection (D4).** Metadata from OpenAlex only, made before any retrieval. For each study
@@ -698,14 +702,15 @@ references and citers in the neighbour arm.
 removed). A paper whose ratio is **below 0.90 is excluded**, and it is replaced as other exclusions are:
 an excluded neighbour is walked past (the walk-down above), and for a random draw the walk continues in
 its seeded order. Exclusions are counted and printed **per arm and draw**. *Why 0.90:* ordinary papers
-sit near 1.0; the v3 scan found two documents below 0.9 across all three arms (ratios ≈ 0.53 and 0.61),
-one of them a broken PDF extraction yielding 2,500 chunks.
+sit near 1.0, and the papers below 0.90 are ones whose chunk store holds the same text many times over.
 
-*What the screen caught in the v4 build (a disclosure; provisional while the #915 review checks the
-screen).* It excluded **9** papers of the v3 arms (neighbour 3, random-1 4, random-2 2). Two are the
-broken PDF extractions above; **7 are JATS papers** in which one table chunk repeats across records, an
-effect of the JATS-to-text conversion rather than of a broken source. The rule is per paper, as written,
-and is applied to them unchanged. By the same measure **OA-1000 holds 4 papers below 0.90** (0.4 % of
+*What the screen caught in the v4 build (a disclosure).* It excluded **9** papers of the v3 arms
+(neighbour 3, random-1 4, random-2 2). Two are PDFs: one a broken extraction yielding 2,500 chunks (ratio
+≈ 0.53), the other a paper in which 2 chunks repeat about 70 times each (≈ 0.61). **Seven are JATS
+papers** whose converter repeats a caption plus a header at chunk size, so one table chunk recurs across
+records; the #915 review confirmed that this is genuinely identical text in the chunk store. The scratch
+v3 scan by the PR #911 reviewer saw only the two PDFs and missed the 7 JATS cross-record cases. The rule
+is per paper, as written, and is applied to all 9 unchanged. By the same measure **OA-1000 holds 4 papers below 0.90** (0.4 % of
 1,000; a scratch count made for #915, not a committed artifact); the base corpus is not screened, so the
 screen applies to added papers only (§13.7).
 
@@ -769,12 +774,12 @@ paper: the pair with the smallest key is filled first, then the smallest of the 
 The key is band distance, then type mismatch, then source mismatch, then the slot's position in sorted
 cell order, then the candidate's seeded order. The result is deterministic and does not depend on the
 order in which the slots are listed. It is greedy, **not a minimum-total assignment**: with open slots in
-bands 5 and 3 and candidates in bands 4 and 0, it pairs 3 ↔ 4 first (distance 1, the band-3 slot first
+bands 5 and 3 and candidates in bands 4 and 0 (slots and candidates of one type and one source, so the
+band distance and the cell order decide), it pairs 3 ↔ 4 first (distance 1, the band-3 slot first
 in cell order) and then 5 ↔ 0, a total band distance of 6, where a minimum-total assignment (5 ↔ 4,
-3 ↔ 0) has 4. On the 8 study papers of the v4 build with several `any` slots, a minimum-total assignment
-gives the same totals as the greedy (checked in the #915 review). The v4 manifests' `any_rule` string
-("open slots served in sorted cell order") undersells this order, in which sorted cell order is only the
-fourth tie-break; the corpus fix corrects the string.
+3 ↔ 0) has 4. On the 8 study-paper × draw cases of the v4 build with several `any` slots (6 distinct
+study papers), a minimum-total assignment gives the same totals as the greedy (checked in the #915
+review).
 
 **Chunk volume (owner, 2026-11-03, R19).** Each random draw's total added chunks is targeted at **± 5 %**
 of the neighbour arm's. This is a **build target, not a gate**: a draw outside it is used as built, and
@@ -812,7 +817,7 @@ one neighbour fewer, and each draw one random slot fewer, than in v3 (2,423 pape
 
 **Build counts, v4** (private `counts-v4.json`, sha256 `54776372…`; draw manifests `random-1-draw-v4.json`
 `5b7b6446…`, `random-2-draw-v4.json` `0bb7b6f5…`; `neighbour-selection-v4.json` `9c1e2511…`; run at
-`1574286`, clean, `citable true`):
+`1574286`, clean, `citable true`; #915 is merged with a merge commit, so the run commit stays reachable):
 
 | v4 count | neighbour | random-1 | random-2 |
 |---|---|---|---|
@@ -865,8 +870,8 @@ inactive-reranker gate (§9.1), whose cells are run in stage A (R20, §5.7).
 
 | arm | rendered `symbol_glossary` field |
 |---|---|
-| **none** | empty on every chunk |
-| **merged** | the paper's merged glossary (symbol + defined abbreviation), rendered on **every chunk where the entry's alias occurs** as a whole token (the **mention** rule; abbreviations state no value), under the served caps (12 entries, 1,200 characters) |
+| **none** | empty on every chunk, from an explicit glossary file of empty rows (every document has a row) with its own version stamp (R26) |
+| **merged** | the paper's merged glossary (symbol + defined abbreviation), rendered on **every chunk where the entry's alias occurs** as a whole token (the **mention** rule; abbreviations state no value), under the served caps (12 lines, one per alias, and 1,200 characters; R27, below) |
 | **placebo** (one leg: base × default only; R7) | another paper's merged glossary: the entry lists are **permuted across the OA-1000 papers that have at least one merged entry** by a seeded derangement (each paper receives the whole entry list of the paper that follows it in the order of sha256 of `261101\|alias\|placebo\|<paper>`, ascending, the last receiving the first's), with the receiving paper's own entries removed (R21, below), then rendered on the receiving paper's chunks by the same mention rule and caps |
 
 **The placebo leg is a descriptive control for "extra text"** (R7). It attaches glossary-shaped text that
@@ -879,8 +884,8 @@ embeddings with the placebo glossary file (R26), with its own version stamp and 
 stage B (§5.7).
 
 **Own entries removed (owner, 2026-11-03, R21).** After the derangement, every entry of a receiving
-paper's placebo list that equals one of that paper's own merged entries (the normalised primary term and
-alias, under the same normalisation as the glossary pipeline's merge key, *Merge* below) is **removed**. The
+paper's placebo list that equals one of that paper's own merged entries (the alias exactly, and the
+primary term under the glossary pipeline's merge-key normalisation, *Merge* below) is **removed**. The
 drops are counted per paper and in total. A paper left with an empty list gets **no placebo field**, and
 such papers are counted. All three counts are printed beside the placebo's field coverage. *Why:* a
 whole-list permutation can hand a paper one of its own entries, which would break "the placebo carries no
@@ -888,19 +893,41 @@ entry of the chunk's own paper".
 
 **Each glossary arm is its own collection (owner, 2026-11-03, R26).** No glossary is swapped in place.
 Each (corpus arm, glossary arm) is a separate bench collection, written exactly once: base × {none,
-merged, placebo} and {neighbour, random-1, random-2} × {none, merged}, **9 collections** (the count is
-pending owner confirmation). **The load route** (settled with management): each corpus is **embedded
-once** (`embed-bulk.cwl`), and the same embedding shards are **loaded once per variant collection**
-(`load-embeddings.cwl`) with `glossary_file` set to null for *none* and to a
-`ragstack.glossary_file/v1` file for *merged* or *placebo*; the loader renders the field under the mention
-rule and caps of the table above. So nothing is re-embedded and nothing is backfilled. The loads run
-through the workflow engine (GoWe) on the bench tenant, under the approved path. Each collection has a
-**registry entry** and a **load receipt** with provenance. They are bench collections with an
-unmistakable prefix, recorded in the private run config. *Why:* nothing is overwritten, nothing has to be restored, the
-legs do not depend on the order they run in, and a re-run reads the same collection. *Capacity*
-(confirmed by management): about 16–19 GB of dense vectors and 2–3 GB of BM25 index for the 9
-collections; they need not be built in sequence, but bulk writes still go one index at a time, with the
-85 % heap stop.
+merged, placebo} and {neighbour, random-1, random-2} × {none, merged}, **9 collections**. **The load
+route:** each corpus is **embedded once** (`embed-bulk.cwl`), and the same embedding shards are **loaded
+once per variant collection** (`load-embeddings.cwl`) with `glossary_file` set to a
+`ragstack.glossary_file/v1` file: for *none*, an explicit file of **empty rows** (every document has a
+row) with its own version stamp; for *merged* or *placebo*, that arm's file. `glossary_file: null` is
+**not** used for *none*: it would keep the embedding shards' own field, the rules glossary by default. The
+loader renders the field under the mention rule and the conventions of R27 (below). So nothing is
+re-embedded and nothing is backfilled. **Base embeddings are shared:** base chunks are embedded once, and
+each corpus arm's collections load the base shards plus that arm's added-paper shards. If the loader
+cannot share them (§15 item 23), each arm embeds its own copy of the base chunks and a **vector-parity
+check on the gold chunks** across the four arms replaces the sharing. The loads run through the workflow
+engine (GoWe) on the bench tenant, under the approved path. Each collection has a **registry entry** and a
+**load receipt** with provenance. They are bench collections with an unmistakable prefix, recorded in the
+private run config. **The stamp census** (§9.2) expects every chunk of a collection to carry its glossary
+file's version stamp; for a *none* collection, every chunk carries the *none* file's stamp and an empty
+field. *Why:* nothing is overwritten, nothing has to be restored, the legs do not depend on the order they
+run in, and a re-run reads the same collection. *Capacity:* about 16–19 GB of dense vectors and 2–3 GB of
+BM25 index for the 9 collections; they need not be built in sequence, but bulk writes go one index at a
+time, with the 85 % heap stop.
+
+**Plurals and rendering conventions (owner, 2026-11-03, R27).** The served renderer matches an alias only
+as the exact token, while the study's matcher (`alias_abbrev.alias_occurs`) also accepts an
+abbreviation's plural `Xs`. Under the exact token alone, **48 of the 600 G records** would get no entry on
+their gold chunk. The glossary files therefore carry, for every `abbreviation` or `both` entry, an added
+**`Xs` entry with the same definitions**. Where both forms occur in a chunk (about 2,247 base chunks), the
+field shows two lines. The rendering conventions, for every glossary file:
+- **one line per alias**: `alias — p1; p2`;
+- the **12-entry cap counts lines** (aliases), not merged entries; on base the two counts give different
+  fields on 61 chunks;
+- **served order**: aliases by codepoint, ascending; definitions in file order;
+- the **1,200-character cap stops at the first line that would exceed it**; that line and the ones after
+  it are dropped, and no line is truncated;
+- served config `attach_only_with_value` false and `positional` false;
+- each variant has **its own version string**, ending in `+attach=mention`;
+- the definition text is the entry's `display_form` (NFC), with NFKD-cut primaries.
 
 For added papers in **every** expanded arm, the glossaries are generated **by the same pipeline at the
 same versions** (owner, 2026-11-01):
@@ -924,7 +951,7 @@ depend on the glossary arm.
 
 24 cells, plus **one noise repeat per corpus arm** (default × none, run twice; §9.4), plus the **placebo
 leg** (base × default × placebo, §5.3): 29 legs × 1,091 records = **31,639** retrieval calls, at ≤ 4 in
-flight against the bench copies. Moving the 5 norerank and the 5 BM25 cells of the Layer-1 attachments
+flight against the bench collections. Moving the 5 norerank and the 5 BM25 cells of the Layer-1 attachments
 into stage-A retrieval (R20, R25, §5.7: 19 legs, 20,729 calls) changes the order of the calls, not their
 number. After the freeze the 191 pilot records are run again in every leg as
 the descriptive leg (§4.2). No gateway call is made for retrieval. The pilot (§5.6) adds its own calls
@@ -1231,9 +1258,13 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
 - **Fixed sensitivities of R6**, displayed in a fixed table beside H1 and H2 whatever the verdict, never
   deciding:
   - **Bootstrap-t, H1 and H2 (R22; owner, 2026-11-03):** a **one-sided paper-cluster bootstrap-t** of the
-    mean paper score: papers are resampled with replacement (10,000 resamples, seed
-    `261101|alias|boot`), each resample's t* = (mean* − mean) / se* is formed, and p is the share of t*
-    at or beyond the observed t = mean / se in the hypothesised direction. It **replaces the studentized
+    mean paper score (`alias_study_stats.bootstrap_t`): t = mean / se, se = sd / √P over all P papers,
+    zero scores included; B resamples of the papers with replacement (B = the bootstrap's 10,000, seed
+    `261101|alias|boot`) give t*_b = (mean*_b − mean) / se*_b; and **p = (#{t* ≥ t} + 1) / (B + 1)** for
+    H1's gain, mirrored (#{t* ≤ t}) for H2's drop, the comparison carrying a relative tolerance of 10⁻⁹.
+    **se* = 0** (a resample whose paper scores are all equal; `_safe_ratio`): t* is +∞ or −∞ by the sign
+    of mean* − mean, and 0 when mean* = mean; the observed t follows the same rule. With fewer than 2
+    papers there is no p. It **replaces the studentized
     randomization test** of v2. *Why:* with one score per paper, Σ S_j² does not change under sign
     flips, so the studentized statistic is strictly increasing in the sum and its exact p equals the
     primary's; it could never flip a verdict, so it was a vacuous re-test. The bootstrap-t adds a
@@ -1252,7 +1283,9 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
     (b + 1) / (m + 1). The re-test reuses the primary's **unadjusted gold-only direction gate**. *Why:* a
     fixed-slope adjustment ignores that the slope is estimated; in the #913 reviewer's scratch
     simulation its type-I rate was .067 / .148 / .263 at x̄ / s_x = 0.5 / 1 / 2, against .035–.047 for
-    Freedman–Lane. At the realised gap (x̄ / s_x ≈ 0.13–0.22) both hold.
+    Freedman–Lane. At the realised v4 gap, x̄ / s_x = 0.216 (per-study-paper added chunks, neighbour arm
+    minus the random average, over the 298 study papers with added papers; private
+    `per-study-chunks-v4.json`), both hold.
   - **H2 on the XML-only stratum:** H2 recomputed on the study papers whose attributed neighbours and
     whose papers in both random draws are **all** JATS-sourced (§5.1), so that no PDF extraction enters
     the contrast; the stratum's size is printed.
@@ -1324,8 +1357,7 @@ the **300 C records** at q 5 % the same formula, read two-sided, gives **3.57 po
 accepted-record file (sha `09fc5ca4…`, balanced-set id sha `2be86f8c…`) and the v4 neighbour counts
 (the private `neighbour-counts-v4.json`, sha256 `ed71fcb9…`: 2,423 attributed, mean 8.08 per study paper,
 min 0, max 10; dose 0.865), 2,000 simulated studies per cell, between-paper SD of p .15, seed
-`261101|alias|power`. Its output is the private `power-v4.json` (sha256 `65040db6…`); committing it as
-the artifact of §15 item 8 is open. (The v2 draft's run on the v2 counts, 2,424 neighbours, gave the
+`261101|alias|power`. Its output is the private `power-v4.json` (sha256 `65040db6…`). (The v2 draft's run on the v2 counts, 2,424 neighbours, gave the
 same table to two decimals except one cell, .58 for .57.) H2 is at the realised dose, with **ρ = 1** (the draws' discordance fully shared, the
 conservative three-valued case) and, in brackets, ρ = 0.5; *confirm* means the judged test rejects **and**
 the gold-only gate passes, at agreement a between the gold-only and judged changes.
@@ -1410,7 +1442,8 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
 
 - **Census before and after:** the chunk count of the collection equals the corpus arm's manifest (base
   32,765; the expanded arms as built). The `metadata.symbol_glossary_version` stamp census equals the
-  glossary arm. Every gold chunk id is present, with the same content hash, in all four corpus arms.
+  glossary arm's file stamp on every chunk; for *none*, the *none* file's stamp with an empty field
+  (§5.3). Every gold chunk id is present, with the same content hash, in all four corpus arms.
 - **Admin config hash:** `/v1/config` is read at the start and the end of the leg. The two reads must be
   identical, as in round 3 §5 note 2(c). **An admin credential is required** (owner, 2026-11-01): if
   `/v1/config` is not readable, the leg is refused and nothing is measured. A difference stops the leg, and the leg is re-run after the cause
@@ -1449,14 +1482,14 @@ result is re-run to move the floor.
 **Exists on `main` (at or before `323d470`):** the record pipeline (§4.1); the judge harness
 `glossbench_alias_judge.py` with the Qwen, gateway and Opus backends, the served-model check,
 `analyse-gate` and `analyse-tiebreaker` (#894–#899); `bm25_exhaustion.py` (#877); the round-3 runner
-and analysis (`found10.py`, `found10_analysis.py`, `chunktrial_stats`), the backfill and the stamp
+and analysis (`found10.py`, `found10_analysis.py`, `chunktrial_stats`), the backfill (unused under R26) and the stamp
 census.
 
 **Must be written, reviewed and merged before the freeze (§15):** a recount script for the balanced set
 and the verdict-source split (§4.1); the OpenAlex neighbour and random selectors (metadata only, seeded,
 writing the manifests of §5.1, with the v3 carry-over re-draw of R16, the nearest-band fill of R17 and
 the repetition screen of R18); an alias adapter for the runner (the records schema; the 24 cells and 4
-repeats; the four corpus collections); the pair builder and the deduplication for judged pairs; the
+repeats; the 9 collections of R26); the pair builder and the deduplication for judged pairs; the
 composed-rule labeller (C + E, then Argon), with the arm-stratified drift sampler and both alarms, the
 Opus single retry (§6.3) and the on-demand pair selection by stage (§6.2, §5.7); the statistics for H1,
 H1b (fixed sequence within Family G) and H2 (two-draw average, gold-only gate), with tests — the
@@ -1581,11 +1614,11 @@ entry, not a silent retry.
    v3 build**: they were made after reading the v3 counts (per band, the chunk-volume gap, the re-draw and
    relaxation counts) and a scan of distinct-chunk ratios over the added papers, which was a scratch scan
    made by the PR #911 reviewer, not a committed artifact. The v4 build's 9 repetition-screen hits (7 of
-them JATS papers with one repeated table chunk, §5.1) were seen before the freeze, and so was the
-scratch count of 4 OA-1000 papers below 0.90; the rule was kept per paper, as written. None of this
-read retrieval, judge or outcome data. The pilot (§5.6) is run
-   on held-out records before the freeze, and what it may change is fixed in advance. Each is bounded by
-   being fixed here before any retrieval on a balanced-set record.
+   them JATS papers with one repeated table chunk, §5.1) were seen before the freeze, and so was the
+   scratch count of 4 OA-1000 papers below 0.90; the rule was kept per paper, as written. None of this
+   read retrieval, judge or outcome data. The pilot (§5.6) is run on held-out records before the freeze,
+   and what it may change is fixed in advance. Each is bounded by being fixed here before any retrieval
+   on a balanced-set record.
 8. **No study-wide error control across the two families** (§3.1, R1). Family G and Family N are each
    controlled at 0.05; the chance of at least one false confirmation across both, with every null true,
    is up to about 0.0975.
@@ -1602,7 +1635,7 @@ read retrieval, judge or outcome data. The pilot (§5.6) is run
 
 ## 14. Open decisions for the owner
 
-Only items not settled by D1–D10 and R1–R26.
+Only items not settled by D1–D10 and R1–R27.
 
 | # | decision | proposal in this draft |
 |---|---|---|
@@ -1624,11 +1657,11 @@ Only items not settled by D1–D10 and R1–R26.
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R26 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R27 decided 2026-11-03 and folded in v3, O13 with R23; O7 (Argon, ceiling), O8, O10 and O12 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
-| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, run at `1574286`) exists and its counts are entered in §5.1; its private manifests' sha256s are public there; the #915 review is open |
-| 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded; then the **9 collections of R26** (§5.3) loaded from their embeddings, each with its registry entry and load receipt (§9.3) | open |
+| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, run at `1574286`, merged with a merge commit) exists and its counts are entered in §5.1, with its private manifests' sha256s; random-v4 / finalize-v4 are being re-run from memo to correct the manifests' `any_rule` string (which undersells the greedy order of §5.1), and the manifest sha256s quoted in §5.1 are updated after that re-run |
+| 5 | **The 9 bench collections of R26 loaded** (§5.3, §9.3) under a reviewed live-ops plan: each corpus embedded once at the same chunker, embedder and tools image, base chunk ids and content verified identical across the arms, each collection loaded once with its glossary file (an empty-row file for *none*), each with its registry entry and load receipt | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The `ragstack.glossary_file/v1` files (merged, placebo) that `load-embeddings` renders, with render-parity tests against the prereg's mention rule and caps (§5.3); the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
 | 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, on `main` since `e3b9695`); a run on the v4 counts exists as the private `power-v4.json` (`1574286`, clean, `citable true`; §8), and committing it as the artifact is open. The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
@@ -1641,9 +1674,11 @@ Only items not settled by D1–D10 and R1–R26.
 | 15 | **The prompt-paraphrase check** (§6.6, R4): three paraphrases of `alias-judge/2`, committed before they are run, scored on the validation pairs by both primaries; the result recorded in §6.6 and §13.3 | open |
 | 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | open: *to be inserted from the calibration follow-up* |
 | 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
-| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915 (review open); the v4 build ran on it (item 4) |
+| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915 (merged with a merge commit); the v4 build ran on it (item 4) |
 | 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | decided (R23, §7); implementation open (§10) |
 | 20 | **The stage-A leg lists** (R20, R25, §5.7): retrieval 19 legs (the 5 Layer-1 attachments × default, norerank, BM25, and the 4 noise repeats), judging 14 legs (without the BM25 legs), checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
-| 21 | **The load route** (R26): each corpus embedded once (`embed-bulk.cwl`), its shards loaded once per variant with `load-embeddings.cwl` and the variant's glossary file, through the workflow engine under the approved path | settled with management; the 9-collection count pending owner confirmation |
+| 21 | **The load route** (R26): each corpus embedded once (`embed-bulk.cwl`), its shards loaded once per variant with `load-embeddings.cwl` and the variant's `ragstack.glossary_file/v1` file (an explicit empty-row file for *none*, never `null`), through the workflow engine under the approved path | settled with management; the 9-collection count pending the owner's confirmation |
 | 22 | **The capacity check** (R26): about 16–19 GB of dense vectors and 2–3 GB of BM25 index for the 9 collections | confirmed by management |
+| 23 | **Base embeddings shared across the four corpus arms** (R26, §5.3): the loader check that each arm's collections can load the base shards plus its added-paper shards; otherwise the vector-parity check on the gold chunks | open: loader check in progress |
+| 24 | **The glossary files of R27** (merged and placebo with the `Xs` entries, and the empty-row *none* file), written by the `glossary_file/v1` writer of item 7 under the rendering conventions of §5.3 | open: writer being built |
 
