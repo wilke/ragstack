@@ -1141,3 +1141,19 @@ def test_pilot_build_pairs_prints_only_the_deduplicated_counts(tmp_path: Path,
     assert main(cp2, "build-pairs", "--stage", "A") == 0
     full = json.loads(capsys.readouterr().out)
     assert {"instances_before_dedup", "instances_per_need", "already_registered", "legs"} <= set(full)
+
+
+def test_gateway_calls_so_far_counts_the_legacy_argon_r2_tag(tmp_path: Path) -> None:
+    """Per tag the larger of the calls log and the dispatch log, and the first version's separate
+    re-issue tag (``gw-argon_r2``) counts toward Argon, never toward Opus."""
+    def write(name: str, n: int) -> None:
+        (tmp_path / name).write_text("".join(json.dumps({"i": i}) + "\n" for i in range(n)) + "\n")
+    write("calls-gw-argon.jsonl", 2)
+    write("dispatch-gw-argon.jsonl", 3)
+    write("calls-gw-argon_r2.jsonl", 4)
+    write("dispatch-gw-argon_r2.jsonl", 1)
+    write("calls-gw-opus.jsonl", 5)
+    assert aj.gateway_calls_so_far(tmp_path, "argon") == 3 + 4
+    assert aj.gateway_calls_so_far(tmp_path, "argon_r2") == 3 + 4
+    assert aj.gateway_calls_so_far(tmp_path, "opus") == 5
+    assert aj.gateway_calls_so_far(tmp_path / "none", "argon") == 0

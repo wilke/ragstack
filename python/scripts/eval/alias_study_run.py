@@ -222,8 +222,20 @@ def leg_files(runs: Path, corpus: str, glossary: str, retriever: str, repeat: in
     return sp.with_name(sp.name.removesuffix(".summary.json") + ".jsonl"), sp
 
 
+#: a leg whose summary lacks the runner's ``study`` block (or its mode / stage): the run was
+#: killed between found10 writing its summary and this runner completing it
+INCOMPLETE_NO_STUDY = "incomplete"
+
+
 def run_status(out: Path) -> dict[str, Any]:
-    """The 29 legs and each one's state from the summaries (``missing`` when never run)."""
+    """The 29 legs and each one's state from the summaries (``missing`` when never run).
+
+    A summary without the runner's ``study`` block, or whose block lacks ``mode`` or ``stage``,
+    is **incomplete** whatever its ``status`` says: found10 writes the summary first and
+    :meth:`AliasRunner._finish` then adds the block, so a kill between the two leaves
+    ``status: complete`` on a summary the study never completed. Read as incomplete, the leg is
+    re-run on resume (which rewrites the summary from the rows already done) and
+    ``commit-stage-a`` cannot pin it."""
     st: dict[str, Any] = {}
     for c, g, r, rep in study_legs():
         _, sp = leg_files(out, c, g, r, rep)
@@ -232,7 +244,14 @@ def run_status(out: Path) -> dict[str, Any]:
             st[lid] = "missing"
             continue
         s = json.loads(sp.read_text(encoding="utf-8"))
-        st[lid] = s["status"] if asc.RETRIEVERS[r] in (s.get("conditions") or {}) else "missing"
+        if asc.RETRIEVERS[r] not in (s.get("conditions") or {}):
+            st[lid] = "missing"
+            continue
+        study = s.get("study")
+        if not isinstance(study, dict) or not study.get("mode") or not study.get("stage"):
+            st[lid] = INCOMPLETE_NO_STUDY
+            continue
+        st[lid] = s["status"]
     return st
 
 

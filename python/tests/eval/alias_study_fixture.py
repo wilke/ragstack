@@ -92,8 +92,12 @@ class World:
 
     def write_runs(self, top10: Callable[[str, Mapping[str, Any]], list[str]] | None = None,
                    failed: Callable[[str, Mapping[str, Any]], bool] | None = None,
-                   gates: Mapping[str, str] | None = None, status: Mapping[str, str] | None = None) -> None:
-        """found10-shaped summaries and rows for all 28 legs."""
+                   gates: Mapping[str, str] | None = None, status: Mapping[str, str] | None = None,
+                   mode: str = "dry_run") -> None:
+        """found10-shaped summaries and rows for all 29 legs, each summary with the runner's
+        ``study`` block (mode and retrieval stage; ``alias_study_run.run_status`` needs both)."""
+        import alias_study_run as ar
+
         top10 = top10 or self.default_top10
         gates = gates or {}
         status = status or {}
@@ -101,7 +105,7 @@ class World:
         for c, g, r, rep in asc.all_legs():
             label = g if rep == 1 else f"{g}#2"
             key = (c, label)
-            f = files.setdefault(key, {"rows": [], "conds": {}})
+            f = files.setdefault(key, {"rows": [], "conds": {}, "stage": ar.leg_stage(c, g, r, rep)})
             cond = asc.RETRIEVERS[r]
             leg = asc.leg_id(c, g, r, rep)
             f["conds"][cond] = {"gate": gates.get(leg)}
@@ -115,7 +119,8 @@ class World:
             write_jsonl(d / f"{label}.jsonl", f["rows"])
             (d / f"{label}.summary.json").write_text(json.dumps({
                 "status": status.get(f"{c}/{label}", "complete"), "conditions": f["conds"],
-                "provenance": {"commit": "a" * 40, "dirty": False, "untracked": 0}, "citable": True}))
+                "provenance": {"commit": "a" * 40, "dirty": False, "untracked": 0}, "citable": True,
+                "study": {"mode": mode, "stage": f["stage"]}}))
 
     def mixed_top10(self, leg: str, rec: Mapping[str, Any]) -> list[str]:
         """A top 10 that exercises judging on demand: per (leg, record), by a hash, the gold is
@@ -139,7 +144,7 @@ class World:
 
     def write_staged_runs(self, stage: str, top10: Callable[[str, Mapping[str, Any]], list[str]] | None = None,
                           failed: Callable[[str, Mapping[str, Any]], bool] | None = None,
-                          status: Mapping[str, str] | None = None) -> None:
+                          status: Mapping[str, str] | None = None, mode: str = "dry_run") -> None:
         """found10-shaped summaries and rows for the legs of one stage (prereg §5.7), in the
         runner's staged files (``alias_study_run.run_label``)."""
         import alias_study_run as ar
@@ -165,4 +170,4 @@ class World:
             (d / f"{label}.summary.json").write_text(json.dumps({
                 "status": status.get(f"{c}/{label}", "complete"), "conditions": f["conds"],
                 "provenance": {"commit": "a" * 40, "dirty": False, "untracked": 0}, "citable": True,
-                "study": {"stage": stage, "legs": f["legs"]}}))
+                "study": {"mode": mode, "stage": stage, "legs": f["legs"]}}))

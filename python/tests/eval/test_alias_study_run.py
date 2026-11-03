@@ -814,3 +814,53 @@ def test_the_example_config_validates() -> None:
     cfg = ar.validate_config(ex)
     assert ar.config_mode(cfg) == "main" and cfg["arms"]["none"]["attach"] == "mention"
     assert {(c, g) for c, gs in cfg["collections"].items() for g in gs} == set(ar.required_attachments(cfg))
+
+
+def test_a_kill_between_found10s_summary_and_the_study_block_leaves_the_leg_incomplete(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """found10's _finish writes ``status: complete`` first; AliasRunner._finish then adds the
+    ``study`` block. A kill between the two must not read as complete (the judge's commit would
+    pin the file): run_status says incomplete, the judge refuses the leg's rows, and a resume
+    re-runs the leg from its rows (no new retrieval call) and completes it."""
+    import alias_study_judge as aj
+
+    w, cfg = setup(tmp_path)
+    api = API(w)
+
+    def killed(self: Any, *a: Any, **k: Any) -> int:
+        f10.Runner._finish(self, *a, **k)
+        raise KeyboardInterrupt("killed after found10 wrote its summary")
+    monkeypatch.setattr(ar.AliasRunner, "_finish", killed)
+    with pytest.raises(KeyboardInterrupt):
+        run(cfg, api)
+    s = summary(cfg, "base", "none")
+    assert s["status"] == "complete" and "study" not in s       # the kill window
+    legs = [lg for lg in ar.study_legs() if lg[:2] == ("base", "none") and lg[3] == 1]
+    st = ar.run_status(Path(cfg["out_dir"]))
+    assert {st[asc.leg_id(*lg)] for lg in legs} == {"incomplete"}
+    with pytest.raises(SystemExit, match="not complete"):
+        aj.leg_rows(Path(cfg["out_dir"]), legs)
+    monkeypatch.undo()
+    calls = len(api.bodies)
+    assert run(cfg, api) == 0
+    assert len(api.bodies) == calls                               # resumed from the rows
+    s = summary(cfg, "base", "none")
+    assert s["status"] == "complete" and s["study"]["mode"] == "dry_run" and s["study"]["stage"] == "A"
+    st = ar.run_status(Path(cfg["out_dir"]))
+    assert {st[asc.leg_id(*lg)] for lg in legs} == {"complete"}
+
+
+@pytest.mark.parametrize("drop", ["study", "mode", "stage"])
+def test_run_status_needs_the_study_block_with_mode_and_stage(tmp_path: Path, drop: str) -> None:
+    w = fx.World(tmp_path)
+    w.write_runs()
+    sp = tmp_path / "runs" / "neighbour" / "none.summary.json"
+    s = json.loads(sp.read_text())
+    if drop == "study":
+        del s["study"]
+    else:
+        s["study"].pop(drop)
+    sp.write_text(json.dumps(s))
+    st = ar.run_status(w.runs)
+    assert {st[f"neighbour|none|{r}"] for r in asc.RETRIEVERS} == {"incomplete"}
+    assert sum(v == "complete" for v in st.values()) == 29 - 3
