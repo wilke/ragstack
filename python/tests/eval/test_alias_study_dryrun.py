@@ -12,8 +12,10 @@ _HERE = Path(__file__).resolve().parent
 for _p in (_HERE, _HERE.parents[1] / "scripts" / "eval", _HERE.parents[1] / "scripts" / "eval" / "glossbench"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
+import alias_study_common as asc  # noqa: E402
 import alias_study_dryrun as dry  # noqa: E402
 import alias_study_fixture as fx  # noqa: E402
+import alias_study_run as ar  # noqa: E402
 
 
 def test_dry_run_end_to_end(tmp_path: Path) -> None:
@@ -28,6 +30,24 @@ def test_dry_run_end_to_end(tmp_path: Path) -> None:
     assert out["retrieve_calls"] == len(w.records) * 29
     assert len(out["leg_rows"]) == 29 and set(out["leg_rows"].values()) == {len(w.records)}
     assert out["stats_exit"] == 0 and all(v == 0 for v in out["judge"].values())
+    # the statistics on the harness's own output: Layer 1 after stage A, everything after stage B
+    assert out["stats_exit_stage_a"] == 0
+    ra = json.loads((tmp_path / "work" / "results-stageA.json").read_text())
+    assert ra["analysis"]["stage"] == "A" and ra["label_coverage"]["legs"] == 14
+    assert ra["label_coverage"]["pairs_without_final_label"] == 0 and ra["label_coverage"]["needs"] == ["found10"]
+    assert ra["layer2"].startswith("absent (analysis stage A") and ra["frozen_stage_a"]["agree"] is True
+    assert all(ra["legs_read"][asc.leg_id(*lg)] == len(w.records) for lg in ar.stage_legs("A"))
+    assert ra["layer1"]["H1"]["n"] > 0 and ra["layer1"]["H2"]["n"] > 0
+    fy = ra["layer1"]["H2"]["judge_false_yes_bound"]
+    assert fy["source"].startswith("stage-a/judge-summary.json") and fy["cross_check_with_final_rows"] is True
+    rb = json.loads((tmp_path / "work" / "results-dryrun.json").read_text())
+    assert rb["analysis"]["stage"] == "B" and rb["label_coverage"]["legs"] == 29
+    assert rb["label_coverage"]["pairs_without_final_label"] == 0 and rb["label_coverage"]["needs"] == ["found10", "rr10"]
+    assert all(v == len(w.records) for v in rb["legs_read"].values()) and len(rb["legs_read"]) == 29
+    assert rb["study"]["mode"] == "dry_run" and rb["study"]["spot_checks_waiver"] == "dry run"
+    assert rb["inputs"]["stage_a"]["stage_a_commit_sha256"] == out["analysis_gate"]["stage_a_commit_sha256"]
+    assert rb["inputs"]["runs"]["base/none"]["collection_build_sha256"]
+    assert isinstance(rb["layer2"], dict) and rb["layer2"]["placebo"]["field_coverage"]["placebo"]
     assert out["analysis_gate"]["allowed"] and out["analysis_gate"]["spot_checks_waived"]
     res = json.loads((tmp_path / "work" / "results-dryrun.json").read_text())
     assert res["dry_run"] is True and res["citable"] is False
