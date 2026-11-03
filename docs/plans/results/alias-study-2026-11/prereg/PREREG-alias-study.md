@@ -928,13 +928,21 @@ time, with the 85 % heap stop.
 **Plurals and rendering conventions (owner, 2026-11-03, R27).** The served renderer matches an alias only
 as the exact token, while the study's matcher (`alias_abbrev.alias_occurs`) also accepts an
 abbreviation's plural `Xs`. Under the exact token alone, **48 of the 600 G records** would get no entry on
-their gold chunk (this and the two counts below are scratch counts from the glossary-file feasibility
+their gold chunk (this and the two-line count below are scratch counts from the glossary-file feasibility
 check on the base chunk export, not committed artifacts). The glossary files therefore carry, for every `abbreviation` or `both` entry, an added
 **`Xs` entry with the same definitions**. Where both forms occur in a chunk (about 2,247 base chunks), the
-field shows two lines. The rendering conventions, for every glossary file:
+field shows two lines. With the plural entries, **600 of the 600** balanced G records render their own
+entry on the gold chunk under base × merged (the writer's census, below). The rendering conventions, for
+every glossary file:
 - **one line per alias**: `alias — p1; p2`;
-- the **12-entry cap counts lines** (aliases), not merged entries; on base the two counts give different
-  fields on 61 chunks;
+- the **12-entry cap counts lines** (aliases), not merged entries. Disclosed in the writer's census
+  (`alias_glossary_file.ENTRY_CAP_RULE`): on base × merged, **88** chunks render a different field than
+  under a cap of 12 distinct merged entries with the same lines, order and character rule (**90** if a
+  line counts only the entries whose alias is the form); 98 chunks match more than 12 entries; the line
+  cap cuts 38 chunks and the character cap none. Source: the private census
+  `base.merged.jsonl.manifest.json` (sha256 `bd805a18…`), written by the writer at `c111f64` (#918),
+  clean and citable. (An earlier scratch figure of 61 is withdrawn: no committed computation reproduces
+  it);
 - **served order**: aliases by codepoint, ascending; definitions in file order;
 - the **1,200-character cap stops at the first line that would exceed it** (the count includes the
   newline between lines); that line and the ones after it are dropped, and no line is truncated;
