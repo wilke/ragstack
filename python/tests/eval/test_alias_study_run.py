@@ -21,6 +21,7 @@ for _p in (_HERE, _HERE.parents[1] / "scripts" / "eval", _HERE.parents[1] / "scr
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 import alias_study_common as asc  # noqa: E402
+import alias_study_dryrun as dry  # noqa: E402
 import alias_study_fixture as fx  # noqa: E402
 import alias_study_run as ar  # noqa: E402
 import found10 as f10  # noqa: E402
@@ -90,18 +91,24 @@ class Census:
             "buckets": [{"key": k, "doc_count": v} for k, v in st.items()]}}})
 
 
-#: a glossary_file/v1 header's counts (ragstack.ingestion.glossary_file); the none file holds empty rows
-COUNTS = {"documents": 3, "with_llm": 0, "degraded": 0, "merged_entries": 4}
-NONE_COUNTS = {**COUNTS, "merged_entries": 0}
+def arm_files(tmp: Path) -> dict[str, dict[str, Any]]:
+    """One real glossary_file/v1 per glossary arm (none: empty rows), with the record
+    ``load_embeddings.py`` writes about it (the real ``file_provenance``)."""
+    d = tmp / "glossary-files"
+    if not d.is_dir():
+        d.mkdir()
+        for g in ar.STUDY_GLOSSARY_ARMS:
+            prov = dry.real_glossary_file(d / f"{g}.jsonl", f"t-{g}", entries=g != "none")
+            (d / f"{g}.prov.json").write_text(json.dumps(prov))
+    return {g: json.loads((d / f"{g}.prov.json").read_text()) for g in ar.STUDY_GLOSSARY_ARMS}
 
 
-def receipt(tmp: Path, c: str, g: str, **over: Any) -> Path:
-    """The load summary of ``load_embeddings.py`` for one collection: every arm, none included,
-    loaded from an explicit glossary file with its own stamp (the none file renders nothing)."""
-    gf = {"symbol_glossary": {"sha256": f"sha-{g}", "glossary_versions": [f"t-{g}"], "schema": "glossary_file/v1",
-                              "counts": NONE_COUNTS if g == "none" else COUNTS}}
-    rec = {"n_shards": 1, "n_shards_failed": 0, "n_chunks": 100, "failed_shards": [], "errors": {},
-           "provenance": {"workflow_id": "load-embeddings"}, "glossary_file": gf, **over}
+def receipt(tmp: Path, c: str, g: str, *, failed: bool = False, **over: Any) -> Path:
+    """The load summary of ``load_embeddings.py`` for one collection (the real
+    ``merge_summary`` and ``file_provenance``): every arm, none included, loaded from an explicit
+    glossary file with its own stamp (the none file renders nothing)."""
+    rec = dry.load_summary(100, arm_files(tmp)[g], failed=failed)
+    rec.update(over)
     p = tmp / f"receipt-{c}-{g}.json"
     p.write_text(json.dumps(rec))
     return p
@@ -122,9 +129,10 @@ def setup(tmp: Path, **over: Any) -> tuple[fx.World, dict[str, Any]]:
                 continue
             cols.setdefault(a, {})[g] = {"collection": collection(a, g), "index": f"ix_{a}_{g}",
                                          "load_receipt": str(receipt(tmp, a, g))}
+    files = arm_files(tmp)
     arms = {}
     for g in ("none", "merged", "placebo"):
-        arms[g] = {"stamps": [f"t-{g}"], "glossary_file_sha256": dict.fromkeys(asc.CORPUS_ARMS, f"sha-{g}")}
+        arms[g] = {"stamps": [f"t-{g}"], "glossary_file_sha256": dict.fromkeys(asc.CORPUS_ARMS, files[g]["sha256"])}
     cfg = {"api": {"base_url": "http://api.invalid", "retry_backoff_s": 0.0, "retries": 1}, "corpora": corpora,
            "collections": cols, "arms": arms, "records": str(w.records_path), "out_dir": str(tmp / "runs"),
            "gold_hashes": str(tmp / "gold.json"), "dry_run": True, **over}
@@ -260,27 +268,115 @@ def test_merged_collection_must_hold_the_loaded_files_versions(tmp_path: Path) -
 
 
 def test_load_receipt_is_the_build_manifest(tmp_path: Path) -> None:
-    def gf(sha: str, counts: dict[str, Any]) -> dict[str, Any]:
-        return {"glossary_file": {"symbol_glossary": {"sha256": sha, "glossary_versions": ["t-none"], "counts": counts}}}
+    def none_prov(tmp: Path, **counts: Any) -> dict[str, Any]:
+        p = dict(arm_files(tmp)["none"])
+        p["counts"] = {**p["counts"], **counts}
+        return p
 
-    for g, over, msg in (("none", {"n_shards_failed": 1, "failed_shards": ["s1"]}, "failed shards"),
-                         ("none", {"n_chunks": 99}, "loaded 99 chunks"),
-                         ("none", {"glossary_file": None}, "none collection was loaded without a glossary file"),
-                         ("none", gf("sha-merged", NONE_COUNTS), "another glossary file"),
-                         ("none", gf("sha-none", COUNTS), "renders a field"),
-                         ("none", gf("sha-none", {"documents": 3}), "renders a field"),
-                         ("none", gf("sha-none", {**NONE_COUNTS, "chunks_with_glossary": 2}), "renders a field"),
-                         ("merged", {"glossary_file": None}, "without a glossary file"),
-                         ("merged", {"glossary_file": {"symbol_glossary": {"sha256": "sha-placebo"}}},
-                          "another glossary file")):
+    cases = (("none", lambda t: {"failed": True}, "failed shards"),
+             ("none", lambda t: {"n_chunks": 99}, "loaded 99 chunks"),
+             ("none", lambda t: {"glossary_file": None}, "none collection was loaded without a glossary file"),
+             ("none", lambda t: {"glossary_file": arm_files(t)["merged"]}, "another glossary file"),
+             ("none", lambda t: {"glossary_file": dry.real_glossary_file(t / "none-with-entries.jsonl", "t-none",
+                                                                         entries=True)}, "another glossary file"),
+             ("none", lambda t: {"glossary_file": {"symbol_glossary": arm_files(t)["none"]}},
+              "another glossary file"),                                  # the shape no loader writes
+             ("merged", lambda t: {"glossary_file": None}, "without a glossary file"),
+             ("merged", lambda t: {"glossary_file": arm_files(t)["placebo"]}, "another glossary file"))
+    for g, over, msg in cases:
         tmp = tmp_path / str(len(list(tmp_path.iterdir())))
         tmp.mkdir()
         w, cfg = setup(tmp)
-        cfg["collections"]["base"][g]["load_receipt"] = str(receipt(tmp, "base", g, **over))
+        o = over(tmp)
+        failed = bool(o.pop("failed", False))
+        cfg["collections"]["base"][g]["load_receipt"] = str(receipt(tmp, "base", g, failed=failed, **o))
         api = API(w)
         with pytest.raises(f10.Refused, match=msg):
             run(cfg, api, glossary=g)
         assert api.bodies == []
+
+
+def test_a_none_file_that_renders_is_refused(tmp_path: Path) -> None:
+    """The none arm's file holds empty rows: a file with entries, declared as the none arm's,
+    is refused on its counts."""
+    w, cfg = setup(tmp_path)
+    prov = dry.real_glossary_file(tmp_path / "none-with-entries.jsonl", "t-none", entries=True)
+    cfg["arms"]["none"]["glossary_file_sha256"]["base"] = prov["sha256"]
+    cfg["collections"]["base"]["none"]["load_receipt"] = str(receipt(tmp_path, "base", "none", glossary_file=prov))
+    with pytest.raises(f10.Refused, match="renders a field"):
+        run(cfg, API(w))
+    gone = {**prov, "counts": {k: v for k, v in prov["counts"].items() if k != "merged_entries"}}
+    cfg["collections"]["base"]["none"]["load_receipt"] = str(receipt(tmp_path, "base", "none", glossary_file=gone))
+    with pytest.raises(f10.Refused, match="renders a field"):
+        run(cfg, API(w))
+
+
+def real_load(tmp: Path, *, none: bool) -> tuple[dict[str, Any], Path]:
+    """``load_embeddings.py`` run for real (memory stores, dead store URLs) on an embedded shard
+    with a glossary file built and re-derived by ``glossary_file.py`` (none: ``--merge none``;
+    both ``--attach mention``). Returns the summary it writes and the glossary file."""
+    from ragstack.ingestion.chunkers import RecursiveCharacterChunker
+    from ragstack.ingestion.embed_shard import run_embed_shard
+    from ragstack.ingestion.loaders import JsonlLoader
+    from ragstack.ingestion.pipeline import IngestionPipeline
+    from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+
+    scripts = Path(ar.__file__).resolve().parents[1]
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    import glossary_file as gf_cli
+    import load_embeddings as load_cli
+
+    class Emb:
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[float(len(t)), 1.0, 2.0] for t in texts]
+
+    docs = {"a": "Methods\n\nThe flux N = Qb Cq, where Qb is the breathing flow rate. " + "words " * 60,
+            "b": "We use the rate λv, the viral deactivation rate, here. " + "more words " * 40}
+    shard = tmp / "shard.jsonl"
+    shard.write_text("".join(json.dumps({"text": t, "path": f"{k}.pdf", "metadata": {}}) + "\n"
+                             for k, t in docs.items()))
+    emb = tmp / "shard.emb.jsonl"
+    pipe = IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(chunk_size=120, chunk_overlap=20),
+                             embedder=Emb(), vector_store=InMemoryVectorStore(), text_index=InMemoryTextIndex())
+    assert asyncio.run(run_embed_shard(pipe, str(shard), "public", "s0", emb)).status == "completed"
+    g0, g1 = tmp / "g0.jsonl", tmp / "g1.jsonl"
+    assert gf_cli.main(["build", "--jsonl", str(shard), "--out", str(g0)]) == 0
+    assert gf_cli.main(["rederive", *(["--merge", "none"] if none else []), "--attach", "mention", str(g0),
+                        "--out", str(g1)]) == 0
+    out = tmp / "load-summary.json"
+    rc = load_cli.main([str(emb), "--glossary-file", str(g1), "--out", str(out), "--collection-id", "bench-t-real",
+                        "--vector-backend", "memory", "--text-backend", "memory",
+                        "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1"])
+    assert rc == 0
+    return json.loads(out.read_text()), g1
+
+
+def test_a_real_load_summary_is_read_as_written(tmp_path: Path) -> None:
+    """The build manifest read from a summary ``load_embeddings.py`` actually wrote: the none
+    arm from a re-derived empty file passes, its versions are the file's; a merged file declared
+    as the none arm is refused on its counts and passes as the merged arm."""
+    for none in (True, False):
+        tmp = tmp_path / ("none" if none else "merged")
+        tmp.mkdir()
+        rec, gfile = real_load(tmp, none=none)
+        w, cfg = setup(tmp)
+        for g in ("none", "merged"):
+            cfg["arms"][g]["glossary_file_sha256"]["base"] = asc.sha256_file(gfile)
+            cfg["arms"][g]["stamp_prefixes"] = []
+        cfg["corpora"]["base"]["expected_chunks"] = rec["n_chunks"]
+        for g in ("none", "merged"):
+            cfg["collections"]["base"][g]["load_receipt"] = str(tmp / "load-summary.json")
+        c = ar.validate_config(cfg)
+        if none:
+            b = ar.check_load_receipt(c, "base", "none")
+            assert b["glossary_file_sha256"] == asc.sha256_file(gfile) and b["n_chunks"] == rec["n_chunks"] > 0
+            assert b["glossary_versions"] and all(v.endswith("+merge=none+attach=mention")
+                                                  for v in b["glossary_versions"])
+        else:
+            with pytest.raises(f10.Refused, match="renders a field"):
+                ar.check_load_receipt(c, "base", "none")
+            assert ar.check_load_receipt(c, "base", "merged")["n_shards"] == 1
 
 
 def test_none_from_an_explicit_empty_file_passes(tmp_path: Path) -> None:
@@ -289,7 +385,7 @@ def test_none_from_an_explicit_empty_file_passes(tmp_path: Path) -> None:
     w, cfg = setup(tmp_path, census={"es_url": ES})
     assert run(cfg, API(w), census=Census()) == 0
     b = summary(cfg, "base", "none")["census"]["collection_build"]
-    assert b["glossary_file_sha256"] == "sha-none" and b["glossary_versions"] == ["t-none"]
+    assert b["glossary_file_sha256"] == arm_files(tmp_path)["none"]["sha256"] and b["glossary_versions"] == ["t-none"]
 
 
 def test_none_without_a_file_is_refused(tmp_path: Path) -> None:
@@ -376,7 +472,8 @@ def test_config_shape(tmp_path: Path) -> None:
     bad(lambda c: c["collections"]["neighbour"].update(placebo=c["collections"]["base"]["placebo"]),
         "exactly the attachments")
     bad(lambda c: c["collections"]["random1"]["none"].update(collection=collection("base", "none")), "shares")
-    bad(lambda c: c["collections"]["random1"]["none"].update(collection="oa1000-live"), "bench collection")
+    for cid in ("oa1000-live", "workbench-x", "benchmark-x", "x-bench-y"):
+        bad(lambda c, cid=cid: c["collections"]["random1"]["none"].update(collection=cid), "bench collection")
     bad(lambda c: c["collections"]["random1"]["none"].pop("load_receipt"), "load_receipt")
     bad(lambda c: c["corpora"]["base"].update(collection="x"), "own collection")
     bad(lambda c: c["corpora"]["base"].update(restore_point="rp.json"), "own collection")
@@ -547,13 +644,13 @@ def test_placebo_leg_summary_carries_the_drop_counts(tmp_path: Path) -> None:
     cfg["arms"]["placebo"]["manifest"] = str(mf)
     with pytest.raises(f10.Refused, match="manifest"):            # not the arm's declared file
         run(cfg, API(w), glossary="placebo", stage="B")
-    cfg["arms"]["placebo"]["glossary_file_sha256"]["base"] = asc.sha256_file(pf)
-    cfg["collections"]["base"]["placebo"]["load_receipt"] = str(receipt(
-        tmp_path, "base", "placebo", glossary_file={"symbol_glossary": {"sha256": asc.sha256_file(pf),
-                                                                        "glossary_versions": ["t-placebo"]}}))
+    # the writer's manifest of the glossary_file/v1 the placebo collection was loaded from
+    v1 = arm_files(tmp_path)["placebo"]["sha256"]
+    man = json.loads(mf.read_text())
+    mf.write_text(json.dumps({**man, "glossary_file_sha256": v1}))
     assert run(cfg, API(w), glossary="placebo", stage="B") == 0
     pg = summary(cfg, "base", "placebo")["study"]["placebo_glossary"]
-    assert pg["glossary_file_sha256"] == asc.sha256_file(pf)
+    assert pg["glossary_file_sha256"] == v1
     assert set(pg["counts"]["placebo_dropped_own_entries"]) == {"entries", "papers", "papers_emptied",
                                                                 "per_paper_by_rank"}
 
@@ -673,13 +770,22 @@ def test_main_run_pins_the_frozen_prereg(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_field_coverage(tmp_path: Path) -> None:
-    rec = {"glossary_file": {"symbol_glossary": {"counts": {"docs": 4, "docs_with_glossary": 2}}}}
+    rec = dry.load_summary(4, arm_files(tmp_path)["merged"])
     fc = ar.field_coverage([("a", "t", "AB: alpha beta"), ("b", "t", ""), ("c", "t", "CD: c"), ("d", "t", "")],
                            None, "chunk export + glossary file", rec)
     assert fc["available"] and fc["chunks"] == 4 and fc["chunks_with_field"] == 2 and fc["share_with_field"] == 0.5
     assert fc["mean_chars"] == (14 + 5) / 4 and fc["mean_chars_with_field"] == 9.5
-    assert fc["glossary_file_counts"] == {"docs": 4, "docs_with_glossary": 2}
+    assert fc["glossary_file_counts"] == arm_files(tmp_path)["merged"]["counts"]
     w, cfg = setup(tmp_path)
     assert run(cfg, API(w)) == 0
     s = summary(cfg, "base", "none")["study"]["field_coverage"]
-    assert s["available"] is False and s["glossary_file_counts"] == NONE_COUNTS
+    assert s["available"] is False and s["glossary_file_counts"]["merged_entries"] == 0
+
+
+def test_the_example_config_validates() -> None:
+    """The committed template is the current shape: a main-run config (collections, no swap or
+    restore point), the none arm declaring attach: mention."""
+    ex = json.loads((Path(ar.__file__).resolve().parent / "examples" / "alias-study-run.example.json").read_text())
+    cfg = ar.validate_config(ex)
+    assert ar.config_mode(cfg) == "main" and cfg["arms"]["none"]["attach"] == "mention"
+    assert {(c, g) for c, gs in cfg["collections"].items() for g in gs} == set(ar.required_attachments(cfg))

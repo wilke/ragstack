@@ -162,6 +162,45 @@ class FakeJudges:
         pass
 
 
+def real_glossary_file(path: Path, version: str, entries: bool) -> dict[str, Any]:
+    """A real ``ragstack.glossary_file/v1`` file of one document (no entry, or one) whose rows
+    carry ``version``, and the record ``load_embeddings.py`` writes about it into its summary
+    (``glossary_file.file_provenance``, the real function, so a change of the shape breaks the
+    callers' tests rather than the run)."""
+    from ragstack.ingestion.glossary_file import (
+        GlossaryRow,
+        Resolution,
+        file_provenance,
+        masked_key,
+        read_glossary_file,
+        write_glossary_file,
+    )
+    from ragstack.ingestion.symbol_glossary import Definition, Glossary, GlossaryEntry, content_key
+
+    text = "dry-run document"
+    g = Glossary((GlossaryEntry("AB", (Definition("alpha beta", 0),)),) if entries else (), version)
+    row = GlossaryRow(doc_id="d0", text_sha256=content_key(text), text_chars=len(text),
+                      text_ws_sha256=masked_key(text), rules=g, llm=None, merged=g, drops={},
+                      provenance={"source": "alias dry run"}, degraded=None)
+    write_glossary_file(path, [row], producer="alias_study_dryrun")
+    return file_provenance(read_glossary_file(path), Resolution())
+
+
+def load_summary(n_chunks: int, glossary: Mapping[str, Any] | None, *, failed: bool = False) -> dict[str, Any]:
+    """The summary ``load_embeddings.py`` writes for one load: the real ``merge_summary`` of one
+    shard receipt, the chunk-cap and provenance keys, and ``glossary_file``."""
+    from ragstack.ingestion.receipts import COMPLETED, FAILED, ShardReceipt, merge_summary
+
+    r = ShardReceipt(shard_id="s0", tenant="dry", status=FAILED if failed else COMPLETED, n_docs=1,
+                     n_chunks=n_chunks, error="load failed" if failed else None)
+    s = merge_summary([r])
+    s.update({"chunk_cap": {"cap": None}, "provenance": {"workflow_id": "dry-run"}, "embed_provenance": [],
+              "n_files_without_provenance": 0})
+    if glossary is not None:
+        s["glossary_file"] = dict(glossary)
+    return s
+
+
 def json_verdict(v: bool) -> str:
     return json.dumps({"reason": "dry run", "answers": "yes" if v else "no"})
 
@@ -212,11 +251,10 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
         exports[a] = work / f"added-{a}.jsonl"
         write_jsonl(exports[a], rows)
     added = {a: {r["chunk_id"]: r for r in rows} for a, rows in added_rows.items()}
-    gfiles = {}
+    gfiles, gprov = {}, {}
     for g in ar.STUDY_GLOSSARY_ARMS:
-        gf = work / f"glossary-{g}.txt"
-        gf.write_text(f"dry-run glossary arm {g}\n")
-        gfiles[g] = asc.sha256_file(gf)
+        gprov[g] = real_glossary_file(work / f"glossary-{g}.jsonl", f"dry-{g}", entries=g != "none")
+        gfiles[g] = gprov[g]["sha256"]
     expected = {a: len(base) + len(added.get(a, {})) for a in asc.CORPUS_ARMS}
     corpora: dict[str, Any] = {a: {"expected_chunks": expected[a],
                                    "chunk_export": [str(base_export)] + ([str(exports[a])] if a in exports else [])}
@@ -232,14 +270,8 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
                 continue
             cid = f"bench-dry-{a}-{g}"
             rp = receipts / f"{a}-{g}.json"
-            rp.write_text(json.dumps({
-                "n_shards": 1, "n_shards_failed": 0, "n_chunks": expected[a], "failed_shards": [], "errors": {},
-                "provenance": {"workflow_id": "dry-run"},
-                # every arm, none included, loaded from an explicit glossary file; none's holds empty rows
-                "glossary_file": {"symbol_glossary": {
-                    "sha256": gfiles[g], "glossary_versions": [f"dry-{g}"],
-                    "counts": {"documents": 1, "with_llm": 0, "degraded": 0,
-                               "merged_entries": 0 if g == "none" else 1}}}}))
+            # every arm, none included, loaded from an explicit glossary file; none's holds empty rows
+            rp.write_text(json.dumps(load_summary(expected[a], gprov[g])))
             cols.setdefault(a, {})[g] = {"collection": cid, "index": f"ragstack_lib_bench_dry_{a}_{g}",
                                          "load_receipt": str(rp)}
             attach[cid] = (a, g)

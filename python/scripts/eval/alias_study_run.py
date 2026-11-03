@@ -124,8 +124,8 @@ for _p in (_HERE, _HERE / "glossbench"):
 import alias_study_common as asc  # noqa: E402
 import found10 as f10  # noqa: E402
 
-#: every attachment's collection is a bench copy: its id must name it as one (never a served collection)
-BENCH_MARK = "bench"
+#: every attachment's collection is a bench copy: its id starts with this (never a served collection)
+BENCH_PREFIX = "bench-"
 #: a stamp whose version carries this mark was rendered under the mention rule (§5.3, R27)
 MENTION_MARK = "+attach=mention"
 STUDY_SCHEMA = "alias-study-run/1"
@@ -341,8 +341,9 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         for k in ("collection", "index", "load_receipt"):
             if not col.get(k):
                 raise f10.Refused(f"collections.{c}.{g}.{k} is not set")
-        if BENCH_MARK not in str(col["collection"]).lower():
-            raise f10.Refused(f"collections.{c}.{g}.collection must be a bench collection (its id names it '{BENCH_MARK}')")
+        if not str(col["collection"]).startswith(BENCH_PREFIX):
+            raise f10.Refused(f"collections.{c}.{g}.collection must be a bench collection (its id starts with "
+                              f"{BENCH_PREFIX!r})")
         for k in ("collection", "index"):
             key = f"{k}:{col[k]}"
             if key in seen:
@@ -379,8 +380,10 @@ def attachment_cfg(cfg: Mapping[str, Any], corpus: str, glossary: str) -> dict[s
 def check_load_receipt(cfg: Mapping[str, Any], corpus: str, glossary: str) -> dict[str, Any]:
     """The attachment's build manifest is its load receipt (``load_embeddings.py`` summary of
     ``load-embeddings.cwl``): no failed shard, the corpus arm's chunk count, and the glossary
-    file the arm declares, for every arm (the receipt's ``glossary_file.symbol_glossary.sha256``
-    = ``arms.<glossary>.glossary_file_sha256.<corpus>``); the none arm's file must render no
+    file the arm declares, for every arm (the receipt's ``glossary_file.sha256`` =
+    ``arms.<glossary>.glossary_file_sha256.<corpus>``; ``glossary_file`` is
+    ``ragstack.ingestion.glossary_file.file_provenance``, a flat record, as ``load_embeddings.py``
+    writes it); the none arm's file must render no
     field (its ``counts.merged_entries`` 0, and no non-zero ``*with_glossary*`` count).
     Raises :class:`found10.Refused`; returns what goes into the summary."""
     col = cfg["collections"][corpus][glossary]
@@ -394,7 +397,7 @@ def check_load_receipt(cfg: Mapping[str, Any], corpus: str, glossary: str) -> di
     exp = cfg["corpora"][corpus]["expected_chunks"]
     if rec.get("n_chunks") != exp:
         problems.append(f"loaded {rec.get('n_chunks')} chunks, the corpus arm has {exp}")
-    gf = (rec.get("glossary_file") or {}).get("symbol_glossary")
+    gf = rec.get("glossary_file") or None
     want = ((cfg["arms"][glossary].get("glossary_file_sha256")) or {}).get(corpus)
     # every arm, none included, is loaded from an explicit glossary file with its own stamp (the
     # none file holds empty rows: it renders no field, §5.3, §9.2)
@@ -489,7 +492,7 @@ def field_coverage(probe_chunks: Sequence[tuple[str, str, str]] | None, unavaila
     ``--glossary-file`` or ``--rendered-fields``: every chunk of the index with its field,
     rendered offline as the loader renders it); the glossary file's own counts from the load
     receipt are printed beside it when present (``glossary_file_counts``)."""
-    gf = ((receipt or {}).get("glossary_file") or {}).get("symbol_glossary") or {}
+    gf = (receipt or {}).get("glossary_file") or {}
     backfill = dict(gf.get("counts") or {})
     if not probe_chunks:
         return {"available": False, "reason": unavailable or "no probe candidates", "glossary_file_counts": backfill}
