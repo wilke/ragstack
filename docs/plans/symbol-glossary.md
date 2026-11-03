@@ -538,3 +538,15 @@ whitespace changes moved nothing on this corpus.
 - rules/3 run-ons: end a definition at `, <token> is the` for symbols `_SYMBOL_BODY`
   cannot read (`u→`, `u′2`, `M w`), and make the appositive phrase non-greedy (#790).
 - A tools tag so GoWe ingests stamp `rules/3`.
+- ~~Return the glossary from the API.~~ Done (#846): `POST /v1/retrieve` takes
+  `include_symbol_glossary` and then puts `symbol_glossary` on every source (`""` when the
+  chunk has none); see `docs/API.md`. The Go server accepts and ignores it (parity TODO).
+- ~~An English stemmer on the BM25 fields.~~ Tried on a dev scratch index (2026-11-03
+  session, 155 records, answer-quote gold, BM25 only), not adopted. Against the unstemmed
+  content + glossary arm (84 found), stemming both fields found 85 (8 gained, 7 lost),
+  stemming only the glossary found 83 (3 gained, 4 lost), and all four fields summed found
+  86 (4 gained, 2 lost, p = 0.69). Stemming `content` alone moved 28 to 30, the same size
+  as the whole gain, so none of it can be credited to the glossary. The example that
+  prompted the trial was not a stemming case: the other extractor's wording for the symbol
+  shares no stem with the query. Wording, not word form, decides these misses, so the lever
+  is the extractor's vocabulary (the quantity's standard name first, then paraphrases).
