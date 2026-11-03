@@ -22,7 +22,7 @@ file with the committed balanced-set rule when ``--records`` is given, else the 
    * **H1b**: 2 G + 1 C per paper, mean(D_G) - D_C summed > 0, by the exact G / C label
      randomization test (:func:`simulate_h1b`; C discordant at the same q with no effect).
    * **H2**: all 3 records, d = (d_1 + d_2) / 2 with d_k = hit(neighbour) - hit(random-k), the
-     sum < 0, by the exact arm-label randomization test per question (:func:`simulate_h2`). ``q`` is a record's discordance between the neighbour arm and EACH draw
+     paper sum < 0, by the exact paper sign-flip test (:func:`simulate_h2`). ``q`` is a record's discordance between the neighbour arm and EACH draw
      (q scaled per paper by its realised neighbour count over the mean count when
      ``--neighbour-counts`` is given); a share ``rho`` of it is shared by both draws (same
      record, same direction: d = +-1) and the rest occurs per draw independently (d = +-1/2).
@@ -141,23 +141,15 @@ def _rand_p(groups: Sequence[tuple[Sequence[int], int]], obs2: int, alternative:
     return min(1.0, float(tail.sum()))
 
 
-#: H2 per question under arm-label exchangeability, doubled: one arm hits and two miss
-#: ("single one": the contrast is +1 when the odd arm is the neighbour, -1/2 otherwise), or one
-#: arm misses and two hit ("single zero": -1 / +1/2). Each relabelling equally likely.
-H2_SINGLE_ONE = (2, -1, -1)
-H2_SINGLE_ZERO = (-2, 1, 1)
-
-
 def simulate_h2(n_clusters: int, rec_per: int, q: float, p: float, *, rho: float = 1.0,
                 q_scale: Sequence[float] | None = None, sd_p: float = SD_P,
                 agreements: Sequence[float] = AGREEMENTS, n_sims: int = 2000, n_flips: int = 2000,
                 seed: int = 0) -> dict[str, Any]:
-    """H2 with the two-draw average and the exact arm-label randomization test (§7, owner
-    2026-11-02). ``q`` is the record's discordance between the neighbour arm and EACH random
-    draw; a share ``rho`` of it is shared by both draws (the same record, the same direction:
-    the neighbour is the odd arm), the rest occurs per draw independently (the draw is the odd
-    arm). A record with opposite own changes on the two draws (impossible for binary hits) keeps
-    the first draw's change only. ``n_flips`` is unused (the p is exact); kept for the signature."""
+    """H2 with the two-draw average and the exact paper sign-flip test (§7, owner 2026-11-02:
+    ``chunktrial_stats.sign_flip_lattice`` on the paper sums, "less"). ``q`` is the record's
+    discordance between the neighbour arm and EACH random draw; a share ``rho`` of it is shared
+    by both draws (the same record, the same direction), the rest occurs per draw
+    independently. ``n_flips`` is unused (the p is exact); kept for the signature."""
     rng = np.random.default_rng(seed)
     shape = (n_sims, n_clusters, rec_per)
     pj = beta_draws(rng, p, sd_p, (n_sims, n_clusters))[:, :, None]
@@ -173,18 +165,10 @@ def simulate_h2(n_clusters: int, rec_per: int, q: float, p: float, *, rho: float
     for _ in range(2):
         own = rng.random(shape) < qj * (1 - rho)
         d_draw.append(np.where(shared, ds, np.where(own, direction(), 0.0)))
-    d1, d2 = d_draw
-    d2 = np.where(~shared & (d1 * d2 < 0), 0.0, d2)
-    d = 0.5 * (d1 + d2)
-    one_nz = (d1 == 0) != (d2 == 0)
-    single_one = ((d1 == 1) & (d2 == 1)) | (one_nz & (d1 + d2 == -1))
-    single_zero = ((d1 == -1) & (d2 == -1)) | (one_nz & (d1 + d2 == 1))
-    n_one = single_one.sum(axis=(1, 2))
-    n_zero = single_zero.sum(axis=(1, 2))
-    obs2 = np.rint(2 * d.sum(axis=(1, 2))).astype(int)
-    pv = np.array([_rand_p([(H2_SINGLE_ONE, int(a)), (H2_SINGLE_ZERO, int(b))], int(o), "less")
-                   for a, b, o in zip(n_one, n_zero, obs2, strict=True)])
-    out: dict[str, Any] = {"n_sims": n_sims, "test": "arm-label randomization (exact)", "rho": rho}
+    d = 0.5 * (d_draw[0] + d_draw[1])
+    sums = d.sum(axis=2)
+    pv = np.array([cs.sign_flip_lattice(s, "less")["p"] for s in sums])  # type: ignore[index]
+    out: dict[str, Any] = {"n_sims": n_sims, "test": "paper sign-flip (exact)", "rho": rho}
     for lvl in (0.025, 0.05):
         sig = pv <= lvl
         row: dict[str, Any] = {"test_only": float(sig.mean())}

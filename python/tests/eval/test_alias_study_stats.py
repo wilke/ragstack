@@ -445,29 +445,32 @@ def test_exchange_supports_permute_the_three_arm_labels() -> None:
     assert sorted(st.exchange_supports(recs, o, two)[0]) == [-1.0, 1.0]     # two labels: the sign flip
 
 
-def test_layer1_tests_h1b_and_h2_by_label_randomization_and_h1_by_sign_flip() -> None:
+def test_layer1_tests_h1b_by_label_randomization_h1_and_h2_by_sign_flip() -> None:
     import chunktrial_stats as cs
 
     recs, o = h2_world(True)
     r = st.layer1(recs, o, {}, None, AN)
-    assert "randomization" in r["H2"]["test"] and "question" in r["H2"]["test"]
+    assert "sign-flip" in r["H1"]["test"] and "sign-flip" in r["H2"]["test"]
     assert "randomization" in r["H1b"]["test"] and "paper" in r["H1b"]["test"]
-    assert "sign-flip" in r["H1"]["test"]
-    sup = st.exchange_supports(recs, o, st.H2_SPEC)
-    _, v, _ = st.contrast_values(recs, o, st.H2_SPEC)
-    want = cs.cluster_randomization_lattice(sup, sum(v), "less")
-    assert want is not None and r["H2"]["p"] == pytest.approx(want["p"], abs=1e-15)
+    cl, v, _ = st.contrast_values(recs, o, st.H2_SPEC)
+    _, sums, _ = st.cluster_sums(cl, v)
+    want = cs.sign_flip_test_exact(sums, alternative="less")
+    assert r["H2"]["p"] == pytest.approx(want["p"], abs=1e-15)
     assert r["H2"]["min_attainable_p"] == pytest.approx(want["min_attainable_p"])
-    # not the paper sign-flip p it replaced
-    _, sums, _ = st.cluster_sums(*st.contrast_values(recs, o, st.H2_SPEC)[:2])
-    assert r["H2"]["p"] != pytest.approx(cs.sign_flip_test_exact(sums, alternative="less")["p"])
+    # not the arm-label randomization p (decided against for H2: scatter is not a mean drop)
+    rand = cs.cluster_randomization_lattice(st.exchange_supports(recs, o, st.H2_SPEC), sum(v), "less")
+    assert rand is not None and r["H2"]["p"] != pytest.approx(rand["p"])
+    # H1b's p is the G / C label randomization p
+    clb, vb, supb, _ = st.h1b_label_supports(recs, o)
+    wb = cs.cluster_randomization_lattice(supb, sum(vb), "greater")
+    assert wb is not None and r["H1b"]["p"] == pytest.approx(wb["p"], abs=1e-15)
 
 
 def test_randomization_floor_drives_gate_not_evaluable() -> None:
-    """A member's minimum attainable p is its randomization floor: 3 single-one questions under
-    "less" have floor (2/3)^3 ~ 0.30 > 0.05, so H2 is GATE-NOT-EVALUABLE however extreme."""
-    t = st.member_randomization(["P1", "P1", "P2"], [-0.5, -0.5, -0.5], [[1, 1, -0.5, -0.5, -0.5, -0.5]] * 3,
-                                "less", "question", AN)
+    """H1b's minimum attainable p is its randomization floor: 3 papers each (1, 0 | C 0) have
+    floor (2/3)^3 ~ 0.30 > 0.05 under "greater", so H1b is GATE-NOT-EVALUABLE however extreme."""
+    t = st.member_randomization(["P1", "P2", "P3"], [0.5, 0.5, 0.5], [[-1.0, 0.5, 0.5]] * 3,
+                                "greater", "paper", AN)
     assert t["min_attainable_p"] == pytest.approx((2 / 3) ** 3) and t["p"] == pytest.approx((2 / 3) ** 3)
-    r = st.layer1_procedure({"H1": m(0.001), "H2": {**t, "gates": [], "gold_gate_pass": True}, "H1b": m(0.2)})
-    assert r["H2"]["status"] == st.GATE
+    r = st.layer1_procedure({"H1": m(0.001), "H2": m(0.001), "H1b": {**t, "gates": []}})
+    assert r["H1b"]["status"] == st.GATE

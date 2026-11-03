@@ -700,16 +700,16 @@ Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
   | member | test | unit and relabelling | tested null, and why it matches |
   |---|---|---|---|
   | **H1** | exact conditional paper sign-flip (`chunktrial_stats.sign_flip_test_exact`) | paper; the sign of each non-zero paper score S_j (2^k vectors) | the **sharp null per question** of no glossary effect: H1 compares two conditions (merged, none), so swapping them negates each question's difference, each S_j is symmetric about 0 and its sign is a fair coin given \|S_j\| |
-  | **H1b** | exact G / C label randomization (`chunktrial_stats.cluster_randomization_test`) | paper; the G / C labels permuted over the paper's balanced records (2 G + 1 C: 3 arrangements, equally likely; 2 for a paper left with 1 G + 1 C) | **label exchangeability**: the glossary effect does not depend on whether a record is G or C. The statistic is a 2 : 1 difference of differences, which a relabelling does not negate, so a sign flip is not exact for this null (a scratch simulation in the #907 review found it anti-conservative under a skewed sparse null) |
-  | **H2** | exact arm-label randomization (`chunktrial_stats.cluster_randomization_test`) | question; the three arm labels (neighbour, random-1, random-2) permuted over its three outcomes (3! relabellings, equally likely) | **label exchangeability** of the three corpus arms for every question. The statistic, neighbour − mean(random-1, random-2) summed over papers, is a 3-condition contrast that a relabelling does not negate. The gold-only direction gate and the draw-gap flag are unchanged |
+  | **H1b** | exact G / C label randomization (`chunktrial_stats.cluster_randomization_test`) | paper; the G / C labels permuted over the paper's balanced records (2 G + 1 C: 3 arrangements, equally likely; 2 for a paper left with 1 G + 1 C) | **label exchangeability**: the glossary effect does not depend on whether a record is G or C. The statistic is a 2 : 1 difference of differences, which a relabelling does not negate, so a sign flip is not exact for this null. **Deciding scenario: S3c** (G and C gaining alike, skewed and sparse, q 2 %), under which a scratch simulation in the #907 review found the sign flip anti-conservative for H1b and the label randomization within level |
+  | **H2** | exact conditional paper sign-flip (`chunktrial_stats.sign_flip_test_exact`) | paper; the sign of each non-zero paper score S_j = Σ (neighbour − mean(random-1, random-2)) | the **symmetric mean-difference null**: each paper's score is symmetric about 0, so the neighbour arm does not shift found@10 in either direction. H2 claims a **mean drop**, and this null allows the neighbour arm to differ from the draws on more questions without a direction. **Deciding scenario: S8** (a neighbour arm that scatters more, with no mean shift), under which the same scratch simulation found the arm-label randomization test above level (exchangeability counts extra scatter as an effect) and the sign flip within level. The gold-only direction gate and the draw-gap flag are unchanged |
 
   Under its null each p is **exactly level-α**: P(p ≤ α) ≤ α, with equality whenever α is an
   attainable value of the discrete null distribution. **What a rejection says.** A rejection of H1 is
-  evidence against the sharp null. A rejection of H1b or H2 is evidence against exchangeability, which
-  can fail without any shift in the mean. For H2 this includes a neighbour arm that differs from both
-  draws on more questions but in neither direction; the one-sided statistic reads such a difference
-  partly as a loss. Neither test addresses a weaker null of zero mean effect.
-- **Minimum attainable p** (owner, 2026-11-01) is 2^−k for H1's exact p. For H1b and H2 (owner,
+  evidence against the sharp null; of H2, against a symmetric per-paper difference, read in the
+  claimed direction and confirmed only with the gold-only gate; of H1b, against G / C exchangeability.
+  None of the three tests addresses a weaker null of zero mean effect with a skewed per-cluster
+  distribution.
+- **Minimum attainable p** (owner, 2026-11-01) is 2^−k for H1's and H2's exact p. For H1b (owner,
   2026-11-02) it is the null mass of the most extreme value: the product, over the units whose
   relabellings change the statistic, of each unit's share of relabellings at its extreme. For any
   Monte-Carlo p it is max(that floor, 1/(m + 1)). It is judged against the **final level** at which the member is tested: for H1 and
@@ -795,8 +795,8 @@ not a null unless the power at the stated scenario is ≥ .80.
 
 **The committed calculation (pre-freeze, §15)** runs on the realised layout and, for H2, on the realised
 neighbour and random counts per study paper. It repeats the table above by the normal approximation and
-by simulation of each member's test of §7 (2,000 simulations; H1's sign-flip with 2,000 flips, H1b's
-and H2's randomization tests exactly; a between-paper SD of p of .15, seed `261101|alias|power`, §5.5),
+by simulation of each member's test of §7 (2,000 simulations; H1's sign-flip with 2,000 flips, H2's
+sign-flip and H1b's randomization test exactly; a between-paper SD of p of .15, seed `261101|alias|power`, §5.5),
 and it computes H2 with the two-draw average and the gold-only gate under stated agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, the caps of
 §5.1 are raised before the freeze**; that is the lever, and it acts on metadata counts only. **The power
 the lever reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test rejects **and** the
@@ -804,9 +804,10 @@ gold-only direction gate passes, not the test's power alone. **The lever reads t
 `a = 0.7`, and `a = 0.6` is reported as a sensitivity** (owner, 2026-11-02, §14 O11;
 `alias_study_power.LEVER_AGREEMENT`).
 
-**Evaluability floor.** For H1, with k non-zero clusters, the minimum attainable one-sided p is 2^−k.
-At the Holm worst case α/2 it needs k ≥ 6; at α = 0.05 (after H2 is confirmed) it needs k ≥ 5. For
-H1b and H2 the floor is the randomization floor of §7: each unit at its extreme contributes 1/3 or 2/3.
+**Evaluability floor.** For H1 and H2, with k non-zero clusters, the minimum attainable one-sided p
+is 2^−k. At the Holm worst case α/2 a member needs k ≥ 6; at α = 0.05 (after the other is confirmed)
+it needs k ≥ 5. For H1b the floor is the randomization floor of §7: each paper at its extreme
+contributes 1/3 or 2/3.
 
 ## 9. Gates, stops, and restore points
 

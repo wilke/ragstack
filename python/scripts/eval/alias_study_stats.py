@@ -18,15 +18,14 @@ counted (§7 *Missing data*); ``family_missing_as_not_found`` scores it 0 (a sen
 **Layer 1 (§3.1).** Each member is a linear contrast of cell outcomes per record (H1:
 merged - none on base x default, G records; H2: neighbour - (random-1 + random-2)/2 on
 default x none, all 900; H1b: per paper, the mean of its G records' H1 difference minus its C
-record's), summed per paper. The tests (§7, owner 2026-11-02): **H1** by the paper sign-flip test with the
-exact conditional p (``chunktrial_stats.sign_flip_test_exact``: enumeration at <= 20 non-zero
-papers, lattice convolution above; null: the sharp null per question, two conditions, so each
-paper score is symmetric; minimum attainable p 2^-k). **H1b and H2** by the exact
-label-exchangeability randomization test (``chunktrial_stats.cluster_randomization_test``): H1b
-permutes the G / C labels over each paper's records (3 assignments for 2 G + 1 C), H2 permutes
-the three arm labels over each question's outcomes (6 relabellings), the statistic as above; the
-minimum attainable p is the null mass of the most extreme value. Monte Carlo, 10,000 draws, seed
-``261101|alias|perm``, (b + 1)/(m + 1), only beyond the lattice threshold. The members run
+record's), summed per paper. The tests (§7, owner 2026-11-02): **H1 and H2** by the paper sign-flip test
+with the exact conditional p (``chunktrial_stats.sign_flip_test_exact``: enumeration at <= 20
+non-zero papers, lattice convolution above; minimum attainable p 2^-k; H1's null is the sharp null
+per question, H2's the symmetric mean-difference null per paper). **H1b** by the exact G / C label
+randomization test (``chunktrial_stats.cluster_randomization_test``): the G / C labels permuted
+over each paper's records (3 assignments for 2 G + 1 C); the minimum attainable p is the null mass
+of the most extreme value. Monte Carlo, 10,000 draws, seed ``261101|alias|perm``, (b + 1)/(m + 1),
+only beyond the lattice threshold. The members run
 through the Option-B procedure (:func:`layer1_procedure`): H1 and H2 start at 0.025 each and a
 rejected member passes its level to the other (Holm over 2); H1b is tested at 0.05 only when
 both are rejected. A member is GATE-NOT-EVALUABLE (p = 1.0 in the procedure) when its minimum
@@ -193,7 +192,8 @@ def found_rate(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
 
 def member_test(clusters: Sequence[str], vals: Sequence[float], alternative: str, an: Mapping[str, Any]
                 ) -> dict[str, Any]:
-    """H1's test (§7): the exact conditional paper sign-flip p (the sharp null per question)."""
+    """H1's and H2's test (§7): the exact conditional paper sign-flip p (H1: the sharp null per
+    question; H2: per-paper symmetry of the mean difference)."""
     names, sums, cnt = cluster_sums(clusters, vals)
     if sums.size == 0:
         return {"n": 0, "papers": 0, "p": None, "min_attainable_p": 1.0, "n_nonzero": 0}
@@ -207,7 +207,7 @@ def member_test(clusters: Sequence[str], vals: Sequence[float], alternative: str
 
 def member_randomization(clusters: Sequence[str], vals: Sequence[float], supports: Sequence[Sequence[float]],
                          alternative: str, unit: str, an: Mapping[str, Any]) -> dict[str, Any]:
-    """H1b's and H2's test (§7, owner 2026-11-02): the exact label-exchangeability randomization
+    """H1b's test (§7, owner 2026-11-02): the exact label-exchangeability randomization
     p (``chunktrial_stats.cluster_randomization_test``; Monte Carlo ``(b + 1)/(m + 1)`` with
     ``n_perm`` draws, seed ``perm_seed``, only beyond the lattice threshold). ``supports[i]`` is
     unit ``i``'s statistic under each equally likely relabelling; ``unit`` names the unit
@@ -554,8 +554,7 @@ def layer1(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str,
         h1b_gates.append(f"{h1b['papers']} papers < {MIN_CLUSTERS}")
     # H2
     cl2, v2, miss2 = contrast_values(bal, outcomes, h2_spec, "hit", missing)
-    sup2 = exchange_supports(bal, outcomes, h2_spec, "hit", missing)
-    h2 = {**member_randomization(cl2, v2, sup2, "less", "question", an), "missing": miss2}
+    h2 = {**member_test(cl2, v2, "less", an), "missing": miss2}
     _, v2g, _ = contrast_values(bal, outcomes, h2_spec, "hit_gold", missing)
     gold_net = 100 * sum(v2g) / len(v2g) if v2g else None
     h2["gold_only_net_points"] = None if gold_net is None else round(gold_net, 4)

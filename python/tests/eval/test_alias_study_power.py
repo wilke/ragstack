@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 _EVAL = Path(__file__).resolve().parents[2] / "scripts" / "eval"
@@ -47,17 +48,27 @@ def test_simulation_monotone_and_near_the_approximation() -> None:
     assert null < 0.12
 
 
-def test_h2_randomization_test_level_power_and_what_it_rejects() -> None:
-    """The arm-label randomization test (§7, 2026-11-02): at least the sign-flip approximation's
-    power at q 2 % / p .85; level held when the three arms are exchangeable (no direction and
-    the odd arm equally often each arm: rho = 1/3); and it rejects -- by design of its null --
-    when the neighbour arm merely differs more often with no direction (rho = 1, p = .5)."""
-    power = pw.simulate_h2(300, 3, 0.02, 0.85, rho=1.0, sd_p=0.0, n_sims=600, seed=4)["0.025"]
-    assert power["test_only"] >= pw.normal_power(900, 0.02, 0.85, 0.025) - 0.03
-    exch = pw.simulate_h2(300, 3, 0.05, 0.5, rho=1 / 3, sd_p=0.0, agreements=(1.0,), n_sims=1500, seed=5)
-    assert exch["0.05"]["test_only"] <= 0.05 + 2 * (0.05 * 0.95 / 1500) ** 0.5
+def test_h2_sign_flip_power_level_and_scatter_is_not_an_effect() -> None:
+    """H2's exact paper sign-flip (§7, 2026-11-02): near the three-valued approximation at
+    rho = 1, averaging two draws helps, and a neighbour arm that differs more often with no
+    direction (rho = 1, p = .5: the S8 null that decided the test) holds level. The arm-label
+    randomization test rejects that same data well above level, so the check is not vacuous."""
+    three = pw.simulate_h2(300, 3, 0.02, 0.85, rho=1.0, sd_p=0.0, n_sims=600, seed=4)["0.025"]
+    avg = pw.simulate_h2(300, 3, 0.02, 0.85, rho=0.0, sd_p=0.0, n_sims=600, seed=4)["0.025"]
+    assert abs(three["test_only"] - pw.normal_power(900, 0.02, 0.85, 0.025)) < 0.06
+    assert avg["test_only"] > three["test_only"]
     churn = pw.simulate_h2(300, 3, 0.05, 0.5, rho=1.0, sd_p=0.0, agreements=(1.0,), n_sims=1500, seed=5)
-    assert churn["0.05"]["test_only"] > 0.075
+    assert churn["0.05"]["test_only"] <= 0.05 + 2 * (0.05 * 0.95 / 1500) ** 0.5
+    # the same S8-type data under the label-randomization test (single-one / single-zero questions)
+    rng = np.random.default_rng(5)
+    rej = 0
+    for _ in range(800):
+        disc = rng.random(900) < 0.05
+        up = rng.random(900) < 0.5                       # neighbour is the odd arm, no direction
+        n_one, n_zero = int((disc & up).sum()), int((disc & ~up).sum())
+        obs2 = 2 * (n_one - n_zero)
+        rej += pw._rand_p([((2, -1, -1), n_one), ((-2, 1, 1), n_zero)], obs2, "less") <= 0.05
+    assert rej / 800 > 0.075
 
 
 def test_h1b_randomization_test_level_and_power() -> None:
