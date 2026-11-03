@@ -1,5 +1,5 @@
 {
- "_comment": "alias_study_run.py --config: private; every path and id below is a placeholder. found10's keys apply (api, corpora, arms, census, server_assumed).",
+ "_comment": "alias_study_run.py --config: private; every path and id below is a placeholder. found10's keys apply (api, corpora, arms, census, server_assumed). One read-only bench collection per (corpus arm, glossary arm), each with the load summary load_embeddings.py wrote (load_receipt); every arm, none included, is loaded from an explicit glossary_file v1 (none: empty rows). An arm whose stamps carry +attach=mention declares attach: mention.",
  "api": {
   "base_url": "http://<bench API host>:<port>",
   "api_key_env": "ALIAS_STUDY_ADMIN_KEY",
@@ -15,76 +15,144 @@
  },
  "corpora": {
   "base": {
-   "collection": "<bench collection, base>",
-   "index": "ragstack_lib_bench_<base>",
    "expected_chunks": 0,
-   "es_id_prefix": "<tenant>:",
-   "bm25_scope": {
-    "tenant": "<tenant>",
-    "extra_tenants": []
-   },
    "chunk_export": [
     "/private/alias-study/exports/chunks-base.jsonl"
-   ],
-   "restore_point": "/private/alias-study/ops/restore-base.json"
+   ]
   },
   "neighbour": {
-   "collection": "<bench collection, neighbour>",
-   "index": "ragstack_lib_bench_<neighbour>",
    "expected_chunks": 0,
-   "es_id_prefix": "<tenant>:",
-   "bm25_scope": {
-    "tenant": "<tenant>",
-    "extra_tenants": []
-   },
    "chunk_export": [
     "/private/alias-study/exports/chunks-base.jsonl",
     "/private/alias-study/exports/added-neighbour.jsonl"
-   ],
-   "restore_point": "/private/alias-study/ops/restore-neighbour.json"
+   ]
   },
   "random1": {
-   "collection": "<bench collection, random1>",
-   "index": "ragstack_lib_bench_<random1>",
    "expected_chunks": 0,
-   "es_id_prefix": "<tenant>:",
-   "bm25_scope": {
-    "tenant": "<tenant>",
-    "extra_tenants": []
-   },
    "chunk_export": [
     "/private/alias-study/exports/chunks-base.jsonl",
     "/private/alias-study/exports/added-random1.jsonl"
-   ],
-   "restore_point": "/private/alias-study/ops/restore-random1.json"
+   ]
   },
   "random2": {
-   "collection": "<bench collection, random2>",
-   "index": "ragstack_lib_bench_<random2>",
    "expected_chunks": 0,
-   "es_id_prefix": "<tenant>:",
-   "bm25_scope": {
-    "tenant": "<tenant>",
-    "extra_tenants": []
-   },
    "chunk_export": [
     "/private/alias-study/exports/chunks-base.jsonl",
     "/private/alias-study/exports/added-random2.jsonl"
-   ],
-   "restore_point": "/private/alias-study/ops/restore-random2.json"
+   ]
+  }
+ },
+ "collections": {
+  "base": {
+   "none": {
+    "collection": "bench-<base x none>",
+    "index": "ragstack_lib_bench_<base x none>",
+    "load_receipt": "/private/alias-study/loads/base-none.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   },
+   "merged": {
+    "collection": "bench-<base x merged>",
+    "index": "ragstack_lib_bench_<base x merged>",
+    "load_receipt": "/private/alias-study/loads/base-merged.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   },
+   "placebo": {
+    "collection": "bench-<base x placebo>",
+    "index": "ragstack_lib_bench_<base x placebo>",
+    "load_receipt": "/private/alias-study/loads/base-placebo.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   }
+  },
+  "neighbour": {
+   "none": {
+    "collection": "bench-<neighbour x none>",
+    "index": "ragstack_lib_bench_<neighbour x none>",
+    "load_receipt": "/private/alias-study/loads/neighbour-none.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   },
+   "merged": {
+    "collection": "bench-<neighbour x merged>",
+    "index": "ragstack_lib_bench_<neighbour x merged>",
+    "load_receipt": "/private/alias-study/loads/neighbour-merged.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   }
+  },
+  "random1": {
+   "none": {
+    "collection": "bench-<random1 x none>",
+    "index": "ragstack_lib_bench_<random1 x none>",
+    "load_receipt": "/private/alias-study/loads/random1-none.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   },
+   "merged": {
+    "collection": "bench-<random1 x merged>",
+    "index": "ragstack_lib_bench_<random1 x merged>",
+    "load_receipt": "/private/alias-study/loads/random1-merged.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   }
+  },
+  "random2": {
+   "none": {
+    "collection": "bench-<random2 x none>",
+    "index": "ragstack_lib_bench_<random2 x none>",
+    "load_receipt": "/private/alias-study/loads/random2-none.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   },
+   "merged": {
+    "collection": "bench-<random2 x merged>",
+    "index": "ragstack_lib_bench_<random2 x merged>",
+    "load_receipt": "/private/alias-study/loads/random2-merged.load-summary.json",
+    "es_id_prefix": "<tenant>:",
+    "bm25_scope": {
+     "tenant": "<tenant>",
+     "extra_tenants": []
+    }
+   }
   }
  },
  "arms": {
   "none": {
    "stamps": [
-    "<none-arm version>"
+    "<none-arm version>+attach=mention@file/1"
    ],
-   "attach": null,
+   "attach": "mention",
    "glossary_file_sha256": {
-    "base": "<sha256>",
-    "neighbour": "<sha256>",
-    "random1": "<sha256>",
-    "random2": "<sha256>"
+    "base": "<sha256 of the arm's glossary_file v1>",
+    "neighbour": "<sha256 of the arm's glossary_file v1>",
+    "random1": "<sha256 of the arm's glossary_file v1>",
+    "random2": "<sha256 of the arm's glossary_file v1>"
    }
   },
   "merged": {
@@ -93,12 +161,26 @@
    ],
    "attach": "mention",
    "glossary_file_sha256": {
-    "base": "<sha256>",
-    "neighbour": "<sha256>",
-    "random1": "<sha256>",
-    "random2": "<sha256>"
+    "base": "<sha256 of the arm's glossary_file v1>",
+    "neighbour": "<sha256 of the arm's glossary_file v1>",
+    "random1": "<sha256 of the arm's glossary_file v1>",
+    "random2": "<sha256 of the arm's glossary_file v1>"
    }
+  },
+  "placebo": {
+   "stamps": [
+    "<placebo-arm version>+attach=mention@file/1"
+   ],
+   "attach": "mention",
+   "glossary_file_sha256": {
+    "base": "<sha256 of the placebo glossary_file v1>"
+   },
+   "manifest": "/private/alias-study/glossaries/placebo.manifest.json"
   }
+ },
+ "prereg": {
+  "file": "docs/plans/results/alias-study-2026-11/prereg/PREREG-alias-study.md",
+  "sha256": "<the frozen prereg's sha256>"
  },
  "records": "/private/alias-study/accepted-alias-O.jsonl",
  "gold_hashes": "/private/alias-study/runs/gold-hashes.json",
