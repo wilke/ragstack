@@ -397,14 +397,26 @@ def launch_records(work: Path) -> dict[str, Any]:
             obj = json.loads(text)
             fmt = "json"
         except json.JSONDecodeError:
-            obj, end = json.JSONDecoder().raw_decode(text)
-            rest = text[end:].split()
-            obj = {**obj, "worker_sha256": rest[0], "worker_path": rest[1], "launch_commit": rest[2]}
+            try:
+                obj, end = json.JSONDecoder().raw_decode(text)
+                rest = text[end:].split()
+                obj = {**obj, "worker_sha256": rest[0], "worker_path": rest[1], "launch_commit": rest[2]}
+            except (json.JSONDecodeError, IndexError):
+                raise SystemExit(f"{p.name}: neither a JSON launch record nor a legacy one") from None
             fmt = "legacy"
+        missing = [k for k in ("pid", "argv", "worker_sha256", "launch_commit") if k not in obj]
+        if missing:
+            raise SystemExit(f"{p.name}: launch record lacks {missing}")
+        if obj.get("worker_dirty"):
+            raise SystemExit(f"{p.name}: the worker had uncommitted changes at launch")
         commit = obj["launch_commit"]
-        blob = subprocess.run(["git", "-C", str(REPO), "show",
-                               f"{commit}:python/scripts/eval/alias_added_glossaries_worker.py"],
-                              capture_output=True, check=True).stdout
+        got = subprocess.run(["git", "-C", str(REPO), "show",
+                              f"{commit}:python/scripts/eval/alias_added_glossaries_worker.py"],
+                             capture_output=True)
+        if got.returncode != 0:
+            raise SystemExit(f"{p.name}: the worker is not readable at launch commit {commit!r} "
+                             f"({got.stderr.decode(errors='replace').strip()[:200]})")
+        blob = got.stdout
         if hashlib.sha256(blob).hexdigest() != obj["worker_sha256"]:
             raise SystemExit(f"{p.name}: the worker's sha256 is not the file at the launch commit")
         recs[p.name.removesuffix(".launch.json")] = {
@@ -488,8 +500,10 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool, manifes
     deg_docs: list[dict[str, Any]] = []
     served: Counter[str] = Counter()
     calls = 0
+    unit_calls: dict[str, int] = {}
     seen: set[str] = set()
     for u in plan["units"]:
+        unit_calls[u["unit"]] = 0
         gf = read_glossary_file(u["out"])
         if sorted(gf.rows) != sorted(u["doc_ids"]):
             raise SystemExit(f"unit {u['unit']}: rows != planned documents")
@@ -505,6 +519,7 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool, manifes
             if lp.get("served"):
                 served[json.dumps(lp["served"], sort_keys=True)] += 1
             calls += len(lp.get("calls") or [])
+            unit_calls[u["unit"]] += len(lp.get("calls") or [])
             if row.degraded:
                 deg[row.degraded] += 1
                 deg_docs.append({"doc_id": did, "unit": u["unit"], "reason": row.degraded})
@@ -538,6 +553,11 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool, manifes
     mismatched = {k: v for k, v in served_replies.items() if k != cfg["model"]}
     if mismatched:
         raise SystemExit(f"replies from another model in the ledger: {mismatched}")
+    off = [u["unit"] for u in plan["units"]
+           if sum((last[u["unit"]].get("served_replies") or {}).values()) != unit_calls[u["unit"]]]
+    if off:
+        raise SystemExit(f"{len(off)} unit(s) whose checked replies != the calls their rows record, "
+                         f"e.g. {off[:5]}")
     if sum(served_replies.values()) != calls:
         raise SystemExit(f"checked replies {sum(served_replies.values())} != calls in the rows {calls}")
     workers = launch_records(work)
@@ -552,6 +572,8 @@ def cmd_assemble(cfg: Mapping[str, Any], allow_degraded_transport: bool, manifes
     if manifest_only:
         # F7/F2 additions only: the outputs are not regenerated; they must be byte for byte the
         # ones the previous manifest recorded, whose pinned commits are carried over
+        if not (out / "manifest.json").is_file():
+            raise SystemExit("--manifest-only: no previous manifest.json to rebuild from")
         prev = json.loads((out / "manifest.json").read_text())
         commits = {**prev["chain"]["rederive_commits"],
                    "abbrev_commit": prev["abbreviation"]["alias_abbrev_commit"]}
@@ -667,6 +689,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--allow-dirty", action="store_true", help="development only: not citable")
     a = ap.parse_args(argv)
     os.umask(0o077)
+    if a.manifest_only and a.command != "assemble":
+        raise SystemExit("--manifest-only applies to assemble only")
+    if a.allow_degraded_transport and a.command != "assemble":
+        raise SystemExit("--allow-degraded-transport applies to assemble only")
     cfg = load_config(a.config)
     if a.command != "status":
         prov = provenance()
