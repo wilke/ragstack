@@ -19,15 +19,19 @@ corpus arm (default x none, ``--repeat 2``), plus the **placebo leg** (base x de
 
 **One collection per attachment (owner, 2026-11-03).** Each (corpus arm, glossary arm) is its
 own bench collection, loaded once from the corpus arm's embedding shards with that arm's
-glossary file (``load-embeddings.cwl``) and never written again: base x {none, merged,
+glossary file (``load-embeddings.cwl``; the none arm from an explicit file of empty rows with
+its own stamp) and never written again: base x {none, merged,
 placebo} and the three expanded arms x {none, merged}, nine collections
 (``collections.<corpus>.<glossary>``: ``collection``, ``index``, ``load_receipt``, optional
 ``es_id_prefix`` / ``bm25_scope``). The runner triggers no backfill, swap or store write of any
 kind. Its build manifest is the load receipt (:func:`check_load_receipt`: no failed shard, the
-corpus arm's chunk count, the arm's glossary file sha256), and every leg reads the collection's
+corpus arm's chunk count, the arm's glossary file sha256, and for none a file that renders no
+field), and every leg reads the collection's
 live census before and after (:meth:`AliasRunner._census_ok`: the chunk total, every chunk's
 ``metadata.symbol_glossary_version`` one of the arm's stamps and of the loaded file's
-versions; a chunk stamped for another arm refuses the run). Restore points are gone with the
+versions; a chunk stamped for another arm, or unstamped, refuses the run). An arm whose stamps
+carry ``+attach=mention`` must declare ``attach: "mention"``, so the census also checks the
+attach slot (§5.3, R27). Restore points are gone with the
 swaps: a collection is immutable after its load, verified by census at the start and end of
 every leg. One ``run`` measures the legs of one attachment that belong to its ``--stage``. A repeat run measures ``default`` only, in the
 seeded order ``sha256(261101|alias|noise|<corpus arm>|<record>|<condition>)`` (§5.5), so a
@@ -48,8 +52,7 @@ placebo leg. ``run --stage`` names the retrieval stage: ``A`` is refused once st
 committed (the judge's ``commit-stage-a`` writes ``<out_dir>/STAGE-A-COMMITTED``), ``B`` is
 refused until then and verifies the commit before it measures anything. Every attachment is
 retrieved in one stage only, so one run writes one file pair, ``<corpus>/<glossary>.{jsonl,
-summary.json}``; :func:`leg_files` also reads the ``.stageB`` files of the first version of
-this harness.
+summary.json}`` (:func:`leg_files`).
 
 **Modes.** ``dry_run: true`` (``alias_study_dryrun.py``) skips the record-set identity and
 must name no study record. ``pilot: true`` is the pre-freeze pilot (§5.6): the record set is
@@ -121,8 +124,10 @@ for _p in (_HERE, _HERE / "glossbench"):
 import alias_study_common as asc  # noqa: E402
 import found10 as f10  # noqa: E402
 
-#: every attachment's collection is a bench collection (management's ids: bench-alias-<corpus>-<glossary>-<yymmdd>)
-COLLECTION_PREFIX = "bench-alias-"
+#: every attachment's collection is a bench copy: its id must name it as one (never a served collection)
+BENCH_MARK = "bench"
+#: a stamp whose version carries this mark was rendered under the mention rule (§5.3, R27)
+MENTION_MARK = "+attach=mention"
 STUDY_SCHEMA = "alias-study-run/1"
 PLACEBO_SCHEMA = "alias-placebo-glossary/1"
 #: §5.2 / round 3: every retriever asks 50 (the depth-50 pool); default reranks a pool of 50
@@ -154,8 +159,6 @@ JUDGING_A_LEGS = frozenset([asc.leg_id(c, g, r) for c, g in LAYER1_ATTACHMENTS f
                            + _REPEATS)
 #: the name the first version used for the retrieval stage-A set
 STAGE_A_LEGS = RETRIEVAL_A_LEGS
-#: the first version's file label for a stage-B leg of a stage-A attachment (still read)
-STAGE_B_LABEL_SUFFIX = ".stageB"
 COMMIT_MARKER = "STAGE-A-COMMITTED"
 MODE_MARKER = "STUDY-MODE"
 MODES = ("main", "pilot", "dry_run")
@@ -210,16 +213,8 @@ def run_label(corpus: str, glossary: str, repeat: int, stage: str | None = None)
 
 
 def leg_files(runs: Path, corpus: str, glossary: str, retriever: str, repeat: int = 1) -> tuple[Path, Path]:
-    """``(rows, summary)`` of one leg: the attachment's files, or, when they do not hold the
-    leg's condition, the first version's ``<label>.stageB`` files when those do."""
-    label = run_label(corpus, glossary, repeat)
-    sp = runs / corpus / f"{label}.summary.json"
-    old = runs / corpus / f"{label}{STAGE_B_LABEL_SUFFIX}.summary.json"
-    if old.is_file():
-        cond = asc.RETRIEVERS[retriever]
-        here = json.loads(sp.read_text(encoding="utf-8")).get("conditions") or {} if sp.is_file() else {}
-        if cond not in here and cond in (json.loads(old.read_text(encoding="utf-8")).get("conditions") or {}):
-            sp = old
+    """``(rows, summary)`` of one leg: its attachment's files (one run per attachment)."""
+    sp = runs / corpus / f"{run_label(corpus, glossary, repeat)}.summary.json"
     return sp.with_name(sp.name.removesuffix(".summary.json") + ".jsonl"), sp
 
 
@@ -305,6 +300,12 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
             if sa_ & sb_:
                 raise f10.Refused(f"arms.{a} shares a stamp with arms.{b}: every glossary arm has its own version "
                                   "stamp, so a census tells the collections apart (§5.3)")
+    for a in names:
+        acfg = cfg["arms"][a]
+        marks = [x for x in (acfg.get("stamps") or []) + (acfg.get("stamp_prefixes") or []) if MENTION_MARK in str(x)]
+        if marks and acfg.get("attach") != "mention":
+            raise f10.Refused(f"arms.{a}: its stamps carry {MENTION_MARK!r}, so the arm must declare attach: \"mention\" "
+                              "(the census then checks the attach slot, §5.3, R27)")
     for c, spec in cfg["conditions"].items():
         if int(spec["top_k"]) != REQUIRED_TOP_K:
             raise f10.Refused(f"condition {c}: top_k {spec['top_k']} != {REQUIRED_TOP_K} (the depth-50 pool)")
@@ -340,8 +341,8 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         for k in ("collection", "index", "load_receipt"):
             if not col.get(k):
                 raise f10.Refused(f"collections.{c}.{g}.{k} is not set")
-        if not str(col["collection"]).startswith(COLLECTION_PREFIX):
-            raise f10.Refused(f"collections.{c}.{g}.collection must be a bench collection ({COLLECTION_PREFIX}…)")
+        if BENCH_MARK not in str(col["collection"]).lower():
+            raise f10.Refused(f"collections.{c}.{g}.collection must be a bench collection (its id names it '{BENCH_MARK}')")
         for k in ("collection", "index"):
             key = f"{k}:{col[k]}"
             if key in seen:
@@ -378,8 +379,9 @@ def attachment_cfg(cfg: Mapping[str, Any], corpus: str, glossary: str) -> dict[s
 def check_load_receipt(cfg: Mapping[str, Any], corpus: str, glossary: str) -> dict[str, Any]:
     """The attachment's build manifest is its load receipt (``load_embeddings.py`` summary of
     ``load-embeddings.cwl``): no failed shard, the corpus arm's chunk count, and the glossary
-    file the arm declares (none: loaded without one; merged / placebo: the receipt's
-    ``glossary_file.symbol_glossary.sha256`` = ``arms.<glossary>.glossary_file_sha256.<corpus>``).
+    file the arm declares, for every arm (the receipt's ``glossary_file.symbol_glossary.sha256``
+    = ``arms.<glossary>.glossary_file_sha256.<corpus>``); the none arm's file must render no
+    field (its ``counts.merged_entries`` 0, and no non-zero ``*with_glossary*`` count).
     Raises :class:`found10.Refused`; returns what goes into the summary."""
     col = cfg["collections"][corpus][glossary]
     rp = Path(col["load_receipt"])
@@ -394,14 +396,19 @@ def check_load_receipt(cfg: Mapping[str, Any], corpus: str, glossary: str) -> di
         problems.append(f"loaded {rec.get('n_chunks')} chunks, the corpus arm has {exp}")
     gf = (rec.get("glossary_file") or {}).get("symbol_glossary")
     want = ((cfg["arms"][glossary].get("glossary_file_sha256")) or {}).get(corpus)
-    if glossary == asc.REPEAT_GLOSSARY:
-        if gf:
-            problems.append("the none collection was loaded with a glossary file")
-    elif not gf:
+    # every arm, none included, is loaded from an explicit glossary file with its own stamp (the
+    # none file holds empty rows: it renders no field, §5.3, §9.2)
+    if not gf:
         problems.append(f"the {glossary} collection was loaded without a glossary file")
     elif not want or gf.get("sha256") != want:
         problems.append(f"the {glossary} collection was loaded from another glossary file than "
                         f"arms.{glossary}.glossary_file_sha256.{corpus}")
+    elif glossary == asc.REPEAT_GLOSSARY:
+        counts = dict(gf.get("counts") or {})
+        rendering = {k: v for k, v in counts.items() if (k == "merged_entries" or "with_glossary" in k) and v}
+        if "merged_entries" not in counts or rendering:
+            problems.append(f"the none collection's glossary file renders a field (counts {counts}); it must hold "
+                            "empty rows only (merged_entries 0)")
     if problems:
         raise f10.Refused(f"collection {col['collection']}: " + "; ".join(problems))
     return {"collection": col["collection"], "index": col["index"], "load_receipt_sha256": asc.sha256_file(rp),
@@ -523,6 +530,7 @@ class AliasRunner(f10.Runner):
         """The live census of the collection (``metadata.symbol_glossary_version`` terms): the
         chunk total of the load, and every chunk's stamp the glossary arm's (another arm's
         stamp, or an unstamped chunk, refuses), its version one of the loaded glossary file's."""
+        self.census_source = "the load receipt's"
         if int(live.get("total", -1)) != int(census["total"]):
             return False
         stamps = dict(live.get("stamps") or {})

@@ -33,7 +33,7 @@ def stamp(g: str) -> str:
 
 
 def collection(c: str, g: str) -> str:
-    return f"bench-alias-{c}-{g}-261103"
+    return f"bench-t-{c}-{g}"
 
 
 class API:
@@ -90,9 +90,16 @@ class Census:
             "buckets": [{"key": k, "doc_count": v} for k, v in st.items()]}}})
 
 
+#: a glossary_file/v1 header's counts (ragstack.ingestion.glossary_file); the none file holds empty rows
+COUNTS = {"documents": 3, "with_llm": 0, "degraded": 0, "merged_entries": 4}
+NONE_COUNTS = {**COUNTS, "merged_entries": 0}
+
+
 def receipt(tmp: Path, c: str, g: str, **over: Any) -> Path:
-    gf = None if g == "none" else {"symbol_glossary": {"sha256": f"sha-{g}", "glossary_versions": [f"t-{g}"],
-                                                       "counts": {"docs": 3}, "schema": "glossary_file/v1"}}
+    """The load summary of ``load_embeddings.py`` for one collection: every arm, none included,
+    loaded from an explicit glossary file with its own stamp (the none file renders nothing)."""
+    gf = {"symbol_glossary": {"sha256": f"sha-{g}", "glossary_versions": [f"t-{g}"], "schema": "glossary_file/v1",
+                              "counts": NONE_COUNTS if g == "none" else COUNTS}}
     rec = {"n_shards": 1, "n_shards_failed": 0, "n_chunks": 100, "failed_shards": [], "errors": {},
            "provenance": {"workflow_id": "load-embeddings"}, "glossary_file": gf, **over}
     p = tmp / f"receipt-{c}-{g}.json"
@@ -115,8 +122,8 @@ def setup(tmp: Path, **over: Any) -> tuple[fx.World, dict[str, Any]]:
                 continue
             cols.setdefault(a, {})[g] = {"collection": collection(a, g), "index": f"ix_{a}_{g}",
                                          "load_receipt": str(receipt(tmp, a, g))}
-    arms = {"none": {"stamps": ["t-none"]}}
-    for g in ("merged", "placebo"):
+    arms = {}
+    for g in ("none", "merged", "placebo"):
         arms[g] = {"stamps": [f"t-{g}"], "glossary_file_sha256": dict.fromkeys(asc.CORPUS_ARMS, f"sha-{g}")}
     cfg = {"api": {"base_url": "http://api.invalid", "retry_backoff_s": 0.0, "retries": 1}, "corpora": corpora,
            "collections": cols, "arms": arms, "records": str(w.records_path), "out_dir": str(tmp / "runs"),
@@ -253,9 +260,16 @@ def test_merged_collection_must_hold_the_loaded_files_versions(tmp_path: Path) -
 
 
 def test_load_receipt_is_the_build_manifest(tmp_path: Path) -> None:
+    def gf(sha: str, counts: dict[str, Any]) -> dict[str, Any]:
+        return {"glossary_file": {"symbol_glossary": {"sha256": sha, "glossary_versions": ["t-none"], "counts": counts}}}
+
     for g, over, msg in (("none", {"n_shards_failed": 1, "failed_shards": ["s1"]}, "failed shards"),
                          ("none", {"n_chunks": 99}, "loaded 99 chunks"),
-                         ("none", {"glossary_file": {"symbol_glossary": {"sha256": "sha-merged"}}}, "none collection"),
+                         ("none", {"glossary_file": None}, "none collection was loaded without a glossary file"),
+                         ("none", gf("sha-merged", NONE_COUNTS), "another glossary file"),
+                         ("none", gf("sha-none", COUNTS), "renders a field"),
+                         ("none", gf("sha-none", {"documents": 3}), "renders a field"),
+                         ("none", gf("sha-none", {**NONE_COUNTS, "chunks_with_glossary": 2}), "renders a field"),
                          ("merged", {"glossary_file": None}, "without a glossary file"),
                          ("merged", {"glossary_file": {"symbol_glossary": {"sha256": "sha-placebo"}}},
                           "another glossary file")):
@@ -267,6 +281,42 @@ def test_load_receipt_is_the_build_manifest(tmp_path: Path) -> None:
         with pytest.raises(f10.Refused, match=msg):
             run(cfg, api, glossary=g)
         assert api.bodies == []
+
+
+def test_none_from_an_explicit_empty_file_passes(tmp_path: Path) -> None:
+    """Reviewer's probe (prereg §5.3, §9.2): the none collection loaded from an explicit file of
+    empty rows with its own stamp is measured, census included."""
+    w, cfg = setup(tmp_path, census={"es_url": ES})
+    assert run(cfg, API(w), census=Census()) == 0
+    b = summary(cfg, "base", "none")["census"]["collection_build"]
+    assert b["glossary_file_sha256"] == "sha-none" and b["glossary_versions"] == ["t-none"]
+
+
+def test_none_without_a_file_is_refused(tmp_path: Path) -> None:
+    """Reviewer's probe: a none collection loaded with glossary_file null (unstamped chunks)."""
+    w, cfg = setup(tmp_path, census={"es_url": ES})
+    cfg["collections"]["base"]["none"]["load_receipt"] = str(receipt(tmp_path, "base", "none", glossary_file=None))
+    api = API(w)
+    with pytest.raises(f10.Refused, match="without a glossary file"):
+        run(cfg, api, census=Census({"<none>": 100}))
+    assert api.bodies == []
+
+
+def test_census_refusal_names_the_load_receipt(tmp_path: Path) -> None:
+    w, cfg = setup(tmp_path, census={"es_url": ES})
+    with pytest.raises(f10.Refused, match="the load receipt's") as e:
+        run(cfg, API(w), census=Census({stamp("merged"): 100}))
+    assert "swap record" not in str(e.value)
+
+
+def test_mention_stamps_need_the_attach_rule(tmp_path: Path) -> None:
+    _, cfg = setup(tmp_path)
+    c = json.loads(json.dumps(cfg))
+    c["arms"]["merged"]["stamps"] = ["t-merged+attach=mention"]
+    with pytest.raises(f10.Refused, match='attach: "mention"'):
+        ar.validate_config(c)
+    c["arms"]["merged"]["attach"] = "mention"
+    ar.validate_config(c)
 
 
 def test_no_write_path_is_reachable_from_the_runner(tmp_path: Path) -> None:
@@ -442,20 +492,22 @@ def test_the_runner_reads_the_marker_s_sha(tmp_path: Path) -> None:
     assert cp.is_file()
 
 
-def test_old_stage_b_files_are_still_read(tmp_path: Path) -> None:
-    """Legs written before the stages (one file per attachment) resolve to that file, and the
-    first version's ``.stageB`` files to theirs."""
+def test_single_file_layout_is_read(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     w.write_runs()
     st = ar.run_status(w.runs)
     assert sum(v == "complete" for v in st.values()) == 29
     assert ar.leg_files(w.runs, "base", "none", "bm25")[0].name == "none.jsonl"
-    d = w.runs / "base"
-    s = json.loads((d / "none.summary.json").read_text())
-    (d / "none.summary.json").write_text(json.dumps({**s, "conditions": {"base": {}, "norerank": {}}}))
-    (d / "none.stageB.summary.json").write_text(json.dumps({**s, "conditions": {"bm25": {}}}))
-    assert ar.leg_files(w.runs, "base", "none", "bm25")[1].name == "none.stageB.summary.json"
-    assert ar.leg_files(w.runs, "base", "none", "default")[1].name == "none.summary.json"
+
+
+def test_a_stray_stage_b_file_shadows_nothing(tmp_path: Path) -> None:
+    """Reviewer's probe: a ``<label>.stageB`` file left on disk is not a leg's file."""
+    d = tmp_path / "runs" / "neighbour"
+    d.mkdir(parents=True)
+    (d / "merged.stageB.summary.json").write_text(json.dumps({"status": "complete", "conditions": {"bm25": {}}}))
+    rows, sp = ar.leg_files(tmp_path / "runs", "neighbour", "merged", "bm25")
+    assert sp.name == "merged.summary.json" and rows.name == "merged.jsonl"
+    assert ar.run_status(tmp_path / "runs")["neighbour|merged|bm25"] == "missing"
 
 
 # ------------------------------------------------------------------ the placebo leg (§5.3)
@@ -621,4 +673,4 @@ def test_field_coverage(tmp_path: Path) -> None:
     w, cfg = setup(tmp_path)
     assert run(cfg, API(w)) == 0
     s = summary(cfg, "base", "none")["study"]["field_coverage"]
-    assert s["available"] is False and s["glossary_file_counts"] == {}
+    assert s["available"] is False and s["glossary_file_counts"] == NONE_COUNTS

@@ -39,7 +39,7 @@ def test_dry_run_end_to_end(tmp_path: Path) -> None:
     assert s["study"]["legs"] == ["base|none|default", "base|none|bm25", "base|none|norerank"]
     assert s["study"]["leg_stages"]["base|none|bm25"] == {"retrieval": "A", "judging": "B"}
     assert s["conditions"]["base"]["identical_to_norerank"]["records"] == len(w.records)
-    assert s["census"]["collection_build"]["collection"] == "bench-alias-dry-base-none"
+    assert s["census"]["collection_build"]["collection"] == "bench-dry-base-none"
     assert not (tmp_path / "work" / "runs" / "base" / "none.stageB.summary.json").exists()
     sb = json.loads((tmp_path / "work" / "runs" / "neighbour" / "merged.summary.json").read_text())
     assert sb["study"]["stage"] == "B" and sb["study"]["stage_a_commit"]["verified"]

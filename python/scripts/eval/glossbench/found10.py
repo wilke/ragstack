@@ -653,6 +653,9 @@ class Runner:
             self.hard_stop = (f"a served {cond} hit carries stamp(s) {bad} that arm {self.arm!r} does not allow: "
                               "the index does not hold the declared arm")
 
+    #: what the verified census came from, for the refusal message
+    census_source = "the swap record's"
+
     def _attachment_census(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """``(the attachment record, its verified census)``: round 3's swap record (item 1 of
         the module docstring). The alias study reads a per-collection load receipt instead."""
@@ -680,7 +683,7 @@ class Runner:
             if census_cfg.get("es_url"):
                 live_before = await live_census(es_client, census_cfg["es_url"], self.ccfg["index"])
                 if not self._census_ok(live_before, census):
-                    raise Refused(f"live census {live_before} != the swap record's {census}")
+                    raise Refused(f"live census {live_before} != {self.census_source} {census}")
             server = await self._server_info(client)
             self.boost_check = await self._boost_probe(client)
             if self.boost_check["status"] in gbp.STOP:

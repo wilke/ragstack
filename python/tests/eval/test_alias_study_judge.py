@@ -993,3 +993,101 @@ def test_a_pair_with_three_errors_on_disk_gets_no_further_call(tmp_path: Path) -
     row = {r["pair_id"]: r for r in asc.read_jsonl(out_of(w) / "labels-gw-opus.jsonl")}[victim]
     assert row["verdict"] is None and row["no_verdict_reason"] == "http_errors"
     assert fake.calls["Claude Opus 5.5"] == len(sel) - 1
+
+
+# ------------------------------------------------------------------ the commit's remaining guards
+
+def test_torn_tail_at_commit_then_repair_keeps_the_commit(tmp_path: Path) -> None:
+    """Reviewer's probe: a torn last line (a kill mid-write) at commit time. The commit repairs
+    every append-only file before hashing it, so a later reader's repair changes nothing."""
+    w, cp = world(tmp_path)
+    judge_stage(w, cp, "A", dry.FakeJudges())
+    p = out_of(w) / "calls-gw-opus.jsonl"
+    with p.open("ab") as fh:
+        fh.write(b'{"key": "gw-opus|torn')
+    assert main(cp, "commit-stage-a") == 0
+    aj.verify_marker(w.runs)
+    aj.jd.p4.read_jsonl_repair_tail(p)
+    assert aj.verify_marker(w.runs)["files"] > 0
+
+
+def test_a_file_absent_at_the_commit_cannot_appear_naming_a_committed_pair(tmp_path: Path) -> None:
+    """No drift sample (share 0 in a dry run): no Opus file exists at the commit. One that
+    appears later naming a committed pair is refused; one naming only new pairs is stage B's."""
+    w, cp, _ = through_commit(tmp_path, drift={"share": 0.0})
+    out = out_of(w)
+    commit = json.loads((out / "stage-a-commit.json").read_text())
+    absent = {a["name"] for a in commit["absent_prefix_files"]}
+    assert {"labels:gw-opus", "attempts:gw-opus", "calls:gw-opus", "dispatch:gw-opus"} <= absent
+    pid = asc.read_jsonl(out / "pairs.jsonl")[0]["pair_id"]
+    victim = out / "attempts-gw-opus.jsonl"
+    victim.write_text(json.dumps({"k": f"gw-opus|{pid}|r1|a1", "pair_id": pid, "verdict": True}) + "\n")
+    with pytest.raises(SystemExit, match="absent at the commit"):
+        aj.verify_marker(w.runs)
+    victim.write_text(json.dumps({"k": "gw-opus|newpair|r1|a1", "pair_id": "newpair"}) + "\n")
+    assert aj.verify_marker(w.runs)["files"] > 0
+
+
+def test_build_b_verifies_the_commit(tmp_path: Path) -> None:
+    w, cp, _ = through_commit(tmp_path)
+    fp = out_of(w) / "final.jsonl"
+    data = fp.read_bytes()
+    fp.write_bytes(data.replace(b'"label": 0', b'"label": 1', 1))
+    with pytest.raises(SystemExit, match="changed since the commit"):
+        main(cp, "build-pairs", "--stage", "B")
+    fp.write_bytes(data)
+    assert main(cp, "build-pairs", "--stage", "B") == 0
+
+
+def test_commit_needs_all_19_retrieval_legs_bm25_included(tmp_path: Path) -> None:
+    w, cp = world(tmp_path)
+    judge_stage(w, cp, "A", dry.FakeJudges())
+    sp = w.runs / "base" / "merged.summary.json"
+    keep = sp.read_text()
+    s = json.loads(keep)
+    s["conditions"].pop("bm25")                       # the bm25 leg is not judged in stage A, but retrieved
+    sp.write_text(json.dumps(s))
+    with pytest.raises(SystemExit, match="retrieval-stage-A leg"):
+        main(cp, "commit-stage-a")
+    sp.write_text(keep)
+    assert main(cp, "commit-stage-a") == 0
+
+
+def test_commit_refuses_on_a_drift_alarm_without_a_remedy(tmp_path: Path) -> None:
+    w, cp = world(tmp_path, batch_size=100000, drift={"min_pairs": 3, "share": 0.2})
+    fake = Disagree()
+    main(cp, "build-pairs", "--stage", "A")
+    for be in aj.BACKENDS:
+        assert label(cp, 1, be, fake) == 0
+    assert main(cp, "finalize", "--batch", "1") == aj.EXIT_HARD_STOP
+    (out_of(w) / "PAUSE").unlink()                    # PAUSE removed, but no remedy filed
+    with pytest.raises(SystemExit, match="drift alarm has fired"):
+        main(cp, "commit-stage-a")
+
+
+def test_verify_marker_refuses_a_missing_public_file(tmp_path: Path) -> None:
+    w, cp, _ = through_commit(tmp_path)
+    pub = out_of(w) / "stage-a-commit.public.json"
+    keep = pub.read_bytes()
+    pub.unlink()
+    with pytest.raises(SystemExit, match="public commit file is missing"):
+        aj.verify_marker(w.runs)
+    pub.write_bytes(keep)
+    assert aj.verify_marker(w.runs)["files"] > 0
+
+
+def test_stage_a_batches_cannot_change_nor_be_finalized_again(tmp_path: Path) -> None:
+    w, cp, _ = through_commit(tmp_path)
+    out = out_of(w)
+    bp = out / "batches.json"
+    keep = bp.read_text()
+    doc = json.loads(keep)
+    doc["batches"][0] = doc["batches"][0][1:]
+    bp.write_text(json.dumps(doc))
+    with pytest.raises(SystemExit, match="stage A's batches changed"):
+        aj.verify_marker(w.runs)
+    bp.write_text(keep)
+    with (out / "final.jsonl").open("a") as fh:
+        fh.write(json.dumps({"k": "batch|1", "batch": 1, "pairs": 0}) + "\n")
+    with pytest.raises(SystemExit, match="committed pair or batch"):
+        aj.verify_marker(w.runs)

@@ -96,7 +96,8 @@ refuses without ``--notice-acknowledged`` and a preflight of the same plan, whic
 batch and the sha256 of its selection); the harness's budget stop (exit 76, PAUSE) and call cap
 (``limits``) apply; and the study's caps (§14 O7, ``caps``): the cumulative calls of a backend
 (its calls log, one row per HTTP call, re-issues included) plus the planned selection may not
-exceed ``argon_share`` / ``opus_share`` (0.07, §6.5) of the registry's (deduplicated) pairs, nor
+exceed ``argon_share`` / ``opus_share`` (defaults 0.04 and 0.07; §14 O7, §6.5) of the registry's
+(deduplicated) pairs, nor
 ``argon_max_calls`` / ``opus_max_calls`` when set; inside a run the remaining cap is the
 segment's call cap, so a re-issue can never overrun it (the run pauses at the cap).
 
@@ -184,6 +185,11 @@ DEFAULTS: dict[str, Any] = {
     "unjudged_flag_share": 0.01,
 }
 GW_ROLE = {"argon": "tiebreak", "opus": "drift_ref"}
+#: the judge's append-only files besides pairs and final: pinned by prefix at the stage-A commit,
+#: or recorded as absent then (and refused later if they appear naming a committed pair)
+PREFIX_FILE_NAMES = ("labels-qwen-C.jsonl", "labels-qwen-E.jsonl", "labels-gw-argon.jsonl", "labels-gw-opus.jsonl",
+                     "attempts-gw-argon.jsonl", "attempts-gw-opus.jsonl", "calls-gw-argon.jsonl", "calls-gw-opus.jsonl",
+                     "dispatch-gw-argon.jsonl", "dispatch-gw-opus.jsonl")
 LABEL_FILES = {"C": "labels-qwen-C.jsonl", "E": "labels-qwen-E.jsonl", "argon": "labels-gw-argon.jsonl",
                "opus": "labels-gw-opus.jsonl"}
 
@@ -910,6 +916,15 @@ def verify_stage_a_commit(path: Path, expect_sha256: str | None) -> dict[str, An
             if pid in committed or (str(r.get("k", "")).startswith("batch|") and int(r["batch"]) in batches_a):
                 bad.append(f"{f['name']} (a row appended after the commit names a committed pair or batch)")
                 break
+    for a in c.get("absent_prefix_files") or []:
+        p = Path(a["path"])
+        if not p.is_file():
+            continue
+        for r in _tail_rows(p, 0):
+            pid = _row_pair(r)
+            if pid in committed or (str(r.get("k", "")).startswith("batch|") and int(r["batch"]) in batches_a):
+                bad.append(f"{a['name']} (absent at the commit, it now names a committed pair or batch)")
+                break
     bl = Path(c["batches_file"])
     got = json.loads(bl.read_text())["batches"] if bl.is_file() else []
     if got[: len(c["batches_A"])] != c["batches_A"]:
@@ -1483,11 +1498,21 @@ class Pipeline:
             cp = d / src.name
             shutil.copyfile(src, cp)
             files.append(file_entry(name, cp, "exact"))
-        files.append(file_entry("pairs", self.pairs_path, "prefix"))
-        files.append(file_entry("final", self.out / "final.jsonl", "prefix"))
+        # the append-only judge files: a torn tail (a kill mid-write) is repaired before hashing,
+        # or the first later reader would cut it and the prefix would no longer match
+        prefix: dict[str, Path] = {"pairs": self.pairs_path, "final": self.out / "final.jsonl"}
+        for name in PREFIX_FILE_NAMES:
+            prefix[name.split("-")[0] + ":" + name.removesuffix(".jsonl").split("-", 1)[1]] = self.out / name
         for pat in ("labels-*.jsonl", "attempts-*.jsonl", "calls-*.jsonl", "dispatch-*.jsonl"):
             for p in sorted(self.out.glob(pat)):
-                files.append(file_entry(pat.split("-")[0] + ":" + p.stem.split("-", 1)[1], p, "prefix"))
+                prefix.setdefault(pat.split("-")[0] + ":" + p.stem.split("-", 1)[1], p)
+        absent = []
+        for name, p in prefix.items():
+            if p.exists():
+                jd.p4.read_jsonl_repair_tail(p)
+                files.append(file_entry(name, p, "prefix"))
+            else:
+                absent.append({"name": name, "path": str(p.resolve())})
         fin = self.final_rows()
         counts = {"legs": len(ar.stage_legs("A")), "retrieval_legs": len(ar.stage_legs("A")),
                   "judging_legs": len(ar.judging_legs("A")), "records": len(recs),
@@ -1506,7 +1531,7 @@ class Pipeline:
                   "batches_file": str((self.out / "batches.json").resolve()), "batch_numbers_A": list(stages["A"]),
                   "batches_A": [doc["batches"][b - 1] for b in stages["A"]], "files": files, "counts": counts,
                   "drift": summ["drift"], "drift_remedies": summ["drift"]["remedies"],
-                  "public_file": str(pub_path.resolve())}
+                  "absent_prefix_files": absent, "public_file": str(pub_path.resolve())}
         cpath = self.out / "stage-a-commit.json"
         jd.g.write_json_atomic(cpath, commit)
         csha = asc.sha256_file(cpath)

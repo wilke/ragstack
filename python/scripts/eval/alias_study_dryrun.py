@@ -230,21 +230,24 @@ def dry_run(records: Path, base_export: Path, glossary: Path, work: Path, *, stu
         for g in ar.STUDY_GLOSSARY_ARMS:
             if g == ar.PLACEBO and a != "base":
                 continue
-            cid = f"bench-alias-dry-{a}-{g}"
+            cid = f"bench-dry-{a}-{g}"
             rp = receipts / f"{a}-{g}.json"
             rp.write_text(json.dumps({
                 "n_shards": 1, "n_shards_failed": 0, "n_chunks": expected[a], "failed_shards": [], "errors": {},
                 "provenance": {"workflow_id": "dry-run"},
-                "glossary_file": None if g == "none" else {"symbol_glossary": {
-                    "sha256": gfiles[g], "glossary_versions": [f"dry-{g}"], "counts": {}}}}))
+                # every arm, none included, loaded from an explicit glossary file; none's holds empty rows
+                "glossary_file": {"symbol_glossary": {
+                    "sha256": gfiles[g], "glossary_versions": [f"dry-{g}"],
+                    "counts": {"documents": 1, "with_llm": 0, "degraded": 0,
+                               "merged_entries": 0 if g == "none" else 1}}}}))
             cols.setdefault(a, {})[g] = {"collection": cid, "index": f"ragstack_lib_bench_dry_{a}_{g}",
                                          "load_receipt": str(rp)}
             attach[cid] = (a, g)
     gold_hashes = work / "gold-hashes.json"
     gold_hashes.write_text(json.dumps({r["gold_chunks"][0]: asc.sha_text(base[r["gold_chunks"][0]]["content"])
                                        for r in recs}))
-    arms: dict[str, Any] = {"none": {"stamps": ["dry-none"]}}
-    for g in ("merged", ar.PLACEBO):
+    arms: dict[str, Any] = {}
+    for g in ("none", "merged", ar.PLACEBO):
         arms[g] = {"stamps": [f"dry-{g}"], "glossary_file_sha256": dict.fromkeys(asc.CORPUS_ARMS, gfiles[g])}
     run_cfg = {"api": {"base_url": DRY_URL, "retry_backoff_s": 0.0}, "corpora": corpora, "collections": cols,
                "arms": arms, "records": str(records), "out_dir": str(work / "runs"), "gold_hashes": str(gold_hashes),
