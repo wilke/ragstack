@@ -21,11 +21,12 @@ def test_dry_run_end_to_end(tmp_path: Path) -> None:
     w = fx.World(tmp_path / "in", set_="V")
     out = dry.dry_run(w.records_path, w.base_export, w.glossary, tmp_path / "work", added_per_arm=3,
                       batch_size=60, n_perm=500, n_boot=200)
-    # 9 stage-A runs (14 legs: 5 attachments x default + norerank, 4 repeats) and 9 stage-B runs
-    # (15 cells + the placebo leg)
-    assert not any(out["legs"].values()) and len(out["legs"]) == 18
+    # 9 stage-A runs (19 legs: the 5 Layer-1 attachments x 3 retrievers, the 4 repeats) and 4 stage-B
+    # runs (the expanded arms x merged, and the placebo leg): 29 legs, every attachment run once
+    assert not any(out["legs"].values()) and len(out["legs"]) == 13
     assert sum(k.startswith("A|") for k in out["legs"]) == 9
     assert out["retrieve_calls"] == len(w.records) * 29
+    assert len(out["leg_rows"]) == 29 and set(out["leg_rows"].values()) == {len(w.records)}
     assert out["stats_exit"] == 0 and all(v == 0 for v in out["judge"].values())
     assert out["analysis_gate"]["allowed"] and out["analysis_gate"]["spot_checks_waived"]
     res = json.loads((tmp_path / "work" / "results-dryrun.json").read_text())
@@ -34,13 +35,16 @@ def test_dry_run_end_to_end(tmp_path: Path) -> None:
     s = json.loads((tmp_path / "work" / "runs" / "base" / "none.summary.json").read_text())
     assert s["study"]["dry_run"] is True and s["study"]["config_hash_identical"] is True
     assert s["manipulation_check"]["glossary_boost"]["status"] == "declared"
-    assert s["study"]["stage"] == "A" and s["study"]["legs"] == ["base|none|default", "base|none|norerank"]
+    assert s["study"]["stage"] == "A"
+    assert s["study"]["legs"] == ["base|none|default", "base|none|bm25", "base|none|norerank"]
+    assert s["study"]["leg_stages"]["base|none|bm25"] == {"retrieval": "A", "judging": "B"}
     assert s["conditions"]["base"]["identical_to_norerank"]["records"] == len(w.records)
-    sb = json.loads((tmp_path / "work" / "runs" / "base" / "none.stageB.summary.json").read_text())
-    assert sb["study"]["stage"] == "B" and sb["study"]["legs"] == ["base|none|bm25"]
-    assert sb["study"]["stage_a_commit"]["verified"]
+    assert s["census"]["collection_build"]["collection"] == "bench-alias-dry-base-none"
+    assert not (tmp_path / "work" / "runs" / "base" / "none.stageB.summary.json").exists()
+    sb = json.loads((tmp_path / "work" / "runs" / "neighbour" / "merged.summary.json").read_text())
+    assert sb["study"]["stage"] == "B" and sb["study"]["stage_a_commit"]["verified"]
     pub = json.loads((tmp_path / "work" / "judge" / "stage-a-commit.public.json").read_text())
-    assert pub["counts"]["legs"] == 14
+    assert pub["counts"]["retrieval_legs"] == 19 and pub["counts"]["judging_legs"] == 14
 
 
 def test_dry_run_refuses_study_records(tmp_path: Path) -> None:

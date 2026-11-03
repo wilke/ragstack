@@ -16,10 +16,14 @@ check, the size notice, PAUSE / INFLIGHT, the budget stop and the call caps.
 needs them. ``found10``: a record's top 10 in a leg is judged only when its gold chunk is
 **outside** that top 10 (when it is inside, the record is a hit whatever the others are).
 ``rr10``: in a leg where the gold is inside the top 10, the non-gold chunks ranked **above**
-it. ``build-pairs --stage A`` reads the 9 stage-A legs (all must be ``complete``) and registers
-the pairs their found@10 needs; ``build-pairs --stage B`` (only after ``commit-stage-a``) reads
-the 20 stage-B legs and registers the pairs their found@10 needs, then the pairs RR@10 needs in
-all 29 legs, stage-A legs included. **A pair is labelled once, whatever first asked for it**:
+it. Every leg has a retrieval stage and a judging stage (``alias_study_run.leg_stages``; owner,
+2026-11-03): ``build-pairs --stage A`` reads the 14 judging-stage-A legs (default and norerank
+of the five Layer-1 attachments, and the noise repeats) and registers the pairs their found@10
+needs; ``build-pairs --stage B`` (only after ``commit-stage-a``) reads the 15 judging-stage-B
+legs (the five Layer-1 bm25 legs, retrieved in stage A, among them) and registers the pairs
+their found@10 needs, then the pairs RR@10 needs in all 29 legs; found@10 pairs are labelled
+first, then RR@10 pairs. The build is crash-safe (``build-pending.json``, an atomic rename,
+recovery on the next start). **A pair is labelled once, whatever first asked for it**:
 the (record, chunk) pairs are deduplicated across legs and stages, a pair already registered is
 never registered again, and ``finalize`` refuses a pair that already has a final label, so a
 stage-A label is never changed by stage B. The registry (``pairs.jsonl``) is append-only: stage
@@ -46,35 +50,46 @@ reallocated equally to the arms that still have pairs, the first pairs of each s
 order ``sha256(261101|alias|drift|<batch>|<pair>)``.
 
 **The retry cap (§6.3, R4).** An Argon or Opus reply that is empty, truncated or unparseable is
-re-issued **at most once** (:data:`MAX_GW_ATTEMPTS` answered calls per pair). The count is on
+re-issued **at most once** (:data:`MAX_GW_ATTEMPTS` answered calls per pair; a reply from
+another model than the requested one is a hard stop and does not use up the pair's cap). The count is on
 disk: every answered reply is written to ``attempts-gw-<tag>.jsonl`` before anything else
 happens to it, and the gateway's calls log is read at start, so a pause, a kill or a resume
 never buys a pair a third call. After the cap the pair's row is stored with no verdict: an
 Argon pair is then **unjudged** (not answering in the primary analysis), an Opus pair
 **no-reference** (filtered from the drift agreement, counted per arm, never a drift failure).
-An HTTP error is not a reply: it is re-issued in a second pass, and every call counts against
-the caps.
+An HTTP error is not a reply: it is re-issued in a later pass, at most :data:`MAX_HTTP_ERRORS`
+errors per pair across resumes, after which the pair has no verdict (``no_verdict_reason``
+``http_errors``). Every call is written to ``dispatch-gw-<tag>.jsonl`` before it is sent, so the
+caps count a call a kill leaves in flight.
 
 **Finalize and the drift alarm.** ``finalize`` needs C and E on every pair of the batch, the
 tiebreaker on every escalated pair and Opus on every sampled pair; it writes the batch's final
 labels (``final.jsonl``) and checks the cumulative agreement between the final label (unjudged
 = no) and Opus on the Opus-answered pairs: below **0.97 overall** or **0.95 in any arm**, each
 scope with at least **100** Opus-answered pairs, writes ``PAUSE`` and ``drift-alarm.json`` and
-exits 1. Nothing is labelled while ``PAUSE`` exists; the owner decides the remedy (a deviation).
+exits 1, and logs the alarm in ``drift-alarms.jsonl``. Nothing is labelled while ``PAUSE``
+exists; the owner decides the remedy (a deviation) and may file it as
+``drift-remedies/<id>.json`` (``deviation_id``, ``date``, ``action``, ``scope``,
+``through_batch``, ``signed_by``; :func:`load_remedies`): that scope's alarm then reads only
+the batches after ``through_batch``. A remedy never removes PAUSE; it is recorded in the summary
+and in the stage-A commit.
 A batch can be labelled only after every earlier batch is finalized.
 
 **Stage A's commit (§5.7).** ``commit-stage-a`` (every stage-A batch finalized, no PAUSE, no
-drift alarm, the 9 stage-A legs complete) writes ``stage-a/`` (frozen copies of the stage-A
+drift alarm, the 19 retrieval-stage-A legs complete) writes ``stage-a/`` (frozen copies of the stage-A
 leg summaries, the judge summary and the pairs manifest, and ``hits.jsonl``: hit and gold-only
-hit per record and stage-A leg), ``stage-a-commit.json`` (private: every stage-A file with its
-byte length and sha256; the append-only files are later checked by prefix, so stage B may
-append but never rewrite) and ``stage-a-commit.public.json`` (counts and sha256s only, checked
+hit per record and judging-stage-A leg), ``stage-a-commit.json`` (private: every stage-A file
+with its byte length and sha256; the stage-A rows files and leg summaries, which stage B never
+writes, exactly; the append-only judge files by prefix, and nothing appended to them may name a
+committed pair or batch) and ``stage-a-commit.public.json`` (counts and sha256s only, checked
 by :func:`alias_study_common.public_problems`; this is what the owner commits to the
 repository), and the marker ``<runs_dir>/STAGE-A-COMMITTED``. Stage B's runs and pairs need
-the marker and a commit that still verifies. **No analysis before the commit:**
-:func:`analysis_gate` (``check-analysis-gate``) refuses until the commit verifies and both owner
-spot checks (``spot_checks.records``, ``spot_checks.judge``, §13.4-13.5) exist; the statistics
-call it before reading any outcome.
+the marker and a commit that still verifies (:func:`verify_marker`: the marker's sha256, the
+public file's, and in the main run the public file tracked at HEAD in the repository). **No
+analysis before the commit:** :func:`analysis_gate` (``check-analysis-gate``) refuses until the
+commit verifies and both owner spot checks (``spot_checks.records``, ``spot_checks.judge``,
+§13.4-13.5) exist, waived (and recorded) only in a dry run and the pilot; the statistics call it
+before reading any outcome.
 
 **Gateway calls** carry a size notice per batch and backend (``preflight`` writes it; ``label``
 refuses without ``--notice-acknowledged`` and a preflight of the same plan, which includes the
@@ -86,7 +101,11 @@ exceed ``argon_share`` / ``opus_share`` (0.07, §6.5) of the registry's (dedupli
 segment's call cap, so a re-issue can never overrun it (the run pauses at the cap).
 
 **Modes.** As the runner (``dry_run``, ``pilot``, main; a ``STUDY-MODE`` marker in the out dir;
-the main run pins the frozen prereg, §9.2). The pilot's labels live in the pilot's own out dir
+the main run pins the frozen prereg, §9.2). Main and pilot also pin the prereg's numbers (batch
+2,000, drift share .05, thresholds .97 / .95, 100 pairs, the retry cap 2), the drift
+reference's served id (:data:`OPUS_SERVED_MODELS`), a stated budget (``limits``) and one
+glossary file per corpus arm; an arm whose prompts would all read "(none listed)" is a hard
+stop at ``build-pairs``. The pilot's labels live in the pilot's own out dir
 and are never carried into the main run (§5.6).
 """
 from __future__ import annotations
@@ -97,8 +116,11 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
+import subprocess
 import sys
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
@@ -127,6 +149,22 @@ NEEDS = ("found10", "rr10")
 MAX_GW_ATTEMPTS = 2
 #: calls-log statuses of a reply that came back (an HTTP error or a budget stop is not one)
 ANSWERED = ("ok", "empty", "empty0", "truncated")
+#: HTTP errors (no reply) one pair may meet across resumes before it is left without a verdict
+MAX_HTTP_ERRORS = 3
+#: prereg-fixed numbers (§6.3, §6.5): a main or pilot config that differs is a hard stop
+PINNED_BATCH_SIZE = 2000
+PINNED_DRIFT = {"share": 0.05, "overall": 0.97, "per_arm": 0.95, "min_pairs": 100}
+#: the served model id(s) accepted for the drift reference: every answered Opus reply of the
+#: judge calibration and of its validation carried this id (calibration: 1,232 label rows, 1,495
+#: answered calls; validation: 1,505 label rows, 2,294 answered calls; read 2026-11-03)
+OPUS_SERVED_MODELS = ["Claude Opus 5.5"]
+OPUS_SERVED_SOURCE = ("the served 'model' field of every answered Opus reply in the judge calibration's and "
+                      "validation's Opus label and call logs (#896-#898), read 2026-11-03")
+#: main / pilot: the gateway budget is stated, never the calibration harness's defaults
+REQUIRED_LIMITS = ("input_token_cap", "output_token_cap", "call_cap")
+DRIFT_SCOPES = ("overall", *asc.ARM_GROUPS)
+REMEDY_FIELDS = ("deviation_id", "date", "action", "scope", "through_batch", "signed_by")
+REPO = _HERE.parents[2]
 
 #: prereg §6.3, fixed: what the config may not change (the endpoint, the cap and the timeout may)
 FIXED: dict[str, dict[str, Any]] = {
@@ -184,11 +222,47 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
             raise SystemExit(f"{block}.base_url is required")
     if int(cfg["batch_size"]) < 1:
         raise SystemExit("batch_size: at least 1")
+    cfg["retry_cap"] = int(cfg.get("retry_cap", MAX_GW_ATTEMPTS))
+    cfg["drift_ref"] = {**cfg["drift_ref"], "served_models": list(cfg["drift_ref"].get("served_models")
+                                                                   or OPUS_SERVED_MODELS)}
+    if ar.config_mode(cfg) != "dry_run":
+        pinned_problems(cfg)
     try:
         ar.check_prereg(cfg)
     except ar.f10.Refused as e:
         raise SystemExit(str(e)) from e
     return cfg
+
+
+def pinned_problems(cfg: Mapping[str, Any]) -> None:
+    """Main and pilot: the prereg-fixed numbers, the stated budget, the drift reference's
+    served id and one glossary file per corpus arm. A difference is a hard stop; only a dry run
+    may override."""
+    bad = []
+    if int(cfg["batch_size"]) != PINNED_BATCH_SIZE:
+        bad.append(f"batch_size {cfg['batch_size']} != {PINNED_BATCH_SIZE} (§6.3)")
+    for k, v in PINNED_DRIFT.items():
+        if float(cfg["drift"][k]) != float(v):
+            bad.append(f"drift.{k} {cfg['drift'][k]} != {v} (§6.3)")
+    if int(cfg["retry_cap"]) != MAX_GW_ATTEMPTS:
+        bad.append(f"retry_cap {cfg['retry_cap']} != {MAX_GW_ATTEMPTS} (§6.3, R4)")
+    if sorted(cfg["drift_ref"]["served_models"]) != sorted(OPUS_SERVED_MODELS):
+        bad.append(f"drift_ref.served_models {cfg['drift_ref']['served_models']} != {OPUS_SERVED_MODELS}")
+    lim = cfg.get("limits") or {}
+    miss = [k for k in REQUIRED_LIMITS if lim.get(k) is None]
+    if miss:
+        bad.append(f"limits must state {miss} (no calibration defaults outside a dry run)")
+    g = cfg["glossary"]
+    if not isinstance(g, Mapping) or set(g) != set(cfg["chunk_exports"]):
+        bad.append(f"glossary must name a file (or list) per corpus arm of chunk_exports {sorted(cfg['chunk_exports'])}"
+                   " (§5.3: a missing file makes that arm's prompts read '(none listed)')")
+    else:
+        for arm, v in g.items():
+            for x in ([v] if isinstance(v, str) else list(v)):
+                if not Path(x).is_file():
+                    bad.append(f"glossary.{arm}: file missing")
+    if bad:
+        raise SystemExit("HARD STOP (main / pilot config): " + "; ".join(bad))
 
 
 def glossary_paths(cfg: Mapping[str, Any]) -> list[Path]:
@@ -197,6 +271,13 @@ def glossary_paths(cfg: Mapping[str, Any]) -> list[Path]:
     passage needs its own paper's entries (§6.2), or that arm's prompts would systematically read
     *(none listed)*, a difference by arm the judge could see."""
     g = cfg["glossary"]
+    if isinstance(g, Mapping):
+        out: list[Path] = []
+        for v in g.values():
+            for x in ([v] if isinstance(v, str) else list(v)):
+                if Path(x) not in out:
+                    out.append(Path(x))
+        return out
     return [Path(g)] if isinstance(g, str) else [Path(x) for x in g]
 
 
@@ -349,7 +430,9 @@ def build_pairs(records: Sequence[Mapping[str, Any]], rows: Sequence[tuple[str, 
                               "term": rec["primary"], "q_paper": rec["paper"], "c_paper": ch["paper"],
                               "record_kind": rec["kind"], "arm": arm_of[cid], "stage": stage, "need": need,
                               "order": asc.seeded_key(asc.SEEDS["judge_order"], pid)}
-    out = sorted(pairs.values(), key=lambda p: p["order"])
+    # §6.2: within a stage, the found@10 pairs are labelled first, then the RR@10 pairs, each in
+    # the seeded order
+    out = sorted(pairs.values(), key=lambda p: (NEEDS.index(p["need"]), p["order"]))
     counts = {"pairs": len(out), "instances_before_dedup": sum(instances.values()),
               "instances_per_need": dict(instances), "already_registered": dict(already), "legs": len(per_leg),
               "per_arm": dict(Counter(p["arm"] for p in out)), "per_need": dict(Counter(p["need"] for p in out)),
@@ -425,10 +508,9 @@ def escalated(c_row: Mapping[str, Any] | None, e_row: Mapping[str, Any] | None) 
     return final_label(c_row, e_row, None, None)[1] != "agree"
 
 
-def drift_stats(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mapping[str, Any]],
-                sampled: Sequence[str], arm_of_pair: Mapping[str, str], dcfg: Mapping[str, Any]) -> dict[str, Any]:
-    """Cumulative agreement and the alarm (§6.3), per arm false yes (§6.3, D2)."""
-    scopes: dict[str, dict[str, int]] = {s: Counter() for s in ("overall", *asc.ARM_GROUPS)}
+def _drift_tally(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mapping[str, Any]],
+                 sampled: Sequence[str], arm_of_pair: Mapping[str, str]) -> dict[str, Counter[str]]:
+    scopes: dict[str, Counter[str]] = {s: Counter() for s in DRIFT_SCOPES}
     for pid in sampled:
         arm = arm_of_pair[pid]
         o = (opus.get(pid) or {}).get("verdict")
@@ -451,16 +533,45 @@ def drift_stats(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mappi
             if f == 1:
                 sc["final_yes"] += 1
                 sc["opus_no_on_final_yes"] += int(o == 0)
-    out: dict[str, Any] = {"scopes": {}, "alarm": False, "alarm_reasons": []}
+    return scopes
+
+
+def drift_stats(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mapping[str, Any]],
+                sampled: Sequence[str], arm_of_pair: Mapping[str, str], dcfg: Mapping[str, Any],
+                remedies: Sequence[Mapping[str, Any]] = (), batch_of: Mapping[str, int] | None = None
+                ) -> dict[str, Any]:
+    """Cumulative agreement and the alarm (§6.3), per arm false yes (§6.3, D2). An owner's
+    remedy for a scope (:func:`load_remedies`) restarts that scope's alarm window after its
+    ``through_batch``: the alarm then reads only later batches (again with at least
+    ``min_pairs`` Opus-answered pairs), while the cumulative figures are still reported."""
+    scopes = _drift_tally(final, opus, sampled, arm_of_pair)
+    last: dict[str, Mapping[str, Any]] = {}
+    for r in remedies:
+        if r["scope"] not in last or int(r["through_batch"]) >= int(last[r["scope"]]["through_batch"]):
+            last[r["scope"]] = r
+    out: dict[str, Any] = {"scopes": {}, "alarm": False, "alarm_reasons": [],
+                           "remedies": [dict(r) for r in remedies]}
+    keys = ("sampled", "filtered", "answered", "agree", "opus_no", "opus_yes", "final_yes_on_opus_no",
+            "final_yes", "opus_no_on_final_yes")
     for s, sc in scopes.items():
         thr = float(dcfg["overall"] if s == "overall" else dcfg["per_arm"])
         n = sc["answered"]
         agr = sc["agree"] / n if n else None
-        fires = n >= int(dcfg["min_pairs"]) and agr is not None and agr < thr
-        keys = ("sampled", "filtered", "answered", "agree", "opus_no", "opus_yes", "final_yes_on_opus_no",
-                "final_yes", "opus_no_on_final_yes")
+        rem = last.get(s)
+        if rem is None:
+            n_alarm, agr_alarm, window = n, agr, None
+        else:
+            t = int(rem["through_batch"])
+            later = [p for p in sampled if int((batch_of or {}).get(p, 0)) > t]
+            w = _drift_tally(final, opus, later, arm_of_pair)[s]
+            n_alarm = w["answered"]
+            agr_alarm = w["agree"] / n_alarm if n_alarm else None
+            window = {"after_batch": t, "deviation_id": rem["deviation_id"], "answered": int(n_alarm),
+                      "agree": int(w["agree"]), "agreement": agr_alarm}
+        fires = n_alarm >= int(dcfg["min_pairs"]) and agr_alarm is not None and agr_alarm < thr
         out["scopes"][s] = {**{k: int(sc[k]) for k in keys}, "agreement": agr, "threshold": thr,
-                            "evaluable": n >= int(dcfg["min_pairs"]), "fires": fires,
+                            "evaluable": n_alarm >= int(dcfg["min_pairs"]), "fires": fires,
+                            "alarm_window": window,
                             "filtered_share": (sc["filtered"] / sc["sampled"]) if sc["sampled"] else None,
                             "false_yes": {"k": int(sc["final_yes_on_opus_no"]), "n": int(sc["opus_no"]),
                                           "rate": (sc["final_yes_on_opus_no"] / sc["opus_no"]) if sc["opus_no"]
@@ -474,8 +585,34 @@ def drift_stats(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mappi
                                 "wilson95": jd.wilson(sc["opus_no_on_final_yes"], sc["final_yes"])}}
         if fires:
             out["alarm"] = True
-            out["alarm_reasons"].append(f"{s}: agreement {agr:.4f} < {thr} on {n} Opus-answered pairs")
+            out["alarm_reasons"].append(f"{s}: agreement {agr_alarm:.4f} < {thr} on {n_alarm} Opus-answered pairs")
     return out
+
+
+def load_remedies(out: Path) -> list[dict[str, Any]]:
+    """The owner's drift remedies, ``<out_dir>/drift-remedies/*.json`` (§6.3: the owner decides
+    the remedy, recorded as a deviation). Each names ``deviation_id``, ``date`` (YYYY-MM-DD),
+    ``action``, ``scope`` (overall / base / neighbour / random), ``through_batch`` and
+    ``signed_by``, and must answer an alarm the log ``drift-alarms.jsonl`` holds for that scope
+    at that batch. A remedy never removes PAUSE: the owner does. Raises SystemExit on a bad file."""
+    d = out / "drift-remedies"
+    if not d.is_dir():
+        return []
+    alarms = jd.p4.read_jsonl_repair_tail(out / "drift-alarms.jsonl")
+    fired = {(int(a["batch"]), sc) for a in alarms for sc in a.get("scopes", [])}
+    rows = []
+    for p in sorted(d.glob("*.json")):
+        r = json.loads(p.read_text(encoding="utf-8"))
+        miss = [k for k in REMEDY_FIELDS if r.get(k) in (None, "")]
+        if miss:
+            raise SystemExit(f"drift remedy {p.name}: missing {miss}")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(r["date"])) or r["scope"] not in DRIFT_SCOPES:
+            raise SystemExit(f"drift remedy {p.name}: date YYYY-MM-DD and scope one of {list(DRIFT_SCOPES)}")
+        if (int(r["through_batch"]), r["scope"]) not in fired:
+            raise SystemExit(f"drift remedy {p.name}: no {r['scope']} alarm at batch {r['through_batch']} in "
+                             "drift-alarms.jsonl")
+        rows.append({**{k: r[k] for k in REMEDY_FIELDS}, "sha256": asc.sha256_file(p)})
+    return rows
 
 
 # ------------------------------------------------------------------ the pipeline object
@@ -508,10 +645,12 @@ class StudyLabeler(jd.Labeler):
     """The harness's Labeler with the batch and the selection in the plan (so a size notice for
     one batch never admits another), and the capped gateway labeller (§6.3, R4)."""
 
-    def __init__(self, *a: Any, batch: int, role: str, max_calls: int | None = None, **kw: Any) -> None:
+    def __init__(self, *a: Any, batch: int, role: str, max_calls: int | None = None,
+                 retry_cap: int = MAX_GW_ATTEMPTS, **kw: Any) -> None:
         super().__init__(*a, **kw)
         self.batch, self.role = batch, role
         self.max_calls = max_calls
+        self.retry_cap = int(retry_cap)
 
     def plan(self, backend: str, reps: int) -> dict[str, Any]:
         p = super().plan(backend, reps)
@@ -519,8 +658,8 @@ class StudyLabeler(jd.Labeler):
         p.update({"study_batch": self.batch, "study_role": self.role,
                   "selection_sha256": asc.sha_text("".join(f"{x}\n" for x in sel))})
         if backend == "gateway":
-            p.update({"retry_cap_answered_calls_per_pair": MAX_GW_ATTEMPTS,
-                      "max_calls_worst_case": MAX_GW_ATTEMPTS * len(sel)})
+            p.update({"retry_cap_answered_calls_per_pair": self.retry_cap,
+                      "max_calls_worst_case": (self.retry_cap + MAX_HTTP_ERRORS) * len(sel)})
         return p
 
     def label_gw_capped(self) -> int:
@@ -537,8 +676,16 @@ class StudyLabeler(jd.Labeler):
         st = self.store("gateway")
         att = jd.p4.Store(self.out / f"attempts-{key}.jsonl")
         calls_log = self.out / f"calls-{key}.jsonl"
-        answered: Counter[str] = Counter(str(r.get("key")) for r in jd.p4.read_jsonl_repair_tail(calls_log)
-                                         if r.get("status") in ANSWERED)
+        dispatch_log = self.out / f"dispatch-{key}.jsonl"
+        cap = self.retry_cap
+        logged = jd.p4.read_jsonl_repair_tail(calls_log)
+        jd.p4.read_jsonl_repair_tail(dispatch_log)
+        # a reply counts against a pair's cap only when its served model is the requested one: a
+        # mismatched reply is a hard stop and is never stored (it still counts against the caps)
+        answered: Counter[str] = Counter(str(r.get("key")) for r in logged
+                                         if r.get("status") in ANSWERED and r.get("model") in served)
+        errors: Counter[str] = Counter(str(r.get("key")) for r in logged
+                                       if str(r.get("status") or "").startswith("error"))
         prev: Counter[str] = Counter()
         tp = self.out / f"totals-{key}.json"
         if tp.is_file():
@@ -562,7 +709,7 @@ class StudyLabeler(jd.Labeler):
 
         def attempts_of(pid: str) -> list[dict[str, Any]]:
             out = []
-            for i in range(1, MAX_GW_ATTEMPTS + 1):
+            for i in range(1, cap + 1):
                 a = att.get(f"{lk(pid)}|a{i}")
                 if a is not None:
                     out.append(a)
@@ -571,7 +718,8 @@ class StudyLabeler(jd.Labeler):
         def todo() -> list[str]:
             return [pid for pid in by_id if lk(pid) not in st]
 
-        def finish(pid: str, attempts: Sequence[Mapping[str, Any]], used: int, prompt: str, cut: int) -> None:
+        def finish(pid: str, attempts: Sequence[Mapping[str, Any]], used: int, prompt: str, cut: int,
+                   why: str = "retry_cap") -> None:
             best = next((a for a in attempts if a.get("verdict") is not None), None)
             src = best or (attempts[-1] if attempts else {})
             st.put({"k": lk(pid), "pair_id": pid, "rep": 1, "backend": "gateway",
@@ -580,7 +728,8 @@ class StudyLabeler(jd.Labeler):
                     "text": src.get("text"), "model": src.get("model"), "requested_model": spec["model"],
                     "pt": src.get("pt"), "ct": src.get("ct"), "finish": src.get("finish"),
                     "attempts": used, "attempt_statuses": [a.get("status") for a in attempts],
-                    "retry_cap": MAX_GW_ATTEMPTS, "no_verdict_after_cap": best is None,
+                    "retry_cap": cap, "no_verdict_after_cap": best is None,
+                    "no_verdict_reason": None if best is not None else why, "http_errors": errors[lk(pid)],
                     "defs_cut": cut, "prompt_sha256": jd.g.sha_text(prompt), "judge_version": jg["judge_version"],
                     "system_sha256": jd.g.sha_text(system), "max_tokens": int(jg["max_tokens"]),
                     "temperature": jg.get("temperature"), "endpoint": str(jg["base_url"]), "t": jd.g.now_iso()})
@@ -594,17 +743,26 @@ class StudyLabeler(jd.Labeler):
                 msgs = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
                 attempts = attempts_of(pid)
                 used = max(answered[k], len(attempts))
-                if any(a.get("verdict") is not None for a in attempts) or used >= MAX_GW_ATTEMPTS:
-                    seg["gateway_cap_reached_on_resume"] += int(used >= MAX_GW_ATTEMPTS)
+                if any(a.get("verdict") is not None for a in attempts) or used >= cap:
+                    seg["gateway_cap_reached_on_resume"] += int(used >= cap)
                     finish(pid, attempts, used, prompt, cut)
                     return
-                while used < MAX_GW_ATTEMPTS:
+                if errors[k] >= MAX_HTTP_ERRORS:
+                    seg["gateway_http_error_cap"] += 1
+                    finish(pid, attempts, used, prompt, cut, "http_errors")
+                    return
+                while used < cap:
+                    if ctl.stopped() or control.stopped():
+                        return
+                    # logged at dispatch, so the caps count a call that a kill leaves in flight
+                    jd.p4.append_fsync(dispatch_log, {"key": k, "t": round(time.time(), 2)})
                     res = await gw.once(self.http, spec, msgs, "judge", k)
                     if res is None:
                         if control.reason:
                             ctl.stop(control.reason)
                         return
                     if res["status"] == "error":
+                        errors[k] += 1          # the pair's next pass (or resume) stops at MAX_HTTP_ERRORS
                         control.fail(str(res.get("error")))
                         if control.reason:
                             ctl.stop(control.reason)
@@ -626,7 +784,7 @@ class StudyLabeler(jd.Labeler):
                     attempts.append(a)
                     if verdict is not None:
                         break
-                    if used < MAX_GW_ATTEMPTS:
+                    if used < cap:
                         seg["gateway_no_verdict_reissued"] += 1
                         await asyncio.sleep(float(jg["empty_retry_s"]))
                 seg["gateway_no_verdict_after_cap"] += int(all(x.get("verdict") is None for x in attempts))
@@ -644,7 +802,7 @@ class StudyLabeler(jd.Labeler):
 
         items = todo()
         jd.notice_line("GATEWAY", f"label backend=gateway model={jg['model']}: starting {len(items)} pairs "
-                       f"(<= {MAX_GW_ATTEMPTS} answered calls each; {len(st.rows)} stored, <= {ctl.inflight()} "
+                       f"(<= {cap} answered calls each; {len(st.rows)} stored, <= {ctl.inflight()} "
                        f"in flight, segment call cap {self.max_calls})", self.log_path)
         for _ in range(2):                         # a failed call is re-issued once in a second pass
             if not items or ctl.stopped() or control.stopped():
@@ -687,14 +845,44 @@ def file_entry(name: str, path: Path, mode: str) -> dict[str, Any]:
             "sha256": asc.sha256_file(path)}
 
 
-def verify_stage_a_commit(path: Path, expect_sha256: str | None = None) -> dict[str, Any]:
-    """Every file of the commit still holds the bytes it held when committed (a prefix for the
-    append-only files), and the batches file still starts with stage A's batches. Raises
-    SystemExit naming what differs."""
+def _tail_rows(path: Path, start: int) -> list[dict[str, Any]]:
+    """The JSON rows appended to ``path`` after byte ``start`` (a torn last line is skipped)."""
+    with path.open("rb") as fh:
+        fh.seek(start)
+        data = fh.read()
+    out = []
+    for ln in data.split(b"\n"):
+        if not ln.strip():
+            continue
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            continue
+    return out
+
+
+def _row_pair(row: Mapping[str, Any]) -> str | None:
+    """The pair id a judge-side row names: ``pair_id``, or the middle of a call key
+    ``<tag>|<pair>|r1``."""
+    if row.get("pair_id"):
+        return str(row["pair_id"])
+    parts = str(row.get("key") or "").split("|")
+    return parts[1] if len(parts) >= 3 else None
+
+
+def verify_stage_a_commit(path: Path, expect_sha256: str | None) -> dict[str, Any]:
+    """The stage-A commit still holds. ``expect_sha256`` is the marker's (required). Exact
+    files (the stage-A rows files and leg summaries, which stage B never writes, and the
+    frozen copies) must be byte-identical. Append-only files (``prefix``) must start with their
+    committed bytes, and **nothing appended after them may name a committed pair** (every
+    reader keeps the last row per key, so one appended row would relabel it) nor a committed
+    batch. The batches file must still start with stage A's batches. Raises SystemExit."""
+    if not expect_sha256:
+        raise SystemExit("stage-A marker carries no commit_sha256")
     if not path.is_file():
         raise SystemExit("stage-A commit file is missing")
     sha = asc.sha256_file(path)
-    if expect_sha256 is not None and sha != expect_sha256:
+    if sha != expect_sha256:
         raise SystemExit("stage-A commit file differs from the sha256 the marker recorded")
     c = json.loads(path.read_text(encoding="utf-8"))
     if c.get("schema") != COMMIT_SCHEMA:
@@ -708,34 +896,95 @@ def verify_stage_a_commit(path: Path, expect_sha256: str | None = None) -> dict[
             ok = prefix_sha(p, int(f["bytes"])) == f["sha256"]
         if not ok:
             bad.append(f["name"])
+    committed: set[str] = set()
+    pf = next((f for f in c["files"] if f["name"] == "pairs"), None)
+    if pf is not None and Path(pf["path"]).is_file():
+        with Path(pf["path"]).open("rb") as fh:
+            committed = {json.loads(x)["pair_id"] for x in fh.read(int(pf["bytes"])).split(b"\n") if x.strip()}
+    batches_a = {int(b) for b in c.get("batch_numbers_A") or []}
+    for f in c["files"]:
+        if f["mode"] != "prefix" or f["name"] in bad or not Path(f["path"]).is_file():
+            continue
+        for r in _tail_rows(Path(f["path"]), int(f["bytes"])):
+            pid = _row_pair(r)
+            if pid in committed or (str(r.get("k", "")).startswith("batch|") and int(r["batch"]) in batches_a):
+                bad.append(f"{f['name']} (a row appended after the commit names a committed pair or batch)")
+                break
     bl = Path(c["batches_file"])
     got = json.loads(bl.read_text())["batches"] if bl.is_file() else []
     if got[: len(c["batches_A"])] != c["batches_A"]:
         bad.append("batches (stage A's batches changed)")
     if bad:
         raise SystemExit(f"stage-A commit: {len(bad)} file(s) changed since the commit: {bad[:8]}")
-    return {"commit_sha256": sha, "files": len(c["files"]), "batches_A": len(c["batches_A"])}
+    return {"commit_sha256": sha, "files": len(c["files"]), "batches_A": len(c["batches_A"]),
+            "mode": c.get("mode"), "public": c.get("public_file")}
 
 
-def analysis_gate(runs_dir: Path, spot_checks: Mapping[str, Any] | None = None, *, dry_run: bool = False
-                  ) -> dict[str, Any]:
-    """§5.7: no analysis is run until stage A is committed and both owner spot checks (§13.4
-    records, §13.5 judged pairs) are committed. Raises SystemExit; returns what it checked. The
-    statistics call it before they read any outcome. A dry run waives the spot checks only."""
+def git_blob_sha(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: S324 - git's object id
+
+
+def public_tracked_at_head(path: Path, repo: Path | None = None) -> bool:
+    """Some file in the repository's HEAD tree has exactly this file's bytes."""
+    repo = Path(repo or REPO)
+    try:
+        out = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "HEAD"], capture_output=True, text=True,
+                             check=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    want = git_blob_sha(path)
+    return any(ln.split()[2] == want for ln in out.splitlines() if len(ln.split()) >= 4)
+
+
+def verify_marker(runs_dir: Path, repo: Path | None = None) -> dict[str, Any]:
+    """The marker in the runs dir, its commit (always against the marker's sha256), the public
+    commit file (its ``commit_sha256`` must be the marker's), and, for the main run, that file
+    tracked at HEAD in the repository (§5.7: stage A's outputs are *committed* before stage B
+    and before any analysis). Raises SystemExit."""
     marker = ar.read_commit_marker(Path(runs_dir))
     if marker is None:
-        raise SystemExit("no analysis before stage A is committed (§5.7): run commit-stage-a")
+        raise SystemExit("stage A is not committed (no STAGE-A-COMMITTED marker)")
     v = verify_stage_a_commit(Path(marker["commit"]), marker.get("commit_sha256"))
+    pub = Path(marker.get("public") or v.get("public") or "")
+    if not pub.is_file():
+        raise SystemExit("the stage-A public commit file is missing")
+    if json.loads(pub.read_text(encoding="utf-8")).get("commit_sha256") != marker["commit_sha256"]:
+        raise SystemExit("the stage-A public commit file names another commit")
+    tracked = None
+    if v.get("mode") == "main":
+        tracked = public_tracked_at_head(pub, repo)
+        if not tracked:
+            raise SystemExit(f"commit {pub.name} to the repository (it is not tracked at HEAD): stage A counts as "
+                             "committed only when its public record is (§5.7)")
+    return {**v, "public_sha256": asc.sha256_file(pub), "public_tracked_at_head": tracked}
+
+
+def analysis_gate(runs_dir: Path, spot_checks: Mapping[str, Any] | None = None, *, dry_run: bool = False,
+                  repo: Path | None = None) -> dict[str, Any]:
+    """§5.7: no analysis is run until stage A is committed and both owner spot checks (§13.4
+    records, §13.5 judged pairs) are committed. Raises SystemExit; returns what it checked. The
+    statistics call it before they read any outcome. The spot checks are waived, and the waiver
+    recorded, only in a dry run and in the pilot (descriptive, §5.6)."""
+    if ar.read_commit_marker(Path(runs_dir)) is None:
+        raise SystemExit("no analysis before stage A is committed (§5.7): run commit-stage-a")
+    v = verify_marker(Path(runs_dir), repo)
+    waive = None
+    if dry_run or v.get("mode") == "dry_run":
+        waive = "dry run"
+    elif v.get("mode") == "pilot":
+        waive = "pilot (descriptive, §5.6)"
     spot: dict[str, Any] = {}
     for k in ("records", "judge"):
         p = (spot_checks or {}).get(k)
         if p and Path(p).is_file():
             spot[k] = asc.sha256_file(p)
-        elif not dry_run:
+        elif waive is None:
             raise SystemExit(f"no analysis before the owner's {k} spot check is committed (§5.7, §13.4-13.5): "
                              f"spot_checks.{k}")
-    return {"allowed": True, "stage_a_commit_sha256": v["commit_sha256"], "spot_checks_sha256": spot,
-            "spot_checks_waived": bool(dry_run and len(spot) < 2)}
+    return {"allowed": True, "mode": v.get("mode"), "stage_a_commit_sha256": v["commit_sha256"],
+            "public_tracked_at_head": v["public_tracked_at_head"], "spot_checks_sha256": spot,
+            "spot_checks_waived": bool(waive and len(spot) < 2), "spot_checks_waiver": waive if len(spot) < 2 else None}
 
 
 class Pipeline:
@@ -758,6 +1007,7 @@ class Pipeline:
         self.prov = dict(provenance or {})
         self._chunks: dict[str, dict[str, Any]] | None = None
         self._glossary: dict[str, list[dict[str, Any]]] | None = None
+        self.recovered = self.recover_build()
 
     # -- registry
     @property
@@ -804,29 +1054,31 @@ class Pipeline:
         return ar.read_commit_marker(self.runs)
 
     def build(self, stage: str) -> dict[str, Any]:
-        """``build-pairs --stage A|B`` (module docstring, *Pairs, on demand*)."""
+        """``build-pairs --stage A|B`` (module docstring, *Pairs, on demand*). Crash-safe: the
+        new registry, batches and manifest are written to ``build-pending.json`` first, then the
+        registry is replaced atomically (temp file, rename), then batches and manifest; a kill
+        anywhere is finished or undone by :meth:`recover_build` on the next start."""
         if stage not in ar.STAGES:
             raise SystemExit("--stage A or B (§5.7)")
         recs = asc.load_records(self.cfg["records"])
         if stage == "A":
             if self.pairs_path.exists():
                 raise SystemExit("pairs.jsonl exists; stage A's registry is frozen once built")
-            legs = ar.stage_legs("A")
+            legs = ar.judging_legs("A")
             needs = {asc.leg_id(*lg): ("found10",) for lg in legs}
             known: set[str] = set()
             prev_man: dict[str, Any] = {}
             prev_batches: list[list[str]] = []
             stages: dict[str, list[int]] = {}
         else:
-            marker = self.committed()
-            if marker is None:
+            if self.committed() is None:
                 raise SystemExit("stage B's pairs need stage A committed first (§5.7): run commit-stage-a")
-            verify_stage_a_commit(Path(marker["commit"]), marker.get("commit_sha256"))
+            verify_marker(self.runs)
             prev_man = self.manifest()
             if "B" in (prev_man.get("stages") or {}):
                 raise SystemExit("stage B's pairs are registered; the registry is frozen once built")
             legs = ar.study_legs()
-            needs = {asc.leg_id(*lg): (("found10", "rr10") if ar.leg_stage(*lg) == "B" else ("rr10",))
+            needs = {asc.leg_id(*lg): (("found10", "rr10") if ar.judging_stage(*lg) == "B" else ("rr10",))
                      for lg in legs}
             known = {p["pair_id"] for p in self.registry()}
             doc = self.batch_doc()
@@ -836,33 +1088,70 @@ class Pipeline:
         chunks, arm_of = chunk_arms(self.cfg)
         self._chunks = chunks
         pairs, counts = build_pairs(recs, rows, chunks, arm_of, needs=needs, stage=stage, known=known)
-        start_bytes = self.pairs_path.stat().st_size if self.pairs_path.exists() else 0
-        with self.pairs_path.open("a", encoding="utf-8") as fh:
-            for p in pairs:
-                fh.write(json.dumps(p, sort_keys=True) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        counts["definitions_coverage"] = definitions_coverage(pairs, self.glossary())
+        if self.mode != "dry_run":
+            blind = sorted(a for a, v in counts["definitions_coverage"].items()
+                           if v["pairs"] and not v["passage_paper_has_entries"])
+            if blind:
+                raise SystemExit(f"HARD STOP: every {blind} prompt would read '(none listed)': that arm's glossary "
+                                 "file is missing or empty (§5.3, §6.2)")
+        old = self.pairs_path.read_bytes() if self.pairs_path.exists() else b""
+        data = old + "".join(json.dumps(p, sort_keys=True) + "\n" for p in pairs).encode("utf-8")
         new = batches(pairs, int(self.cfg["batch_size"]))
         first = len(prev_batches) + 1
         stages[stage] = list(range(first, first + len(new)))
-        jd.g.write_json_atomic(self.out / "batches.json", {"batch_size": int(self.cfg["batch_size"]),
-                                                           "batches": prev_batches + new, "stages": stages,
-                                                           "seed": asc.SEEDS["judge_order"]})
-        counts["definitions_coverage"] = definitions_coverage(pairs, self.glossary())
+        bdoc = {"batch_size": int(self.cfg["batch_size"]), "batches": prev_batches + new, "stages": stages,
+                "seed": asc.SEEDS["judge_order"]}
         st_man = {**(prev_man.get("stages") or {}),
                   stage: {"counts": counts, "batches": stages[stage], "legs": [asc.leg_id(*lg) for lg in legs],
                           "needs": {k: list(v) for k, v in needs.items()},
-                          "pairs_bytes_from": start_bytes, "pairs_bytes_to": self.pairs_path.stat().st_size,
-                          "t": jd.g.now_iso()}}
+                          "pairs_bytes_from": len(old), "pairs_bytes_to": len(data), "t": jd.g.now_iso()}}
         man = {"schema": PAIRS_SCHEMA, "counts": counts if stage == "A" else prev_man.get("counts"),
                "stages": st_man, "batches": len(prev_batches) + len(new), "mode": self.mode,
-               "pairs_sha256": asc.sha256_file(self.pairs_path),
+               "pairs_sha256": hashlib.sha256(data).hexdigest(),
                "inputs_sha256": {"records": asc.sha256_file(self.cfg["records"]),
                                  "glossaries": [asc.sha256_file(x) for x in glossary_paths(self.cfg)],
                                  **{f"chunks_{a}": asc.sha256_file(p) for a, p in self.cfg["chunk_exports"].items()}},
                "provenance": self.prov, "t": jd.g.now_iso()}
-        jd.g.write_json_atomic(self.out / "pairs-manifest.json", man)
+        jd.g.write_json_atomic(self.pending_path, {"stage": stage, "old_sha256": hashlib.sha256(old).hexdigest(),
+                                                   "manifest": man, "batches": bdoc})
+        tmp = self.pairs_path.with_suffix(".jsonl.tmp")
+        with tmp.open("wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.pairs_path)
+        self._apply_pending()
         return {**man, "counts": counts}
+
+    @property
+    def pending_path(self) -> Path:
+        return self.out / "build-pending.json"
+
+    def _apply_pending(self) -> None:
+        pend = json.loads(self.pending_path.read_text())
+        jd.g.write_json_atomic(self.out / "batches.json", pend["batches"])
+        jd.g.write_json_atomic(self.out / "pairs-manifest.json", pend["manifest"])
+        self.pending_path.unlink()
+
+    def recover_build(self) -> str | None:
+        """A build killed midway: when the registry already holds the pending bytes, finish
+        (batches, manifest); when it still holds the old bytes, drop the pending build (rerun
+        build-pairs). Anything else is a hard stop."""
+        if not self.pending_path.is_file():
+            return None
+        pend = json.loads(self.pending_path.read_text())
+        have = asc.sha256_file(self.pairs_path) if self.pairs_path.exists() else hashlib.sha256(b"").hexdigest()
+        if have == pend["manifest"]["pairs_sha256"]:
+            self._apply_pending()
+            return "finished"
+        if have == pend["old_sha256"]:
+            self.pending_path.unlink()
+            tmp = self.pairs_path.with_suffix(".jsonl.tmp")
+            if tmp.exists():
+                tmp.unlink()
+            return "rolled_back"
+        raise jd.p4.HardStop("pairs.jsonl matches neither side of the pending build")
 
     # -- labels on disk
     def labels(self, backend: str) -> dict[str, dict[str, Any]]:
@@ -896,7 +1185,7 @@ class Pipeline:
         hc = harness_cfg(self.cfg, backend)
         world = StudyWorld(hc, self.chunks(), self.glossary(), self.selection(batch_no, backend))
         return StudyLabeler(hc, world, http_factory=self.http_factory, provenance=self.prov, batch=batch_no,
-                            role=backend, max_calls=max_calls)
+                            role=backend, max_calls=max_calls, retry_cap=int(self.cfg["retry_cap"]))
 
     def harness_backend(self, backend: str) -> str:
         return "qwen" if backend in ("C", "E") else "gateway"
@@ -910,14 +1199,14 @@ class Pipeline:
             raise SystemExit(f"batch {batch_no} is finalized")
 
     def calls_so_far(self, backend: str) -> int:
-        names = ["calls-gw-argon.jsonl", "calls-gw-argon_r2.jsonl"] if backend.startswith("argon") \
-            else ["calls-gw-opus.jsonl"]
-        n = 0
-        for nm in names:
-            p = self.out / nm
-            if p.is_file():
-                n += sum(1 for x in p.read_text(encoding="utf-8").splitlines() if x.strip())
-        return n
+        """Every gateway call of a backend: per tag the larger of the calls log (one row per HTTP
+        reply or error) and the dispatch log (one row per call issued, so a call a kill left in
+        flight counts)."""
+        tags = ["gw-argon", "gw-argon_r2"] if backend.startswith("argon") else ["gw-opus"]
+
+        def rows(p: Path) -> int:
+            return sum(1 for x in p.read_text(encoding="utf-8").splitlines() if x.strip()) if p.is_file() else 0
+        return sum(max(rows(self.out / f"calls-{t}.jsonl"), rows(self.out / f"dispatch-{t}.jsonl")) for t in tags)
 
     def cap_limit(self, backend: str) -> int | None:
         if backend in ("C", "E"):
@@ -955,6 +1244,9 @@ class Pipeline:
         hb = self.harness_backend(backend)
         lim = self.cap_limit(backend)
         remaining = None if lim is None else max(0, lim - self.calls_so_far(backend))
+        configured = (self.cfg.get("limits") or {}).get("max_calls")
+        if configured is not None:
+            remaining = int(configured) if remaining is None else min(int(configured), remaining)
         lab = self.labeler(batch_no, backend, max_calls=remaining)
         st = lab.store(hb)
         sel = {p["pair_id"] for p in lab.w.pairs()}
@@ -1041,6 +1333,9 @@ class Pipeline:
         if summ["drift"]["alarm"]:
             jd.g.write_json_atomic(self.out / "drift-alarm.json", {"batch": batch_no, **summ["drift"],
                                                                      "t": jd.g.now_iso()})
+            jd.p4.append_fsync(self.out / "drift-alarms.jsonl", {
+                "batch": batch_no, "scopes": [sc for sc, v in summ["drift"]["scopes"].items() if v["fires"]],
+                "reasons": summ["drift"]["alarm_reasons"], "t": jd.g.now_iso()})
             (self.out / "PAUSE").write_text(f"drift alarm after batch {batch_no}: "
                                             f"{'; '.join(summ['drift']['alarm_reasons'])}. The owner decides the "
                                             "remedy (a deviation entry).\n", encoding="utf-8")
@@ -1076,8 +1371,10 @@ class Pipeline:
                 "opus_no_reference": {"total": sum(r.get("opus_status") == "no_reference" for r in fin.values()),
                                       **{a: sum(r.get("opus_status") == "no_reference" and r["arm"] == a
                                                 for r in fin.values()) for a in asc.ARM_GROUPS}},
-                "retry_cap_answered_calls_per_pair": MAX_GW_ATTEMPTS,
-                "drift": drift_stats(fin, opus, sampled, arm_of, self.cfg["drift"]),
+                "retry_cap_answered_calls_per_pair": int(self.cfg["retry_cap"]),
+                "opus_served_models": {"ids": self.cfg["drift_ref"]["served_models"], "source": OPUS_SERVED_SOURCE},
+                "drift": drift_stats(fin, opus, sampled, arm_of, self.cfg["drift"], load_remedies(self.out),
+                                     {p: int(r["batch"]) for p, r in fin.items()}),
                 "models": {k: FIXED[k]["model"] for k in BACKENDS},
                 "judge_versions": {k: FIXED[k]["judge_version"] for k in BACKENDS}, "seeds": {
                     "judge_order": asc.SEEDS["judge_order"], "drift": asc.SEEDS["drift"]}}
@@ -1105,14 +1402,14 @@ class Pipeline:
 
     # -- stage A's commit (§5.7)
     def stage_a_hits(self, recs: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        """Per record and stage-A leg: hit (gold in the top 10, or a top-10 chunk whose final
+        """Per record and judging-stage-A leg: hit (gold in the top 10, or a top-10 chunk whose final
         label is *answers*; unjudged = no) and the gold-only hit. A demanded pair without a final
         label refuses the commit."""
         fin = self.final_rows()
         by_id = {r["record_id"]: r for r in recs}
         out: list[dict[str, Any]] = []
         missing = 0
-        for leg, row in leg_rows(self.runs, ar.stage_legs("A")):
+        for leg, row in leg_rows(self.runs, ar.judging_legs("A")):
             rec = by_id[row["record_id"]]
             if row.get("failed"):
                 out.append({"leg": leg, "record_id": rec["record_id"], "failed": True, "hit": None, "hit_gold": None})
@@ -1152,6 +1449,10 @@ class Pipeline:
         summ = self.summary()
         if summ["drift"]["alarm"]:
             raise SystemExit("the drift alarm has fired; the owner decides the remedy before the commit")
+        st = ar.run_status(self.runs)
+        undone = sorted(k for k in ar.RETRIEVAL_A_LEGS if st[k] != "complete")
+        if undone:
+            raise SystemExit(f"retrieval-stage-A leg(s) {undone[:6]} are not complete")
         recs = asc.load_records(self.cfg["records"])
         hits = self.stage_a_hits(recs)
         d = self.out / "stage-a"
@@ -1161,17 +1462,22 @@ class Pipeline:
             for h in hits:
                 fh.write(json.dumps({"schema": HITS_SCHEMA, **h}, sort_keys=True) + "\n")
         files: list[dict[str, Any]] = [file_entry("stage_a_hits", hp, "exact")]
-        seen_rows: set[Path] = set()
+        seen: set[Path] = set()
+        # every retrieval-stage-A leg's rows and summary, exact: retrieval of stage A is done and
+        # stage B never writes these files (the bm25 legs, judged in stage B, included)
         for c, g, r, rep in ar.stage_legs("A"):
             rows_path, sp = ar.leg_files(self.runs, c, g, r, rep)
             leg = asc.leg_id(c, g, r, rep)
-            cp = d / "summaries" / c / sp.name
-            cp.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(sp, cp)
-            files.append(file_entry(f"summary:{leg}", cp, "exact"))
-            if rows_path not in seen_rows:
-                seen_rows.add(rows_path)
-                files.append(file_entry(f"rows:{leg}", rows_path, "prefix"))
+            if sp not in seen:
+                seen.add(sp)
+                cp = d / "summaries" / c / sp.name
+                cp.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(sp, cp)
+                files.append(file_entry(f"summary_copy:{leg}", cp, "exact"))
+                files.append(file_entry(f"summary:{leg}", sp, "exact"))
+            if rows_path not in seen:
+                seen.add(rows_path)
+                files.append(file_entry(f"rows:{leg}", rows_path, "exact"))
         for name, src in (("judge_summary", self.out / "judge-summary.json"),
                           ("pairs_manifest", self.out / "pairs-manifest.json")):
             cp = d / src.name
@@ -1179,27 +1485,36 @@ class Pipeline:
             files.append(file_entry(name, cp, "exact"))
         files.append(file_entry("pairs", self.pairs_path, "prefix"))
         files.append(file_entry("final", self.out / "final.jsonl", "prefix"))
-        for pat in ("labels-*.jsonl", "attempts-*.jsonl", "calls-*.jsonl"):
+        for pat in ("labels-*.jsonl", "attempts-*.jsonl", "calls-*.jsonl", "dispatch-*.jsonl"):
             for p in sorted(self.out.glob(pat)):
                 files.append(file_entry(pat.split("-")[0] + ":" + p.stem.split("-", 1)[1], p, "prefix"))
         fin = self.final_rows()
-        counts = {"legs": len(ar.stage_legs("A")), "records": len(recs),
+        counts = {"legs": len(ar.stage_legs("A")), "retrieval_legs": len(ar.stage_legs("A")),
+                  "judging_legs": len(ar.judging_legs("A")), "records": len(recs),
                   "hits_rows": len(hits), "hits_failed": sum(bool(h["failed"]) for h in hits),
                   "found10_per_leg": {lg: sum(int(h["hit"] or 0) for h in hits if h["leg"] == lg)
                                       for lg in sorted({h["leg"] for h in hits})},
                   "found10_gold_per_leg": {lg: sum(int(h["hit_gold"] or 0) for h in hits if h["leg"] == lg)
                                            for lg in sorted({h["leg"] for h in hits})},
                   "pairs": len(fin), "batches": len(stages["A"]), "sources": summ["sources"],
-                  "unjudged": summ["unjudged"], "opus_no_reference": summ["opus_no_reference"]}
+                  "unjudged": summ["unjudged"], "opus_no_reference": summ["opus_no_reference"],
+                  "drift_remedies": len(summ["drift"]["remedies"])}
+        pub_path = self.out / "stage-a-commit.public.json"
         commit = {"schema": COMMIT_SCHEMA, "mode": self.mode, "t": jd.g.now_iso(), "provenance": self.prov,
-                  "stage_a_legs": sorted(ar.STAGE_A_LEGS), "batches_file": str((self.out / "batches.json").resolve()),
+                  "stage_a_legs": sorted(ar.RETRIEVAL_A_LEGS), "retrieval_A_legs": sorted(ar.RETRIEVAL_A_LEGS),
+                  "judging_A_legs": sorted(ar.JUDGING_A_LEGS),
+                  "batches_file": str((self.out / "batches.json").resolve()), "batch_numbers_A": list(stages["A"]),
                   "batches_A": [doc["batches"][b - 1] for b in stages["A"]], "files": files, "counts": counts,
-                  "drift": summ["drift"]}
+                  "drift": summ["drift"], "drift_remedies": summ["drift"]["remedies"],
+                  "public_file": str(pub_path.resolve())}
         cpath = self.out / "stage-a-commit.json"
         jd.g.write_json_atomic(cpath, commit)
         csha = asc.sha256_file(cpath)
         public = {"schema": COMMIT_PUBLIC_SCHEMA, "commit_sha256": csha, "mode": self.mode, "t": commit["t"],
-                  "stage_a_legs": commit["stage_a_legs"], "counts": counts,
+                  "stage_a_legs": commit["stage_a_legs"], "retrieval_A_legs": commit["retrieval_A_legs"],
+                  "judging_A_legs": commit["judging_A_legs"], "counts": counts,
+                  "drift_remedies": [{k: r[k] for k in ("deviation_id", "date", "scope", "through_batch", "sha256")}
+                                     for r in summ["drift"]["remedies"]],
                   "files": {f["name"]: {"sha256": f["sha256"], "bytes": f["bytes"], "mode": f["mode"]} for f in files},
                   "drift": {s: {k: v for k, v in sc.items() if k in ("sampled", "answered", "agree", "filtered",
                                                                      "agreement", "fires")}
@@ -1211,9 +1526,9 @@ class Pipeline:
         bad = asc.public_problems(public, forbidden, [r["question"] for r in recs])
         if bad:
             raise SystemExit(f"stage-A public commit file would carry {len(bad)} private string(s); refused")
-        jd.g.write_json_atomic(self.out / "stage-a-commit.public.json", public)
+        jd.g.write_json_atomic(pub_path, public)
         jd.g.write_json_atomic(self.runs / ar.COMMIT_MARKER, {"commit": str(cpath.resolve()), "commit_sha256": csha,
-                                                              "t": commit["t"]})
+                                                              "public": str(pub_path.resolve()), "t": commit["t"]})
         return public
 
 

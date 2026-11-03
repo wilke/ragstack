@@ -5,8 +5,7 @@ study adds what its prereg asks on top.
 
     alias_study_run.py --config CFG plan
     alias_study_run.py --config CFG gold-hashes --base-export CHUNKS.jsonl
-    alias_study_run.py --config CFG run --stage {A,B} --corpus-arm base --glossary none \\
-                       --swap-record SWAP.json [--repeat 2] \\
+    alias_study_run.py --config CFG run --stage {A,B} --corpus-arm base --glossary none [--repeat 2] \\
                        [--chunk-export X --glossary-file F | --rendered-fields R] \\
                        [--boost-declared B] [--probe-max-glossaries N]
     alias_study_run.py --config CFG placebo-glossary --merged MERGED.jsonl --base-export CHUNKS.jsonl \\
@@ -16,29 +15,41 @@ study adds what its prereg asks on top.
 glossary arms (``none``, ``merged``) x three retrievers (``default`` = found10's ``base``
 condition: hybrid + rerank; ``bm25``; ``norerank``) = 24 cells, plus one noise repeat per
 corpus arm (default x none, ``--repeat 2``), plus the **placebo leg** (base x default x
-``placebo``, §5.3, R7) = **29 legs** (:func:`study_legs`). One ``run`` is one corpus arm with
-one glossary arm attached (the swap, ``swap.sh``, happens outside) and measures the legs of
-that attachment that belong to its ``--stage``. A repeat run measures ``default`` only, in the
+``placebo``, §5.3, R7) = **29 legs** (:func:`study_legs`).
+
+**One collection per attachment (owner, 2026-11-03).** Each (corpus arm, glossary arm) is its
+own bench collection, loaded once from the corpus arm's embedding shards with that arm's
+glossary file (``load-embeddings.cwl``) and never written again: base x {none, merged,
+placebo} and the three expanded arms x {none, merged}, nine collections
+(``collections.<corpus>.<glossary>``: ``collection``, ``index``, ``load_receipt``, optional
+``es_id_prefix`` / ``bm25_scope``). The runner triggers no backfill, swap or store write of any
+kind. Its build manifest is the load receipt (:func:`check_load_receipt`: no failed shard, the
+corpus arm's chunk count, the arm's glossary file sha256), and every leg reads the collection's
+live census before and after (:meth:`AliasRunner._census_ok`: the chunk total, every chunk's
+``metadata.symbol_glossary_version`` one of the arm's stamps and of the loaded file's
+versions; a chunk stamped for another arm refuses the run). Restore points are gone with the
+swaps: a collection is immutable after its load, verified by census at the start and end of
+every leg. One ``run`` measures the legs of one attachment that belong to its ``--stage``. A repeat run measures ``default`` only, in the
 seeded order ``sha256(261101|alias|noise|<corpus arm>|<record>|<condition>)`` (§5.5), so a
 repeat is not a replay of the first leg's request sequence. Every record of the accepted file
 (the 900 balanced and the 191 descriptive) is run in every leg; every call asks ``top_k`` 50,
 so the rows carry the top 10 and the depth-50 pool for diagnostics.
 
-**Two stages (§5.7, R9; owner, 2026-11-03).** Stage A is the 14 legs every Layer-1 member and
-gate reads (:data:`STAGE_A_LEGS`): base x default x none, base x default x merged, neighbour /
-random-1 / random-2 x default x none, the noise repeat of each corpus arm, and the **norerank**
-cell of each of those five attachments, so that the inactive-reranker gate (§9.1) is computed
-by found10 inside the stage-A run (``conditions.base.identical_to_norerank`` and
-``conditions.base.gate``) and every Layer-1 gate is readable after stage A alone. Stage B is
-the other 15 cells and the placebo leg.
-``run --stage A`` measures only stage-A legs and is refused once stage A is committed (the
-judge's ``commit-stage-a`` writes ``<out_dir>/STAGE-A-COMMITTED``); ``run --stage B`` is
-refused until then, and verifies the commit (every stage-A file still has the bytes it had
-when committed) before it measures anything. A stage-B leg on an attachment that also has a
-stage-A leg (the bm25 cell of base x none, base x merged and the expanded arms x none) is
-written to its own files, ``<corpus>/<glossary>.stageB.{jsonl,summary.json}``, so no stage-A
-file is ever opened for writing again: :func:`leg_files` maps every leg to its files (and still
-reads a single-file layout written before the stages).
+**Two stages (§5.7, R9; owner decisions of 2026-11-03).** Every leg has a **retrieval stage**
+and a **judging stage** (:func:`leg_stages`). Retrieval stage A is 19 legs
+(:data:`RETRIEVAL_A_LEGS`): the five Layer-1 attachments (base x none, base x merged,
+neighbour / random-1 / random-2 x none, :data:`LAYER1_ATTACHMENTS`) at all three retrievers,
+and the noise repeat of each corpus arm. So each Layer-1 attachment is run once, found10 computes the inactive-reranker gate (§9.1) inside that run
+(``conditions.base.identical_to_norerank`` and ``conditions.base.gate``), and every Layer-1
+gate is readable after stage A. Judging stage A is 14 of them (:data:`JUDGING_A_LEGS`):
+default and norerank of the five attachments and the repeats; the five **bm25** legs are
+retrieved in stage A but **judged in stage B**. Retrieval stage B is the other 9 cells and the
+placebo leg. ``run --stage`` names the retrieval stage: ``A`` is refused once stage A is
+committed (the judge's ``commit-stage-a`` writes ``<out_dir>/STAGE-A-COMMITTED``), ``B`` is
+refused until then and verifies the commit before it measures anything. Every attachment is
+retrieved in one stage only, so one run writes one file pair, ``<corpus>/<glossary>.{jsonl,
+summary.json}``; :func:`leg_files` also reads the ``.stageB`` files of the first version of
+this harness.
 
 **Modes.** ``dry_run: true`` (``alias_study_dryrun.py``) skips the record-set identity and
 must name no study record. ``pilot: true`` is the pre-freeze pilot (§5.6): the record set is
@@ -47,9 +58,8 @@ run and the config must pin the frozen prereg (``prereg: {file, sha256}``); a sh
 hard stop (§9.2). The out dir carries a ``STUDY-MODE`` marker, and a pilot dir is never reused
 by the main run or the reverse (the pilot's labels are not carried over, §5.6).
 
-**Gates kept from round 3** (found10, unchanged): the swap record's census (chunk total = the
-arm's ``expected_chunks``, every stamp the glossary arm's, the glossary file's sha256) and the
-optional live census before and after; the depth read-back on every call, with the BM25
+**Gates kept from round 3** (found10): the live census before and after (here against the load
+receipt, above, in place of round 3's swap record); the depth read-back on every call, with the BM25
 exhaustion verifier (``exhausted_verified`` scored, ``clamp`` / ``query_mismatch`` hard
 stops, ``under_served`` gated); the glossary-boost probe (``active``, or ``declared`` when not
 testable; never ``pass``); hit stamps on bm25 hits; the inactive-reranker gate; > 2 % failed
@@ -63,10 +73,8 @@ calls a hard stop; PAUSE / SIGTERM / resume; at most 4 in flight; provenance and
 2. *Gold presence (§9.2).* Every record's gold chunk must be in the corpus arm's chunk export
    (``corpora.<arm>.chunk_export``) with the content hash ``gold-hashes`` recorded from the base
    export: an expanded arm holds the base chunks with identical ids and content (§5.1).
-3. *Restore point (§9.3).* ``corpora.<arm>.restore_point`` names the JSON the live-ops plan
-   wrote before the arm's first store write (``schema alias-restore-point/1``: ``index``,
-   ``snapshot_id``, ``total``, ``stamps``): its index must be the arm's, its snapshot id set
-   and its total the arm's ``expected_chunks``. Its sha256 is in the summary.
+3. *Collections (§9.3 as amended by the owner, 2026-11-03).* The load receipt and the live
+   census, above; ``census.collection_build`` in the summary.
 4. *Failed calls per leg (§7, §9.2).* More than 2 % failed calls in any ONE retriever's leg is
    a hard stop (round 3 counted over the run).
 5. *The record set (§4.1).* The accepted file's sha256 and the balanced-set id sha must be the
@@ -113,7 +121,8 @@ for _p in (_HERE, _HERE / "glossbench"):
 import alias_study_common as asc  # noqa: E402
 import found10 as f10  # noqa: E402
 
-RESTORE_SCHEMA = "alias-restore-point/1"
+#: every attachment's collection is a bench collection (management's ids: bench-alias-<corpus>-<glossary>-<yymmdd>)
+COLLECTION_PREFIX = "bench-alias-"
 STUDY_SCHEMA = "alias-study-run/1"
 PLACEBO_SCHEMA = "alias-placebo-glossary/1"
 #: §5.2 / round 3: every retriever asks 50 (the depth-50 pool); default reranks a pool of 50
@@ -131,15 +140,21 @@ NOISE_ORDER_RULE = "sha256('261101|alias|noise|<corpus arm>|<record id>|<conditi
 PLACEBO_DROP_KEYS = frozenset({"doc_id", "def_chunk_id", "def_span", "chunk_id", "chunk_ids"})
 
 #: §5.7 (R9; owner, 2026-11-03): the attachments the Layer-1 members read (H1: base x none /
-#: merged; H2: the expanded arms x none), all at the default retriever
+#: merged; H2: the expanded arms x none)
 LAYER1_ATTACHMENTS = (("base", "none"), ("base", "merged"), ("neighbour", "none"), ("random1", "none"),
                       ("random2", "none"))
-#: stage A: those cells, their norerank cells (the inactive-reranker gate, §9.1) and the noise
-#: repeats; every other leg (15 cells + placebo) is stage B
 STAGES = ("A", "B")
-STAGE_A_LEGS = frozenset([asc.leg_id(c, g, "default") for c, g in LAYER1_ATTACHMENTS]
-                         + [asc.leg_id(c, g, "norerank") for c, g in LAYER1_ATTACHMENTS]
-                         + [asc.leg_id(c, asc.REPEAT_GLOSSARY, asc.REPEAT_RETRIEVER, 2) for c in asc.CORPUS_ARMS])
+_REPEATS = [asc.leg_id(c, asc.REPEAT_GLOSSARY, asc.REPEAT_RETRIEVER, 2) for c in asc.CORPUS_ARMS]
+#: retrieval stage A (19): the five attachments at every retriever, and the noise repeats
+RETRIEVAL_A_LEGS = frozenset([asc.leg_id(c, g, r) for c, g in LAYER1_ATTACHMENTS for r in asc.RETRIEVERS]
+                             + _REPEATS)
+#: judging stage A (14): the default and norerank legs of the five attachments and the repeats;
+#: the bm25 legs are retrieved in stage A and judged in stage B (owner, 2026-11-03)
+JUDGING_A_LEGS = frozenset([asc.leg_id(c, g, r) for c, g in LAYER1_ATTACHMENTS for r in ("default", "norerank")]
+                           + _REPEATS)
+#: the name the first version used for the retrieval stage-A set
+STAGE_A_LEGS = RETRIEVAL_A_LEGS
+#: the first version's file label for a stage-B leg of a stage-A attachment (still read)
 STAGE_B_LABEL_SUFFIX = ".stageB"
 COMMIT_MARKER = "STAGE-A-COMMITTED"
 MODE_MARKER = "STUDY-MODE"
@@ -159,11 +174,28 @@ def study_legs() -> list[tuple[str, str, str, int]]:
 
 
 def leg_stage(corpus: str, glossary: str, retriever: str, repeat: int = 1) -> str:
-    return "A" if asc.leg_id(corpus, glossary, retriever, repeat) in STAGE_A_LEGS else "B"
+    """The leg's **retrieval** stage."""
+    return "A" if asc.leg_id(corpus, glossary, retriever, repeat) in RETRIEVAL_A_LEGS else "B"
+
+
+def judging_stage(corpus: str, glossary: str, retriever: str, repeat: int = 1) -> str:
+    """The stage in which the pairs a leg asks for found@10 are judged."""
+    return "A" if asc.leg_id(corpus, glossary, retriever, repeat) in JUDGING_A_LEGS else "B"
+
+
+def leg_stages(corpus: str, glossary: str, retriever: str, repeat: int = 1) -> dict[str, str]:
+    return {"retrieval": leg_stage(corpus, glossary, retriever, repeat),
+            "judging": judging_stage(corpus, glossary, retriever, repeat)}
 
 
 def stage_legs(stage: str) -> list[tuple[str, str, str, int]]:
+    """The legs of one retrieval stage."""
     return [lg for lg in study_legs() if leg_stage(*lg) == stage]
+
+
+def judging_legs(stage: str) -> list[tuple[str, str, str, int]]:
+    """The legs whose found@10 pairs are judged in one stage."""
+    return [lg for lg in study_legs() if judging_stage(*lg) == stage]
 
 
 def attachment_legs(corpus: str, glossary: str, repeat: int = 1) -> list[tuple[str, str, str, int]]:
@@ -171,25 +203,23 @@ def attachment_legs(corpus: str, glossary: str, repeat: int = 1) -> list[tuple[s
     return [lg for lg in study_legs() if lg[0] == corpus and lg[1] == glossary and lg[3] == repeat]
 
 
-def run_label(corpus: str, glossary: str, repeat: int, stage: str) -> str:
-    """The file label of a run: found10's (``none``, ``none#2``), with ``.stageB`` for the
-    stage-B legs of an attachment that also has a stage-A leg."""
-    base = f10.arm_label(glossary, repeat if repeat == 2 else None)
-    split = any(leg_stage(*lg) == "A" for lg in attachment_legs(corpus, glossary, repeat))
-    return base + STAGE_B_LABEL_SUFFIX if stage == "B" and split else base
+def run_label(corpus: str, glossary: str, repeat: int, stage: str | None = None) -> str:
+    """The file label of a run: found10's (``none``, ``none#2``). Every attachment is
+    retrieved in one stage, so the stage does not enter the label."""
+    return f10.arm_label(glossary, repeat if repeat == 2 else None)
 
 
 def leg_files(runs: Path, corpus: str, glossary: str, retriever: str, repeat: int = 1) -> tuple[Path, Path]:
-    """``(rows, summary)`` of one leg. A leg written before the stages (one file per
-    attachment, every retriever in it) is still found: when the staged summary is absent and
-    the single-file summary holds the leg's condition, that file is the leg's."""
-    stage = leg_stage(corpus, glossary, retriever, repeat)
-    sp = runs / corpus / f"{run_label(corpus, glossary, repeat, stage)}.summary.json"
-    legacy = runs / corpus / f"{f10.arm_label(glossary, repeat if repeat == 2 else None)}.summary.json"
-    if not sp.is_file() and legacy != sp and legacy.is_file():
-        s = json.loads(legacy.read_text(encoding="utf-8"))
-        if asc.RETRIEVERS[retriever] in (s.get("conditions") or {}):
-            sp = legacy
+    """``(rows, summary)`` of one leg: the attachment's files, or, when they do not hold the
+    leg's condition, the first version's ``<label>.stageB`` files when those do."""
+    label = run_label(corpus, glossary, repeat)
+    sp = runs / corpus / f"{label}.summary.json"
+    old = runs / corpus / f"{label}{STAGE_B_LABEL_SUFFIX}.summary.json"
+    if old.is_file():
+        cond = asc.RETRIEVERS[retriever]
+        here = json.loads(sp.read_text(encoding="utf-8")).get("conditions") or {} if sp.is_file() else {}
+        if cond not in here and cond in (json.loads(old.read_text(encoding="utf-8")).get("conditions") or {}):
+            sp = old
     return sp.with_name(sp.name.removesuffix(".summary.json") + ".jsonl"), sp
 
 
@@ -267,14 +297,14 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     if not set(asc.GLOSSARY_ARMS) <= arms <= set(STUDY_GLOSSARY_ARMS):
         raise f10.Refused(f"arms must be {list(asc.GLOSSARY_ARMS)} (and {PLACEBO!r} for the placebo leg), "
                           f"got {sorted(arms)}")
-    if PLACEBO in arms:
-        mine = cfg["arms"][PLACEBO]
-        mine_s = set(mine.get("stamps") or []) | set(mine.get("stamp_prefixes") or [])
-        for other in asc.GLOSSARY_ARMS:
-            o = cfg["arms"][other]
-            if mine_s & (set(o.get("stamps") or []) | set(o.get("stamp_prefixes") or [])):
-                raise f10.Refused(f"arms.{PLACEBO} shares a stamp with arms.{other}: the placebo has its own version "
-                                  "stamp, so a census tells the arms apart (§5.3)")
+    names = sorted(arms)
+    for i, a in enumerate(names):
+        sa_ = set(cfg["arms"][a].get("stamps") or []) | set(cfg["arms"][a].get("stamp_prefixes") or [])
+        for b in names[i + 1:]:
+            sb_ = set(cfg["arms"][b].get("stamps") or []) | set(cfg["arms"][b].get("stamp_prefixes") or [])
+            if sa_ & sb_:
+                raise f10.Refused(f"arms.{a} shares a stamp with arms.{b}: every glossary arm has its own version "
+                                  "stamp, so a census tells the collections apart (§5.3)")
     for c, spec in cfg["conditions"].items():
         if int(spec["top_k"]) != REQUIRED_TOP_K:
             raise f10.Refused(f"condition {c}: top_k {spec['top_k']} != {REQUIRED_TOP_K} (the depth-50 pool)")
@@ -290,16 +320,96 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
             raise f10.Refused(f"config has no {k!r}")
     if cfg.get("dry_run") and cfg.get("pilot"):
         raise f10.Refused("dry_run and pilot exclude each other")
-    if not cfg.get("dry_run"):
-        for c in asc.CORPUS_ARMS:
-            for k in ("chunk_export", "restore_point"):
-                if not cfg["corpora"][c].get(k):
-                    raise f10.Refused(f"corpora.{c}.{k} is not set")
-        if not cfg.get("gold_hashes"):
-            raise f10.Refused("config has no 'gold_hashes' (the base export's gold-chunk content hashes)")
+    for c in asc.CORPUS_ARMS:
+        cc = cfg["corpora"][c]
+        if "collection" in cc or "restore_point" in cc:
+            raise f10.Refused(f"corpora.{c}: name each attachment's own collection in collections.{c}.<glossary> "
+                              "(collections are built once and never written; no swap, no restore point)")
+        if not isinstance(cc.get("expected_chunks"), int):
+            raise f10.Refused(f"corpora.{c}.expected_chunks is not set")
+        if not cfg.get("dry_run") and not cc.get("chunk_export"):
+            raise f10.Refused(f"corpora.{c}.chunk_export is not set")
+    cols = cfg.get("collections") or {}
+    want = required_attachments(cfg)
+    have = {(c, g) for c, gs in cols.items() for g in (gs or {})}
+    if have != set(want):
+        raise f10.Refused(f"collections must name exactly the attachments {sorted(want)}; got {sorted(have)}")
+    seen: dict[str, tuple[str, str]] = {}
+    for c, g in want:
+        col = cols[c][g]
+        for k in ("collection", "index", "load_receipt"):
+            if not col.get(k):
+                raise f10.Refused(f"collections.{c}.{g}.{k} is not set")
+        if not str(col["collection"]).startswith(COLLECTION_PREFIX):
+            raise f10.Refused(f"collections.{c}.{g}.collection must be a bench collection ({COLLECTION_PREFIX}…)")
+        for k in ("collection", "index"):
+            key = f"{k}:{col[k]}"
+            if key in seen:
+                raise f10.Refused(f"collections.{c}.{g} shares its {k} with {seen[key]}: one collection per attachment")
+            seen[key] = (c, g)
+    if not cfg.get("dry_run") and not cfg.get("gold_hashes"):
+        raise f10.Refused("config has no 'gold_hashes' (the base export's gold-chunk content hashes)")
+    if config_mode(cfg) != "dry_run" and not (cfg.get("census") or {}).get("es_url"):
+        raise f10.Refused("census.es_url is required: every leg reads its collection's census before and after (§9.2)")
     if config_mode(cfg) == "main" and not cfg.get("prereg"):
         raise f10.Refused("the main run needs prereg: {file, sha256} (the frozen prereg, §9.2, §15)")
     return cfg
+
+
+def required_attachments(cfg: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Every (corpus arm, glossary arm) with its own collection: the 8 of the 24 cells, and
+    base x placebo when the placebo arm is configured."""
+    out = [(c, g) for c in asc.CORPUS_ARMS for g in asc.GLOSSARY_ARMS]
+    return out + [("base", PLACEBO)] if PLACEBO in cfg["arms"] else out
+
+
+def attachment_cfg(cfg: Mapping[str, Any], corpus: str, glossary: str) -> dict[str, Any]:
+    """The config found10 runs one attachment with: ``corpora.<corpus>`` carrying the
+    attachment's own collection and index."""
+    import copy
+
+    out = copy.deepcopy(dict(cfg))
+    col = cfg["collections"][corpus][glossary]
+    out["corpora"][corpus] = {**cfg["corpora"][corpus],
+                              **{k: v for k, v in col.items() if k != "load_receipt"}}
+    return out
+
+
+def check_load_receipt(cfg: Mapping[str, Any], corpus: str, glossary: str) -> dict[str, Any]:
+    """The attachment's build manifest is its load receipt (``load_embeddings.py`` summary of
+    ``load-embeddings.cwl``): no failed shard, the corpus arm's chunk count, and the glossary
+    file the arm declares (none: loaded without one; merged / placebo: the receipt's
+    ``glossary_file.symbol_glossary.sha256`` = ``arms.<glossary>.glossary_file_sha256.<corpus>``).
+    Raises :class:`found10.Refused`; returns what goes into the summary."""
+    col = cfg["collections"][corpus][glossary]
+    rp = Path(col["load_receipt"])
+    if not rp.is_file():
+        raise f10.Refused(f"collections.{corpus}.{glossary}.load_receipt: no such file")
+    rec = json.loads(rp.read_text(encoding="utf-8"))
+    problems = []
+    if int(rec.get("n_shards_failed", -1)) != 0 or rec.get("failed_shards"):
+        problems.append("the load has failed shards")
+    exp = cfg["corpora"][corpus]["expected_chunks"]
+    if rec.get("n_chunks") != exp:
+        problems.append(f"loaded {rec.get('n_chunks')} chunks, the corpus arm has {exp}")
+    gf = (rec.get("glossary_file") or {}).get("symbol_glossary")
+    want = ((cfg["arms"][glossary].get("glossary_file_sha256")) or {}).get(corpus)
+    if glossary == asc.REPEAT_GLOSSARY:
+        if gf:
+            problems.append("the none collection was loaded with a glossary file")
+    elif not gf:
+        problems.append(f"the {glossary} collection was loaded without a glossary file")
+    elif not want or gf.get("sha256") != want:
+        problems.append(f"the {glossary} collection was loaded from another glossary file than "
+                        f"arms.{glossary}.glossary_file_sha256.{corpus}")
+    if problems:
+        raise f10.Refused(f"collection {col['collection']}: " + "; ".join(problems))
+    return {"collection": col["collection"], "index": col["index"], "load_receipt_sha256": asc.sha256_file(rp),
+            "n_chunks": rec["n_chunks"], "n_shards": rec.get("n_shards"),
+            "glossary_file_sha256": None if not gf else gf.get("sha256"),
+            "glossary_versions": [] if not gf else list(gf.get("glossary_versions") or []),
+            "provenance": rec.get("provenance"), "embed_provenance": rec.get("embed_provenance"),
+            "chunk_cap": rec.get("chunk_cap")}
 
 
 def load_study_records(cfg: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -354,22 +464,6 @@ def check_gold_presence(recs: Sequence[Mapping[str, Any]], exports: Sequence[Pat
             "export_sha256": [asc.sha256_file(x) for x in exports], "chunks_in_export": len(chunks)}
 
 
-def check_restore_point(path: Path, ccfg: Mapping[str, Any]) -> dict[str, Any]:
-    rp = json.loads(path.read_text(encoding="utf-8"))
-    problems = []
-    if rp.get("schema") != RESTORE_SCHEMA:
-        problems.append(f"schema {rp.get('schema')!r} != {RESTORE_SCHEMA!r}")
-    if rp.get("index") != ccfg.get("index"):
-        problems.append("restore point is for another index")
-    if not rp.get("snapshot_id"):
-        problems.append("no snapshot_id")
-    if rp.get("total") != ccfg.get("expected_chunks"):
-        problems.append(f"restore-point total {rp.get('total')} != expected chunks {ccfg.get('expected_chunks')}")
-    if problems:
-        raise f10.Refused("restore point: " + "; ".join(problems))
-    return {"sha256": asc.sha256_file(path), "snapshot_id_sha256": asc.sha_text(str(rp["snapshot_id"]))}
-
-
 def noise_order(corpus_arm: str) -> Any:
     seed = asc.SEEDS["noise"]
 
@@ -381,17 +475,17 @@ def noise_order(corpus_arm: str) -> Any:
 # ------------------------------------------------------------------ the runner
 
 def field_coverage(probe_chunks: Sequence[tuple[str, str, str]] | None, unavailable: str | None,
-                   source: str | None, swap: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                   source: str | None, receipt: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """§5.3 / §3.3: the attached field's coverage on this collection: the share of chunks with
     a non-empty ``symbol_glossary`` and the mean rendered characters (over all chunks, and over
     the chunks with a field). Read from the probe candidates (``--chunk-export`` with
     ``--glossary-file`` or ``--rendered-fields``: every chunk of the index with its field,
-    rendered offline as the backfill renders it); the backfill's own count from the swap record
-    (``apply.chunks_with_glossary``) is printed beside it when present."""
-    apply = (swap or {}).get("apply") or {}
-    backfill = {k: apply.get(k) for k in ("chunks", "chunks_with_glossary") if k in apply}
+    rendered offline as the loader renders it); the glossary file's own counts from the load
+    receipt are printed beside it when present (``glossary_file_counts``)."""
+    gf = ((receipt or {}).get("glossary_file") or {}).get("symbol_glossary") or {}
+    backfill = dict(gf.get("counts") or {})
     if not probe_chunks:
-        return {"available": False, "reason": unavailable or "no probe candidates", "backfill": backfill}
+        return {"available": False, "reason": unavailable or "no probe candidates", "glossary_file_counts": backfill}
     n = len(probe_chunks)
     lens = [len(f or "") for _, _, f in probe_chunks]
     with_f = [x for x in lens if x > 0]
@@ -399,7 +493,7 @@ def field_coverage(probe_chunks: Sequence[tuple[str, str, str]] | None, unavaila
             "share_with_field": round(len(with_f) / n, 6) if n else None,
             "mean_chars": round(sum(lens) / n, 3) if n else None,
             "mean_chars_with_field": round(sum(with_f) / len(with_f), 3) if with_f else None,
-            "backfill": backfill}
+            "glossary_file_counts": backfill}
 
 
 class AliasRunner(f10.Runner):
@@ -417,6 +511,30 @@ class AliasRunner(f10.Runner):
             self.label = label
             self.rows_path = self.out_dir / f"{label}.jsonl"
             self.summary_path = self.out_dir / f"{label}.summary.json"
+
+    def _attachment_census(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The collection's load receipt (checked in :func:`build_runner`) in place of round
+        3's swap record: the census to expect is the arm's chunk total, every stamp the arm's."""
+        build = self.study["collection_build"]
+        return ({"collection_build": build},
+                {"total": int(build["n_chunks"]), "stamps": None, "shuffle_suffix": None})
+
+    def _census_ok(self, live: Mapping[str, Any], census: Mapping[str, Any]) -> bool:
+        """The live census of the collection (``metadata.symbol_glossary_version`` terms): the
+        chunk total of the load, and every chunk's stamp the glossary arm's (another arm's
+        stamp, or an unstamped chunk, refuses), its version one of the loaded glossary file's."""
+        if int(live.get("total", -1)) != int(census["total"]):
+            return False
+        stamps = dict(live.get("stamps") or {})
+        if sum(stamps.values()) != int(census["total"]):
+            return False
+        versions = set(self.study["collection_build"].get("glossary_versions") or [])
+        for st in stamps:
+            if not f10.stamp_allowed(st, self.acfg):
+                return False
+            if versions and st.split(f10.FILE_STAMP)[0] not in versions:
+                return False
+        return True
 
     async def _server_info(self, client: httpx.AsyncClient) -> dict[str, Any]:
         info = await super()._server_info(client)
@@ -462,30 +580,41 @@ class AliasRunner(f10.Runner):
                  "config_sha256_end": server.get("config_sha256_end"),
                  "config_hash_identical": server.get("config_hash_identical")}
         summary["study"] = study
+        cen = summary.get("census") or {}
+        cen.pop("swap_utc", None)
+        cen.update({"swap_record_sha256": None, "collection_build": self.study.get("collection_build"),
+                    "source": "load_receipt+live" if live_before is not None else "load_receipt"})
+        summary["census"] = cen
         f10.write_json_atomic(self.summary_path, summary)
         return rc
 
 
 def placebo_manifest_record(cfg: Mapping[str, Any]) -> dict[str, Any] | None:
-    """``arms.placebo.manifest`` (the ``placebo-glossary`` manifest): its placebo file's sha256
-    must be the arm's declared base glossary file; its counts (the dropped own entries among
-    them) go into the placebo leg's summary. Required outside a dry run."""
+    """``arms.placebo.manifest``: the manifest of the placebo glossary file the base x placebo
+    collection was loaded from (this module's ``placebo-glossary`` manifest, or the glossary-file
+    writer's). Its ``glossary_file_sha256`` (or ``placebo_sha256``) must be the arm's declared
+    base glossary file, and its ``counts`` must carry ``placebo_dropped_own_entries``; the counts
+    go into the placebo leg's summary. Required outside a dry run."""
     acfg = cfg["arms"].get(PLACEBO) or {}
     mp = acfg.get("manifest")
     if not mp:
         if cfg.get("dry_run"):
             return None
-        raise f10.Refused("arms.placebo.manifest is not set (the placebo-glossary manifest, §5.3)")
+        raise f10.Refused("arms.placebo.manifest is not set (the placebo glossary's manifest, §5.3)")
     man = json.loads(Path(mp).read_text(encoding="utf-8"))
     want = (acfg.get("glossary_file_sha256") or {}).get("base")
-    if man.get("schema") != PLACEBO_SCHEMA or man.get("placebo_sha256") != want:
-        raise f10.Refused("arms.placebo.manifest is not the manifest of the arm's declared glossary file")
-    return {"manifest_sha256": asc.sha256_file(mp), "placebo_sha256": man["placebo_sha256"],
-            "source_sha256": man.get("source_sha256"), "seed": man.get("seed"), "counts": man.get("counts")}
+    named = man.get("glossary_file_sha256") or man.get("placebo_sha256")
+    counts = man.get("counts") or {}
+    if named != want or "placebo_dropped_own_entries" not in counts:
+        raise f10.Refused("arms.placebo.manifest is not the manifest of the arm's declared glossary file (or carries "
+                          "no placebo_dropped_own_entries)")
+    return {"manifest_sha256": asc.sha256_file(mp), "glossary_file_sha256": named,
+            "schema": man.get("schema"), "source_sha256": man.get("source_sha256"), "seed": man.get("seed"),
+            "counts": counts}
 
 
 def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: Mapping[str, Any],
-                 corpus_arm: str, glossary: str, swap_record: Path, repeat: int | None = None,
+                 corpus_arm: str, glossary: str, repeat: int | None = None,
                  stage: str | None = None, **kw: Any) -> AliasRunner:
     if corpus_arm not in asc.CORPUS_ARMS:
         raise f10.Refused(f"--corpus-arm {corpus_arm!r}: one of {list(asc.CORPUS_ARMS)}")
@@ -501,7 +630,8 @@ def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: 
     if glossary == PLACEBO and corpus_arm != "base":
         raise f10.Refused("the placebo leg is base x default only (§5.3)")
     if stage not in STAGES:
-        raise f10.Refused(f"--stage {stage!r}: A (the 9 Layer-1 legs) or B (the rest and the placebo), §5.7")
+        raise f10.Refused(f"--stage {stage!r}: retrieval stage A (the 5 Layer-1 attachments and the repeats) or B "
+                          "(the rest and the placebo), §5.7")
     legs = [lg for lg in attachment_legs(corpus_arm, glossary, rep) if leg_stage(*lg) == stage]
     if not legs:
         raise f10.Refused(f"{corpus_arm} x {glossary}{' (repeat)' if rep == 2 else ''} has no stage-{stage} leg (§5.7)")
@@ -520,7 +650,7 @@ def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: 
         import alias_study_judge as aj
 
         try:
-            commit = aj.verify_stage_a_commit(Path(marker["commit"]))
+            commit = aj.verify_marker(out)
         except SystemExit as e:
             raise f10.Refused(f"stage-A commit does not verify: {e}") from e
     ccfg = cfg["corpora"][corpus_arm]
@@ -528,27 +658,26 @@ def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: 
     if not cfg.get("dry_run") or ccfg.get("chunk_export"):
         hashes = json.loads(Path(cfg["gold_hashes"]).read_text(encoding="utf-8")) if cfg.get("gold_hashes") else {}
         extra["gold_presence"] = check_gold_presence(recs, export_paths(ccfg["chunk_export"]), hashes)
-    if ccfg.get("restore_point"):
-        extra["restore_point"] = check_restore_point(Path(ccfg["restore_point"]), ccfg)
+    build = check_load_receipt(cfg, corpus_arm, glossary)
+    extra["collection_build"] = build
     label = run_label(corpus_arm, glossary, rep, stage)
     if glossary == PLACEBO:
         extra["placebo_glossary"] = placebo_manifest_record(cfg)
-    try:
-        swap_doc = json.loads(Path(swap_record).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        swap_doc = {}
+    receipt = json.loads(Path(cfg["collections"][corpus_arm][glossary]["load_receipt"]).read_text(encoding="utf-8"))
     extra["field_coverage"] = field_coverage(kw.get("probe_chunks"), kw.get("probe_unavailable"),
-                                             kw.get("probe_source"), swap_doc)
+                                             kw.get("probe_source"), receipt)
     study = {"corpus_arm": corpus_arm, "glossary_arm": glossary, "repeat": rep, "record_set": dict(ident),
              "seeds": {"noise": asc.SEEDS["noise"]} if rep == 2 else {}, "seed_rule": asc.SEED_RULE,
              "dry_run": bool(cfg.get("dry_run")), "pilot": bool(cfg.get("pilot")), "mode": mode, "stage": stage,
-             "legs": [asc.leg_id(*lg) for lg in legs], "run_label": label, "placebo": glossary == PLACEBO,
+             "legs": [asc.leg_id(*lg) for lg in legs],
+             "leg_stages": {asc.leg_id(*lg): leg_stages(*lg) for lg in legs}, "run_label": label, "placebo": glossary == PLACEBO,
              "request_order": NOISE_ORDER_RULE if rep == 2 else "record file order",
              "prereg": prereg, "stage_a_commit": None if commit is None else
              {"sha256": commit["commit_sha256"], "verified": True}, **extra}
     conds = [asc.RETRIEVERS[lg[2]] for lg in legs]
     order = noise_order(corpus_arm) if rep == 2 else None
-    return AliasRunner(cfg, records_for(recs, corpus_arm), corpus_arm, glossary, out, swap_record,
+    return AliasRunner(attachment_cfg(cfg, corpus_arm, glossary), records_for(recs, corpus_arm), corpus_arm, glossary,
+                       out, Path(cfg["collections"][corpus_arm][glossary]["load_receipt"]),
                        repeat=rep if rep == 2 else None, conditions=conds, job_order=order, study=study, label=label,
                        **kw)
 
@@ -577,9 +706,13 @@ def placebo_mapping(papers: Sequence[str]) -> dict[str, str]:
 
 def build_placebo(entries: Sequence[Mapping[str, Any]], corpus_papers: set[str] | None = None
                   ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """The placebo rows and their counts. ``entries``: the merged glossary's rows (``paper``,
-    ``alias``, ``primary``, ``kind`` …). ``corpus_papers``: the base export's papers; an entry
-    on another paper is refused (§5.3: the OA-1000 papers with at least one merged entry)."""
+    """The placebo rows and their counts: a pure function (no I/O; SystemExit on a refusal),
+    importable by the glossary-file writer. ``entries``: the merged glossary's rows (``paper``,
+    ``alias``, ``primary``, ``kind`` …; rows without ``alias`` are skipped). ``corpus_papers``:
+    the base export's papers; an entry on another paper is refused (§5.3: the OA-1000 papers
+    with at least one merged entry). Returns the receiving papers' rows in the merged schema
+    (``paper`` = receiver, location fields dropped, ``placebo: true``), in placebo order, and
+    the counts (``placebo_dropped_own_entries`` among them)."""
     import alias_abbrev as aa
 
     by: dict[str, list[Mapping[str, Any]]] = {}
@@ -681,7 +814,7 @@ def cmd_plan(cfg: Mapping[str, Any]) -> int:
                      "legs": {asc.leg_id(*lg): st[asc.leg_id(*lg)] for lg in legs}})
     runs.sort(key=lambda x: x["stage"])
     print(json.dumps({"legs": len(st), "complete": sum(v == "complete" for v in st.values()),
-                      "stage_a_complete": all(st[k] == "complete" for k in STAGE_A_LEGS),
+                      "stage_a_complete": all(st[k] == "complete" for k in RETRIEVAL_A_LEGS),
                       "stage_a_committed": read_commit_marker(out) is not None, "runs": runs}, indent=1))
     return 0
 
@@ -704,11 +837,14 @@ def cmd_gold_hashes(cfg: Mapping[str, Any], base_export: Path) -> int:
 def cmd_run(cfg: dict[str, Any], args: argparse.Namespace,
             client_factory: Any = None, census_client_factory: Any = None) -> int:
     recs, ident = load_study_records(cfg)
-    swap = json.loads(Path(args.swap_record).read_text(encoding="utf-8"))
-    chunks, unavailable, source = f10.probe_candidates(cfg, args.corpus_arm, args.glossary, swap, args.chunk_export,
+    if (args.corpus_arm, args.glossary) not in required_attachments(cfg):
+        raise f10.Refused(f"{args.corpus_arm} x {args.glossary} has no collection")
+    receipt = json.loads(Path(cfg["collections"][args.corpus_arm][args.glossary]["load_receipt"]).read_text(
+        encoding="utf-8"))
+    chunks, unavailable, source = f10.probe_candidates(attachment_cfg(cfg, args.corpus_arm, args.glossary),
+                                                       args.corpus_arm, args.glossary, receipt, args.chunk_export,
                                                        args.glossary_file, args.rendered_fields)
-    runner = build_runner(cfg, recs, ident, args.corpus_arm, args.glossary, Path(args.swap_record),
-                          repeat=args.repeat, stage=args.stage, probe_chunks=chunks, probe_unavailable=unavailable,
+    runner = build_runner(cfg, recs, ident, args.corpus_arm, args.glossary, repeat=args.repeat, stage=args.stage, probe_chunks=chunks, probe_unavailable=unavailable,
                           probe_source=source, boost_declared=args.boost_declared,
                           probe_max_glossaries=args.probe_max_glossaries, client_factory=client_factory,
                           census_client_factory=census_client_factory)
@@ -726,7 +862,6 @@ def main(argv: Sequence[str] | None = None, *, client_factory: Any = None, censu
     r.add_argument("--stage", required=True, choices=STAGES)
     r.add_argument("--corpus-arm", required=True, choices=asc.CORPUS_ARMS)
     r.add_argument("--glossary", required=True, choices=STUDY_GLOSSARY_ARMS)
-    r.add_argument("--swap-record", required=True)
     r.add_argument("--repeat", type=int, default=None)
     r.add_argument("--chunk-export", default=None)
     r.add_argument("--glossary-file", default=None)

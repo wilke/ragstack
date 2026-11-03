@@ -115,7 +115,7 @@ def test_stage_a_pairs_are_the_found10_demand_of_the_14_legs(tmp_path: Path) -> 
     pairs = asc.read_jsonl(out / "pairs.jsonl")
     man = json.loads((out / "pairs-manifest.json").read_text())
     got = {(p["record_id"], p["chunk_id"]) for p in pairs}
-    assert got == expected_demand(w, ar.stage_legs("A"), "found10")
+    assert got == expected_demand(w, ar.judging_legs("A"), "found10")
     assert len(pairs) == len(got) == man["stages"]["A"]["counts"]["pairs"]
     assert man["stages"]["A"]["counts"]["legs"] == 14 and len(man["stages"]["A"]["legs"]) == 14
     assert {lg.split("|")[2].split("#")[0] for lg in man["stages"]["A"]["legs"]} == {"default", "norerank"}
@@ -128,6 +128,30 @@ def test_stage_a_pairs_are_the_found10_demand_of_the_14_legs(tmp_path: Path) -> 
     assert stage_batches(w, "A") == list(range(1, man["batches"] + 1))
     with pytest.raises(SystemExit, match="frozen"):
         main(cp, "build-pairs", "--stage", "A")
+
+
+def test_found10_pairs_are_labelled_before_rr10_pairs(tmp_path: Path) -> None:
+    """§6.2: within a stage, every found@10 pair comes before any RR@10 pair in the labelling
+    order (each group in the seeded order)."""
+    w = fx.World(tmp_path)
+    recs = asc.load_records(w.records_path)
+    chunks, arm_of = aj.chunk_arms(config(w))
+    p0, p1 = w.papers[0], w.papers[1]
+    rows = []
+    for rec in recs:
+        gold = rec["gold_chunks"][0]
+        others = [c for c in chunks if c != gold and chunks[c]["paper"] in (p0, p1)]
+        rows.append(("A|x|default", {"record_id": rec["record_id"], "ranked_chunk_ids": others[:10]}))
+        rows.append(("B|x|default", {"record_id": rec["record_id"],
+                                     "ranked_chunk_ids": [c for c in chunks if c not in others[:10]][:2] + [gold]}))
+    pairs, _ = aj.build_pairs(recs, rows, chunks, arm_of, needs={"A|x|default": ("found10",),
+                                                                 "B|x|default": ("rr10",)}, stage="B")
+    needs = [p["need"] for p in pairs]
+    assert set(needs) == {"found10", "rr10"} and needs == sorted(needs, key=aj.NEEDS.index)
+    for nd in aj.NEEDS:
+        grp = [p["order"] for p in pairs if p["need"] == nd]
+        assert grp == sorted(grp)
+    assert aj.batches(pairs, 7)[0][0] == pairs[0]["pair_id"] and pairs[0]["need"] == "found10"
 
 
 def test_pairs_need_the_stage_legs_complete(tmp_path: Path) -> None:
@@ -143,7 +167,7 @@ def test_failed_rows_add_no_pairs(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     w.write_staged_runs("A", failed=lambda leg, rec: True)
     recs = asc.load_records(w.records_path)
-    rows = aj.leg_rows(w.runs, ar.stage_legs("A"))
+    rows = aj.leg_rows(w.runs, ar.judging_legs("A"))
     chunks, arm_of = aj.chunk_arms(config(w))
     pairs, counts = aj.build_pairs(recs, rows, chunks, arm_of)
     assert pairs == [] and counts["instances_before_dedup"] == 0
@@ -171,8 +195,10 @@ def test_stage_b_registers_only_new_pairs_and_never_relabels(tmp_path: Path) -> 
     assert len(ids) == len(set(ids))                                    # a pair is registered once
     new = reg[len(reg_a):]
     assert {p["stage"] for p in new} == {"B"}
+    needs = [p["need"] for p in new]                                    # found@10 first, then RR@10
+    assert needs == sorted(needs, key=aj.NEEDS.index)
     a_ids = {(p["record_id"], p["chunk_id"]) for p in reg_a}
-    want_f = expected_demand(w, ar.stage_legs("B"), "found10")
+    want_f = expected_demand(w, ar.judging_legs("B"), "found10")
     want_r = expected_demand(w, ar.study_legs(), "rr10")
     assert {(p["record_id"], p["chunk_id"]) for p in new} == (want_f | want_r) - a_ids
     assert {(p["record_id"], p["chunk_id"]) for p in new if p["need"] == "found10"} == want_f - a_ids
@@ -190,7 +216,7 @@ def test_stage_b_registers_only_new_pairs_and_never_relabels(tmp_path: Path) -> 
     assert (out / "final.jsonl").read_bytes()[: len(final_a)] == final_a
     fin = [r for r in asc.read_jsonl(out / "final.jsonl") if r["k"].startswith("pair|")]
     assert len(fin) == len({r["pair_id"] for r in fin}) == len(reg)
-    assert aj.verify_stage_a_commit(out / "stage-a-commit.json")["batches_A"] == len(stage_batches(w, "A"))
+    assert aj.verify_marker(w.runs)["batches_A"] == len(stage_batches(w, "A"))
     summ = json.loads((out / "judge-summary.json").read_text())
     assert summ["stages"]["A"]["pairs_finalized"] == len(reg_a) and summ["stage_a_committed"] is True
 
@@ -364,19 +390,72 @@ def test_config_pins_the_judges(tmp_path: Path) -> None:
             aj.validate_config(bad)
 
 
+def arm_glossaries(w: fx.World) -> dict[str, str]:
+    """One merged-glossary file per corpus arm (the base file, and the added papers' entries)."""
+    files = {"base": str(w.glossary)}
+    for arm in ("neighbour", "random1", "random2"):
+        rows = [{"alias": "AB", "primary": "alpha bravo", "kind": "abbreviation", "paper": p, "doc_id": f"d-{p}"}
+                for p in w.added[arm]]
+        files[arm] = str(fx.write_jsonl(w.tmp / f"glossary-{arm}.jsonl", rows))
+    return files
+
+
+def strict_config(w: fx.World, mode: str, **over: Any) -> dict[str, Any]:
+    """A main or pilot judge config: the prereg-fixed numbers, a stated budget, one glossary
+    file per arm (and the frozen prereg for the main run)."""
+    pr = w.tmp / "prereg.md"
+    if not pr.exists():
+        pr.write_text("frozen\n")
+    cfg = config(w, dry_run=False, batch_size=2000, glossary=arm_glossaries(w),
+                 limits={"input_token_cap": 10 ** 8, "output_token_cap": 10 ** 7, "call_cap": 10 ** 6})
+    cfg.pop("dry_run")
+    if mode == "pilot":
+        cfg["pilot"] = True
+    else:
+        cfg["prereg"] = {"file": str(pr), "sha256": asc.sha256_file(pr)}
+    cfg.update(over)
+    return cfg
+
+
 def test_main_config_pins_the_prereg_and_a_pilot_dir_stays_the_pilot_s(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     with pytest.raises(SystemExit, match="prereg"):
-        aj.validate_config(config(w, dry_run=False))
-    aj.Pipeline(aj.validate_config(config(w, dry_run=False, pilot=True)), provenance=PROV)
-    pr = tmp_path / "prereg.md"
-    pr.write_text("frozen\n")
-    main_cfg = aj.validate_config(config(w, dry_run=False, prereg={"file": str(pr), "sha256": asc.sha256_file(pr)}))
+        aj.validate_config({k: v for k, v in strict_config(w, "main").items() if k != "prereg"})
+    aj.Pipeline(aj.validate_config(strict_config(w, "pilot")), provenance=PROV)
+    main_cfg = aj.validate_config(strict_config(w, "main"))
     with pytest.raises(SystemExit, match="STUDY-MODE"):
         aj.Pipeline(main_cfg, provenance=PROV)
-    pr.write_text("edited\n")
+    (tmp_path / "prereg.md").write_text("edited\n")
     with pytest.raises(SystemExit, match="HARD STOP"):
-        aj.validate_config(config(w, dry_run=False, prereg={"file": str(pr), "sha256": "0" * 64}))
+        aj.validate_config(strict_config(w, "main", prereg={"file": str(tmp_path / "prereg.md"), "sha256": "0" * 64}))
+
+
+def test_prereg_fixed_numbers_are_pinned_outside_a_dry_run(tmp_path: Path) -> None:
+    w = fx.World(tmp_path)
+    for mode in ("main", "pilot"):
+        aj.validate_config(strict_config(w, mode))
+        for over, msg in (({"batch_size": 40}, "batch_size"), ({"drift": {"share": 0.1}}, "drift.share"),
+                          ({"drift": {"overall": 0.96}}, "drift.overall"), ({"drift": {"per_arm": 0.9}}, "per_arm"),
+                          ({"drift": {"min_pairs": 50}}, "min_pairs"), ({"retry_cap": 3}, "retry_cap"),
+                          ({"limits": {}}, "limits must state"), ({"glossary": str(w.glossary)}, "glossary must"),
+                          ({"drift_ref": {**config(w)["drift_ref"], "served_models": ["other"]}}, "served_models")):
+            with pytest.raises(SystemExit, match=f"HARD STOP.*{msg}"):
+                aj.validate_config(strict_config(w, mode, **over))
+    cfg = aj.validate_config(config(w, batch_size=40, drift={"share": 0.3}, retry_cap=3))     # a dry run may
+    assert cfg["retry_cap"] == 3 and cfg["drift_ref"]["served_models"] == aj.OPUS_SERVED_MODELS
+
+
+def test_a_missing_arm_glossary_is_a_hard_stop(tmp_path: Path) -> None:
+    w = fx.World(tmp_path)
+    w.write_staged_runs("A")
+    g = arm_glossaries(w)
+    blind = {**g, "neighbour": str(w.glossary)}                  # the neighbour papers' entries are missing
+    pl = aj.Pipeline(aj.validate_config(strict_config(w, "pilot", glossary=blind)), provenance=PROV)
+    with pytest.raises(SystemExit, match="none listed"):
+        pl.build("A")
+    assert not (out_of(w) / "pairs.jsonl").exists()
+    with pytest.raises(SystemExit, match="glossary.neighbour: file missing"):
+        aj.validate_config(strict_config(w, "pilot", glossary={**g, "neighbour": str(tmp_path / "gone.jsonl")}))
 
 
 # ------------------------------------------------------------------ the pipeline with fake judges
@@ -569,10 +648,13 @@ def test_the_cap_is_counted_from_disk_across_a_pause(tmp_path: Path) -> None:
         fh.write(json.dumps({"k": k.format(one_att) + "|a1", "pair_id": one_att, "attempt": 1, "status": "empty",
                              "verdict": None}) + "\n")
     with (out / "calls-gw-opus.jsonl").open("a") as fh:
-        fh.write(json.dumps({"key": k.format(one_att), "status": "empty"}) + "\n")
-        fh.write(json.dumps({"key": k.format(one_log), "status": "empty0"}) + "\n")
-        fh.write(json.dumps({"key": k.format(two_log), "status": "empty"}) + "\n")
-        fh.write(json.dumps({"key": k.format(two_log), "status": "truncated"}) + "\n")
+        op = "Claude Opus 5.5"
+        fh.write(json.dumps({"key": k.format(one_att), "status": "empty", "model": op}) + "\n")
+        fh.write(json.dumps({"key": k.format(one_log), "status": "empty0", "model": op}) + "\n")
+        # a reply from another model is a hard stop, never stored: it does not use up the pair's cap
+        fh.write(json.dumps({"key": k.format(one_log), "status": "ok", "model": "Claude Opus 5"}) + "\n")
+        fh.write(json.dumps({"key": k.format(two_log), "status": "empty", "model": op}) + "\n")
+        fh.write(json.dumps({"key": k.format(two_log), "status": "truncated", "model": op}) + "\n")
         fh.write(json.dumps({"key": k.format(two_log), "status": "error:http_502"}) + "\n")   # not a reply
     assert label(cp, 1, "opus", fake) == 0
     world_ = pl.labeler(1, "opus").w
@@ -582,6 +664,8 @@ def test_the_cap_is_counted_from_disk_across_a_pause(tmp_path: Path) -> None:
     rows = {r["pair_id"]: r for r in asc.read_jsonl(out / "labels-gw-opus.jsonl")}
     assert rows[two_log]["attempts"] == 2 and rows[two_log]["verdict"] is None
     assert all(rows[p]["attempts"] == 2 for p in sampled)
+    # every call counts against the 7 % cap: the mismatched reply and the error included
+    assert pl.calls_so_far("opus") == 6 + sum(per.values())
 
 
 def test_the_call_cap_holds_inside_a_run(tmp_path: Path) -> None:
@@ -659,22 +743,57 @@ def test_commit_writes_hits_shas_public_file_and_marker(tmp_path: Path) -> None:
     pub = json.loads((out / "stage-a-commit.public.json").read_text())
     forbidden = [r["record_id"] for r in w.records] + w.papers + list(asc.read_chunk_exports([w.base_export]))
     assert asc.public_problems(pub, forbidden, [r["question"] for r in w.records]) == []
-    assert pub["counts"]["legs"] == 14 and pub["commit_sha256"] == marker["commit_sha256"]
+    assert pub["counts"]["retrieval_legs"] == 19 and pub["counts"]["judging_legs"] == 14 and pub["commit_sha256"] == marker["commit_sha256"]
     assert "rows:base|none|default" in pub["files"] and "final" in pub["files"]
     with pytest.raises(SystemExit, match="committed already"):
         main(cp, "commit-stage-a")
 
 
-def test_analysis_gate_refuses_before_the_commit_and_the_spot_checks(tmp_path: Path) -> None:
-    w, cp = world(tmp_path)
-    fake = dry.FakeJudges()
-    judge_stage(w, cp, "A", fake)
+def git(repo: Path, *a: str) -> None:
+    import subprocess
+
+    subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
+
+
+def strict_stage_a(tmp: Path, mode: str) -> tuple[fx.World, Path]:
+    w = fx.World(tmp)
+    w.write_staged_runs("A")
+    cp = tmp / "jcfg.json"
+    cp.write_text(json.dumps(strict_config(w, mode)))
+    judge_stage(w, cp, "A", dry.FakeJudges())
+    assert main(cp, "commit-stage-a") == 0
+    return w, cp
+
+
+def test_analysis_gate_refuses_before_the_commit_and_the_spot_checks(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.email", "t@example.invalid")
+    git(repo, "config", "user.name", "t")
+    (repo / "README").write_text("x\n")
+    git(repo, "add", "README")
+    git(repo, "commit", "-qm", "init")
+    monkeypatch.setattr(aj, "REPO", repo)
+    w = fx.World(tmp_path)
+    w.write_staged_runs("A")
+    cp = tmp_path / "jcfg.json"
+    cp.write_text(json.dumps(strict_config(w, "main")))
+    judge_stage(w, cp, "A", dry.FakeJudges())
     with pytest.raises(SystemExit, match="before stage A is committed"):
-        aj.analysis_gate(w.runs, dry_run=True)
+        aj.analysis_gate(w.runs)
     with pytest.raises(SystemExit, match="before stage A is committed"):
         main(cp, "check-analysis-gate")
     assert main(cp, "commit-stage-a") == 0
-    assert aj.analysis_gate(w.runs, dry_run=True)["allowed"]
+    # the main run: the public record must be committed to the repository first
+    with pytest.raises(SystemExit, match="not tracked at HEAD"):
+        aj.analysis_gate(w.runs)
+    pub = out_of(w) / "stage-a-commit.public.json"
+    (repo / "results").mkdir()
+    (repo / "results" / pub.name).write_bytes(pub.read_bytes())
+    git(repo, "add", "results")
+    git(repo, "commit", "-qm", "stage A")
     with pytest.raises(SystemExit, match="records spot check"):
         aj.analysis_gate(w.runs)
     sr, sj = tmp_path / "spot-records.json", tmp_path / "spot-judge.json"
@@ -684,6 +803,7 @@ def test_analysis_gate_refuses_before_the_commit_and_the_spot_checks(tmp_path: P
     sj.write_text("{}")
     g = aj.analysis_gate(w.runs, {"records": str(sr), "judge": str(sj)})
     assert g["allowed"] and set(g["spot_checks_sha256"]) == {"records", "judge"} and not g["spot_checks_waived"]
+    assert g["mode"] == "main" and g["public_tracked_at_head"] is True
     # a stage-A label rewritten after the commit: no analysis
     fp = out_of(w) / "final.jsonl"
     data = fp.read_bytes()
@@ -692,3 +812,184 @@ def test_analysis_gate_refuses_before_the_commit_and_the_spot_checks(tmp_path: P
         aj.analysis_gate(w.runs, {"records": str(sr), "judge": str(sj)})
     fp.write_bytes(data)
     assert aj.analysis_gate(w.runs, {"records": str(sr), "judge": str(sj)})["allowed"]
+
+
+def test_pilot_waives_the_spot_checks_and_records_it(tmp_path: Path) -> None:
+    w, _ = strict_stage_a(tmp_path, "pilot")
+    g = aj.analysis_gate(w.runs)
+    assert g["allowed"] and g["mode"] == "pilot" and g["spot_checks_waived"]
+    assert g["spot_checks_waiver"].startswith("pilot") and g["public_tracked_at_head"] is None
+
+
+def test_an_appended_row_cannot_relabel_a_committed_pair(tmp_path: Path) -> None:
+    """Readers keep the last row per key: one appended row naming a committed pair would
+    relabel it, so the commit refuses any such row (final, labels, calls, pairs)."""
+    w, cp, _ = through_commit(tmp_path)
+    out = out_of(w)
+    pid = asc.read_jsonl(out / "pairs.jsonl")[0]["pair_id"]
+    for name, row in (("final.jsonl", {"k": f"pair|{pid}", "pair_id": pid, "label": 1, "source": "agree"}),
+                      ("labels-qwen-C.jsonl", {"k": f"qwen|{pid}", "pair_id": pid, "verdicts": [1, 1, 1, 1, 1]}),
+                      ("calls-gw-opus.jsonl", {"key": f"gw-opus|{pid}|r1", "status": "ok"}),
+                      ("pairs.jsonl", {"pair_id": pid, "record_id": "x", "chunk_id": "y"})):
+        f = out / name
+        keep = f.read_bytes()
+        with f.open("a") as fh:
+            fh.write(json.dumps(row) + "\n")
+        with pytest.raises(SystemExit, match="names a committed pair"):
+            aj.verify_marker(w.runs)
+        f.write_bytes(keep)
+    with (out / "final.jsonl").open("a") as fh:                         # a new pair's row is stage B's right
+        fh.write(json.dumps({"k": "pair|newpair", "pair_id": "newpair", "label": 1}) + "\n")
+    assert aj.verify_marker(w.runs)["files"] > 0
+
+
+def test_an_edited_original_summary_breaks_the_commit(tmp_path: Path) -> None:
+    w, cp, _ = through_commit(tmp_path)
+    sp = w.runs / "base" / "none.summary.json"
+    keep = sp.read_bytes()
+    s = json.loads(keep)
+    s["status"] = "complete "
+    sp.write_text(json.dumps(s))
+    with pytest.raises(SystemExit, match="summary:base"):
+        aj.verify_marker(w.runs)
+    sp.write_bytes(keep)
+    rows = w.runs / "base" / "none.jsonl"                    # the bm25 rows are pinned too (retrieval done)
+    with rows.open("a") as fh:
+        fh.write(json.dumps({"record_id": "x", "condition": "bm25"}) + "\n")
+    with pytest.raises(SystemExit, match="rows:base"):
+        aj.verify_marker(w.runs)
+
+
+def test_bm25_pairs_wait_for_stage_b(tmp_path: Path) -> None:
+    """Owner, 2026-11-03: the five Layer-1 bm25 legs are retrieved in stage A and judged in
+    stage B. No pair that only a bm25 leg asks for is labelled before the commit; the stage-B
+    build registers them."""
+    l1_bm25 = [lg for lg in ar.stage_legs("A") if lg[2] == "bm25"]
+    assert len(l1_bm25) == 5 and all(ar.judging_stage(*lg) == "B" for lg in l1_bm25)
+    w, cp, fake = through_commit(tmp_path)
+    out = out_of(w)
+    reg_a = {(p["record_id"], p["chunk_id"]) for p in asc.read_jsonl(out / "pairs.jsonl")}
+    only_bm25 = expected_demand(w, l1_bm25, "found10") - expected_demand(w, ar.judging_legs("A"), "found10")
+    assert only_bm25 and not only_bm25 & reg_a
+    fin_a = {(r["record_id"], r["chunk_id"]) for r in asc.read_jsonl(out / "final.jsonl") if r["k"].startswith("pair|")}
+    assert not only_bm25 & fin_a
+    assert main(cp, "build-pairs", "--stage", "B") == 0
+    new = {(p["record_id"], p["chunk_id"]): p for p in asc.read_jsonl(out / "pairs.jsonl") if p["stage"] == "B"}
+    assert only_bm25 <= set(new) and all(new[k]["need"] == "found10" for k in only_bm25)
+
+
+def test_a_drift_alarm_is_cleared_only_by_a_signed_remedy(tmp_path: Path) -> None:
+    w, cp = world(tmp_path, batch_size=100000, drift={"min_pairs": 3, "share": 0.2})
+    fake = Disagree()
+    main(cp, "build-pairs", "--stage", "A")
+    for be in aj.BACKENDS:
+        assert label(cp, 1, be, fake) == 0
+    assert main(cp, "finalize", "--batch", "1") == aj.EXIT_HARD_STOP
+    out = out_of(w)
+    fired = asc.read_jsonl(out / "drift-alarms.jsonl")[0]["scopes"]
+    assert "overall" in fired
+    rd = out / "drift-remedies"
+    rd.mkdir()
+    (rd / "bad.json").write_text(json.dumps({"deviation_id": "D-1", "date": "2026-11-04", "action": "x",
+                                             "scope": "overall", "through_batch": 1}))
+    with pytest.raises(SystemExit, match="signed_by"):
+        aj.load_remedies(out)
+    (rd / "bad.json").write_text(json.dumps({"deviation_id": "D-1", "date": "2026-11-04", "action": "x",
+                                             "scope": "overall", "through_batch": 2, "signed_by": "owner"}))
+    with pytest.raises(SystemExit, match="no overall alarm at batch 2"):
+        aj.load_remedies(out)
+    (rd / "bad.json").unlink()
+    for sc in fired:
+        (rd / f"D-1-{sc}.json").write_text(json.dumps({"deviation_id": "D-1", "date": "2026-11-04",
+                                                       "action": "prompt reviewed; labels kept", "scope": sc,
+                                                       "through_batch": 1, "signed_by": "owner"}))
+    pl = aj.Pipeline(aj.load_config(cp), provenance=PROV)
+    summ = pl.summary()
+    assert not summ["drift"]["alarm"] and len(summ["drift"]["remedies"]) == len(fired)
+    assert summ["drift"]["scopes"]["overall"]["alarm_window"]["after_batch"] == 1
+    assert summ["drift"]["scopes"]["overall"]["agreement"] < 0.5          # the cumulative figure is still reported
+    with pytest.raises(SystemExit, match="PAUSE"):                      # never auto-cleared: the owner removes PAUSE
+        main(cp, "commit-stage-a")
+    (out / "PAUSE").unlink()
+    assert main(cp, "commit-stage-a") == 0
+    commit = json.loads((out / "stage-a-commit.json").read_text())
+    assert [r["deviation_id"] for r in commit["drift_remedies"]] == ["D-1"] * len(fired)
+    pub = json.loads((out / "stage-a-commit.public.json").read_text())
+    assert pub["counts"]["drift_remedies"] == len(fired)
+
+
+def test_build_pairs_recovers_from_a_kill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+
+    w, cp = world(tmp_path)
+    real = aj.Pipeline._apply_pending
+
+    def killed(self: aj.Pipeline) -> None:
+        raise KeyboardInterrupt("killed after the registry was renamed")
+    monkeypatch.setattr(aj.Pipeline, "_apply_pending", killed)
+    with pytest.raises(KeyboardInterrupt):
+        main(cp, "build-pairs", "--stage", "A")
+    out = out_of(w)
+    assert (out / "build-pending.json").exists() and not (out / "pairs-manifest.json").exists()
+    monkeypatch.setattr(aj.Pipeline, "_apply_pending", real)
+    pl = aj.Pipeline(aj.load_config(cp), provenance=PROV)
+    assert pl.recovered == "finished" and len(pl.registry()) == len(asc.read_jsonl(out / "pairs.jsonl"))
+    assert pl.batch_doc()["stages"]["A"] and not (out / "build-pending.json").exists()
+    # a kill before the rename: the old (empty) registry stands and the pending build is dropped
+    (tmp_path / "two").mkdir()
+    w2, cp2 = world(tmp_path / "two")
+    out2 = out_of(w2)
+    out2.mkdir(parents=True, exist_ok=True)
+    (out2 / "build-pending.json").write_text(json.dumps({"stage": "A", "old_sha256": hashlib.sha256(b"").hexdigest(),
+                                                         "manifest": {"pairs_sha256": "f" * 64}, "batches": {}}))
+    pl2 = aj.Pipeline(aj.load_config(cp2), provenance=PROV)
+    assert pl2.recovered == "rolled_back"
+    assert main(cp2, "build-pairs", "--stage", "A") == 0
+
+
+class OpusDown(dry.FakeJudges):
+    async def post(self, url: str, json: dict[str, Any]) -> Any:  # noqa: A002
+        if json["model"] == "Claude Opus 5.5":
+            self.calls[json["model"]] = self.calls.get(json["model"], 0) + 1
+            return dry.Resp(502, {"error": {"message": "bad gateway"}})
+        return await super().post(url, json)
+
+
+def test_http_errors_are_capped_per_pair_across_resumes(tmp_path: Path) -> None:
+    fake = OpusDown()
+    w, cp, pl = labelled_through_tiebreak(tmp_path, fake,
+                                          limits={"max_fail_total": 10 ** 6, "max_fail_consecutive": 10 ** 6})
+    sampled = [p["pair_id"] for p in pl.selection(1, "opus")]
+    rc = label(cp, 1, "opus", fake)
+    for _ in range(4):
+        if rc == 0:
+            break
+        rc = main(cp, "label", "--batch", "1", "--backend", "opus", "--notice-acknowledged", "--resume", http=fake)
+    assert rc == 0
+    rows = {r["pair_id"]: r for r in asc.read_jsonl(out_of(w) / "labels-gw-opus.jsonl")}
+    assert set(rows) == set(sampled)
+    assert all(r["verdict"] is None and r["no_verdict_reason"] == "http_errors"
+               and r["http_errors"] == aj.MAX_HTTP_ERRORS for r in rows.values())
+    assert fake.calls["Claude Opus 5.5"] == aj.MAX_HTTP_ERRORS * len(sampled)
+    disp = asc.read_jsonl(out_of(w) / "dispatch-gw-opus.jsonl")
+    assert len(disp) == fake.calls["Claude Opus 5.5"] and pl.calls_so_far("opus") == len(disp)
+    # a call a kill left in flight (dispatched, no reply logged) still counts against the cap
+    with (out_of(w) / "dispatch-gw-opus.jsonl").open("a") as fh:
+        fh.write(json.dumps({"key": "gw-opus|x|r1"}) + "\n")
+    assert pl.calls_so_far("opus") == len(disp) + 1
+
+
+def test_a_pair_with_three_errors_on_disk_gets_no_further_call(tmp_path: Path) -> None:
+    fake = GatewayScript(opus=lambda n: dry.json_verdict(True))
+    w, cp, pl = labelled_through_tiebreak(tmp_path, fake)
+    sel = pl.selection(1, "opus")
+    victim = sel[0]["pair_id"]
+    with (out_of(w) / "calls-gw-opus.jsonl").open("a") as fh:
+        for _ in range(aj.MAX_HTTP_ERRORS):
+            fh.write(json.dumps({"key": f"gw-opus|{victim}|r1", "status": "error:http_502"}) + "\n")
+    assert label(cp, 1, "opus", fake) == 0
+    prompt = pl.labeler(1, "opus").w.prompt(sel[0])[0]
+    assert fake.per_prompt.get(("Claude Opus 5.5", prompt), 0) == 0
+    row = {r["pair_id"]: r for r in asc.read_jsonl(out_of(w) / "labels-gw-opus.jsonl")}[victim]
+    assert row["verdict"] is None and row["no_verdict_reason"] == "http_errors"
+    assert fake.calls["Claude Opus 5.5"] == len(sel) - 1
