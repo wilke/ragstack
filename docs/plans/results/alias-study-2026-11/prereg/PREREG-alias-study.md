@@ -127,7 +127,9 @@ that sketch and acceptance counts alone. **For version 2** the independent metho
 output. **For version 3** the counts of the corpus build's third pass (*v3*, #911; private manifest
 `counts-v3.json`, sha256 `44180414…`) were read: papers and chunks per length band and arm, each draw's
 chunk-volume gap against the neighbour arm, the re-draw and relaxation counts, and a scan of the added
-papers' distinct-chunk ratios in all three arms. They shaped R16–R19 (§5.1). The v3 pass, like the
+papers' distinct-chunk ratios in all three arms (a scratch scan by the PR #911 reviewer, not a
+committed artifact). They shaped R16–R19 (§5.1, §13.7).
+ The v3 pass, like the
 first, read bibliographic metadata and paper full text only. **The pre-freeze pilot (§5.6) will retrieve and judge the 191 held-out records before the
 freeze**; its counts are entered here before the freeze, and from then on this paragraph's statement
 that no retrieval has been run holds for the **900 balanced records** only. All of this is disclosed so
@@ -697,14 +699,22 @@ matching rule above. They are design facts, as the build facts of 2026-11-01 are
 - **Fetch budget.** Per study paper and per phase of the draw (the strict pass, then relaxation), at most
   **max(40, 15 × n)** candidates are resolved, where n is **all** of that study paper's slots (kept and
   open) and a candidate read from an earlier fetch counts against the budget
-  (`alias_corpus_run.V3_BUDGET_RULE`). In the strict pass the budget decides only **whether** relaxation
-  happens: when it is spent, the walk stops and the open slots pass to relaxation. **In relaxation it can
-  also decide which candidate fills a cell** (a disclosed property of `alias_corpus.draw_matched`, not a
-  rule change): at the `source` and `source+type` levels the passed-over candidates are walked in seeded
-  order, and once the relaxation budget is spent an unfetched candidate is skipped, so a later candidate
-  already fetched can be taken in its place. The choice still depends only on metadata and on fetch
-  availability; it is seeded and content-blind. At `any` the budget plays no part, because the
-  nearest-band fill makes no new fetches (R17).
+  (`alias_corpus_run.V3_BUDGET_RULE`). **The budget can decide which candidate fills a slot**, in both
+  phases. These are disclosed properties of `alias_corpus.draw_matched`, not rule changes, and the code
+  stays as it is:
+  - *Strict pass.* When the strict budget is spent, the walk stops, and the rest of the seeded order is
+    passed to relaxation with the candidates already passed over. Relaxation at `source` then walks them
+    in seeded order, so an earlier candidate that matches type and band (with another source) can take a
+    slot ahead of an exact match further down that the strict pass never reached.
+  - *Relaxation.* At the `source` and `source+type` levels, once the relaxation budget is spent, an
+    unfetched candidate is skipped, so a later candidate already fetched can be taken in its place.
+  - *Late exact matches.* Relaxation can fetch a candidate the strict pass never reached and, when it
+    matches its slot exactly, records the take as level `strict`. A `strict` take is therefore not always
+    one the strict pass made.
+
+  In every case the choice depends only on metadata, the seeded order and fetch availability; it is
+  content-blind. At `any` the budget plays no part, because the nearest-band fill makes no new fetches
+  (R17).
 
 - **Relaxation order.** A cell the strict pass (type, band and source all matching) leaves open is relaxed
   **source first, then type, then band**: the levels are `strict`, `source` (type and band match),
@@ -724,9 +734,16 @@ its gap is printed per draw. The residual gap is covered by the pre-named **H2 c
 sensitivity (§7), which by R14 can make H2 *fragile*. A deeper search for slots of ≥ 80 chunks (about
 4,000–8,000 further fetches) was declined.
 
+**What the v3 pass measured** (private `counts-v3.json`, sha256 `44180414…`): the neighbour arm added
+89,180 chunks; random-1 86,573 (−2.9 %) and random-2 84,131 (−5.66 %), each on 2,424 papers. These are
+counts seen before this version was written; they are not a forecast of v4.
+
+> **TODO (pending the corpus v4 builder's answer):** R17's fill order when a study paper has several open
+> `any` slots; and the v4 carry-over: which v3 takes are released, whether R17 reads the v3 walk's
+> fetched candidates, and how neighbour-arm R18 exclusions flow into the random quotas.
+
 **Build counts, v4** (the v3 draws with R17 and R18 applied; the neighbour arm with R18). *Pending the
-v4 build: entered here before the freeze from its private manifests.* After the v4 build, random-2 is
-expected near −5 % of the neighbour arm's chunks.
+v4 build: entered here before the freeze from its private manifests.*
 
 | v4 count | neighbour | random-1 | random-2 |
 |---|---|---|---|
@@ -1209,7 +1226,7 @@ direction gate passes, not the test's power alone. **The lever reads the agreeme
 `a = 0.6` is reported as a sensitivity** (owner, 2026-11-02, §14 O11;
 `alias_study_power.LEVER_AGREEMENT`). On the scratch run above the lever does **not** fire at a = 0.7
 (.96); at the a = 0.6 sensitivity it would (.79). **The script reads the lever at α = 0.05**
-(`alias_study_power.LEVER_ALPHA`, changed from the v1 Holm level 0.025 on this draft's branch; the
+(`alias_study_power.LEVER_ALPHA`, changed from the v1 Holm level 0.025 in `e3b9695`; the
 0.025 row stays in its output for comparison, where the a = 0.7 figure is .95).
 
 **Evaluability floor.** For H1 and H2, with k non-zero clusters, the minimum attainable one-sided p
@@ -1308,7 +1325,8 @@ Every output embeds `experiment_provenance()`. A dirty run is not citable.
   labels, the spot-check sheets and keys, and the per-record hits.
 - **Released (public, counts only):** this prereg; `RESULTS.md`; `DEVIATIONS.md`; `artifacts/*.json`
   holding counts, rates, CIs, p values, model ids, version strings, commit shas and sha256 hashes of the
-  private files; per-paper quantities by paper rank only. A committed check refuses any public artifact
+  private files; per-paper quantities by paper rank only; and the `experiment_provenance()` block, which
+  carries the build host's name, as the existing artifacts already do. A committed check refuses any public artifact
   that carries record text or ids, in the style of round 3's `string_values` and `--omit-text`.
 - **External calls.** Neighbour and random selection queries OpenAlex for public bibliographic metadata;
   no record content is sent. Judge C and E run on local endpoints. Argon and Opus run through the gateway
@@ -1370,13 +1388,18 @@ entry, not a silent retry.
    order sha256 of `261101|alias|spot|judge|<stratum>|<arm>|<pair>` are taken. The sheet is **blind to arm
    and to the judge's verdict** (the stratum is not on it).
 
-   **What 100 pairs detect** (exact binomial, `artifacts/spot_check_detection.json`). For a judge whose
-   true error rate on *answers* pairs is 10 %, the threshold itself, the *answers*-stratum rule below
-   fires with probability **0.38** at 50 pairs (0.35 at R5's 30). At a true error rate of 15 % it fires
-   with probability 0.78 (0.68 at 30), at 20 % with 0.95 (0.88). A judge whose error rate sits exactly at
-   the threshold is caught less often than not at any sheet size; what the larger sheet buys is better
-   detection of error rates above it, and narrower intervals.
-
+   **What 100 pairs detect** (exact binomial at the nominal stratum sizes,
+   `artifacts/spot_check_detection.json`). For a judge whose true error rate on *answers* pairs is 10 %,
+   the threshold itself, the *answers*-stratum rule below fires with probability **0.38** at 50 pairs
+   (0.35 at R5's 30). At a true error rate of 15 % it fires with probability 0.78 (0.68 at 30), at 20 %
+   with 0.95 (0.88). Read alone at the same < 0.90 cut, the *not* stratum (33) would flag a 10 % error
+   rate with probability 0.42 (0.75 at 15 %, 0.92 at 20 %) and the tiebroken stratum (17) with 0.52
+   (0.75, 0.88); the rule reads neither alone. At these sizes a judge whose error rate sits exactly at the
+   threshold is caught on the *answers* stratum less often than not (0.35 at 30, 0.38 at 50); that is not
+   a property of every n (at 17 pairs, as above, it is 0.52, because 0.90 × 17 is not a whole count).
+   What the larger sheet buys is better detection of error rates above the threshold, and narrower
+   intervals. The sizes are nominal: the shortfall rule above moves a short cell's pairs to *answers*
+   after the other arms of its stratum, so the realised *answers* stratum can exceed 50.
 
    **Reported:** per-stratum owner–judge agreement with Wilson 95 % intervals, the §6.6 metrics, and the
    agreement **re-weighted to the stage-A label shares** (each stratum × arm cell weighted by its share of
@@ -1396,9 +1419,12 @@ entry, not a silent retry.
    test's papers-OC reading. H1's form and the 300-paper target were chosen after v0's power sketch. The
    record set's target was extended twice mid-build (§4.3). The judge's tiebreaker was chosen after its
    calibration results. Version 2's changes (R1–R11) were adopted from an independent methodology review
-   before any retrieval on a study record; the pilot (§5.6) is run on held-out records before the freeze,
-   and what it may change is fixed in advance. Each is bounded by being fixed here before any retrieval
-   on a balanced-set record.
+   before any retrieval on a study record. Version 3's corpus decisions (R16–R19) are **post hoc to the
+   v3 build**: they were made after reading the v3 counts (per band, the chunk-volume gap, the re-draw and
+   relaxation counts) and a scan of distinct-chunk ratios over the added papers, which was a scratch scan
+   made by the PR #911 reviewer, not a committed artifact. They read no retrieval, judge or outcome data. The pilot (§5.6) is run
+   on held-out records before the freeze, and what it may change is fixed in advance. Each is bounded by
+   being fixed here before any retrieval on a balanced-set record.
 8. **No study-wide error control across the two families** (§3.1, R1). Family G and Family N are each
    controlled at 0.05; the chance of at least one false confirmation across both, with every null true,
    is up to about 0.0975.
@@ -1444,7 +1470,7 @@ Only items not settled by D1–D10 and R1–R19.
 | 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The merged-glossary file the backfill renders, with render parity tests; the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
-| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, this draft's branch); the committed run reads the v4 counts (item 4). The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
+| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, on `main` since `e3b9695`); the committed run reads the v4 counts (item 4). The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
 | 9 | The committed replay of the composed judge rule on the validation labels (§6.4), replacing the scratch replay | open |
 | 10 | The code of §10 *Must be written*, merged after an independent review | open |
 | 11 | **Owner spot check of the 40 records** (§13.4): may be done before the freeze; must be committed before any analysis | open |
