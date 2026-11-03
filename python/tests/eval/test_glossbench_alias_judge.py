@@ -499,6 +499,52 @@ def test_v2_system_is_v1_plus_one_rule() -> None:
     assert v2.index(jd.JUDGE_RULE_V2) < v2.index('- "yes":')
 
 
+def test_paraphrases_keep_the_rule_and_the_output_format() -> None:
+    v2 = jd.JUDGE_SYSTEMS["alias-judge/2"]
+    assert v2.endswith(jd.JUDGE_OUTPUT_FORMAT) and jd.JUDGE_SYSTEM.endswith(jd.JUDGE_OUTPUT_FORMAT)
+    ps = [jd.JUDGE_SYSTEMS[f"alias-judge/2-p{i}"] for i in (1, 2, 3)]
+    assert len({v2, *ps}) == 4
+    for p in ps:
+        assert p.count(jd.JUDGE_RULE_V2) == 1 and p.endswith("\n\n" + jd.JUDGE_OUTPUT_FORMAT)
+        assert p.count(jd.JUDGE_OUTPUT_FORMAT) == 1 and '"yes"' in p and '"no"' in p and "NOT the TERM" in p
+        # the paraphrase is a rewording: no rule line of /2 other than the short-form rule survives verbatim
+        kept = [ln for ln in v2.splitlines() if ln.startswith("- ") and ln in p.splitlines()]
+        assert kept == [jd.JUDGE_RULE_V2]
+
+
+def test_qwen_subset_labels_only_the_pinned_pairs(world: Path) -> None:
+    pairs = pairs_of(world)
+    keep = sorted(p["pair_id"] for p in pairs)[:2]
+    cfg = round2_cfg(world, "Cp1", "alias-judge/2-p1", True)
+    sp = world.parent / "subset.txt"
+    sp.write_text("".join(x + "\n" for x in keep))
+    raw = json.loads(cfg.read_text())
+    raw["qwen"] = {**raw["qwen"], "subset_file": str(sp)}
+    cfg.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="subset_sha256"):           # a subset must be pinned
+        jd.main(["--config", str(cfg), "preflight", "--backend", "qwen"], prov=PROV)
+    raw["qwen"]["subset_sha256"] = "0" * 64
+    cfg.write_text(json.dumps(raw))
+    with pytest.raises(jd.p4.HardStop):
+        jd.main(["--config", str(cfg), "preflight", "--backend", "qwen"], prov=PROV)
+    raw["qwen"]["subset_sha256"] = jd.g.file_sha(sp)
+    cfg.write_text(json.dumps(raw))
+    http = FakeHTTP(qwen_reply(lambda s, u: True))
+    assert label(cfg, "qwen", http) == 0
+    out = out_of(cfg)
+    rows = [json.loads(x) for x in (out / "labels-qwen-Cp1.jsonl").read_text().splitlines()]
+    assert sorted(r["pair_id"] for r in rows) == keep and len(http.bodies) == 2
+    assert all(r["judge_version"] == "alias-judge/2-p1" for r in rows)
+    assert http.bodies[0]["messages"][0]["content"] == jd.JUDGE_SYSTEM_V2_P1
+    plan = json.loads((out / "preflight-qwen-Cp1.json").read_text())["plan"]
+    assert plan["pairs"] == 2 and plan["subset_sha256"] == jd.g.file_sha(sp)
+    sp.write_text(keep[0] + "\nnot-a-pair\n")                       # an unknown id refuses
+    raw["qwen"]["subset_sha256"] = jd.g.file_sha(sp)
+    cfg.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="not in pairs"):
+        jd.main(["--config", str(cfg), "preflight", "--backend", "qwen"], prov=PROV)
+
+
 def round2_cfg(world: Path, variant: str, version: str, thinking: bool, **extra: Any) -> Path:
     raw = json.loads(world.read_text())
     r1 = raw["out_dir"]
@@ -648,6 +694,7 @@ def test_round3_default_plan_unchanged(world: Path) -> None:
     _, c = jd.load_config(cfg)
     plan = jd.Labeler(c, jd.World(c)).plan("qwen", 1)
     assert "base_url" not in plan and "require_served_model" not in plan
+    assert "subset_file" not in plan and "subset_sha256" not in plan
 
 
 # ------------------------------------------------------------------ validation (JUDGE-VALIDATION-PLAN.md)
