@@ -816,7 +816,7 @@ def committed_world(tmp_path: Path, label: Any = None, patch: Any = None, inject
             t = [x for x in t if x != rec["gold_chunks"][0]] + ["P99-c0"]
         return t
 
-    w.write_runs(top10=top)
+    w.write_runs(top10=top, mode=kw.get("runs_mode") or kw.get("mode") or "dry_run")
     if patch:
         patch(w)
     write_final(w, label or (lambda rec, cid: 0))
