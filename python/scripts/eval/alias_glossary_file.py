@@ -47,9 +47,12 @@ independently. The parity tests hold the two equal byte for byte.
    primaries (counted in the census). ``positional: false``: all definitions render. The
    merged entries carry no document offsets, and a paper spans several documents.
 4. *Order.* Forms in codepoint order (``sorted``), definitions as in (3).
-5. *Caps.* At most 12 lines, so the cap counts lines (forms), not merged entries. The number of
-   chunks where counting merged entries would give a different field is in the census.
-   At most 1,200 characters, counting each line plus one ``\\n`` between lines. The first line
+5. *Caps.* At most 12 lines, so the cap counts lines (forms), not merged entries. The census
+   discloses ``chunks_field_differs_under_entry_cap``: the chunks whose field would differ
+   under a cap of 12 DISTINCT MERGED ENTRIES (:data:`ENTRY_CAP_RULE`). The lines, order and
+   character rule stay the same. A line stands for every entry contributing its form, and it
+   renders only while the distinct entries of the rendered lines stay at or under 12. A variant
+   counting only the entries whose alias is the form is printed beside it. At most 1,200 characters, counting each line plus one ``\\n`` between lines. The first line
    that would pass a cap ends the field: no later line is tried, and no line is truncated.
 6. *Text.* Each line is NFC (``display_form``). The primaries are stored as the merged file has
    them.
@@ -71,7 +74,7 @@ entries by kind; forms, including plural forms added and multi-definition forms;
 identity verdicts. It counts chunks with a field and mean rendered characters. Those are
 rendered offline over the chunk export by the load path itself: ``read_glossary_file`` →
 ``resolve_documents`` → ``render_chunks``. It also counts chunks cut by each cap, and the
-disclosed difference from counting merged entries against the 12 cap. The placebo's manifest
+disclosed entry-cap counterfactual (rule 5). The placebo's manifest
 carries ``build_placebo``'s counts, including ``placebo_dropped_own_entries``, plus
 ``glossary_file_sha256``, which is what the harness reads (``arms.placebo.manifest``).
 
@@ -199,23 +202,38 @@ def paper_glossary(entries: Sequence[Mapping[str, Any]], version: str, *, plural
 
 
 def spec_field(entries: Sequence[Mapping[str, Any]], chunk_text: str, *, max_lines: int = 12,
-               max_chars: int = 1200, plural: bool = True, reverse: bool = False) -> str:
+               max_chars: int = 1200, plural: bool = True, reverse: bool = False,
+               entry_cap: int | None = None, entry_cap_exact_alias: bool = False) -> str:
     """The INDEPENDENT §5.3 renderer the parity tests hold ``render_chunks`` to. It works from
     the merged rows and ``alias_abbrev``'s matcher (``TOK`` tokens of the canonical text,
     ``alias_tokens``), not from a glossary file, the reader or ``Glossary.for_chunk``.
-    ``plural=False`` and ``reverse=True`` are the parity tests' mutations."""
+    ``plural=False`` and ``reverse=True`` are the parity tests' mutations.
+
+    ``entry_cap`` is the census's counterfactual, :data:`ENTRY_CAP_RULE`. It replaces the line
+    cap with a cap on DISTINCT MERGED ENTRIES. A line stands for every entry contributing its
+    form, or, with ``entry_cap_exact_alias``, only for the entries whose alias is the form.
+    A line renders only while the distinct entries of the rendered lines stay at or under
+    ``entry_cap``; the first line that would pass it ends the field. Order and the character
+    rule are unchanged."""
     toks = set(aa.TOK.findall(canonical_text(chunk_text)))
     defs: dict[str, list[str]] = {}
-    for e in entries:
+    owners: dict[str, set[int]] = defaultdict(set)
+    for i, e in enumerate(entries):
         kind = str(e.get("kind") or "abbreviation") if plural else "symbol"
         for f in aa.alias_tokens(str(e["alias"]), kind):
             lst = defs.setdefault(f, [])
             if str(e["primary"]) not in lst:
                 lst.append(str(e["primary"]))
+            if not entry_cap_exact_alias or f == str(e["alias"]):
+                owners[f].add(i)
     lines: list[str] = []
     size = 0
+    counted: set[int] = set()
     for f in sorted((f for f in defs if f in toks), reverse=reverse):
-        if len(lines) >= max_lines:
+        if entry_cap is None:
+            if len(lines) >= max_lines:
+                break
+        elif len(counted | owners[f]) > entry_cap:
             break
         line = unicodedata.normalize("NFC", f"{f} — {'; '.join(defs[f])}")
         extra = len(line) + (1 if lines else 0)
@@ -223,7 +241,16 @@ def spec_field(entries: Sequence[Mapping[str, Any]], chunk_text: str, *, max_lin
             break
         lines.append(line)
         size += extra
+        counted |= owners[f]
     return "\n".join(lines)
+
+
+#: The census's disclosed counterfactual (owner and coordinator, 2026-11-03), stated once.
+ENTRY_CAP_RULE = ("chunks whose rendered field differs between the served cap (12 lines) and a cap of 12 "
+                  "distinct merged entries: same lines, same order, same 1,200-character rule; a line stands "
+                  "for every merged entry contributing its form (the alias, or for abbreviation/both its "
+                  "plural); a line renders only while the distinct entries of the rendered lines stay <= 12, "
+                  "and the first line that would pass the cap ends the field")
 
 
 def version_for(variant: str, merged_shas: Sequence[str]) -> str:
@@ -343,7 +370,7 @@ def build(variant: str, corpus_arm: str, docs: Mapping[str, Doc], entries: Seque
                 "forms": fst.forms}
         rows.append(GlossaryRow(d.doc_id, content_key(d.text), len(d.text), masked_key(d.text),
                                 Glossary((), EMPTY_RULES_VERSION), None, gl, {}, prov, None))
-    st = Counter()
+    st: Counter[str] = Counter()
     for _gl, fst in glossaries.values():
         st["forms"] += fst.forms
         st["plural_forms_added"] += fst.plural_forms_added
@@ -397,12 +424,14 @@ def identity_check(rows: Sequence[GlossaryRow], export_rows: Sequence[g.ChunkRow
 
 
 def census(fields: Mapping[str, str], export_rows: Sequence[g.ChunkRow],
-           by_paper: Mapping[str, Sequence[Mapping[str, Any]]], *, max_lines: int = 12) -> dict[str, Any]:
-    """Field coverage over the export, rendered by the load path (``fields``), and the caps."""
+           by_paper: Mapping[str, Sequence[Mapping[str, Any]]], *, max_lines: int = 12,
+           max_chars: int = 1200) -> dict[str, Any]:
+    """Field coverage over the export, rendered by the load path (``fields``), the caps, and the
+    disclosed entry-cap counterfactual (:data:`ENTRY_CAP_RULE`)."""
     n = len(export_rows)
     with_field = [f for f in fields.values() if f]
     chars = sum(len(f) for f in with_field)
-    cut_lines = cut_chars = gt12_entries = gt12_entries_not_cut = 0
+    cut_lines = cut_chars = gt_entries = differs = differs_exact = 0
     for r in export_rows:
         es = by_paper.get(paper_root(r.source_path, r.doc_id), ())
         if not es:
@@ -411,25 +440,29 @@ def census(fields: Mapping[str, str], export_rows: Sequence[g.ChunkRow],
         eligible = {f for e in es for f in aa.alias_tokens(str(e["alias"]), str(e.get("kind") or "abbreviation"))
                     if f in toks}
         matched = sum(1 for e in es if aa.alias_occurs(str(e["alias"]), str(e.get("kind") or "abbreviation"), r.content))
-        got = len(fields[r.chunk_id].split("\n")) if fields[r.chunk_id] else 0
+        field = fields[r.chunk_id]
+        got = len(field.split("\n")) if field else 0
         if got < len(eligible):
             if got >= max_lines:
                 cut_lines += 1
             else:
                 cut_chars += 1
-        if matched > 12:
-            gt12_entries += 1
-            if got == len(eligible):
-                gt12_entries_not_cut += 1
+        gt_entries += int(matched > max_lines)
+        # every chunk with entries: one entry can give two lines (X, Xs), so the two caps can differ
+        # even where no more than the cap of entries match
+        differs += int(spec_field(es, r.content, max_chars=max_chars, entry_cap=max_lines) != field)
+        differs_exact += int(spec_field(es, r.content, max_chars=max_chars, entry_cap=max_lines,
+                                        entry_cap_exact_alias=True) != field)
     return {"chunks": n, "chunks_with_field": len(with_field),
             "share_with_field": round(len(with_field) / n, 6) if n else None,
             "mean_field_chars_all": round(chars / n, 3) if n else None,
             "mean_field_chars_with_field": round(chars / len(with_field), 3) if with_field else None,
             "chunks_cut_by_line_cap": cut_lines, "chunks_cut_by_char_cap": cut_chars,
-            # owner, 2026-11-03: the 12 cap counts lines (forms); disclosed: chunks where more than
-            # 12 merged entries match (alias_occurs) yet every eligible line rendered
-            "chunks_gt12_matched_entries": gt12_entries,
-            "chunks_gt12_matched_entries_all_lines_rendered": gt12_entries_not_cut}
+            "chunks_matched_entries_gt_cap": gt_entries,
+            # owner, 2026-11-03: the cap counts lines (forms); disclosed, ENTRY_CAP_RULE
+            "chunks_field_differs_under_entry_cap": differs,
+            "chunks_field_differs_under_entry_cap_exact_alias": differs_exact,
+            "entry_cap_rule": ENTRY_CAP_RULE}
 
 
 # ------------------------------------------------------------------ writing one variant
@@ -464,6 +497,11 @@ def _write_variant(variant: str, corpus_arm: str, *, shards: Sequence[str | Path
         raise Refused("the none variant takes no merged glossary")
     docs = read_shard_documents(shards)
     export_rows = g.read_chunks(list(chunk_exports))
+    exported = {r.doc_id for r in export_rows}
+    unexported = sum(1 for d in docs if d not in exported)
+    if unexported:
+        raise Refused(f"{unexported} shard document(s) are not in the chunk export(s) (an export for every "
+                      "shard of the load is needed: the identity check and the census read it)")
     for r in export_rows:
         d = docs.get(r.doc_id)
         if d is None:
@@ -484,7 +522,8 @@ def _write_variant(variant: str, corpus_arm: str, *, shards: Sequence[str | Path
     counts = write_glossary_file(out, built.rows, producer=producer, config=config, created=created)
     os.chmod(out, 0o600)
     fields, stamps, verdicts = load_render(out, export_rows)
-    cen = census(fields, export_rows, built.entries_by_paper, max_lines=config.max_entries_per_chunk)
+    cen = census(fields, export_rows, built.entries_by_paper, max_lines=config.max_entries_per_chunk,
+                 max_chars=config.max_chars_per_chunk)
     man: dict[str, Any] = {
         "schema": SCHEMA, "variant": variant, "corpus_arm": corpus_arm,
         "glossary_file": str(out), "glossary_file_sha256": file_sha256(out),
@@ -538,17 +577,11 @@ def entries_by_paper_for(variant: str, corpus_arm: str, export_rows: Sequence[g.
 
 
 def balanced_records(recs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """The balanced set (prereg §4.1): the records of papers whose accepted G cover >= 2 distinct
-    alias keys (``glossbench_alias_checks.alias_key``) and that have >= 1 accepted C."""
-    import glossbench_alias_checks as gac
+    """The balanced set (prereg §4.1): the records on ``alias_study_common.balanced_papers``."""
+    import alias_study_common as asc
 
-    by: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for r in recs:
-        by[str(r["paper"])].append(r)
-    keep = [p for p, rs in by.items()
-            if len({gac.alias_key(r["alias"], r.get("alias_kind")) for r in rs if r["kind"] == "G"}) >= 2
-            and any(r["kind"] == "C" for r in rs)]
-    return [r for p in keep for r in by[p]]
+    papers = asc.balanced_papers(recs)
+    return [r for r in recs if str(r["paper"]) in papers]
 
 
 def renders_entry(field: str, alias: str, kind: str, primary: str) -> bool:
@@ -570,9 +603,10 @@ def reach(fields: Mapping[str, str], recs: Sequence[Mapping[str, Any]]) -> dict[
         miss = Counter(str(r.get("alias_kind")) for r in gs if r not in hit)
         return {"G": len(gs), "renders_own_entry": len(hit), "misses_by_alias_kind": dict(sorted(miss.items()))}
     bal = balanced_records(recs)
-    ids = "".join(x + "\n" for x in sorted(str(r["record_id"]) for r in bal))
+    import alias_study_common as asc
+
     return {"all_accepted": count(recs), "balanced": count(bal),
-            "balanced_ids_sha256": hashlib.sha256(ids.encode()).hexdigest(),
+            "balanced_ids_sha256": asc.balanced_ids_sha(str(r["record_id"]) for r in bal),
             "gate": "480 of the 600 balanced G records (prereg §9.1)"}
 
 

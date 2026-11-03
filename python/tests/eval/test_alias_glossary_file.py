@@ -41,6 +41,7 @@ TEXTS = {
     "PB": ["Only Qb here, and the MSC once. Also VL1 VL2 VL3 VL4 VL5."],
     "PC": ["No glossary for this paper at all."],
     "PD": ["A paper of its own: MSC appears, and PCs."],
+    "PE": ["Pairs: AB ABs CD CDs EF EFs GH GHs IJ IJs KL KLs MN MNs."],
 }
 
 
@@ -59,6 +60,7 @@ MERGED = [
     entry("PB", "MSC", "marrow stromal cell", "abbreviation"),
     *[entry("PB", f"VL{i}", f"{LONG} {i}", "abbreviation") for i in range(1, 6)],
     entry("PD", "PC", "plasma cell", "abbreviation"),
+    *[entry("PE", a, f"{a.lower()} long form", "abbreviation") for a in ("AB", "CD", "EF", "GH", "IJ", "KL", "MN")],
 ]
 
 
@@ -163,14 +165,17 @@ def test_every_document_gets_a_row_and_the_file_is_private(corpus: dict[str, Pat
     assert man["identity"]["export_check"] == {"verified": len(docs)}
     n_chunks = len(corpus["export"].read_text(encoding="utf-8").splitlines())
     assert man["stamps_rendered"] == {man["stamp"]: n_chunks}
-    assert man["census"]["chunks_cut_by_line_cap"] == 1
+    assert man["census"]["chunks_cut_by_line_cap"] == 2
+    # PE: 7 entries give 14 lines; the 12-line cap cuts them, a 12-entry cap would not
+    assert man["census"]["chunks_field_differs_under_entry_cap"] == 1
+    assert man["census"]["chunks_matched_entries_gt_cap"] == 1    # PA's chunk with 13 K entries + PC
     assert man["census"]["chunks_with_field"] > 0
 
 
 def test_none_file_has_empty_rows_and_its_own_stamp(corpus: dict[str, Path]) -> None:
     man = write(corpus, "none")
     gf = read_glossary_file(man["glossary_file"])
-    assert gf.header["counts"]["merged_entries"] == 0 and len(gf.rows) == 5
+    assert gf.header["counts"]["merged_entries"] == 0 and len(gf.rows) == 6
     assert man["census"]["chunks_with_field"] == 0
     assert man["stamp"] == "alias-none/1+attach=mention@file/1"
 
@@ -181,7 +186,7 @@ def test_render_parity_synthetic(corpus: dict[str, Path], variant: str) -> None:
     res = parity(corpus, variant)
     assert res["mismatches"] == 0, res
     if variant == "merged":
-        assert res["chunks_with_field_load"] == 5      # every chunk but paper PC's
+        assert res["chunks_with_field_load"] == 6      # every chunk but paper PC's
 
 
 def test_mutation_cap_11_fails_parity(corpus: dict[str, Path]) -> None:
@@ -207,7 +212,7 @@ def test_placebo_uses_the_harness_derangement_and_its_manifest_is_accepted(corpu
     assert man["counts"]["placebo_dropped_own_entries"] == counts["placebo_dropped_own_entries"]
     assert man["counts"]["mapping_sha256"] == counts["mapping_sha256"]
     assert man["seed"] == "261101|alias|placebo"
-    mapping = ar.placebo_mapping(["PA", "PB", "PD"])
+    mapping = ar.placebo_mapping(["PA", "PB", "PD", "PE"])
     gf = read_glossary_file(man["glossary_file"])
     docs = {d.id: d.source.split("#")[0] for d in JsonlLoader().load(str(corpus["shard"]))}
     for doc_id, row in gf.rows.items():
@@ -231,7 +236,7 @@ def test_placebo_drops_receivers_own_entries() -> None:
     import alias_study_run as ar
 
     rows, counts = ar.build_placebo(MERGED)
-    mapping = ar.placebo_mapping(["PA", "PB", "PD"])
+    mapping = ar.placebo_mapping(["PA", "PB", "PD", "PE"])
     own = {(e["paper"], e["alias"], e["primary"]) for e in MERGED}
     assert not any((r["paper"], r["alias"], r["primary"]) in own for r in rows)
     assert counts["placebo_dropped_own_entries"]["entries"] == int(mapping["PA"] == "PB")
@@ -246,6 +251,39 @@ def test_refuses_an_export_document_missing_from_the_shards(corpus: dict[str, Pa
     with pytest.raises(agf.Refused, match="not in the shards"):
         agf.write_variant("merged", "base", shards=[short], chunk_exports=[corpus["export"]],
                           merged=[corpus["merged"]], out=corpus["out"] / "x.jsonl", provenance=PROV)
+
+
+def test_refuses_a_shard_document_missing_from_the_export(corpus: dict[str, Path], tmp_path: Path) -> None:
+    lines = corpus["export"].read_text(encoding="utf-8").splitlines()
+    gone = json.loads(lines[-1])["doc_id"]
+    short = tmp_path / "in" / "short-export.jsonl"
+    short.write_text("".join(x + "\n" for x in lines if json.loads(x)["doc_id"] != gone), encoding="utf-8")
+    with pytest.raises(agf.Refused, match="not in the chunk export"):
+        agf.write_variant("merged", "base", shards=[corpus["shard"]], chunk_exports=[short],
+                          merged=[corpus["merged"]], out=corpus["out"] / "x.jsonl", provenance=PROV)
+
+
+def test_entry_cap_counterfactual() -> None:
+    pe = [e for e in MERGED if e["paper"] == "PE"]
+    text = TEXTS["PE"][0]
+    served = agf.spec_field(pe, text)
+    assert len(served.split("\n")) == 12
+    assert len(agf.spec_field(pe, text, entry_cap=12).split("\n")) == 14
+    assert agf.spec_field(pe, text, entry_cap=6) == "\n".join(served.split("\n")[:12])
+    assert len(agf.spec_field(pe, text, entry_cap=5).split("\n")) == 10
+    pa = [e for e in MERGED if e["paper"] == "PA"]
+    k = " ".join(f"K{c}" for c in "ABCDEFGHIJKLM")
+    assert agf.spec_field(pa, k, entry_cap=12) == agf.spec_field(pa, k)
+
+
+def test_census_reads_the_cap_it_is_given() -> None:
+    pe = [e for e in MERGED if e["paper"] == "PE"]
+    row = g.ChunkRow("c", "d", TEXTS["PE"][0], 0, len(TEXTS["PE"][0]), "PE#0", "t")
+    field = agf.spec_field(pe, row.content, max_lines=14)
+    cen = agf.census({"c": field}, [row], {"PE": pe}, max_lines=14)
+    assert cen["chunks_cut_by_line_cap"] == 0 and cen["chunks_field_differs_under_entry_cap"] == 0
+    cen = agf.census({"c": agf.spec_field(pe, row.content, max_lines=4)}, [row], {"PE": pe}, max_lines=4)
+    assert cen["chunks_cut_by_line_cap"] == 1 and cen["chunks_field_differs_under_entry_cap"] == 1
 
 
 def test_refuses_a_shard_text_the_chunks_were_not_cut_from(corpus: dict[str, Path], tmp_path: Path) -> None:
