@@ -459,6 +459,10 @@ subset, the original /2 labels give a gate accuracy of 0.995, precision 0.990 an
 | p2 | 0.990 | 0.990 | 0.990 | 0.98 | 5 | 0.98 | 0.97 |
 | p3 | 0.995 | 0.990 | 1.000 | 0.99 | 6 | 0.99 | 0.97 |
 
+The subset's prevalence is 0.50 by design, so its precision is not comparable with the 0.224-prevalence table
+above: re-weighted to the population prevalence (`precision_at_population_prevalence`), the gate's precision is
+0.966 for /2 and every paraphrase, C's is 0.904 to 0.905 and E's 0.965 to 0.966.
+
 Across the paraphrases, the largest change against /2 in precision or recall, for the gate or for either judge, is
 **1 point (one pair)**. That is the size of the p0 re-run's own change and of E's sample-to-sample change in the
 stored validation samples. **No paraphrase moves recall or precision by more than 3 points.** At most 4 of 200 raw
