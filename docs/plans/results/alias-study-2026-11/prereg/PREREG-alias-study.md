@@ -80,7 +80,7 @@ files' plurals and rendering.
 | R17 | **nearest-band fill** at the last relaxation level (`any`): the already-fetched candidate of nearest band, ties by type, source, seeded order, assigned by a global greedy over (slot, candidate) pairs; 0 new fetches | §5.1 |
 | R18 | **repetition screen**: every added paper in every arm, after the C0 screen; distinct-chunk ratio < 0.90 excluded and replaced like other exclusions | §5.1, §15 |
 | R19 | **residual chunk-volume gap accepted**: ±5 % of the neighbour arm's chunks is a build target, not a gate; the gap is covered by H2's pre-named chunk-volume covariate sensitivity (which by R14 can make H2 fragile); the deeper search for ≥ 80-chunk slots declined | §5.1, §7, §13.11 |
-| R20 | **stage A includes the 5 norerank cells** the inactive-reranker gate needs (base × none, base × merged, neighbour × none, random-1 × none, random-2 × none, each × norerank), so every Layer-1 gate is read after stage A alone; stage A is 14 legs, stage B the remaining 14 cells plus the placebo; the total is unchanged (stage-A retrieval **extended by R25**) | §5.4, §5.7, §6.2, §9.1 |
+| R20 | **stage A includes the 5 norerank cells** the inactive-reranker gate needs (base × none, base × merged, neighbour × none, random-1 × none, random-2 × none, each × norerank), so every Layer-1 gate is read after stage A alone; stage A was 14 legs, stage B the remaining 14 cells plus the placebo (**superseded by R25**: stage-A retrieval 19 legs, stage-A judging 14, stage-B retrieval 10); the total is unchanged | §5.4, §5.7, §6.2, §9.1 |
 | R21 | **placebo self-entries removed**: after the derangement, every entry equal to one of the receiving paper's own merged entries is dropped; drops counted per paper and in total; a paper left empty gets no placebo field and is counted | §5.3 |
 | R22 | **bootstrap-t replaces the studentized randomization test**: a one-sided paper-cluster bootstrap-t (seed `261101\|alias\|boot`). The *fragile* set is H1 = bootstrap-t + topic clustering, and H2 = bootstrap-t + topic clustering + volume covariate. §7's statement about the weak null is corrected | §3.4, §5.5, §7 |
 | R23 | **the H2 volume-covariate re-test** is a Freedman–Lane sign-flip with the studentized intercept (10,000 flips, seed `261101\|alias\|perm`), reusing the primary's unadjusted gold-only gate; closes O13 | §5.5, §7, §14 O13, §15 item 19 |
@@ -1053,7 +1053,7 @@ random-1 × none, random-2 × none.
   well; their labels arrive in stage B.
 - **Stage B retrieval**: the remaining 9 cells and the placebo leg (10 legs). **Stage B judging**: the
   found@10 pairs of the 5 BM25 cells retrieved in stage A and of the stage-B legs, then the pairs that
-  only RR@10 or a descriptive split needs (§6.2).
+  RR@10 needs (§6.2). No descriptive split needs more labels than these.
 - *Why R20:* the inactive-reranker gate is a Layer-1 gate (§9.1), but its norerank cells were in stage B,
   which contradicted "the Layer-1 analysis can be run after stage A". Now every Layer-1 gate is read
   after stage A alone. The cost: 5 × 1,091 retrieval calls and their found@10 judge pairs move earlier;
@@ -1085,8 +1085,9 @@ is H2's direction gate. **RR@10** (Layer 2) uses the same labels.
   whatever the other chunks are. Stage-A judging (§5.7) labels the pairs its 14 legs need this way,
   first (R20, R25). Stage-B judging labels the found@10 pairs of the 5 BM25 legs retrieved in stage A
   and of the legs retrieved in stage B, then the pairs that **RR@10** needs (non-gold chunks
-  ranked **above** the gold in a cell where the gold is in the top 10, stage-A legs included) and those
-  the descriptive splits of §3.3 and §7 need. A pair is labelled once, whatever first asked for it.
+  ranked **above** the gold in a cell where the gold is in the top 10, stage-A legs included). The
+  descriptive splits of §3.3 and §7 (gold, same-paper and other-paper hits; alias kind) need no labels
+  beyond those of found@10 and RR@10. A pair is labelled once, whatever first asked for it.
 - **Pairs are deduplicated across cells.** The unit is (record, chunk). One final label serves every cell
   in which that chunk appears in that record's top 10.
 - **Blind to arm, retriever and rank.** The pair prompt (`alias-judge/2`) carries the question, its term,
@@ -1457,7 +1458,7 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
 ### 9.2 Checks per leg (a leg is one cell run over all records)
 
 - **Census before and after:** the chunk count of the collection equals the corpus arm's manifest (base
-  32,765; the expanded arms as built). The `metadata.symbol_glossary_version` stamp census equals the
+  32,765; the expanded arms as built) and its load receipt's `n_chunks` (§9.3). The `metadata.symbol_glossary_version` stamp census equals the
   glossary arm's file stamp on every chunk; for *none*, the *none* file's stamp with an empty field
   (§5.3). Every gold chunk id is present, with the same content hash, in all four corpus arms.
 - **Admin config hash:** `/v1/config` is read at the start and the end of the leg. The two reads must be
@@ -1480,10 +1481,12 @@ never left blank. Layer 2 has no gates (§3.3); a gate verdict that would apply 
 Every store write is made on a **bench collection**, never on a live collection. The store writes are the
 loads of the 9 bench collections of §5.3 (R26): each corpus's embedding shards loaded once per variant,
 with that variant's glossary file. Each collection is **written exactly once**: nothing writes to it
-again, and no glossary is swapped in place. Each has a **registry entry** and a **load receipt** with
-provenance (its source embeddings, the glossary file and its sha256, the loader version, its census of
-chunk count and stamp census, and its creation time). The census is verified against the load receipt
-**at the start and the end of every leg** (§9.2); a mismatch stops the leg. The loads run under the
+again, and no glossary is swapped in place. Each has a **load receipt** with provenance, which supplies
+its chunk count (`n_chunks`), the glossary file's sha256 and the file's versions. **At the start and the
+end of every leg** the live census (§9.2) checks the collection's chunk total against the receipt's
+`n_chunks`, and every chunk's stamp against the arm's stamp and the file's versions; a mismatch stops the
+leg. The receipt holds no stamp census of its own. Each collection also has a **registry entry**, which
+the management-approved load route guarantees; the harness does not machine-check it per leg. The loads run under the
 approved path with management (§5.3); bulk writes go one index at a time, with the 85 % heap stop. No
 restore-to-state step exists, because no leg changes a collection.
 
