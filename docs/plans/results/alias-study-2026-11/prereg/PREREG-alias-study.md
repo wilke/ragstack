@@ -895,8 +895,8 @@ once** (`embed-bulk.cwl`), and the same embedding shards are **loaded once per v
 `ragstack.glossary_file/v1` file for *merged* or *placebo*; the loader renders the field under the mention
 rule and caps of the table above. So nothing is re-embedded and nothing is backfilled. The loads run
 through the workflow engine (GoWe) on the bench tenant, under the approved path. Each collection has a
-**registry entry** and a **load receipt** with provenance, and its id follows
-`bench-alias-<corpus>-<glossary>-<yymmdd>`. *Why:* nothing is overwritten, nothing has to be restored, the
+**registry entry** and a **load receipt** with provenance. They are bench collections with an
+unmistakable prefix, recorded in the private run config. *Why:* nothing is overwritten, nothing has to be restored, the
 legs do not depend on the order they run in, and a re-run reads the same collection. *Capacity*
 (confirmed by management): about 16–19 GB of dense vectors and 2–3 GB of BM25 index for the 9
 collections; they need not be built in sequence, but bulk writes still go one index at a time, with the
