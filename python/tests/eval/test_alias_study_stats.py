@@ -1,4 +1,4 @@
-"""Alias study statistics (prereg v2): the two families (G: H1 then H1b in fixed sequence; N:
+"""Alias study statistics (prereg DRAFT v3): the two families (G: H1 then H1b in fixed sequence; N:
 H2 with the gold-only direction gate), the C gate (rule C), the reach and cluster gates, the
 Layer-2 rules (harm, the C cost rule of 2026-11-03, reranker non-inferiority, growth) and the
 serving statements, the judge false-yes bound (U = max), the fixed sensitivities, *fragile*,
@@ -143,6 +143,11 @@ def test_c_gate_needs_the_ci_to_exclude_zero() -> None:
     cg = st.c_gate(recs, o, AN)
     assert cg["conditions"]["a_same_sign"] and cg["conditions"]["b_half"]
     assert not cg["conditions"]["c_ci_excludes_0"] and cg["verdict"] == "passes"
+    # the CI is the paper bootstrap on the boot seed (§5.5), not the permutation seed
+    clc, vc, _ = st.contrast_values([r for r in recs if r["kind"] == "C"], o, st.H1_SPEC)
+    _, sc, nc = st.cluster_sums(clc, vc)
+    assert cg["delta_c_ci95"] == st.boot_ci(sc, nc, AN["n_boot"], AN["boot_seed"])
+    assert cg["delta_c_ci95"] != st.boot_ci(sc, nc, AN["n_boot"], AN["perm_seed"])
 
 
 def test_c_drop_never_fires_and_moot_when_g_does_not_rise() -> None:
@@ -195,7 +200,20 @@ def test_layer1_h1_not_rejected_h1b_not_tested() -> None:
     assert r["H1"]["status"] == st.NOT_CONFIRMED and r["H1"]["p"] == pytest.approx(42 / 64)
     assert r["H1"]["c_gate"]["verdict"] == "moot"
     assert r["H1b"]["status"] == st.NOT_TESTED and "p" not in r["H1b"]
-    assert r["H1b"]["ci95"] is not None and r["H1b"]["power_floor_normal"] is not None
+    assert r["H1b"]["ci95"] is not None
+    # H1b's power is the §8 label-randomization simulation, never H1's normal formula
+    assert "power_floor_normal" not in r["H1b"] and "power_floor_normal" in r["H1"]
+    assert r["H1b"]["power_floor"]["q0.05_p0.85"] == 0.67 and r["H1b"]["power_floor"]["q0.1_p0.7"] == 0.54
+    assert r["H1b"]["power_floor"]["source"].startswith("see §8 simulation")
+
+
+def test_h1b_power_reads_a_simulation_from_the_power_artifact(tmp_path: Path) -> None:
+    art = tmp_path / "power.json"
+    art.write_text(json.dumps({"simulation": {"H1b": {"p0.85_q0.05": {"0.05": 0.671}, "p0.7_q0.1": {"0.05": 0.538}}}}))
+    got = st.h1b_power(art)
+    assert (got["q0.05_p0.85"], got["q0.1_p0.7"]) == (0.671, 0.538) and got["sha256"] == asc.sha256_file(art)
+    # the committed artifact has no H1b simulation (yet): §8's figures, named as such
+    assert st.h1b_power()["q0.05_p0.85"] == st.H1B_POWER_SECTION8["q0.05_p0.85"]
 
 
 def test_reach_gate() -> None:
@@ -294,7 +312,17 @@ def test_equivalence_reading() -> None:
     assert e["delta_points"] == pytest.approx(round(st.apw.mde80_points(600, 0.05), 4))
     assert e["within"] and e["reading"].startswith("no effect larger than")
     assert not st.equivalence(600, 30, [-1.0, 2.6])["within"]
-    assert st.equivalence(600, 0, [0.0, 0.0])["reading"].startswith("not resolved")
+
+
+
+def test_zero_discordance_reads_not_resolved() -> None:
+    """Owner 2026-11-03: with no discordant record the MDE is 0 and there is no equivalence
+    bound: the reading is *not resolved*, with the discordant count (0) beside it, even when
+    the CI is exactly [0, 0]."""
+    z = st.equivalence(600, 0, [0.0, 0.0])
+    assert z["reading"] == "not resolved" and z["discordant"] == 0 and z["within"] is False
+    assert z["delta_points"] is None
+    assert st.equivalence(600, 30, [-1.0, 1.0])["discordant"] == 30
 
 
 # ------------------------------------------------------------------ Layer 2 rules (§3.3)
@@ -332,6 +360,16 @@ def test_attach_needs_lift_2_and_lower_bound_above_0() -> None:
     assert st.attach_rule({"net_points": None, "ci95": None}, f(0, -1, 1))["reading"] == "not resolved"
 
 
+def test_attach_rule_compares_unrounded_figures() -> None:
+    """Printed -1.0 / -3.6, but the unrounded figure lies past the bound: the rule fires."""
+    lift = {"net_points": 3.0, "ci95": [1.0, 5.0]}
+    c_pt = {"net_points": -1.0, "net_exact": -1.00004, "ci95": [-3.0, 1.0], "ci95_exact": [-3.0, 1.0]}
+    c_lo = {"net_points": 0.0, "net_exact": 0.0, "ci95": [-3.6, 2.0], "ci95_exact": [-3.60004, 2.0]}
+    assert st.attach_rule(lift, c_pt)["reading"] == "do not attach (C cost)"
+    assert st.attach_rule(lift, c_lo)["reading"] == "do not attach (C cost)"
+    assert st.attach_rule(lift, {**c_pt, "net_exact": -1.0})["reading"] == "attach"
+
+
 def test_reranker_non_inferiority_at_minus_3() -> None:
     rr = lambda net, lo, hi: st.reranker_rule(f(net, lo, hi))["reading"]  # noqa: E731
     assert rr(-1, -2.9, 1) == "keep the default (non-inferior to BM25)"
@@ -341,9 +379,15 @@ def test_reranker_non_inferiority_at_minus_3() -> None:
 
 
 def test_growth_rule() -> None:
+    """A concern at <= -3 with the CI excluding 0; *not a concern* only through the
+    equivalence bound (§3.3); a wide CI reads *not resolved*."""
+    eq = lambda within: {"within": within, "reading": "no effect larger than 2.1 points" if within else "not resolved"}  # noqa: E731
     assert st.growth_rule(f(-3, -5, -0.1))["reading"] == "a concern"
     assert st.growth_rule(f(-3, -5, 0.0))["reading"] == "not resolved"
-    assert st.growth_rule(f(-2.9, -4, -1))["reading"] == "not a concern by the rule"
+    assert st.growth_rule(f(-2.9, -4, -1))["reading"] == "not resolved"
+    assert st.growth_rule({**f(0.2, -1, 1.5), "equivalence": eq(True)})["reading"] == \
+        "not a concern: no effect larger than 2.1 points"
+    assert st.growth_rule({**f(0.2, -4, 4.5), "equivalence": eq(False)})["reading"] == "not resolved"
 
 
 def l1_stub(h1: str, h1b: str = st.NOT_TESTED, h2: str = st.NOT_CONFIRMED, gates: list[str] | None = None
@@ -351,21 +395,33 @@ def l1_stub(h1: str, h1b: str = st.NOT_TESTED, h2: str = st.NOT_CONFIRMED, gates
     return {"H1": {"status": h1, "gate_reasons": gates or []}, "H1b": {"status": h1b}, "H2": {"status": h2}}
 
 
-def decisions(att: str, gro: str = "not a concern by the rule") -> dict[str, Any]:
-    return {"attach_merged_glossary": {"reading": att}, "related_paper_growth_concern": {"reading": gro},
-            "keep_reranker_default": {"reading": "not resolved"}}
+def decisions(att: str, gro: str = "not resolved", point: bool = False, lower: bool = False) -> dict[str, Any]:
+    return {"attach_merged_glossary": {"reading": att, "n_c": 300,
+                                       "conditions": {"c_point_lt_-1": point, "c_lower_lt_-3.6": lower}},
+            "related_paper_growth_concern": {"reading": gro}, "keep_reranker_default": {"reading": "not resolved"}}
+
+
+C36 = "; a cost on term-bearing passages smaller than about 3.6 points is not ruled out (300 C records)"
 
 
 def test_serving_statements_follow_layer1() -> None:
-    s = lambda att, l1: st.serving_statements(decisions(att), l1)["glossary"]["statement"]  # noqa: E731
-    assert s("attach", l1_stub(st.CONFIRMED, st.CONFIRMED)) == "attach, for questions using the glossary's primary term"
-    assert s("attach", l1_stub(st.CONFIRMED, st.NOT_CONFIRMED)).endswith("(alias-specificity unresolved)")
-    assert s("attach", l1_stub(st.NOT_CONFIRMED)) == "attach provisionally; the confirmatory claim was not confirmed"
+    s = lambda att, l1, **kw: st.serving_statements(decisions(att, **kw), l1)["glossary"]["statement"]  # noqa: E731
+    # every attach statement carries the 3.6-point C cost limit (R12)
+    assert s("attach", l1_stub(st.CONFIRMED, st.CONFIRMED)) == "attach, for questions using the glossary's primary term" + C36
+    assert s("attach", l1_stub(st.CONFIRMED, st.NOT_CONFIRMED)) == \
+        "attach, for questions using the glossary's primary term (alias-specificity unresolved)" + C36
+    assert s("attach", l1_stub(st.NOT_CONFIRMED)) == "attach provisionally; the confirmatory claim was not confirmed" + C36
     assert s("attach", l1_stub(st.GATE, gates=["C gate fired (rule C)"])) == \
-        "attach provisionally, claim not evaluable (C gate fired (rule C))"
+        "attach provisionally, claim not evaluable (C gate fired (rule C))" + C36
     assert s("harmful, do not attach", l1_stub(st.CONFIRMED)) == "harmful, do not attach"
-    assert s("do not attach (C cost)", l1_stub(st.CONFIRMED)).startswith("do not attach: the gain on alias questions")
-    assert s("do not attach (C cost)", l1_stub(st.NOT_CONFIRMED)) == "do not attach (C cost)"
+    # C cost with H1 confirmed names the part of the rule that fired, both when both did
+    head = "do not attach: the gain on alias questions is confirmed, but "
+    assert s("do not attach (C cost)", l1_stub(st.CONFIRMED), point=True) == head + "term-bearing passages lost more than 1 point"
+    assert s("do not attach (C cost)", l1_stub(st.CONFIRMED), lower=True) == \
+        head + "a loss on term-bearing passages larger than 3.6 points is not ruled out"
+    assert s("do not attach (C cost)", l1_stub(st.CONFIRMED), point=True, lower=True) == \
+        head + "term-bearing passages lost more than 1 point and a loss on term-bearing passages larger than 3.6 points is not ruled out"
+    assert s("do not attach (C cost)", l1_stub(st.NOT_CONFIRMED), point=True) == "do not attach (C cost)"
     assert s("not resolved", l1_stub(st.CONFIRMED)) == "not resolved"
     g = lambda h2: st.serving_statements(decisions("not resolved", "a concern"), l1_stub(st.NOT_CONFIRMED, h2=h2))  # noqa: E731
     assert g(st.CONFIRMED)["growth"]["statement"] == "related-paper growth is a concern"
@@ -399,16 +455,32 @@ def test_u_is_max_of_random_and_pooled() -> None:
     random-only U would be too small; (c) no random pair: the pooled one."""
     a = st.false_yes_bound(-2.0, st.false_yes_counts(frows([("random", 1, 0, 3), ("random", 1, 1, 7),
                                                             ("base", 1, 1, 10)])), 90.0, 900)
-    assert a["U_random"] == 0.6032 and a["U_pooled"] == 0.3604 and a["U"] == 0.6032 and a["U_from"] == "random"
-    assert a["B_points"] == pytest.approx(100 * 0.6032 * 90 / 900) and a["within_bound"] is True
+    assert a["U_random"] == 0.6033 and a["U_pooled"] == 0.3605 and a["U"] == 0.6033 and a["U_from"] == "random"
+    assert a["B_points"] == pytest.approx(100 * 0.6033 * 90 / 900) and a["within_bound"] is True
     b = st.false_yes_bound(-3.0, st.false_yes_counts(frows([("random", 1, 1, 40), ("base", 1, 0, 10),
                                                             ("base", 1, 1, 10)])), 90.0, 900)
-    assert b["U_random"] == 0.0876 and b["U_pooled"] == 0.2803 and b["U"] == 0.2803 and b["U_from"] == "pooled"
-    assert b["B_points"] == pytest.approx(2.803) and b["within_bound"] is False   # |-3| > 2.803
+    assert b["U_random"] == 0.0877 and b["U_pooled"] == 0.2804 and b["U"] == 0.2804 and b["U_from"] == "pooled"
+    assert b["B_points"] == pytest.approx(2.804) and b["within_bound"] is False   # |-3| > 2.804
     c = st.false_yes_bound(-1.0, st.false_yes_counts(frows([("base", 1, 0, 3), ("base", 1, 1, 7)])), 90.0, 900)
-    assert c["U_random"] is None and c["U"] == c["U_pooled"] == 0.6032
+    assert c["U_random"] is None and c["U"] == c["U_pooled"] == 0.6033
     none = st.false_yes_bound(-1.0, st.false_yes_counts({}), 90.0, 900)
     assert none["B_points"] is None and none["within_bound"] is False
+
+
+def test_false_yes_bound_boundary_and_denominator() -> None:
+    """|H2 net| = B exactly is *within* the bound (<=); B divides by the contrast's N, not 900."""
+    cnt = st.false_yes_counts(frows([("random", 1, 0, 3), ("random", 1, 1, 7)]))
+    b = 100.0 * 0.6033 * 90.0 / 900
+    assert st.false_yes_bound(-b, cnt, 90.0, 900)["within_bound"] is True
+    assert st.false_yes_bound(-b * 1.0001, cnt, 90.0, 900)["within_bound"] is False
+    half = st.false_yes_bound(-1.0, cnt, 90.0, 450)
+    assert half["N"] == 450 and half["B_points"] == pytest.approx(100 * 0.6033 * 90 / 450)
+
+
+def test_wilson_limits_round_outward() -> None:
+    assert st._wilson(3, 10) == [0.1077, 0.6033]          # 0.10779… down, 0.60322… up
+    assert st._wilson(10, 10)[1] == 1.0 and st._wilson(0, 40) == [0.0, 0.0877]
+    assert st._wilson(0, 0) is None
 
 
 def test_judged_only_hits_average_the_draws() -> None:
@@ -442,6 +514,30 @@ def test_studentized_equals_the_primary_p_when_exact() -> None:
     assert lat["min_attainable_p"] == pytest.approx(2.0 ** -36)
 
 
+def data_stub(recs: list[dict[str, Any]], cfg: dict[str, Any]) -> Any:
+    d = st.Data.__new__(st.Data)
+    d.cfg, d.bal, d.rows, d.pair_paper, d.pair_arm = cfg, recs, {}, {}, {}
+    return d
+
+
+def test_h2_gold_gate_applies_to_every_re_test(tmp_path: Path) -> None:
+    """The judged H2 test rejects but the gold-only change points the other way: the primary is
+    *not confirmed (gold-only direction gate)*. Each H2 re-test that rejects (bootstrap-t, topic
+    clustering, volume covariate) must read the same, or it would 'confirm' H2 and make the
+    primary fragile spuriously."""
+    recs, o = h2_world(False)
+    l1 = st.layer1(recs, o, {}, None, AN)
+    assert l1["H2"]["status"] == st.NOT_CONFIRMED_GOLD
+    cov = {f"P{i:02d}": {"topic": f"T{i % 10}",
+                         "added_chunks": {"neighbour": 30 + i % 2, "random1": 30, "random2": 30}} for i in range(30)}
+    (tmp_path / "cov.json").write_text(json.dumps(cov))
+    fs = st.fixed_sensitivities(data_stub(recs, {"paper_covariates": str(tmp_path / "cov.json")}), o, l1, AN)
+    for name in ("bootstrap_t", "topic_clustering", "volume_covariate"):
+        assert fs["H2"][name]["p"] <= 0.05, name                         # it would confirm without the gate
+        assert fs["H2"][name]["verdict"] == st.NOT_CONFIRMED_GOLD, name
+    assert st.fragile("H2", l1["H2"]["status"], fs["H2"])["fragile"] is False
+
+
 def test_topic_clustering_pools_papers() -> None:
     names = [f"P{i}" for i in range(10)]
     sums = np.array([1.0] * 10)
@@ -449,14 +545,56 @@ def test_topic_clustering_pools_papers() -> None:
     assert k == 4 and no_topic == 2 and sorted(tsum.tolist()) == [1.0, 1.0, 3.0, 5.0]   # untopicked: own clusters
 
 
-def test_volume_covariate_removes_a_pure_volume_effect() -> None:
-    """S_j = -0.1 x_j: the whole H2 effect is added volume; adjusted to x = 0 nothing is left."""
-    names = [f"P{i}" for i in range(12)]
-    x = {p: float(i - 3) for i, p in enumerate(names)}
-    sums = np.array([-0.1 * x[p] for p in names])
-    adj, slope, left = st.volume_adjusted(names + ["Pmissing"], np.append(sums, -1.0), x)
-    assert slope == pytest.approx(-0.1) and left == 1 and np.allclose(adj, 0.0)
-    assert sums.sum() < 0
+def test_freedman_lane_holds_level_where_the_fixed_slope_method_did_not() -> None:
+    """The reviewer's null case (O13): S = 0.5 x + e, no effect at x = 0, x-bar / s_x = 1. The
+    fixed-slope adjust-then-flip method rejected at about .15 at nominal .05; the Freedman–Lane
+    sign-flip with the studentized intercept stays near .05 (small reps, loose bound)."""
+    rng = np.random.default_rng(20261103)
+    reps, rej = 150, 0
+    for i in range(reps):
+        x = rng.normal(1.0, 1.0, 40)
+        y = 0.5 * x + rng.normal(0.0, 1.0, 40)
+        rej += st.freedman_lane_intercept(y, x, "less", 400, i)["p"] <= 0.05
+    assert rej / reps <= 0.10
+
+
+def test_freedman_lane_reads_the_intercept_not_the_volume() -> None:
+    """A pure volume effect (S = -0.5 x + e, x > 0) is not an H2 effect at equal volume; a
+    shifted intercept (S = -1 - 0.5 x + e) is. The p is Monte Carlo and says so."""
+    rng = np.random.default_rng(3)
+    x = rng.uniform(0.5, 3.0, 60)
+    e = rng.normal(0.0, 0.3, 60)
+    X = np.column_stack([np.ones(60), x])
+    e = e - X @ np.linalg.lstsq(X, e, rcond=None)[0]       # noise orthogonal to [1, x]: fitted intercepts exact
+    vol = st.freedman_lane_intercept(-0.5 * x + e, x, "less", 2000, 1)
+    eff = st.freedman_lane_intercept(-1.0 - 0.5 * x + e, x, "less", 2000, 1)
+    assert vol["p"] > 0.05 and eff["p"] <= 0.05 and eff["intercept_per_paper"] == pytest.approx(-1.0)
+    assert vol["intercept_per_paper"] == pytest.approx(0.0, abs=1e-9)
+    assert eff["p_method"].startswith("monte_carlo (Freedman–Lane") and eff["min_attainable_p"] == pytest.approx(1 / 2001)
+    assert st.freedman_lane_intercept(np.ones(5), np.ones(5), "less", 100, 1)["p"] is None   # constant covariate
+
+
+def test_bootstrap_t_type_one_error_under_a_skewed_mean_zero_null() -> None:
+    """S_j = Exp(1) - 1 (mean 0, right-skewed), 50 papers: the one-sided bootstrap-t rejects
+    near .05 (small reps, loose bound), in both directions."""
+    rng = np.random.default_rng(11)
+    reps = 200
+    for alt in ("greater", "less"):
+        rej = sum(st.bootstrap_t(rng.exponential(1.0, 50) - 1.0, alt, 400, i)["p"] <= 0.05 for i in range(reps))
+        assert 0.005 <= rej / reps <= 0.11, (alt, rej / reps)
+
+
+def test_bootstrap_t_can_disagree_with_the_primary() -> None:
+    """29 papers at +1 and one at -7: the sign-flip (symmetric null) rejects, the bootstrap-t
+    (the weak null, skew-aware) does not; the re-test then makes a confirmed H1 fragile."""
+    import chunktrial_stats as cs
+
+    s = np.array([-7.0] + [1.0] * 29)
+    prim = cs.sign_flip_test_exact(s, alternative="greater")
+    bt = st.bootstrap_t(s, "greater", 2000, 11)
+    assert prim["p"] <= 0.05 < bt["p"] and bt["n_boot"] == 2000 and bt["seed"] == 11
+    v = st.retest_verdict(bt["p"], bt["min_attainable_p"])
+    assert st.fragile("H1", st.CONFIRMED, {"bootstrap_t": {"verdict": v}})["flipped_by"] == ["bootstrap_t"]
 
 
 def test_tercile_boundaries_are_read_not_computed() -> None:
@@ -486,12 +624,12 @@ def sv(verdict: str) -> dict[str, str]:
 
 
 def test_fragile_allowed_cases() -> None:
-    for name in ("studentized", "topic_clustering"):
+    for name in ("bootstrap_t", "topic_clustering"):
         r = st.fragile("H1", st.CONFIRMED, {name: sv(st.NOT_CONFIRMED)})
         assert r["fragile"] and r["flipped_by"] == [name]
     assert st.fragile("H1", st.NOT_CONFIRMED, {"topic_clustering": sv(st.CONFIRMED)})["fragile"]
     assert st.fragile("H2", st.CONFIRMED, {"volume_covariate": sv(st.NOT_CONFIRMED_GOLD)})["fragile"]
-    assert st.fragile("H2", st.NOT_CONFIRMED_GOLD, {"studentized": sv(st.CONFIRMED)})["fragile"]
+    assert st.fragile("H2", st.NOT_CONFIRMED_GOLD, {"bootstrap_t": sv(st.CONFIRMED)})["fragile"]
 
 
 def test_fragile_forbidden_cases() -> None:
@@ -502,12 +640,15 @@ def test_fragile_forbidden_cases() -> None:
                                              "H2_vs_random1_alone", "unjudged_yes")}
     assert not st.fragile("H2", st.CONFIRMED, sub)["fragile"]
     # H1b is exempt
-    hb = st.fragile("H1b", st.CONFIRMED, {"studentized": sv(st.NOT_CONFIRMED)})
+    hb = st.fragile("H1b", st.CONFIRMED, {"bootstrap_t": sv(st.NOT_CONFIRMED)})
     assert not hb["fragile"] and hb["considered"] == []
     # a GATE primary cannot be flipped; a GATE re-test flips nothing; gold vs plain not confirmed is no flip
-    assert not st.fragile("H1", st.GATE, {"studentized": sv(st.CONFIRMED)})["fragile"]
+    assert not st.fragile("H1", st.GATE, {"bootstrap_t": sv(st.CONFIRMED)})["fragile"]
+    # the studentized sign-flip is an identity check: it decides nothing
+    assert not st.fragile("H1", st.CONFIRMED, {"studentized_identity_check": sv(st.NOT_CONFIRMED),
+                                               "studentized": sv(st.NOT_CONFIRMED)})["fragile"]
     assert not st.fragile("H1", st.CONFIRMED, {"topic_clustering": sv(st.GATE)})["fragile"]
-    assert not st.fragile("H2", st.NOT_CONFIRMED, {"studentized": sv(st.NOT_CONFIRMED_GOLD)})["fragile"]
+    assert not st.fragile("H2", st.NOT_CONFIRMED, {"bootstrap_t": sv(st.NOT_CONFIRMED_GOLD)})["fragile"]
 
 
 # ------------------------------------------------------------------ outcomes from rows
@@ -617,16 +758,31 @@ def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
     assert l1["H2"]["status"] == GATE_OR_NOT(res)
     assert "holm_drop_gated" not in l1 and l1["families"]["N"]["alpha"] == 0.05
     assert l1["H2"]["judge_false_yes_bound"]["rule"] == "U = max(U_random, U_pooled)"
-    assert l1["H1"]["fragile"]["considered"] == ["studentized", "topic_clustering"]
+    assert l1["H1"]["fragile"]["considered"] == ["bootstrap_t", "topic_clustering"]
     assert l1["H1b"]["fragile"]["fragile"] is False
     dec = res["layer2"]["decisions"]["attach_merged_glossary"]
     assert dec["reading"] == "attach" and dec["delta_c"] == 0.0
     assert res["layer2"]["serving_statements"]["glossary"]["statement"].startswith("attach, for questions")
+    assert res["layer2"]["serving_statements"]["glossary"]["statement"].endswith(
+        "smaller than about 3.6 points is not ruled out (12 C records)")
+    # every input is hashed
+    inp = res["inputs"]
+    jdir = tmp_path / "judge"
+    assert inp["judge"]["final.jsonl"] == asc.sha256_file(jdir / "final.jsonl")
+    assert inp["judge"]["pairs.jsonl"] == asc.sha256_file(jdir / "pairs.jsonl") and inp["judge"]["judge-summary.json"] is None
+    assert len(inp["runs"]) == 13 and all(v["rows_sha256"] and v["summary_sha256"] for v in inp["runs"].values())
+    assert inp["runs"]["base/placebo"]["rows_sha256"] == asc.sha256_file(w.runs / "base" / "placebo.jsonl")
+    assert set(inp["files"]) >= {"field_coverage", "paper_covariates", "tercile_cuts", "neighbour_attribution",
+                                 "power_artifact"}
+    assert inp["files"]["field_coverage"] == asc.sha256_file(tmp_path / "coverage.json")
+    assert inp["records"] == asc.sha256_file(w.records_path) and inp["config_canonical_sha256"]
     # the placebo leg, read when the runner wrote it, with the field coverage beside it
     plc = res["layer2"]["placebo"]
     assert plc["G"]["placebo_minus_none"]["net_points"] == 100.0 and plc["field_coverage"]["placebo"]["share"] == 0.05
     fs = res["fixed_sensitivities"]
-    assert fs["H1"]["studentized"]["verdict"] == st.CONFIRMED and fs["H1"]["topic_clustering"]["clusters"] == 3
+    assert fs["H1"]["bootstrap_t"]["verdict"] == st.CONFIRMED and fs["H1"]["bootstrap_t"]["n_boot"] == 300
+    assert "verdict" not in fs["H1"]["studentized_identity_check"] and fs["H1"]["topic_clustering"]["clusters"] == 3
+    assert fs["H2"]["volume_covariate"]["p_method"].startswith("monte_carlo (Freedman–Lane")
     assert fs["H2"]["xml_only_stratum"]["papers"] == 6 and fs["H2"]["terciles"]["citation_count"]["T1"]["papers"] == 4
     assert isinstance(fs["H2"]["volume_covariate"], dict) and fs["inputs"]["tercile_cuts"]["sha256"]
     # the injected P99-c0 has no final label: counted (a dry run), refused otherwise (review of #904)
@@ -641,7 +797,7 @@ def test_analyse_end_to_end_and_public_check(tmp_path: Path) -> None:
 
 
 def test_fragile_annotates_and_never_changes_the_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A studentized re-test that disagrees makes the confirmed H1 fragile; H1 stays confirmed."""
+    """A bootstrap-t re-test that disagrees makes the confirmed H1 fragile; H1 stays confirmed."""
     w = fx.World(tmp_path)
 
     def top(leg: str, rec: dict[str, Any]) -> list[str]:
@@ -653,13 +809,12 @@ def test_fragile_annotates_and_never_changes_the_label(tmp_path: Path, monkeypat
     w.write_runs(top10=top)
     write_final(w, lambda rec, cid: 0)
     cfg = json.loads(e2e_config(w, tmp_path).read_text())
-    monkeypatch.setattr(st, "studentized_sign_flip",
-                        lambda s, alt, an: {"p": 0.5, "p_method": "stub", "statistic": 0.0, "n_nonzero": 12,
-                                            "min_attainable_p": 2.0 ** -12})
+    monkeypatch.setattr(st, "bootstrap_t",
+                        lambda s, alt, b, seed: {"p": 0.5, "p_method": "stub", "n_boot": b, "min_attainable_p": 1 / (b + 1)})
     res = st.analyse(cfg)
     assert res["layer1"]["H1"]["status"] == st.CONFIRMED
-    assert res["layer1"]["H1"]["fragile"] == {"considered": ["studentized", "topic_clustering"],
-                                              "flipped_by": ["studentized"], "fragile": True}
+    assert res["layer1"]["H1"]["fragile"] == {"considered": ["bootstrap_t", "topic_clustering"],
+                                              "flipped_by": ["bootstrap_t"], "fragile": True}
 
 
 def test_label_coverage_counts_pairs_without_a_final_label() -> None:

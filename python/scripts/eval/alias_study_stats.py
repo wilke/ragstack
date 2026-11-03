@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Alias study (OA-1000): the statistics (DRAFT prereg v2 §3, §3.3, §3.4, §6.6, §7, §8, §9.1).
+"""Alias study (OA-1000): the statistics (DRAFT prereg v3 §3, §3.3, §3.4, §6.6, §7, §8, §9.1).
 
     alias_study_stats.py --config CFG [--out results.json] [--public public.json]
 
@@ -35,24 +35,32 @@ lattice.
 
 **Beside H2 (§3.4):** the gold-only net, the draw-to-draw gap and its flag, the per-arm judge
 false-yes rates and the **judge false-yes bound** B = 100 U J_r / N with **U = max(U_random,
-U_pooled)** (owner 2026-11-03), the Wilson 95 % upper limits of the share of Opus-*not* among
+U_pooled)** (R13, owner 2026-11-03), the Wilson 95 % upper limits (rounded up) of the share of Opus-*not* among
 the drift pairs the final label calls *answers*, in the random arm and over the three arms.
 
 **Layer 2 (§3.3), descriptive.** Every figure in points with a 95 % paper-bootstrap percentile
 CI (10,000 resamples, seed ``261101|alias|boot``) and, for found@10 contrasts, the equivalence
 reading (90 % CI within +-delta, delta the realised 80 %-power MDE). The serving rules,
-mechanically (:func:`decision_rules`): *attach* in order harm (L_hi < 0), **C cost (owner
+mechanically (:func:`decision_rules`): *attach* in order harm (L_hi < 0), **C cost (R12, owner
 2026-11-03): do not attach when dC < -1 point or C_lo < -3.6 points**, attach when L >= 2,
 L_lo > 0, dC >= -1 and C_lo >= -3.6, else not resolved; *reranker* non-inferiority at -3
-points; *growth* a concern at <= -3 points with the CI excluding 0. The Layer-1 verdict
-governs the wording (:func:`serving_statements`).
+points; *growth* a concern at <= -3 points with the CI excluding 0, *not a concern* only
+through the equivalence bound, else not resolved. The rules compare unrounded figures. The
+Layer-1 verdict governs the wording (:func:`serving_statements`); every *attach* statement adds
+that a C cost smaller than about 3.6 points is not ruled out (R12).
+
+**Inputs.** Every file read is hashed into ``inputs`` (:func:`input_hashes`): the records, the
+judge's ``final.jsonl`` / ``pairs.jsonl`` / ``judge-summary.json``, every run summary and row
+file, and every optional file the config names; plus the config's canonical sha256.
 
 **Sensitivities (§7), never deciding.** The declared ones (subsets, judge modes, missing as
 not found, H2 against each draw) and the fixed ones of R6: the studentized sign-flip (H1,
-H2), topic clustering (H1, H2), H2 with the chunk-volume covariate, the XML-only stratum, H2
+H2: an identity check, deciding nothing), the paper-cluster bootstrap-t (H1, H2; the weak-null
+re-test), topic clustering (H1, H2), H2 with the chunk-volume covariate (Freedman–Lane sign-flip,
+studentized intercept), the XML-only stratum, H2
 by citation-count and text-similarity tercile (cut points read from a committed file), the
 origin counts and the placebo leg. **Fragile (owner 2026-11-03):** only H1 and H2, and only
-through the studentized test and topic clustering (H1) plus the volume covariate (H2); a
+through the bootstrap-t and topic clustering (H1) plus the volume covariate (H2); a
 subgroup never makes anything fragile, H1b is exempt, and *fragile* never changes a label.
 """
 from __future__ import annotations
@@ -93,10 +101,11 @@ RERANK_MARGIN = -3.0    # non-inferiority margin of default - BM25
 GROWTH_MARGIN = -3.0    # neighbour - random at or below this, with the CI excluding 0
 #: §3.4: U = max(U of the random arm, U pooled over the three arms) (owner 2026-11-03)
 FALSE_YES_SCOPES = ("random", "pooled")
-#: §7 (owner 2026-11-03): the only sensitivities that can make a member fragile
+#: §7 (owner 2026-11-03): the only sensitivities that can make a member fragile. The studentized
+#: sign-flip is printed as an identity check (its exact p is the primary's) and decides nothing.
 FRAGILE_BY: dict[str, tuple[str, ...]] = {
-    "H1": ("studentized", "topic_clustering"),
-    "H2": ("studentized", "topic_clustering", "volume_covariate"),
+    "H1": ("bootstrap_t", "topic_clustering"),
+    "H2": ("bootstrap_t", "topic_clustering", "volume_covariate"),
 }
 CONFIRMED = "confirmed"
 NOT_CONFIRMED = "not confirmed"
@@ -190,16 +199,25 @@ def cluster_sums(clusters: Sequence[str], vals: Sequence[float]) -> tuple[list[s
     return list(order), sums, cnt
 
 
+def boot_raw(sums: np.ndarray, counts: np.ndarray, n_boot: int, seed: int) -> list[float] | None:
+    """``[lo95, hi95, lo90, hi90]`` of the paper-bootstrap percentile CIs of 100 x sum / n
+    (points), unrounded, from one set of resamples (seed ``261101|alias|boot``; the 90 % CI is
+    the equivalence bound, §3.3). The rules compare these; the printed CIs are rounded."""
+    if sums.size == 0:
+        return None
+    vals = cs._bootstrap_net_shares(np.asarray(sums, float), np.asarray(counts, float), n_boot, seed)
+    return [100 * float(x) for x in np.percentile(vals, [2.5, 97.5, 5.0, 95.0])]
+
+
+def _r4(xs: Sequence[float] | None) -> list[float] | None:
+    return None if xs is None else [round(float(x), 4) for x in xs]
+
+
 def boot_cis(sums: np.ndarray, counts: np.ndarray, n_boot: int, seed: int
              ) -> tuple[list[float] | None, list[float] | None]:
-    """The 95 % and the 90 % paper-bootstrap percentile CI of 100 x sum / n (points), from the
-    same resamples (seed ``261101|alias|boot``; the 90 % one is the equivalence bound, §3.3)."""
-    if sums.size == 0:
-        return None, None
-    vals = cs._bootstrap_net_shares(np.asarray(sums, float), np.asarray(counts, float), n_boot, seed)
-    lo95, hi95, lo90, hi90 = np.percentile(vals, [2.5, 97.5, 5.0, 95.0])
-    return ([round(100 * float(lo95), 4), round(100 * float(hi95), 4)],
-            [round(100 * float(lo90), 4), round(100 * float(hi90), 4)])
+    """The 95 % and the 90 % CI of :func:`boot_raw`, rounded to 4 decimals for printing."""
+    raw = boot_raw(sums, counts, n_boot, seed)
+    return (None, None) if raw is None else (_r4(raw[:2]), _r4(raw[2:]))
 
 
 def boot_ci(sums: np.ndarray, counts: np.ndarray, n_boot: int, seed: int) -> list[float] | None:
@@ -212,14 +230,17 @@ def equivalence(n: int, discordant: int, ci90: list[float] | None) -> dict[str, 
     only when its 90 % CI lies within +-delta, delta the realised 80 %-power MDE (§8's formula at
     the contrast's realised discordance). Otherwise *not resolved*."""
     if not n or ci90 is None:
-        return {"delta_points": None, "within": False, "reading": "not resolved"}
+        return {"delta_points": None, "within": False, "discordant": discordant, "reading": "not resolved"}
     if discordant == 0:
-        return {"delta_points": 0.0, "within": False, "realised_discordance": 0.0,
-                "reading": "not resolved (no discordant records: the MDE is 0)"}
+        # owner 2026-11-03: zero discordance reads *not resolved*, the discordant count beside it
+        return {"delta_points": None, "within": False, "realised_discordance": 0.0, "discordant": 0,
+                "reading": "not resolved", "note": "no discordant records: the MDE is 0, so no equivalence bound"}
     q = discordant / n
-    delta = round(apw.mde80_points(n, q), 4)
-    within = -delta <= ci90[0] and ci90[1] <= delta
-    return {"delta_points": delta, "realised_discordance": round(q, 4), "ci90": ci90, "within": bool(within),
+    delta_exact = apw.mde80_points(n, q)
+    delta = round(delta_exact, 4)
+    within = -delta_exact <= ci90[0] and ci90[1] <= delta_exact
+    return {"delta_points": delta, "realised_discordance": round(q, 4), "discordant": discordant,
+            "ci90": _r4(ci90), "within": bool(within),
             "reading": f"no effect larger than {delta:g} points" if within else "not resolved"}
 
 
@@ -231,13 +252,15 @@ def figure(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str
     _, sums, cnt = cluster_sums(cl, v)
     n = len(v)
     arr = np.asarray(v)
-    ci95, ci90 = boot_cis(sums, cnt, int(an["n_boot"]), int(an["boot_seed"]))
+    raw = boot_raw(sums, cnt, int(an["n_boot"]), int(an["boot_seed"]))
+    net = 100 * float(arr.sum()) / n if n else None
     out: dict[str, Any] = {"n": n, "missing": miss, "papers": int(sums.size),
-                           "net_points": round(100 * float(arr.sum()) / n, 4) if n else None,
-                           "ci95": ci95, "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()),
+                           "net_points": None if net is None else round(net, 4), "net_exact": net,
+                           "ci95": _r4(raw[:2]) if raw else None, "ci95_exact": raw[:2] if raw else None,
+                           "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()),
                            "cells": [leg for _, leg in spec]}
     if key in ("hit", "hit_gold"):
-        out["equivalence"] = equivalence(n, out["gained"] + out["lost"], ci90)
+        out["equivalence"] = equivalence(n, out["gained"] + out["lost"], raw[2:] if raw else None)
     if gates is not None:
         out["cell_gates"] = {leg: gates.get(leg) for _, leg in spec if gates.get(leg)}
     return out
@@ -291,9 +314,10 @@ def member_randomization(clusters: Sequence[str], vals: Sequence[float], support
 def _member_figures(vals: Sequence[float], sums: np.ndarray, cnt: np.ndarray, alternative: str,
                     an: Mapping[str, Any]) -> dict[str, Any]:
     arr = np.asarray(vals)
-    ci95, ci90 = boot_cis(sums, cnt, int(an["n_boot"]), int(an["boot_seed"]))
+    raw = boot_raw(sums, cnt, int(an["n_boot"]), int(an["boot_seed"]))
     return {"n": len(vals), "papers": int(sums.size), "net_points": round(100 * float(arr.sum()) / len(vals), 4),
-            "ci95": ci95, "ci90": ci90,
+            "ci95": _r4(raw[:2]) if raw else None, "ci90": _r4(raw[2:]) if raw else None,
+            "ci90_exact": raw[2:] if raw else None,
             "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()), "alternative": alternative}
 
 
@@ -518,6 +542,7 @@ class Data:
                                          "commit": (s.get("provenance") or {}).get("commit"),
                                          "summary_sha256": asc.sha256_file(sp)}
             rp = sp.with_name(f"{label}.jsonl")
+            self.runs[f"{c}/{label}"]["rows_sha256"] = asc.sha256_file(rp) if rp.is_file() else None
             have = status.get(leg, "complete") != "missing" and rp.is_file()
             self.rows[leg] = [x for x in f10.read_jsonl_repair_tail(rp) if x["condition"] == cond] if have else []
         jdir = Path(cfg["judge_dir"])
@@ -585,7 +610,8 @@ def cell_gates(spec: Spec, gates: Mapping[str, str | None]) -> list[str]:
 
 def layer1(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]],
            gates: Mapping[str, str | None], reach: Mapping[str, Any] | None, an: Mapping[str, Any],
-           missing: str = "exclude", h2_spec: Spec = H2_SPEC) -> dict[str, Any]:
+           missing: str = "exclude", h2_spec: Spec = H2_SPEC, power_artifact: str | Path | None = None
+           ) -> dict[str, Any]:
     g_recs = [r for r in bal if r["kind"] == "G"]
     # H1
     cl, v, miss1 = contrast_values(g_recs, outcomes, H1_SPEC, "hit", missing)
@@ -634,11 +660,14 @@ def layer1(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str,
         disc = int(m.get("gained", 0)) + int(m.get("lost", 0))
         res[h]["mde_split"] = _mde_split(disc, ALPHA)
         n = int(m.get("n") or 0)
-        res[h]["power_floor_normal"] = {f"q{q:g}_p{p:g}": round(apw.normal_power(n, q, p, ALPHA), 4)
-                                        for q, p in ((0.05, 0.85), (0.10, 0.70))} if n else None
+        if h == "H1b":
+            res[h]["power_floor"] = h1b_power(Path(power_artifact) if power_artifact else None)
+        else:
+            res[h]["power_floor_normal"] = {f"q{q:g}_p{p:g}": round(apw.normal_power(n, q, p, ALPHA), 4)
+                                            for q, p in ((0.05, 0.85), (0.10, 0.70))} if n else None
         res[h]["realised_discordance"] = round(disc / n, 4) if n else None
         if h != "H1b":
-            res[h]["equivalence"] = equivalence(n, disc, m.get("ci90"))
+            res[h]["equivalence"] = equivalence(n, disc, m.get("ci90_exact"))
     if not res["H1b"]["tested"]:
         # §3.1: an untested H1b carries its estimate, CI and power only, never a p
         for k in ("p", "p_exact", "p_perm", "p_mid", "p_method", "statistic"):
@@ -652,6 +681,30 @@ def layer1(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str,
                        "N": {"members": ["H2"], "alpha": ALPHA, "rule": "H2 with the gold-only direction gate"},
                        "note": "no level passes between the families (R1)"}
     return res
+
+
+#: §8: the committed power artifact; H1b's power is read from its label-randomization simulation
+POWER_ARTIFACT = _HERE.parents[2] / "docs" / "plans" / "results" / "alias-study-2026-11" / "artifacts" / \
+    "power-prefreeze.json"
+#: §8's simulation table, H1b by label randomization, C with no effect, at alpha 0.05 (printed
+#: when the power artifact carries no H1b simulation)
+H1B_POWER_SECTION8 = {"q0.05_p0.85": 0.67, "q0.1_p0.7": 0.54}
+
+
+def h1b_power(path: Path | None = None) -> dict[str, Any]:
+    """H1b's power at 0.05 at the two planning scenarios, from the label-randomization
+    simulation (§8), never H1's normal formula: the power artifact's ``simulation.H1b`` when it
+    has one (its sha256 recorded), else *see §8 simulation* with §8's values."""
+    p = Path(path) if path is not None else POWER_ARTIFACT
+    sim = None
+    if p.is_file():
+        sim = (json.loads(p.read_text()).get("simulation") or {}).get("H1b")
+    if sim:
+        return {"q0.05_p0.85": sim["p0.85_q0.05"]["0.05"], "q0.1_p0.7": sim["p0.7_q0.1"]["0.05"],
+                "source": "power artifact, simulation.H1b (label randomization)", "sha256": asc.sha256_file(p)}
+    return {**H1B_POWER_SECTION8,
+            "source": "see §8 simulation (H1b label randomization, C with no effect, alpha 0.05); "
+                      "the power artifact carries no H1b simulation"}
 
 
 def _mde_split(discordant: int, alpha: float) -> list[int] | None:
@@ -718,6 +771,13 @@ def judged_only_hits(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, M
 
 # ------------------------------------------------------------------ Layer 2
 
+def _point_ci(f: Mapping[str, Any]) -> tuple[Any, Any]:
+    """A figure's unrounded point and 95 % CI when it carries them, else the printed ones."""
+    v = f.get("net_exact", f.get("net_points"))
+    ci = f.get("ci95_exact", f.get("ci95"))
+    return v, ci
+
+
 def attach_rule(g_lift: Mapping[str, Any], c_change: Mapping[str, Any]) -> dict[str, Any]:
     """§3.3, the glossary decision, applied in this order:
 
@@ -728,11 +788,14 @@ def attach_rule(g_lift: Mapping[str, Any], c_change: Mapping[str, Any]) -> dict[
     3. ``L >= 2`` **and** ``L_lo > 0`` (and ``dC >= -1`` and ``C_lo >= -3.6``) -> *attach*;
     4. otherwise *not resolved*.
 
-    dC is merged - none on the C records (the C cost is -dC); all figures in points, compared
-    as printed (rounded to 4 decimals)."""
-    lv, lci = g_lift.get("net_points"), g_lift.get("ci95")
-    dc, cci = c_change.get("net_points"), c_change.get("ci95")
-    out: dict[str, Any] = {"g_lift": lv, "g_lift_ci95": lci, "delta_c": dc, "delta_c_ci95": cci,
+    dC is merged - none on the C records (the C cost is -dC); all figures in points. The rule
+    compares the **unrounded** figures (``net_exact`` / ``ci95_exact`` of :func:`figure`; the
+    printed values when a figure carries no exact ones)."""
+    lv, lci = _point_ci(g_lift)
+    dc, cci = _point_ci(c_change)
+    out: dict[str, Any] = {"g_lift": g_lift.get("net_points"), "g_lift_ci95": g_lift.get("ci95"),
+                           "delta_c": c_change.get("net_points"), "delta_c_ci95": c_change.get("ci95"),
+                           "n_c": c_change.get("n"),
                            "thresholds": {"lift_points": ATTACH_LIFT_POINTS, "c_point": C_COST_POINT,
                                           "c_lower": C_COST_LOWER},
                            "label": "Layer 2, descriptive; thresholds judgement-based"}
@@ -758,8 +821,8 @@ def attach_rule(g_lift: Mapping[str, Any], c_change: Mapping[str, Any]) -> dict[
 
 def reranker_rule(d: Mapping[str, Any]) -> dict[str, Any]:
     """§3.3: non-inferiority of default against BM25 at -3 points (neighbour arm, none)."""
-    v, ci = d.get("net_points"), d.get("ci95")
-    out: dict[str, Any] = {"default_minus_bm25": v, "ci95": ci, "margin": RERANK_MARGIN,
+    v, ci = _point_ci(d)
+    out: dict[str, Any] = {"default_minus_bm25": d.get("net_points"), "ci95": d.get("ci95"), "margin": RERANK_MARGIN,
                            "label": "Layer 2, descriptive"}
     if v is None or ci is None:
         out["reading"] = "not resolved"
@@ -773,13 +836,23 @@ def reranker_rule(d: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def growth_rule(f: Mapping[str, Any]) -> dict[str, Any]:
-    """§3.3: a concern if neighbours cost >= 3 points more than random with the CI excluding 0."""
-    v, ci = f.get("net_points"), f.get("ci95")
+    """§3.3: *a concern* if neighbours cost >= 3 points more than random with the CI excluding 0.
+    *Not a concern* only through the equivalence bound (the figure's 90 % CI within +-delta:
+    *not a concern: no effect larger than delta points*); anything else, a wide CI included,
+    reads *not resolved*."""
+    v, ci = _point_ci(f)
     point = v is not None and v <= GROWTH_MARGIN
     excl = ci is not None and ci[1] < 0
-    reading = "a concern" if point and excl else ("not resolved" if point else "not a concern by the rule")
-    return {"neighbour_minus_random": v, "ci95": ci, "margin": GROWTH_MARGIN, "concern": bool(point and excl),
-            "reading": reading, "label": "Layer 2, descriptive"}
+    eq = f.get("equivalence") or {}
+    if point and excl:
+        reading = "a concern"
+    elif eq.get("within"):
+        reading = f"not a concern: {eq['reading']}"
+    else:
+        reading = "not resolved"
+    return {"neighbour_minus_random": f.get("net_points"), "ci95": f.get("ci95"), "margin": GROWTH_MARGIN,
+            "concern": bool(point and excl), "equivalence": eq or None, "reading": reading,
+            "label": "Layer 2, descriptive"}
 
 
 def decision_rules(g_lift: Mapping[str, Any], c_change: Mapping[str, Any], rr_gap: Mapping[str, Any],
@@ -796,7 +869,8 @@ def serving_statements(decisions: Mapping[str, Any], l1: Mapping[str, Any]) -> d
     Layer-2 phrase with the verdict beside it."""
     h1, h1b, h2 = (l1[h]["status"] for h in ("H1", "H1b", "H2"))
     h1_gates = "; ".join(l1["H1"].get("gate_reasons") or [])
-    att = decisions["attach_merged_glossary"]["reading"]
+    ad = decisions["attach_merged_glossary"]
+    att = ad["reading"]
     not_eval = h1 in (GATE, "absent")
     if att == "attach" and h1 == CONFIRMED:
         s = "attach, for questions using the glossary's primary term"
@@ -807,10 +881,18 @@ def serving_statements(decisions: Mapping[str, Any], l1: Mapping[str, Any]) -> d
     elif att == "attach":
         s = "attach provisionally; the confirmatory claim was not confirmed"
     elif att == "do not attach (C cost)" and h1 == CONFIRMED:
-        s = ("do not attach: the gain on alias questions is confirmed, but the cost on term-bearing passages "
-             f"fails the C cost rule (ΔC < {C_COST_POINT:g} point or C_lo < {C_COST_LOWER:g} points)")
+        cond = ad.get("conditions") or {}
+        parts = []
+        if cond.get("c_point_lt_-1"):
+            parts.append("term-bearing passages lost more than 1 point")
+        if cond.get("c_lower_lt_-3.6"):
+            parts.append("a loss on term-bearing passages larger than 3.6 points is not ruled out")
+        s = "do not attach: the gain on alias questions is confirmed, but " + " and ".join(parts)
     else:
         s = att
+    if att == "attach":
+        # §3.3 (R12): every attach statement says what 300 C records cannot rule out
+        s += f"; a cost on term-bearing passages smaller than about 3.6 points is not ruled out ({ad.get('n_c')} C records)"
     gro = decisions["related_paper_growth_concern"]["reading"]
     if gro == "a concern" and h2 == CONFIRMED:
         g = "related-paper growth is a concern"
@@ -962,9 +1044,16 @@ def spot_flags(cfg: Mapping[str, Any], d: Data) -> dict[str, Any]:
     return out
 
 
-def _wilson(k: int, n: int) -> list[float] | None:
-    import glossbench_alias_judge as jd
-    return jd.wilson(k, n)
+def _wilson(k: int, n: int, z: float = 1.959964) -> list[float] | None:
+    """The Wilson score 95 % interval, rounded **outward** to 4 decimals (the lower limit down,
+    the upper limit up), so a bound read from it is never rounded towards the estimate."""
+    if not n:
+        return None
+    p = k / n
+    d = 1 + z * z / n
+    mid = (p + z * z / (2 * n)) / d
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return [max(0.0, math.floor((mid - half) * 1e4) / 1e4), min(1.0, math.ceil((mid + half) * 1e4) / 1e4)]
 
 
 # ------------------------------------------------------------------ §7: the fixed sensitivities (R6)
@@ -983,8 +1072,9 @@ def _tstats(signed: np.ndarray, n: int) -> np.ndarray:
 
 
 def studentized_sign_flip(sums: Sequence[float] | np.ndarray, alternative: str, an: Mapping[str, Any]) -> dict[str, Any]:
-    """§7 (R6), after Wu and Ding (2021): the paper sign-flip test with the studentized
-    statistic in place of the sum. Ties in the tail at a relative tolerance of 1e-9.
+    """Printed identity check, deciding nothing (owner 2026-11-03; the weak-null re-test is
+    :func:`bootstrap_t`): the paper sign-flip test with the studentized statistic in place of
+    the sum. Ties in the tail at a relative tolerance of 1e-9.
 
     With one score per paper, ``Σ (ε_j S_j)^2`` does not depend on the signs, so the
     studentized statistic is a strictly increasing function of the sum over the whole sign
@@ -994,7 +1084,7 @@ def studentized_sign_flip(sums: Sequence[float] | np.ndarray, alternative: str, 
     (``chunktrial_stats.sign_flip_lattice``, ``lattice (monotone in the sum)``); Monte Carlo
     (``n_perm`` draws, seed ``perm_seed``, ``(b + 1)/(m + 1)``) only where the lattice is
     infeasible. Above ``k = 20`` the Monte-Carlo studentized p is always reported as ``p_perm``,
-    a cross-check that never decides: a verdict must not turn *fragile* on Monte-Carlo error."""
+    a cross-check."""
     s = np.asarray(sums, float)
     n = int(s.size)
     nz = s[np.abs(s) > 1e-12]
@@ -1062,21 +1152,83 @@ def paper_scores(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mappi
     return names, sums, cnt, len(v)
 
 
-def volume_adjusted(names: Sequence[str], sums: np.ndarray, x_of: Mapping[str, float]
-                    ) -> tuple[np.ndarray, float, int]:
-    """§7: the H2 paper scores adjusted for the added-chunk difference x_j (neighbour - mean of
-    the draws, per study paper): ``S_j - b x_j`` with ``b`` the OLS slope of ``S_j`` on ``x_j``,
-    so the adjusted sum is the effect at equal added volume (x = 0). Papers without ``x`` are
-    left out (counted). Returns (adjusted scores, slope, papers left out)."""
-    keep = [i for i, nm in enumerate(names) if nm in x_of]
-    s = np.asarray([sums[i] for i in keep], float)
-    x = np.asarray([float(x_of[names[i]]) for i in keep], float)
-    if s.size < 2:
-        return s, 0.0, len(names) - len(keep)
-    xc = x - x.mean()
-    sxx = float((xc ** 2).sum())
-    slope = float((xc * (s - s.mean())).sum() / sxx) if sxx > 1e-12 else 0.0
-    return s - slope * x, slope, len(names) - len(keep)
+def _safe_ratio(num: np.ndarray, den: np.ndarray) -> np.ndarray:
+    """``num / den``, with a zero denominator giving +-inf (0 for a zero numerator)."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        q = np.where(den > 1e-12, num / np.where(den > 1e-12, den, 1.0), np.sign(num) * np.inf)
+    return np.where(np.abs(num) <= 1e-15, 0.0, q)
+
+
+def _tail(t: np.ndarray, t_obs: float, alternative: str) -> int:
+    tol = 1e-9 * (max(1.0, abs(t_obs)) if math.isfinite(t_obs) else 1.0)
+    return int(np.count_nonzero(t >= t_obs - tol if alternative == "greater" else t <= t_obs + tol))
+
+
+def bootstrap_t(sums: Sequence[float] | np.ndarray, alternative: str, n_boot: int, seed: int) -> dict[str, Any]:
+    """§7 (owner 2026-11-03), the weak-null re-test of H1 and H2: a one-sided paper-cluster
+    bootstrap-t of the mean paper score. ``t = mean / se`` (se = sd / sqrt(P), all P papers,
+    zeros included); ``B`` resamples of the papers with replacement (seed ``261101|alias|boot``)
+    give ``t*_b = (mean*_b - mean) / se*_b``, whose own skewness the comparison carries (the
+    bootstrap-t's skew correction); ``p = (#{t* >= t} + 1) / (B + 1)`` ("greater"; "less"
+    mirrors it). It tests the mean claim under the weak null E[S_j] = 0, which the sign-flip
+    does not address. Monte Carlo by construction; ``B`` is recorded."""
+    s = np.asarray(sums, float)
+    n = int(s.size)
+    if n < 2:
+        return {"p": None, "p_method": "degenerate", "n_boot": int(n_boot), "min_attainable_p": 1.0}
+    m = float(s.mean())
+    t_obs = float(_safe_ratio(np.array([m]), np.array([float(s.std(ddof=1)) / math.sqrt(n)]))[0])
+    rng = np.random.default_rng(int(seed))
+    b = 0
+    step = max(1, 2_000_000 // n)
+    for start in range(0, n_boot, step):
+        mm = min(step, n_boot - start)
+        x = s[rng.integers(0, n, size=(mm, n))]
+        b += _tail(_safe_ratio(x.mean(axis=1) - m, x.std(axis=1, ddof=1) / math.sqrt(n)), t_obs, alternative)
+    return {"p": (b + 1) / (n_boot + 1), "p_method": "monte_carlo (paper-cluster bootstrap-t, one-sided)",
+            "statistic": t_obs, "mean_paper_score": m, "papers": n, "n_boot": int(n_boot), "seed": int(seed),
+            "min_attainable_p": 1.0 / (n_boot + 1)}
+
+
+def freedman_lane_intercept(s: np.ndarray, x: np.ndarray, alternative: str, n_flips: int, seed: int
+                            ) -> dict[str, Any]:
+    """§7 (O13, owner 2026-11-03), H2 with the chunk-volume covariate: the effect at equal added
+    volume is the intercept of ``S_j = a + g x_j + e_j``. **Freedman–Lane sign-flip with the
+    studentized intercept**: fit the restricted model ``S = g x`` (no intercept), flip the signs
+    of its residuals, ``S* = g_r x + eps r``, refit the full model and compare the studentized
+    intercepts ``t* = a* / se(a*)`` with the observed one. ``n_flips`` flips (seed
+    ``261101|alias|perm``), ``p = (b + 1)/(n_flips + 1)``: a Monte-Carlo p."""
+    n = int(s.size)
+    X = np.column_stack([np.ones(n), x])
+    if n < 3 or np.linalg.matrix_rank(X) < 2 or float((x * x).sum()) <= 1e-12:
+        return {"p": None, "p_method": "degenerate (fewer than 3 papers or a constant covariate)",
+                "min_attainable_p": 1.0}
+    xtx_inv = np.linalg.inv(X.T @ X)
+    hat = xtx_inv @ X.T
+
+    def tstat(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        coef = y @ hat.T
+        rss = ((y - coef @ X.T) ** 2).sum(axis=1)
+        se = np.sqrt(np.maximum(rss, 0.0) / (n - 2) * xtx_inv[0, 0])
+        return _safe_ratio(coef[:, 0], se), coef
+
+    t_obs_a, coef_obs = tstat(s[None, :])
+    t_obs = float(t_obs_a[0])
+    g_r = float((x * s).sum() / (x * x).sum())
+    resid = s - g_r * x
+    rng = np.random.default_rng(int(seed))
+    b = 0
+    step = max(1, 2_000_000 // n)
+    for start in range(0, n_flips, step):
+        mm = min(step, n_flips - start)
+        eps = rng.integers(0, 2, size=(mm, n)).astype(float) * 2 - 1
+        b += _tail(tstat(g_r * x + eps * resid)[0], t_obs, alternative)
+    return {"p": (b + 1) / (n_flips + 1),
+            "p_method": f"monte_carlo (Freedman–Lane sign-flip of the restricted residuals, studentized intercept, "
+                        f"{n_flips} flips)",
+            "statistic": t_obs, "intercept_per_paper": float(coef_obs[0, 0]), "slope_per_chunk": float(coef_obs[0, 1]),
+            "restricted_slope": g_r, "papers": n, "n_flips": int(n_flips), "seed": int(seed),
+            "min_attainable_p": 1.0 / (n_flips + 1)}
 
 
 def tercile_of(v: float, cuts: Sequence[float]) -> str:
@@ -1143,6 +1295,33 @@ def origin_counts(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mappi
     return out
 
 
+#: config keys naming one optional input file each (hashed into ``inputs.files``)
+INPUT_FILE_KEYS = ("field_coverage", "collision", "spot_judge", "paper_covariates", "tercile_cuts",
+                   "neighbour_attribution", "power_artifact")
+JUDGE_FILES = ("final.jsonl", "pairs.jsonl", "judge-summary.json")
+
+
+def _sha_or_none(p: str | Path | None) -> str | None:
+    return asc.sha256_file(p) if p and Path(p).is_file() else None
+
+
+def input_hashes(cfg: Mapping[str, Any], d: Data) -> dict[str, Any]:
+    """The sha256 of every input the analysis reads (None when a named file is absent): the
+    record file, the judge's three files, every run summary and row file (``runs``), each
+    optional file the config names, each sensitivity-set list, the power artifact H1b's power
+    is read from, and the config itself (canonical JSON)."""
+    jdir = Path(cfg["judge_dir"])
+    files = {k: _sha_or_none(cfg[k]) for k in INPUT_FILE_KEYS if cfg.get(k)}
+    files.setdefault("power_artifact", _sha_or_none(POWER_ARTIFACT))
+    return {"config_canonical_sha256": asc.sha_text(json.dumps(cfg, sort_keys=True, separators=(",", ":"))),
+            "records": _sha_or_none(cfg["records"]),
+            "judge": {name: _sha_or_none(jdir / name) for name in JUDGE_FILES},
+            "runs": {k: {"summary_sha256": v.get("summary_sha256"), "rows_sha256": v.get("rows_sha256")}
+                     for k, v in sorted(d.runs.items())},
+            "files": files,
+            "sensitivity_sets": {k: _sha_or_none(v) for k, v in sorted((cfg.get("sensitivity_sets") or {}).items())}}
+
+
 def _json_file(cfg: Mapping[str, Any], key: str) -> tuple[Any, dict[str, Any] | None]:
     p = cfg.get(key)
     if not p:
@@ -1173,9 +1352,12 @@ def fixed_sensitivities(d: Data, outcomes: Mapping[str, Mapping[str, Any]], l1: 
     scores = {h: paper_scores(recs, outcomes, spec) for h, (recs, spec, _, _) in members.items()}
     for h, (_, _, alt, gate) in members.items():
         names, sums, _, n = scores[h]
-        st = studentized_sign_flip(sums, alt, an)
-        out.setdefault(h, {})["studentized"] = {**st, "verdict": retest_verdict(st["p"], st["min_attainable_p"],
+        bt = bootstrap_t(sums, alt, int(an["n_boot"]), int(an["boot_seed"]))
+        out.setdefault(h, {})["bootstrap_t"] = {**bt, "verdict": retest_verdict(bt["p"], bt["min_attainable_p"],
                                                                                 gold_gate=gate)}
+        st = studentized_sign_flip(sums, alt, an)
+        out[h]["studentized_identity_check"] = {
+            **st, "label": "identity check, decides nothing: with one score per paper its exact p is the primary's"}
         if cov is None:
             out[h]["topic_clustering"] = "absent (no paper covariates supplied)"
             continue
@@ -1197,15 +1379,18 @@ def fixed_sensitivities(d: Data, outcomes: Mapping[str, Mapping[str, Any]], l1: 
             ac = (cov.get(p) or {}).get("added_chunks")
             if ac and all(a in ac for a in ("neighbour", "random1", "random2")):
                 x_of[p] = float(ac["neighbour"]) - 0.5 * (float(ac["random1"]) + float(ac["random2"]))
-        adj, slope, left_out = volume_adjusted(names, sums, x_of)
-        if adj.size:
-            t = cs.sign_flip_test_exact(adj, n_flips=int(an["n_perm"]), seed=int(an["perm_seed"]), alternative="less")
-            n_kept = sum(int(c) for nm, c in zip(names, scores["H2"][2], strict=True) if nm in x_of)
+        keep = [i for i, nm in enumerate(names) if nm in x_of]
+        if keep:
+            sv = np.asarray([sums[i] for i in keep], float)
+            xv = np.asarray([x_of[names[i]] for i in keep], float)
+            fl = freedman_lane_intercept(sv, xv, "less", int(an["n_perm"]), int(an["perm_seed"]))
+            n_kept = sum(int(scores["H2"][2][i]) for i in keep)
+            a = fl.get("intercept_per_paper")
             out["H2"]["volume_covariate"] = {
-                "p": t["p"], "p_method": t["p_method"], "slope_per_chunk": round(slope, 8), "papers_left_out": left_out,
-                "adjusted_net_points": round(100 * float(adj.sum()) / n_kept, 4) if n_kept else None,
-                "min_attainable_p": t["min_attainable_p"], "gold_gate": "the primary's gold-only direction gate",
-                "verdict": retest_verdict(t["p"], t["min_attainable_p"], gold_gate=gold2)}
+                **fl, "papers_left_out": len(names) - len(keep),
+                "adjusted_net_points": round(100 * a * len(keep) / n_kept, 4) if (a is not None and n_kept) else None,
+                "gold_gate": "the primary's unadjusted gold-only direction gate",
+                "verdict": retest_verdict(fl["p"], fl["min_attainable_p"], gold_gate=gold2)}
         else:
             out["H2"]["volume_covariate"] = "absent (no added-chunk counts supplied)"
         xml = {p for p in names if (cov.get(p) or {}).get("xml_only") is True}
@@ -1234,7 +1419,7 @@ def fixed_sensitivities(d: Data, outcomes: Mapping[str, Mapping[str, Any]], l1: 
 
 def fragile(member: str, primary_status: str, sens: Mapping[str, Any]) -> dict[str, Any]:
     """§7, *fragile* (owner 2026-11-03): only H1 and H2 can be fragile, and only through the
-    re-tests named in :data:`FRAGILE_BY` (H1: studentized, topic clustering; H2: those two and the
+    re-tests named in :data:`FRAGILE_BY` (H1: bootstrap-t, topic clustering; H2: those two and the
     volume covariate). A re-test **flips** the verdict when, at the member's level, it gives the
     other verdict (confirmed <-> not confirmed); a re-test that is itself GATE-NOT-EVALUABLE or
     absent flips nothing, a primary that is GATE-NOT-EVALUABLE or absent cannot be flipped.
@@ -1275,7 +1460,7 @@ def analyse(cfg: Mapping[str, Any], d: Data | None = None) -> dict[str, Any]:
     res: dict[str, Any] = {"schema": SCHEMA, "record_set": d.identity, "label_coverage": cov,
                            "seeds": {"perm": asc.SEEDS["perm"], "boot": asc.SEEDS["boot"], "rule": asc.SEED_RULE},
                            "n_perm": an["n_perm"], "n_boot": an["n_boot"], "leg_gates": dict(d.gates), "runs": d.runs}
-    l1 = layer1(d.bal, prim, d.gates, reach, an)
+    l1 = layer1(d.bal, prim, d.gates, reach, an, power_artifact=cfg.get("power_artifact"))
     gap = figure(d.bal, prim, [(1.0, L("random1", "none", "default")), (-1.0, L("random2", "none", "default"))], an)
     l1["H2"]["draw_gap_points"] = gap["net_points"]
     l1["H2"]["within_random_draw_variation"] = within_draw_variation(l1["H2"].get("net_points"), gap["net_points"])
@@ -1296,6 +1481,7 @@ def analyse(cfg: Mapping[str, Any], d: Data | None = None) -> dict[str, Any]:
     res["spot_checks"] = spot_flags(cfg, d)
     res["sensitivities"] = sensitivities(cfg, d, an, reach)
     res["fixed_sensitivities"] = fixed
+    res["inputs"] = input_hashes(cfg, d)
     return res
 
 
