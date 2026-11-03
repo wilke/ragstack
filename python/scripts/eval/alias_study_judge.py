@@ -83,13 +83,20 @@ with its byte length and sha256; the stage-A rows files and leg summaries, which
 writes, exactly; the append-only judge files by prefix, and nothing appended to them may name a
 committed pair or batch) and ``stage-a-commit.public.json`` (counts and sha256s only, checked
 by :func:`alias_study_common.public_problems`; this is what the owner commits to the
-repository), and the marker ``<runs_dir>/STAGE-A-COMMITTED``. Stage B's runs and pairs need
+repository), and the marker ``<runs_dir>/STAGE-A-COMMITTED``. **In the pilot** the commit's
+counts carry no per-leg outcome (:data:`PILOT_WITHHELD_COUNTS`: found@10 and found@10-gold per
+leg), neither in the private commit, nor in its public record, nor on the console (owner,
+2026-11-03: the pilot stays blind to outcomes); ``stage-a/hits.jsonl`` keeps them privately for
+the frozen-hits check; and ``build-pairs`` prints only the deduplicated ``pairs``, ``per_need``
+and ``per_arm`` (:data:`PILOT_BUILD_PRINT`). Main and dry-run commits and printouts are unchanged.
+Stage B's runs and pairs need
 the marker and a commit that still verifies (:func:`verify_marker`: the marker's sha256, the
 public file's, and in the main run the public file tracked at HEAD in the repository). **No
 analysis before the commit:** :func:`analysis_gate` (``check-analysis-gate``) refuses until the
 commit verifies and both owner spot checks (``spot_checks.records``, ``spot_checks.judge``,
 §13.4-13.5) exist, waived (and recorded) only in a dry run and the pilot; the statistics call it
-before reading any outcome.
+before reading any outcome and refuse a pilot directory outright, whose only reader is
+``alias_study_pilot.py`` (R28, owner 2026-11-03).
 
 **Gateway calls** carry a size notice per batch and backend (``preflight`` writes it; ``label``
 refuses without ``--notice-acknowledged`` and a preflight of the same plan, which includes the
@@ -190,6 +197,11 @@ GW_ROLE = {"argon": "tiebreak", "opus": "drift_ref"}
 PREFIX_FILE_NAMES = ("labels-qwen-C.jsonl", "labels-qwen-E.jsonl", "labels-gw-argon.jsonl", "labels-gw-opus.jsonl",
                      "attempts-gw-argon.jsonl", "attempts-gw-opus.jsonl", "calls-gw-argon.jsonl", "calls-gw-opus.jsonl",
                      "dispatch-gw-argon.jsonl", "dispatch-gw-opus.jsonl")
+#: per-leg outcome counts the stage-A commit carries in main and dry-run mode and never in the
+#: pilot (owner, 2026-11-03: the pilot stays blind to outcomes, §5.6)
+PILOT_WITHHELD_COUNTS = ("found10_per_leg", "found10_gold_per_leg")
+#: what ``build-pairs`` prints in the pilot (R28): the deduplicated counts only
+PILOT_BUILD_PRINT = ("pairs", "per_need", "per_arm")
 LABEL_FILES = {"C": "labels-qwen-C.jsonl", "E": "labels-qwen-E.jsonl", "argon": "labels-gw-argon.jsonl",
                "opus": "labels-gw-opus.jsonl"}
 
@@ -980,7 +992,9 @@ def analysis_gate(runs_dir: Path, spot_checks: Mapping[str, Any] | None = None, 
     """§5.7: no analysis is run until stage A is committed and both owner spot checks (§13.4
     records, §13.5 judged pairs) are committed. Raises SystemExit; returns what it checked. The
     statistics call it before they read any outcome. The spot checks are waived, and the waiver
-    recorded, only in a dry run and in the pilot (descriptive, §5.6)."""
+    recorded, only in a dry run and in the pilot (descriptive, §5.6); in the pilot the reader is
+    ``alias_study_pilot.py``, which prints no per-leg outcome, and the statistics refuse a pilot
+    directory before calling this (R28)."""
     if ar.read_commit_marker(Path(runs_dir)) is None:
         raise SystemExit("no analysis before stage A is committed (§5.7): run commit-stage-a")
     v = verify_marker(Path(runs_dir), repo)
@@ -1000,6 +1014,18 @@ def analysis_gate(runs_dir: Path, spot_checks: Mapping[str, Any] | None = None, 
     return {"allowed": True, "mode": v.get("mode"), "stage_a_commit_sha256": v["commit_sha256"],
             "public_tracked_at_head": v["public_tracked_at_head"], "spot_checks_sha256": spot,
             "spot_checks_waived": bool(waive and len(spot) < 2), "spot_checks_waiver": waive if len(spot) < 2 else None}
+
+
+def gateway_calls_so_far(out: Path, backend: str) -> int:
+    """Every gateway call of a backend in a judge out dir, as the caps count them: per tag the
+    larger of the calls log (one row per HTTP reply or error) and the dispatch log (one row per
+    call issued, so a call a kill left in flight counts). Reads nothing else, writes nothing: the
+    pilot report calls it without opening a pipeline."""
+    tags = ["gw-argon", "gw-argon_r2"] if backend.startswith("argon") else ["gw-opus"]
+
+    def rows(p: Path) -> int:
+        return sum(1 for x in p.read_text(encoding="utf-8").splitlines() if x.strip()) if p.is_file() else 0
+    return sum(max(rows(Path(out) / f"calls-{t}.jsonl"), rows(Path(out) / f"dispatch-{t}.jsonl")) for t in tags)
 
 
 class Pipeline:
@@ -1214,14 +1240,8 @@ class Pipeline:
             raise SystemExit(f"batch {batch_no} is finalized")
 
     def calls_so_far(self, backend: str) -> int:
-        """Every gateway call of a backend: per tag the larger of the calls log (one row per HTTP
-        reply or error) and the dispatch log (one row per call issued, so a call a kill left in
-        flight counts)."""
-        tags = ["gw-argon", "gw-argon_r2"] if backend.startswith("argon") else ["gw-opus"]
-
-        def rows(p: Path) -> int:
-            return sum(1 for x in p.read_text(encoding="utf-8").splitlines() if x.strip()) if p.is_file() else 0
-        return sum(max(rows(self.out / f"calls-{t}.jsonl"), rows(self.out / f"dispatch-{t}.jsonl")) for t in tags)
+        """Every gateway call of a backend so far (:func:`gateway_calls_so_far` on this out dir)."""
+        return gateway_calls_so_far(self.out, backend)
 
     def cap_limit(self, backend: str) -> int | None:
         if backend in ("C", "E"):
@@ -1524,6 +1544,13 @@ class Pipeline:
                   "pairs": len(fin), "batches": len(stages["A"]), "sources": summ["sources"],
                   "unjudged": summ["unjudged"], "opus_no_reference": summ["opus_no_reference"],
                   "drift_remedies": len(summ["drift"]["remedies"])}
+        if self.mode == "pilot":
+            # the pilot stays blind to outcomes (owner, 2026-11-03): no per-leg found@10 or
+            # found@10-gold in the commit, its public record or the console; hits.jsonl keeps them
+            # privately for the frozen-hits check
+            for k in PILOT_WITHHELD_COUNTS:
+                counts.pop(k, None)
+            counts["per_leg_outcomes"] = "withheld in the pilot (owner, 2026-11-03)"
         pub_path = self.out / "stage-a-commit.public.json"
         commit = {"schema": COMMIT_SCHEMA, "mode": self.mode, "t": jd.g.now_iso(), "provenance": self.prov,
                   "stage_a_legs": sorted(ar.RETRIEVAL_A_LEGS), "retrieval_A_legs": sorted(ar.RETRIEVAL_A_LEGS),
@@ -1594,7 +1621,13 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
     pl = Pipeline(cfg, http_factory=http_factory, provenance=prov if prov is not None else provenance())
     if args.cmd == "build-pairs":
         man = pl.build(args.stage)
-        print(json.dumps(man["counts"], indent=1))
+        counts = man["counts"]
+        if pl.mode == "pilot":
+            # R28: only the deduplicated counts; instance counts by need, pairs already registered
+            # and the number of legs pool the legs' demand unevenly (the noise repeats) and could
+            # bound a contrast's direction in a degenerate case
+            counts = {k: counts.get(k) for k in PILOT_BUILD_PRINT}
+        print(json.dumps(counts, indent=1))
         return EXIT_OK
     if args.cmd == "status":
         print(json.dumps(pl.status(), indent=1))

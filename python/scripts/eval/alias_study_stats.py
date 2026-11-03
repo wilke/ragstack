@@ -49,11 +49,13 @@ through the equivalence bound, else not resolved. The rules compare unrounded fi
 Layer-1 verdict governs the wording (:func:`serving_statements`); every *attach* statement adds
 that a C cost smaller than about 3.6 points is not ruled out (R12).
 
-**Before anything is read (§5.7, §5.6)** (:func:`study_preflight`): the ``STUDY-MODE`` of
-``runs_dir`` and ``judge_dir`` must be this config's mode, :func:`alias_study_judge.analysis_gate`
-must pass (stage A committed and verified; ``spot_checks: {records, judge}`` present, waived and
-recorded only in a dry run and the pilot), and ``judge_dir`` must be the directory stage A was
-committed from. Legs are read through :func:`alias_study_run.leg_files` (the 29 legs of
+**Before anything is read (§5.7, §5.6)** (:func:`study_preflight`): a **pilot** directory is
+refused outright (R28, owner 2026-11-03: the pilot stays blind to outcomes, and this module writes
+every cell's found@10 and found@10-gold; the pilot's only reader is ``alias_study_pilot.py``); the
+``STUDY-MODE`` of ``runs_dir`` and ``judge_dir`` must be this config's mode,
+:func:`alias_study_judge.analysis_gate` must pass (stage A committed and verified;
+``spot_checks: {records, judge}`` present, waived and recorded only in a dry run), and
+``judge_dir`` must be the directory stage A was committed from. Legs are read through :func:`alias_study_run.leg_files` (the 29 legs of
 :func:`alias_study_common.all_legs`); a run measured in another mode is refused; found10's
 inactive-reranker verdict gates the default leg.
 
@@ -530,12 +532,15 @@ def study_preflight(cfg: Mapping[str, Any]) -> dict[str, Any]:
     """Before any outcome is read (§5.7): the modes agree, the analysis gate passes, and the
     judge directory is the one stage A was committed from.
 
+    * A **pilot** config is refused (R28, owner 2026-11-03): the statistics write every cell's
+      found@10 and found@10-gold, and the pilot stays blind to outcomes; ``alias_study_pilot.py``
+      is the pilot's only reader.
     * ``STUDY-MODE`` of ``runs_dir`` and of ``judge_dir`` must both be this config's mode
-      (``dry_run`` / ``pilot`` / ``main``, :func:`alias_study_run.config_mode`): a pilot directory
-      is never analysed as the main run, nor the reverse (§5.6).
+      (``dry_run`` / ``main``, :func:`alias_study_run.config_mode`), and a pilot directory under a
+      main or dry-run config is refused by the same marker check (§5.6).
     * :func:`alias_study_judge.analysis_gate` (``spot_checks: {records, judge}``): stage A
       committed and verified, both owner spot checks present (waived, and recorded, only in a dry
-      run and the pilot). The commit's mode must be this mode.
+      run). The commit's mode must be this mode.
     * The commit file, the committed ``final`` and ``pairs`` files and ``stage-a/hits.jsonl``
       must sit in ``judge_dir`` (and its ``stage-a/``): the labels analysed are the committed ones.
     Raises SystemExit."""
@@ -551,6 +556,10 @@ def study_preflight(cfg: Mapping[str, Any]) -> dict[str, Any]:
         raise SystemExit(f"analysis_stage {stage!r}: 'A' (Layer 1 after stage A) or 'B' (everything, after stage B)")
     runs, jdir = Path(cfg["runs_dir"]), Path(cfg["judge_dir"])
     mode = ar.config_mode(cfg)
+    if mode == "pilot":
+        raise SystemExit("a pilot config: the statistics never read the pilot (R28, owner 2026-11-03: the pilot stays "
+                         "blind to outcomes, and this module writes every cell's found@10); the pilot's only reader is "
+                         "alias_study_pilot.py")
     for name, d in (("runs_dir", runs), ("judge_dir", jdir)):
         m = d / ar.MODE_MARKER
         have = m.read_text(encoding="utf-8").strip() if m.is_file() else None

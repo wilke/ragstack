@@ -59,7 +59,9 @@ must name no study record. ``pilot: true`` is the pre-freeze pilot (§5.6): the 
 verified, but only the 191 records on unsatisfied papers are run. Otherwise the run is the main
 run and the config must pin the frozen prereg (``prereg: {file, sha256}``); a sha mismatch is a
 hard stop (§9.2). The out dir carries a ``STUDY-MODE`` marker, and a pilot dir is never reused
-by the main run or the reverse (the pilot's labels are not carried over, §5.6).
+by the main run or the reverse (the pilot's labels are not carried over, §5.6). A pilot leg
+summary carries no found@10 level per condition (:data:`PILOT_WITHHELD_CONDITION_KEYS`; R28,
+owner 2026-11-03: the pilot stays blind to outcomes); the rows keep every rank, privately.
 
 **Gates kept from round 3** (found10): the live census before and after (here against the load
 receipt, above, in place of round 3's swap record); the depth read-back on every call, with the BM25
@@ -159,6 +161,8 @@ JUDGING_A_LEGS = frozenset([asc.leg_id(c, g, r) for c, g in LAYER1_ATTACHMENTS f
                            + _REPEATS)
 #: the name the first version used for the retrieval stage-A set
 STAGE_A_LEGS = RETRIEVAL_A_LEGS
+#: outcome levels found10 writes per condition into a leg summary; left out in the pilot (R28)
+PILOT_WITHHELD_CONDITION_KEYS = ("found10", "found10_gold", "rr10", "mrr10")
 COMMIT_MARKER = "STAGE-A-COMMITTED"
 MODE_MARKER = "STUDY-MODE"
 MODES = ("main", "pilot", "dry_run")
@@ -596,6 +600,14 @@ class AliasRunner(f10.Runner):
         cen.update({"swap_record_sha256": None, "collection_build": self.study.get("collection_build"),
                     "source": "load_receipt+live" if live_before is not None else "load_receipt"})
         summary["census"] = cen
+        if self.study.get("mode") == "pilot":
+            # R28 (owner, 2026-11-03): the pilot stays blind to outcomes; its leg summaries carry
+            # no found@10 level (the rows keep every rank, privately; the pilot report reads rows
+            # and labels only)
+            for c in (summary.get("conditions") or {}).values():
+                for k in PILOT_WITHHELD_CONDITION_KEYS:
+                    c.pop(k, None)
+                c["outcomes"] = "withheld in the pilot (owner, 2026-11-03)"
         f10.write_json_atomic(self.summary_path, summary)
         return rc
 

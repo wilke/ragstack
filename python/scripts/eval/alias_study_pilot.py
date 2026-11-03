@@ -19,7 +19,7 @@ a 95 % interval, as counts that can be committed before the freeze:
   whose final label is the tiebreaker's, and the unjudged, per arm;
 * the **Opus-filtered** (no-reference) share of the drift sample, per arm (§6.3);
 * the **deduplicated pair count** of the judge's registry, in total and per judging stage, and
-  the gateway calls made so far (:meth:`alias_study_judge.Pipeline.calls_so_far`), for the judge
+  the gateway calls made so far (:func:`alias_study_judge.gateway_calls_so_far`), for the judge
   caps (§14 O7).
 
 §5.6's baseline C found@10 is **not** reported, with or without found@10-gold (owner,
@@ -65,7 +65,6 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -295,11 +294,12 @@ def registry_counts(p: Pilot) -> dict[str, Any]:
 
 def gateway_calls(judge_dir: Path, n_pairs: int) -> dict[str, Any]:
     """Calls per gateway backend as the judge's caps count them: the judge's own
-    :meth:`alias_study_judge.Pipeline.calls_so_far` (per tag the larger of the calls log and the
-    dispatch log, re-issues included), read without opening a pipeline (which may write)."""
+    :func:`alias_study_judge.gateway_calls_so_far`, the function ``Pipeline.calls_so_far`` itself
+    calls (per tag the larger of the calls log and the dispatch log, re-issues included), read
+    without opening a pipeline (which may write)."""
     out: dict[str, Any] = {}
     for kind in ("argon", "opus"):
-        n = aj.Pipeline.calls_so_far(SimpleNamespace(out=judge_dir), kind)  # type: ignore[arg-type]
+        n = aj.gateway_calls_so_far(judge_dir, kind)
         out[kind] = {"calls": n, "per_registry_pair": round(n / n_pairs, 4) if n_pairs else None}
     return out
 
