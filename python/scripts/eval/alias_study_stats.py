@@ -18,8 +18,14 @@ counted (§7 *Missing data*); ``family_missing_as_not_found`` scores it 0 (a sen
 **Layer 1 (§3.1).** Each member is a linear contrast of cell outcomes per record (H1:
 merged - none on base x default, G records; H2: neighbour - (random-1 + random-2)/2 on
 default x none, all 900; H1b: per paper, the mean of its G records' H1 difference minus its C
-record's), summed per paper, tested by the paper sign-flip test (``chunktrial_stats``:
-10,000 flips, exact at <= 20 non-zero papers, seed ``261101|alias|perm``). The members run
+record's), summed per paper. The tests (§7, owner 2026-11-02): **H1 and H2** by the paper sign-flip test
+with the exact conditional p (``chunktrial_stats.sign_flip_test_exact``: enumeration at <= 20
+non-zero papers, lattice convolution above; minimum attainable p 2^-k; H1's null is the sharp null
+per question, H2's the symmetric mean-difference null per paper). **H1b** by the exact G / C label
+randomization test (``chunktrial_stats.cluster_randomization_test``): the G / C labels permuted
+over each paper's records (3 assignments for 2 G + 1 C); the minimum attainable p is the null mass
+of the most extreme value. Monte Carlo, 10,000 draws, seed ``261101|alias|perm``, (b + 1)/(m + 1),
+only beyond the lattice threshold. The members run
 through the Option-B procedure (:func:`layer1_procedure`): H1 and H2 start at 0.025 each and a
 rejected member passes its level to the other (Holm over 2); H1b is tested at 0.05 only when
 both are rejected. A member is GATE-NOT-EVALUABLE (p = 1.0 in the procedure) when its minimum
@@ -37,6 +43,7 @@ the three serving rules applied mechanically (:func:`decision_rules`).
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import sys
 from collections import Counter, defaultdict
@@ -185,24 +192,81 @@ def found_rate(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
 
 def member_test(clusters: Sequence[str], vals: Sequence[float], alternative: str, an: Mapping[str, Any]
                 ) -> dict[str, Any]:
+    """H1's and H2's test (§7): the exact conditional paper sign-flip p (H1: the sharp null per
+    question; H2: per-paper symmetry of the mean difference)."""
     names, sums, cnt = cluster_sums(clusters, vals)
     if sums.size == 0:
         return {"n": 0, "papers": 0, "p": None, "min_attainable_p": 1.0, "n_nonzero": 0}
-    t = cs.sign_flip_test(sums, n_flips=int(an["n_perm"]), seed=int(an["perm_seed"]), alternative=alternative)  # type: ignore[arg-type]
-    k = int(t["n_pages_nonzero"])
-    mp = 2.0 ** -k if k <= cs.EXACT_MAX_PAGES else max(2.0 ** -k, 1.0 / (1 + int(an["n_perm"])))
+    t = cs.sign_flip_test_exact(sums, n_flips=int(an["n_perm"]), seed=int(an["perm_seed"]),
+                                alternative=alternative)  # type: ignore[arg-type]
+    return {**_member_figures(vals, sums, cnt, alternative, an), "test": "paper sign-flip (exact)",
+            "n_nonzero": int(t["n_pages_nonzero"]), "statistic": t["statistic"], "p": t["p"],
+            "p_exact": t["p_exact"], "p_perm": t["p_perm"], "p_mid": t["p_mid"], "p_method": t["p_method"],
+            "min_attainable_p": float(t["min_attainable_p"])}
+
+
+def member_randomization(clusters: Sequence[str], vals: Sequence[float], supports: Sequence[Sequence[float]],
+                         alternative: str, unit: str, an: Mapping[str, Any]) -> dict[str, Any]:
+    """H1b's test (§7, owner 2026-11-02): the exact label-exchangeability randomization
+    p (``chunktrial_stats.cluster_randomization_test``; Monte Carlo ``(b + 1)/(m + 1)`` with
+    ``n_perm`` draws, seed ``perm_seed``, only beyond the lattice threshold). ``supports[i]`` is
+    unit ``i``'s statistic under each equally likely relabelling; ``unit`` names the unit
+    (paper for H1b). ``min_attainable_p`` is the test's exact floor."""
+    names, sums, cnt = cluster_sums(clusters, vals)
+    if sums.size == 0:
+        return {"n": 0, "papers": 0, "p": None, "min_attainable_p": 1.0, "n_nonzero": 0}
+    t = cs.cluster_randomization_test(supports, float(np.sum(vals)), n_draws=int(an["n_perm"]),
+                                      seed=int(an["perm_seed"]), alternative=alternative)  # type: ignore[arg-type]
+    return {**_member_figures(vals, sums, cnt, alternative, an),
+            "test": f"label-exchangeability randomization (unit: {unit})",
+            "n_nonzero": int(t["n_nonzero"]), "statistic": t["statistic"], "p": t["p"], "p_exact": t["p_exact"],
+            "p_perm": t["p_perm"], "p_mid": t["p_mid"], "p_method": t["p_method"],
+            "min_attainable_p": float(t["min_attainable_p"])}
+
+
+def _member_figures(vals: Sequence[float], sums: np.ndarray, cnt: np.ndarray, alternative: str,
+                    an: Mapping[str, Any]) -> dict[str, Any]:
     arr = np.asarray(vals)
-    return {"n": len(vals), "papers": int(sums.size), "n_nonzero": k, "statistic": t["statistic"], "p": t["p"],
-            "p_exact": t["p_exact"], "p_perm": t["p_perm"], "p_mid": t["p_mid"], "min_attainable_p": mp,
-            "net_points": round(100 * float(arr.sum()) / len(vals), 4),
+    return {"n": len(vals), "papers": int(sums.size), "net_points": round(100 * float(arr.sum()) / len(vals), 4),
             "ci95": boot_ci(sums, cnt, int(an["n_boot"]), int(an["boot_seed"])),
             "gained": int((arr > 0).sum()), "lost": int((arr < 0).sum()), "alternative": alternative}
 
 
-def h1b_values(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], key: str = "hit",
-               missing: str = "exclude") -> tuple[list[str], list[float], int]:
-    """Per paper: mean over its G records of D minus its C record's D, D = merged - none (base x
-    default). A paper whose C record, or every G record, is excluded is dropped (counted)."""
+def exchange_supports(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], spec: Spec,
+                      key: str = "hit", missing: str = "exclude") -> list[list[float]]:
+    """Per record kept by :func:`contrast_values` (same order, same exclusion, a missing outcome
+    scored 0 under ``missing != "exclude"``): the contrast ``Σ c_i x_π(i)`` under every
+    permutation ``π`` of the spec's leg labels over the record's outcomes ``x`` (H2: the three
+    arm labels, 3! = 6 relabellings, equally likely under label exchangeability). Not used by
+    :func:`layer1`: the arm-label randomization was decided against for H2 (§7, S8); kept for
+    the test that shows the wired H2 p is not it."""
+    out: list[list[float]] = []
+    coefs = [c for c, _ in spec]
+    for r in recs:
+        xs: list[float] = []
+        miss = False
+        for _, leg in spec:
+            o = (outcomes.get(leg) or {}).get(r["record_id"])
+            if o is None:
+                miss = True
+                xs.append(0.0)
+            else:
+                xs.append(float(o[key]))
+        if miss and missing == "exclude":
+            continue
+        out.append([sum(c * xs[i] for c, i in zip(coefs, perm, strict=True))
+                    for perm in itertools.permutations(range(len(spec)))])
+    return out
+
+
+def h1b_label_supports(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]],
+                       key: str = "hit", missing: str = "exclude"
+                       ) -> tuple[list[str], list[float], list[list[float]], int]:
+    """Per paper: the H1b score (mean over its G records of D minus the mean over its C records,
+    D = merged - none, base x default), and its values under every assignment of the paper's
+    G / C labels to its remaining records (``n choose n_C`` assignments: 3 for 2 G + 1 C),
+    equally likely under label exchangeability. A paper whose C record, or every G record, is
+    excluded is dropped (counted)."""
     by: dict[str, dict[str, list[float]]] = defaultdict(lambda: {"G": [], "C": []})
     miss = 0
     for r in recs:
@@ -210,7 +274,9 @@ def h1b_values(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
         miss += m
         if v:
             by[str(r["paper"])][r["kind"]].append(v[0])
-    clusters, vals = [], []
+    clusters: list[str] = []
+    vals: list[float] = []
+    supports: list[list[float]] = []
     dropped = 0
     for paper, d in by.items():
         if not d["G"] or not d["C"]:
@@ -218,7 +284,23 @@ def h1b_values(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping
             continue
         clusters.append(paper)
         vals.append(sum(d["G"]) / len(d["G"]) - sum(d["C"]) / len(d["C"]))
-    return clusters, vals, miss + dropped
+        xs = d["G"] + d["C"]
+        n_c = len(d["C"])
+        sup = []
+        for cs_idx in itertools.combinations(range(len(xs)), n_c):
+            g = [x for i, x in enumerate(xs) if i not in cs_idx]
+            c = [xs[i] for i in cs_idx]
+            sup.append(sum(g) / len(g) - sum(c) / len(c))
+        supports.append(sup)
+    return clusters, vals, supports, miss + dropped
+
+
+def h1b_values(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], key: str = "hit",
+               missing: str = "exclude") -> tuple[list[str], list[float], int]:
+    """Per paper: mean over its G records of D minus its C record's D, D = merged - none (base x
+    default). A paper whose C record, or every G record, is excluded is dropped (counted)."""
+    clusters, vals, _, n = h1b_label_supports(recs, outcomes, key, missing)
+    return clusters, vals, n
 
 
 def c_gate(recs: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str, Any]], an: Mapping[str, Any],
@@ -467,8 +549,8 @@ def layer1(bal: Sequence[Mapping[str, Any]], outcomes: Mapping[str, Mapping[str,
     if not reach_ok:
         h1_gates.append(f"reach gate: {reach_note}")
     # H1b
-    clb, vb, missb = h1b_values(bal, outcomes, "hit", missing)
-    h1b = {**member_test(clb, vb, "greater", an), "missing_or_dropped": missb}
+    clb, vb, supb, missb = h1b_label_supports(bal, outcomes, "hit", missing)
+    h1b = {**member_randomization(clb, vb, supb, "greater", "paper", an), "missing_or_dropped": missb}
     h1b_gates = list(h1_gates)
     if h1b["papers"] < MIN_CLUSTERS and f"{h1b['papers']} papers < {MIN_CLUSTERS}" not in h1b_gates:
         h1b_gates.append(f"{h1b['papers']} papers < {MIN_CLUSTERS}")

@@ -7,8 +7,9 @@ with the glossary pipeline for added papers (§5.3). It also folds in the owner'
 2026-11-01 from the #904 code review (seed derivation, the power seed, the drift sample, the
 minimum-attainable-p level, H1b with a missing record, the Opus cap, the admin key, the caps lever and
 the exact sign-flip p: §5.5, §6.3, §7, §8, §9.2) and the corpus-build decisions of the same day
-(neighbour walk-down, article types, random-draw matching, the recorded build facts: §5.1, §7). The
-items still open are in §14. Nothing in this text binds a run until it is
+(neighbour walk-down, article types, random-draw matching, the recorded build facts: §5.1, §7), and
+the owner's decisions of 2026-11-02: the test of each Layer-1 member (§7) and the caps-lever agreement
+`a = 0.7` (§8, §14 O11). The items still open are in §14. Nothing in this text binds a run until it is
 frozen by the procedure in this directory's `README.md`. At freeze the text is frozen **as written**, and
 its sha256 goes into the README and a private `PREREG.sha256`, never into this file. After freeze this
 file is never edited. Any later change is a `DEVIATIONS.md` entry.
@@ -578,7 +579,7 @@ draws), it is the **first 8 bytes of sha256(seed string)**, read big-endian as a
 | **random draw 2** | `261101\|alias\|random-2-v2` | the candidate order of random-2, §5.1 (replaces `…\|random\|2`) |
 | **noise repeats** | `261101\|alias\|noise` | the request order of each repeat leg (`…\|<corpus arm>`), so a repeat is not a replay of the first leg's request sequence, §9.4 |
 | **bootstrap** | `261101\|alias\|boot` | every paper-cluster percentile bootstrap: the C gate's CI (§3.1), the CIs beside Layer-1 members (§7) and every Layer-2 CI (§3.3) |
-| permutation | `261101\|alias\|perm` | the sign-flip test where Monte Carlo is used, §7 |
+| permutation | `261101\|alias\|perm` | any Layer-1 test (sign-flip or randomization) where Monte Carlo is used, §7 |
 | power | `261101\|alias\|power` | the committed power simulation, §8 (owner, 2026-11-01) |
 | judge order | `261101\|alias\|judge\|order` | the labelling order of deduplicated pairs, §6.2 |
 | drift sample | `261101\|alias\|drift` | the per-batch drift sample (`…\|<batch>`), §6.3 |
@@ -689,27 +690,29 @@ apply, as in the calibration harness.
 
 Round 3 §7 machinery (`chunktrial_stats`), with these specifications:
 
-- **Test (Layer 1 only):** paper-clustered sign-flip test on the per-cluster statistic of §3.1, with an
-  **exact discrete (conditional) p-value** (owner, 2026-11-01). Conditional on the observed magnitudes
-  |S_j| of the non-zero paper scores, the null distribution of Σ ε_j |S_j| (ε_j = ±1, equally likely)
-  is computed **exactly**: by enumeration of the 2^k sign vectors at ≤ 20 non-zero clusters, and
-  otherwise by convolution of the k two-point distributions on the scores' lattice (H1's paper scores
-  are integers in {−2, …, +2}; H1b's and H2's are multiples of ½), which is exact and feasible at 300
-  clusters. p = #{T* at least as extreme as T} / 2^k, ties counted in the tail. **Only if** neither is
-  feasible is the p Monte Carlo, 10,000 flips, seed `261101|alias|perm`, with the corrected
-  p = (b + 1) / (m + 1). *Why:* the #904 review simulated the plain Monte-Carlo sign-flip at 0.05 as
-  slightly anti-conservative (0.052–0.054) for H1b under a skewed sparse null; the exact (or corrected)
-  p is used for **H1, H1b and H2 alike**, for consistency. All three members are one-sided. The
-  mid-p is printed as a sensitivity and never decides.
-- **The tested null** is the **sharp null of no glossary (H1, H1b) or corpus-arm (H2) effect on any
-  question**: within each question the conditions compared are exchangeable, so each paper's score S_j
-  is symmetric about 0 and its sign is independent of |S_j| and of the other papers. Under that null
-  the exact conditional sign-flip p above is **exactly level-α**: P(p ≤ α) ≤ α, with equality
-  whenever α is an attainable value of the discrete null distribution, so no simulation is needed to
-  establish its size. It does not test a weaker null of zero mean
-  effect with a skewed per-paper distribution; a rejection is read as evidence against the sharp null.
-- **Minimum attainable p** (owner, 2026-11-01) is 2^−k for the exact p and max(2^−k, 1/(m + 1)) for
-  the Monte-Carlo p. It is judged against the **final level** at which the member is tested: for H1 and
+- **Tests (Layer 1 only; decided, owner, 2026-11-02).** Each member is tested by the exact test
+  whose null is that member's null. All three are one-sided and computed **exactly** (enumeration or
+  convolution on the scores' lattice, ties counted in the tail); **only if** the lattice is infeasible
+  (scores off a lattice of step 1/12 or finer, or half-width above 1,000,000) is the p Monte Carlo,
+  10,000 draws, seed `261101|alias|perm`, with the corrected p = (b + 1) / (m + 1). The mid-p is printed
+  as a sensitivity and never decides.
+
+  | member | test | unit and relabelling | tested null, and why it matches |
+  |---|---|---|---|
+  | **H1** | exact conditional paper sign-flip (`chunktrial_stats.sign_flip_test_exact`) | paper; the sign of each non-zero paper score S_j (2^k vectors) | the **sharp null per question** of no glossary effect: H1 compares two conditions (merged, none), so swapping them negates each question's difference, each S_j is symmetric about 0 and its sign is a fair coin given \|S_j\| |
+  | **H1b** | exact G / C label randomization (`chunktrial_stats.cluster_randomization_test`) | paper; the G / C labels permuted over the paper's balanced records (2 G + 1 C: 3 arrangements, equally likely; 2 for a paper left with 1 G + 1 C) | **label exchangeability**: the glossary effect does not depend on whether a record is G or C. The statistic is a 2 : 1 difference of differences, which a relabelling does not negate, so a sign flip is not exact for this null. **Deciding scenario: S3c** (G and C gaining alike, skewed and sparse, q 2 %), under which a scratch simulation in the #907 review found the sign flip anti-conservative for H1b and the label randomization within level |
+  | **H2** | exact conditional paper sign-flip (`chunktrial_stats.sign_flip_test_exact`) | paper; the sign of each non-zero paper score S_j = Σ (neighbour − mean(random-1, random-2)) | the **symmetric mean-difference null**: each paper's score is symmetric about 0, so the neighbour arm does not shift found@10 in either direction. H2 claims a **mean drop**, and this null allows the neighbour arm to differ from the draws on more questions without a direction. **Deciding scenario: S8** (a neighbour arm that scatters more, with no mean shift), under which the same scratch simulation found the arm-label randomization test above level (exchangeability counts extra scatter as an effect) and the sign flip within level. The gold-only direction gate and the draw-gap flag are unchanged |
+
+  Under its null each p is **exactly level-α**: P(p ≤ α) ≤ α, with equality whenever α is an
+  attainable value of the discrete null distribution. **What a rejection says.** A rejection of H1 is
+  evidence against the sharp null; of H2, against a symmetric per-paper difference, read in the
+  claimed direction and confirmed only with the gold-only gate; of H1b, against G / C exchangeability.
+  None of the three tests addresses a weaker null of zero mean effect with a skewed per-cluster
+  distribution.
+- **Minimum attainable p** (owner, 2026-11-01) is 2^−k for H1's and H2's exact p. For H1b (owner,
+  2026-11-02) it is the null mass of the most extreme value: the product, over the units whose
+  relabellings change the statistic, of each unit's share of relabellings at its extreme. For any
+  Monte-Carlo p it is max(that floor, 1/(m + 1)). It is judged against the **final level** at which the member is tested: for H1 and
   H2 the level after any level passed by the other member (0.025, or 0.05 once the other is confirmed),
   for H1b 0.05. A member whose minimum attainable p exceeds 0.025 can therefore still be evaluated, and
   rejected, at 0.05.
@@ -792,16 +795,19 @@ not a null unless the power at the stated scenario is ≥ .80.
 
 **The committed calculation (pre-freeze, §15)** runs on the realised layout and, for H2, on the realised
 neighbour and random counts per study paper. It repeats the table above by the normal approximation and
-by simulation of the cluster sign-flip test (2,000 simulations × 2,000 flips, a between-paper SD of p of
-.15, seed `261101|alias|power`, §5.5), and it computes H2 with the two-draw average and the gold-only gate
-under stated agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, the caps of
+by simulation of each member's test of §7 (2,000 simulations; H1's sign-flip with 2,000 flips, H2's
+sign-flip and H1b's randomization test exactly; a between-paper SD of p of .15, seed `261101|alias|power`, §5.5),
+and it computes H2 with the two-draw average and the gold-only gate under stated agreement assumptions. **If H2's simulated power is below .80 at q 5 % / p .85, the caps of
 §5.1 are raised before the freeze**; that is the lever, and it acts on metadata counts only. **The power
 the lever reads is the power to *confirm* H2** (owner, 2026-11-01): the judged test rejects **and** the
-gold-only direction gate passes, not the test's power alone. **Which agreement level `a` (1.0, 0.8 or
-0.6 in the committed calculation) the lever reads is open** (§14 O11).
+gold-only direction gate passes, not the test's power alone. **The lever reads the agreement level
+`a = 0.7`, and `a = 0.6` is reported as a sensitivity** (owner, 2026-11-02, §14 O11;
+`alias_study_power.LEVER_AGREEMENT`).
 
-**Evaluability floor.** With k non-zero clusters the minimum attainable one-sided p is 2^−k. At the Holm
-worst case α/2 a member needs k ≥ 6; at α = 0.05 (H1b, or H1 / H2 after the other is confirmed) k ≥ 5.
+**Evaluability floor.** For H1 and H2, with k non-zero clusters, the minimum attainable one-sided p
+is 2^−k. At the Holm worst case α/2 a member needs k ≥ 6; at α = 0.05 (after the other is confirmed)
+it needs k ≥ 5. For H1b the floor is the randomization floor of §7: each paper whose relabellings
+change the statistic contributes 1/3 or 2/3 (2 G + 1 C), or 1/2 (a paper left with 1 G + 1 C).
 
 ## 9. Gates, stops, and restore points
 
@@ -949,20 +955,20 @@ Only items not settled by D1–D10.
 | O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | not now: it is **not on the gateway allow-list**. Adding it later would be a deviation with its own frozen selection plan, as TIEBREAKER-PLAN.md was |
 | O9 | Seeds | **Decided (owner, 2026-11-01).** One recorded seed string per draw, seed base `261101\|alias`: neighbours `…\|neighbours`, random draws `…\|random\|1` and `…\|random\|2`, noise repeats `…\|noise`, bootstrap `…\|boot`, and the derived strings of §5.5. Written in §5.5. **Amended (owner, 2026-11-01):** numeric seeds are the first 8 bytes of sha256(seed string), big-endian unsigned; power seed `…\|power`; random draws `…\|random-1-v2` and `…\|random-2-v2` |
 | O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
-| O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.6 in `alias_study_power`) | **open — the owner chooses before the freeze**; not chosen in this text |
+| O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.7, 0.6 in `alias_study_power`) | **Decided (owner, 2026-11-02): `a = 0.7`**; `a = 0.6` is reported as a sensitivity. Written in §8 |
 
 ## 15. What must exist before freeze
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); O3, O7 (Argon, ceiling), O8, O10 and O11 open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; O3, O7 (Argon, ceiling), O8 and O10 open |
 | 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
 | 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
 | 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open |
 | 5 | **The three expanded corpora built and censused on bench copies, within a management window** under a reviewed live-ops plan: the ingest at the same chunker, embedder and tools image, base chunk ids and content verified identical, the restore points recorded | open |
 | 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
 | 7 | The merged-glossary file the backfill renders, with render parity tests; the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
-| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation, §8), with a clean tree and `citable true` | open |
+| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7, H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, §8), with a clean tree and `citable true` | open; a scratch run on the v2 neighbour counts exists and is not citable |
 | 9 | The committed replay of the composed judge rule on the validation labels (§6.4), replacing the scratch replay | open |
 | 10 | The code of §10 *Must be written*, merged after an independent review | open |
 | 11 | **Owner spot check of the 40 records** (§13.4): may be done before the freeze; must be committed before any analysis | open |

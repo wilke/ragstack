@@ -12,21 +12,25 @@ file with the committed balanced-set rule when ``--records`` is given, else the 
    power = Phi(sqrt(n) mu / sigma - z), z = 1.95996 (one-sided 0.025, the Holm worst case) or
    1.64485 (0.05, the conditional rows). The 80 %-power MDE is mu = k sqrt(q / (n + k^2)),
    k = 1.960 + 0.842, in points.
-2. **Simulation of the cluster sign-flip test** (§8, *The committed calculation*): 2,000
-   simulated studies x 2,000 flips (Monte-Carlo p = (1 + #) / (1 + flips)), the paper's
-   direction share p_j ~ Beta with mean p and between-paper SD 0.15, one seeded sign matrix
-   reused across studies (as ``chunktrial_stats.simulate_power``).
+2. **Simulation of each member's test** (§8, *The committed calculation*; tests per §7, owner
+   2026-11-02): 2,000 simulated studies, the paper's direction share p_j ~ Beta with mean p and
+   between-paper SD 0.15.
 
-   * **H1**: the 2 G records of each paper, the paper sum of hit(merged) - hit(none) > 0.
+   * **H1**: the 2 G records of each paper, the paper sum of hit(merged) - hit(none) > 0, by the
+     cluster sign-flip test (2,000 flips, Monte-Carlo p = (1 + #) / (1 + flips), one seeded sign
+     matrix reused across studies, as ``chunktrial_stats.simulate_power``).
+   * **H1b**: 2 G + 1 C per paper, mean(D_G) - D_C summed > 0, by the exact G / C label
+     randomization test (:func:`simulate_h1b`; C discordant at the same q with no effect).
    * **H2**: all 3 records, d = (d_1 + d_2) / 2 with d_k = hit(neighbour) - hit(random-k), the
-     paper sum < 0. ``q`` is a record's discordance between the neighbour arm and EACH draw **at
-     the planned dose** (prereg §5.1: about 2,800 added papers, ``--planned-added``). With
-     ``--neighbour-counts`` the realised dose enters: paper j's q is q x n_j / (planned / clusters),
-     n_j its attributed neighbour count — discordance assumed linear in the number of added papers,
-     so a corpus that adds fewer papers than planned has proportionally less H2 signal (the earlier
-     version scaled by n_j / mean n, which kept the average q at the planned value whatever the
-     realised count). The normal approximation is also printed at the realised dose (q x dose,
-     dose = sum n_j / planned). A share ``rho`` of it is shared by both draws (same
+     paper sum < 0, by the exact paper sign-flip test (:func:`simulate_h2`). ``q`` is a record's
+     discordance between the neighbour arm and EACH draw **at the planned dose** (prereg §5.1:
+     about 2,800 added papers, ``--planned-added``). With ``--neighbour-counts`` the realised dose
+     enters: paper j's q is q x n_j / (planned / clusters), n_j its attributed neighbour count —
+     discordance assumed linear in the number of added papers, so a corpus that adds fewer papers
+     than planned has proportionally less H2 signal (the earlier version scaled by n_j / mean n,
+     which kept the average q at the planned value whatever the realised count). The normal
+     approximation is also printed at the realised dose (q x dose, dose = sum n_j / planned). A
+     share ``rho`` of it is shared by both draws (same
      record, same direction: d = +-1) and the rest occurs per draw independently (d = +-1/2).
      rho = 1 is the prereg's three-valued approximation; rho = 0.5 shows what averaging two
      draws buys (§8, *H2 is approximated conservatively*). The neighbour arm loses a
@@ -35,8 +39,14 @@ file with the committed balanced-set rule when ``--records`` is given, else the 
      with probability a and is its negative otherwise; H2 is confirmed when p <= level AND
      the gold-only net < 0.
 
+**The caps lever (§8)** reads H2's power to *confirm* (the judged test AND the gold-only gate) at
+q 5 %, p .85, rho 1, level 0.025, at the agreement ``--lever-agreement``; below .80 it fires.
+**a = 0.7** (owner, 2026-11-02, §14 O11), with a = 0.6 reported as a sensitivity
+(``caps_lever_by_agreement``). ``--lever-agreement`` overrides it; a None lever agreement leaves
+the lever undecided.
+
 **Stated assumptions** (in the output): SD of p 0.15; rho in {1.0, 0.5}; agreement a in
-{1.0, 0.8, 0.6}; the seed ``261101|alias|power`` (not in the prereg's
+{1.0, 0.8, 0.7, 0.6}; the seed ``261101|alias|power`` (not in the prereg's
 seed table, §5.5, which fixes "a fixed seed" without naming it). The realised neighbour and
 random counts (§15 item 4) do not exist yet: without ``--neighbour-counts`` H2 assumes equal
 q across papers, and the output says so.
@@ -58,12 +68,19 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import alias_study_common as asc  # noqa: E402
+import chunktrial_stats as cs  # noqa: E402
 
 Z = {0.025: 1.959964, 0.05: 1.644854}
 QS = (0.02, 0.03, 0.05, 0.10, 0.20)
 PS = (0.85, 0.70)
 SD_P = 0.15
-AGREEMENTS = (1.0, 0.8, 0.6)
+AGREEMENTS = (1.0, 0.8, 0.7, 0.6)
+#: §8: the agreement ``a`` between the gold-only and the judged change that the caps lever reads.
+#: Owner, 2026-11-02 (§14 O11): 0.7; 0.6 is the reported sensitivity.
+LEVER_AGREEMENT: float | None = 0.7
+LEVER_SENSITIVITY_AGREEMENT = 0.6
+#: §8: the lever fires when H2's simulated power to confirm is below this
+LEVER_POWER = 0.80
 #: the share of a record's neighbour-vs-draw discordance that both random draws share: 1.0 is the
 #: prereg's three-valued approximation (the draws identical); 0.5 lets the average cut noise
 RHOS = (1.0, 0.5)
@@ -124,13 +141,24 @@ def simulate_h1(n_clusters: int, g_per: int, q: float, p: float, *, sd_p: float 
     return {str(lvl): float((pv <= lvl).mean()) for lvl in (0.025, 0.05)} | {"n_sims": n_sims, "n_flips": n_flips}
 
 
+def _rand_p(groups: Sequence[tuple[Sequence[int], int]], obs2: int, alternative: str) -> float:
+    """Exact label-exchangeability randomization p on the doubled lattice
+    (``chunktrial_stats.randomization_law``)."""
+    dist, lo = cs.randomization_law(groups)
+    vals = np.arange(lo, lo + dist.size)
+    tail = dist[vals >= obs2] if alternative == "greater" else dist[vals <= obs2]
+    return min(1.0, float(tail.sum()))
+
+
 def simulate_h2(n_clusters: int, rec_per: int, q: float, p: float, *, rho: float = 1.0,
                 q_scale: Sequence[float] | None = None, sd_p: float = SD_P,
                 agreements: Sequence[float] = AGREEMENTS, n_sims: int = 2000, n_flips: int = 2000,
                 seed: int = 0) -> dict[str, Any]:
-    """H2 with the two-draw average (module docstring). ``q`` is the record's discordance
-    between the neighbour arm and EACH random draw; a share ``rho`` of it is shared by both
-    draws (the same record, the same direction), the rest occurs per draw independently."""
+    """H2 with the two-draw average and the exact paper sign-flip test (§7, owner 2026-11-02:
+    ``chunktrial_stats.sign_flip_lattice`` on the paper sums, "less"). ``q`` is the record's
+    discordance between the neighbour arm and EACH random draw; a share ``rho`` of it is shared
+    by both draws (the same record, the same direction), the rest occurs per draw
+    independently. ``n_flips`` is unused (the p is exact); kept for the signature."""
     rng = np.random.default_rng(seed)
     shape = (n_sims, n_clusters, rec_per)
     pj = beta_draws(rng, p, sd_p, (n_sims, n_clusters))[:, :, None]
@@ -148,9 +176,8 @@ def simulate_h2(n_clusters: int, rec_per: int, q: float, p: float, *, rho: float
         d_draw.append(np.where(shared, ds, np.where(own, direction(), 0.0)))
     d = 0.5 * (d_draw[0] + d_draw[1])
     sums = d.sum(axis=2)
-    signs = (rng.integers(0, 2, size=(n_flips, n_clusters), dtype=np.int8) * 2 - 1).astype(float)
-    pv = _mc_p(sums, signs, "less")
-    out: dict[str, Any] = {"n_sims": n_sims, "n_flips": n_flips, "rho": rho}
+    pv = np.array([cs.sign_flip_lattice(s, "less")["p"] for s in sums])  # type: ignore[index]
+    out: dict[str, Any] = {"n_sims": n_sims, "test": "paper sign-flip (exact)", "rho": rho}
     for lvl in (0.025, 0.05):
         sig = pv <= lvl
         row: dict[str, Any] = {"test_only": float(sig.mean())}
@@ -161,6 +188,38 @@ def simulate_h2(n_clusters: int, rec_per: int, q: float, p: float, *, rho: float
             row[f"confirm_a{a:g}"] = float((sig & gate).mean())
         out[str(lvl)] = row
     return out
+
+
+def simulate_h1b(n_clusters: int, q: float, p: float, *, q_c: float | None = None, p_c: float = 0.5,
+                 sd_p: float = SD_P, n_sims: int = 2000, seed: int = 0) -> dict[str, Any]:
+    """H1b with the exact G / C label randomization test (§7, owner 2026-11-02), 2 G + 1 C per
+    paper: each G record discordant with probability ``q``, gaining with the paper's share
+    ``p_j`` (Beta, mean ``p``, SD ``sd_p``, as H1); the C record discordant with probability
+    ``q_c`` (default ``q``), gaining with probability ``p_c`` (0.5: no C effect). Statistic
+    ``Σ_papers mean(D_G) − D_C`` > 0; under label exchangeability each of the 3 choices of the C
+    record is equally likely (doubled: the paper's ``Σx − 3 x_i``)."""
+    rng = np.random.default_rng(seed)
+    qc = q if q_c is None else q_c
+    pj = beta_draws(rng, p, sd_p, (n_sims, n_clusters))
+    g = np.where(rng.random((n_sims, n_clusters, 2)) < q,
+                 np.where(rng.random((n_sims, n_clusters, 2)) < pj[:, :, None], 1, -1), 0)
+    c = np.where(rng.random((n_sims, n_clusters)) < qc, np.where(rng.random((n_sims, n_clusters)) < p_c, 1, -1), 0)
+    x = np.concatenate([g, c[:, :, None]], axis=2)
+    xs = np.sort(x, axis=2) + 1
+    keys = xs[:, :, 0] * 9 + xs[:, :, 1] * 3 + xs[:, :, 2]
+    obs2 = (g.sum(axis=2) - 2 * c).sum(axis=1)
+    supports = {}
+    for kk in range(27):
+        tr = (kk // 9 - 1, kk // 3 % 3 - 1, kk % 3 - 1)
+        supports[kk] = tuple(sum(tr) - 3 * v for v in tr)
+    pv = np.empty(n_sims)
+    for i in range(n_sims):
+        ks, cnt = np.unique(keys[i], return_counts=True)
+        groups = [(supports[int(k)], int(n)) for k, n in zip(ks, cnt, strict=True)
+                  if len(set(supports[int(k)])) > 1]
+        pv[i] = _rand_p(groups, int(obs2[i]), "greater")
+    return {str(lvl): float((pv <= lvl).mean()) for lvl in (0.025, 0.05)} | \
+        {"n_sims": n_sims, "test": "G/C label randomization (exact)", "q_c": qc, "p_c": p_c}
 
 
 def dose_scale(counts: Mapping[str, float], papers: Sequence[str], planned_added: float) -> tuple[np.ndarray, float, float]:
@@ -186,16 +245,26 @@ def layout_from_records(path: Path) -> dict[str, Any]:
 
 
 def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: int, n_flips: int,
-            dose: float = 1.0) -> dict[str, Any]:
-    """``q_scale``: per-paper multipliers of q for H2 (dose included); ``dose``: the realised
-    added papers over the planned, for the H2 normal approximation at the realised dose."""
+            lever_agreement: float | None = LEVER_AGREEMENT, dose: float = 1.0) -> dict[str, Any]:
+    """Both methods on the layout, and the caps lever (§8): H2's simulated power to *confirm* at
+    q 5 %, p .85, rho 1, level 0.025 -- the judged test rejects AND the gold-only direction gate
+    passes at agreement ``lever_agreement`` (default 0.7, §14 O11) -- below .80 fires it; the
+    verdict at every simulated ``a`` (0.6 the declared sensitivity) is in
+    ``caps_lever_by_agreement``. With ``lever_agreement`` None ``h2_caps_lever_fires`` is None:
+    undecided, not "does not fire". ``q_scale``: per-paper multipliers of q for H2 (dose
+    included); ``dose``: the realised added papers over the planned, for the H2 normal
+    approximation at the realised dose."""
+    if lever_agreement is not None and not 0.0 <= lever_agreement <= 1.0:
+        raise SystemExit(f"lever agreement {lever_agreement!r}: a share in [0, 1]")
+    agreements = tuple(AGREEMENTS) + (() if lever_agreement is None or lever_agreement in AGREEMENTS
+                                      else (float(lever_agreement),))
     if layout["shapes"] != [[2, 1]]:
         raise SystemExit(f"layout is not exactly 2 G + 1 C per paper: {layout['shapes']}")
     nc = int(layout["clusters"])
     n_h1, n_h2 = 2 * nc, 3 * nc
     seed = asc.seed_int(POWER_SEED)
     normal: dict[str, dict[str, Any]] = {"H1": {}, "H2": {}}
-    sim: dict[str, Any] = {"H1": {}, "H2": {}}
+    sim: dict[str, Any] = {"H1": {}, "H2": {}, "H1b": {}}
     for i, p in enumerate(PS):
         for j, q in enumerate(QS):
             key = f"p{p:g}_q{q:g}"
@@ -205,16 +274,28 @@ def compute(layout: Mapping[str, Any], q_scale: Sequence[float] | None, n_sims: 
                 str(a): round(normal_power(n_h2, min(1.0, q * dose), p, a), 4) for a in (0.025, 0.05)}
             s1 = simulate_h1(nc, 2, q, p, n_sims=n_sims, n_flips=n_flips, seed=seed + 100 * i + j)
             sim["H1"][key] = {k: v for k, v in s1.items() if k in ("0.025", "0.05")}
+            s1b = simulate_h1b(nc, q, p, n_sims=n_sims, seed=seed + 50_000 + 100 * i + j)
+            sim["H1b"][key] = {k: v for k, v in s1b.items() if k in ("0.025", "0.05")}
             for t, rho in enumerate(RHOS):
-                s2 = simulate_h2(nc, 3, q, p, rho=rho, q_scale=q_scale, n_sims=n_sims, n_flips=n_flips,
-                                 seed=seed + 10_000 * (t + 1) + 100 * i + j)
+                s2 = simulate_h2(nc, 3, q, p, rho=rho, q_scale=q_scale, agreements=agreements, n_sims=n_sims,
+                                 n_flips=n_flips, seed=seed + 10_000 * (t + 1) + 100 * i + j)
                 sim["H2"].setdefault(f"rho{rho:g}", {})[key] = {k: v for k, v in s2.items() if k in ("0.025", "0.05")}
     mde = {"H1": {f"q{q:g}": round(mde80_points(n_h1, q), 2) for q in QS},
            "H2": {f"q{q:g}": round(mde80_points(n_h2, q), 2) for q in QS}}
     h2_lever = sim["H2"]["rho1"]["p0.85_q0.05"]["0.025"]
+    by_a = {f"a{a:g}": bool(h2_lever[f"confirm_a{a:g}"] < LEVER_POWER) for a in agreements}
+    if lever_agreement is None:
+        fires: bool | None = None
+        lever_note = "no lever agreement given: the lever is undecided; per-a verdicts in caps_lever_by_agreement"
+    else:
+        fires = by_a[f"a{lever_agreement:g}"]
+        lever_note = (f"confirm power (test and gold-only gate) at a = {lever_agreement:g}; "
+                      f"sensitivity a = {LEVER_SENSITIVITY_AGREEMENT:g}")
     return {"normal_approximation": normal, "simulation": sim, "mde80_points": mde, "h2_dose": dose,
             "h2_at_q05_p85_alpha025": h2_lever,
-            "h2_caps_lever_fires": bool(h2_lever["test_only"] < 0.80),
+            "caps_lever_agreement": lever_agreement, "caps_lever_by_agreement": by_a,
+            "caps_lever_note": lever_note,
+            "h2_caps_lever_fires": fires,
             "evaluability_floor": {"alpha_0.025_min_nonzero_clusters": 6, "alpha_0.05_min_nonzero_clusters": 5}}
 
 
@@ -227,6 +308,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     help="the added papers the q grid refers to (prereg §5.1 estimate: 2,800)")
     ap.add_argument("--sims", type=int, default=2000)
     ap.add_argument("--flips", type=int, default=2000)
+    ap.add_argument("--lever-agreement", type=float, default=LEVER_AGREEMENT,
+                    help="agreement a the caps lever reads (§8, §14 O11: 0.7 by the owner's decision of "
+                         "2026-11-02; 0.6 is reported as the sensitivity)")
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args(argv)
     if args.records is not None:
@@ -248,7 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                        f"({args.planned_added:g} / {len(papers)} = {per_planned:.3f}); realised mean {vals.mean():.2f}, "
                        f"min {vals.min():g}, max {vals.max():g}, total {vals.sum():g}, dose {dose:.4f}; "
                        f"counts sha256 {asc.sha256_file(args.neighbour_counts)}")
-    res = compute(layout, q_scale, args.sims, args.flips, dose=dose)
+    res = compute(layout, q_scale, args.sims, args.flips, args.lever_agreement, dose=dose)
     try:
         from ragstack.provenance import experiment_provenance
         prov = experiment_provenance()
@@ -256,14 +340,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         prov = {}
     out = {"schema": "alias-study-power/1", "layout": layout, **res,
            "assumptions": {"sd_p_between_papers": SD_P, "planned_added": args.planned_added,
-                           "dose_rule": "H2 discordance linear in added papers (q at the planned dose)", "rho_shared_discordance": list(RHOS),
-                           "gold_agreement": list(AGREEMENTS), "neighbour_counts": counts_note,
+                           "dose_rule": "H2 discordance linear in added papers (q at the planned dose)",
+                           "rho_shared_discordance": list(RHOS),
+                           "gold_agreement": list(AGREEMENTS), "lever_agreement": args.lever_agreement,
+                           "neighbour_counts": counts_note,
                            "seed": POWER_SEED, "seed_rule": asc.SEED_RULE, "sims": args.sims, "flips": args.flips},
            "provenance": prov, "citable": bool(prov.get("dirty") is False and prov.get("untracked") == 0)}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"H1_sim": res["simulation"]["H1"]["p0.85_q0.05"], "H2_sim": res["h2_at_q05_p85_alpha025"],
-                      "caps_lever": res["h2_caps_lever_fires"]}, indent=1))
+                      "caps_lever": res["h2_caps_lever_fires"], "caps_lever_by_agreement": res["caps_lever_by_agreement"]},
+                     indent=1))
     return 0
 
 

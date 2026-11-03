@@ -255,6 +255,313 @@ def sign_flip_test(
 
 
 # --------------------------------------------------------------------------- #
+# Exact sign-flip p on the scores' lattice (the alias study, prereg §7)
+# --------------------------------------------------------------------------- #
+#: Largest integer multiplier tried to put the cluster scores on an integer lattice (12 covers
+#: halves, thirds and quarters). Scores that need a larger one fall back to Monte Carlo.
+LATTICE_MAX_SCALE = 12
+#: Largest lattice half-width ``W = Σ_j |m S_j|`` the convolution accepts (the null support is
+#: the ``2W + 1`` integers ``-W..W``; the cost is O(k W)). Above it the p falls back to Monte
+#: Carlo. The alias study's widest member (H2: 300 papers, |S_j| <= 3, doubled) has W <= 1,800.
+LATTICE_MAX_WIDTH = 1_000_000
+#: Above this many non-zero clusters the smallest null probability 2^-k underflows float64.
+LATTICE_MAX_CLUSTERS = 1000
+
+
+def lattice_scale(values: Floats, max_scale: int = LATTICE_MAX_SCALE) -> int | None:
+    """The smallest integer ``m <= max_scale`` with every ``m * x`` an integer (tolerance
+    ``_TOL``), or None. Paper scores that are multiples of 1/2 give ``m = 2``."""
+    x = np.asarray(values, dtype=float)
+    for m in range(1, max_scale + 1):
+        y = m * x
+        if np.all(np.abs(y - np.round(y)) <= _TOL * m):
+            return m
+    return None
+
+
+def _lattice_tail(dist: np.ndarray, lo: int, t_obs: int, alternative: Alternative) -> tuple[float, float]:
+    """``(p, p_mid)`` of the law ``dist`` on the integers ``lo..lo + len - 1`` at ``T = t_obs``:
+    ties counted in the tail for ``p``, half-counted for ``p_mid``."""
+    vals = np.arange(lo, lo + dist.size)
+    if alternative == "greater":
+        tail, strict = dist[vals >= t_obs].sum(), dist[vals > t_obs].sum()
+    elif alternative == "less":
+        tail, strict = dist[vals <= t_obs].sum(), dist[vals < t_obs].sum()
+    elif alternative == "two-sided":
+        tail, strict = dist[np.abs(vals) >= abs(t_obs)].sum(), dist[np.abs(vals) > abs(t_obs)].sum()
+    else:
+        raise ValueError(f"unknown alternative {alternative!r}")
+    tail = min(1.0, float(tail))
+    return tail, float(strict + 0.5 * (tail - strict))
+
+
+def sign_flip_lattice(sums: Floats, alternative: Alternative = "greater",
+                      max_scale: int = LATTICE_MAX_SCALE,
+                      max_width: int = LATTICE_MAX_WIDTH) -> dict[str, Any] | None:
+    """Exact conditional sign-flip p by convolution on the integer lattice; None if infeasible.
+
+    The scores are multiplied by :func:`lattice_scale` ``m`` so that ``a_j = |m S_j|`` are
+    positive integers (zero scores are dropped: they contribute 0 under every flip). Given the
+    magnitudes, ``T* = Σ ε_j a_j`` with ``ε_j`` i.i.d. uniform on {−1, +1}; its law on
+    ``-W..W`` (``W = Σ a_j``) is the convolution of the k two-point laws, the clusters of equal
+    magnitude ``a`` convolved at once (``a (2B − c)``, ``B ~ Bin(c, 1/2)``). Then
+
+    * ``p = P(T* >= T)`` ("greater"), ``P(T* <= T)`` ("less"), ``P(|T*| >= |T|)``
+      ("two-sided"), ties in the tail: the 2^k enumeration's count divided by 2^k;
+    * ``p_mid`` = the strictly-more-extreme mass + half the tie mass (a sensitivity only);
+    * ``min_attainable_p`` = ``P(T* >= W) = 2^-k`` one-sided (only the all-positive vector
+      reaches ``W``, since every ``a_j > 0``; ties cannot add to it), ``2^(1-k)`` two-sided.
+
+    None when no ``m <= max_scale`` works, ``W > max_width`` or ``k > LATTICE_MAX_CLUSTERS``.
+    """
+    s = np.asarray(sums, dtype=float)
+    s = s[np.abs(s) > _TOL]
+    k = int(s.size)
+    if k == 0:
+        return {"p": 1.0, "p_mid": 0.5, "min_attainable_p": 1.0, "scale": 1, "width": 0, "n_nonzero": 0}
+    m = lattice_scale(s, max_scale)
+    if m is None or k > LATTICE_MAX_CLUSTERS:
+        return None
+    a = np.rint(np.abs(m * s)).astype(np.int64)
+    width = int(a.sum())
+    if width > max_width:
+        return None
+    dist = np.ones(1)
+    for mag, c in zip(*np.unique(a, return_counts=True), strict=True):
+        mag, c = int(mag), int(c)
+        kern = np.zeros(2 * mag * c + 1)
+        kern[:: 2 * mag] = [math.comb(c, j) / 2 ** c for j in range(c + 1)]
+        dist = np.convolve(dist, kern)
+    p, p_mid = _lattice_tail(dist, -width, int(np.rint(m * s.sum())), alternative)
+    floor = min(1.0, (2.0 if alternative == "two-sided" else 1.0) * 2.0 ** -k)
+    return {"p": p, "p_mid": p_mid, "min_attainable_p": floor, "scale": m, "width": width, "n_nonzero": k}
+
+
+def sign_flip_test_exact(
+    sums: Floats,
+    n_flips: int = N_FLIPS,
+    seed: int = SEED,
+    alternative: Alternative = "greater",
+    exact_max: int = EXACT_MAX_PAGES,
+    max_scale: int = LATTICE_MAX_SCALE,
+    max_width: int = LATTICE_MAX_WIDTH,
+) -> dict[str, Any]:
+    """The alias study's member test (prereg §7): the exact conditional sign-flip p at any k.
+
+    **The null is the sharp null of per-cluster sign symmetry**: given ``|S_j|``, the sign of
+    each cluster score is a fair coin, independent across clusters. It holds when the two
+    conditions compared are exchangeable for every question of the cluster (swapping them
+    negates each question's difference and so ``S_j``). Under it this p is the exact
+    conditional permutation p: ``P(p <= α) <= α``, with equality when α is attainable, so its
+    size needs no simulation. It is *not* a test of the weaker null ``E[S_j] = 0`` with a
+    skewed ``S_j``; no sign-flip test controls that. **For a contrast of more than two
+    conditions** (``x − (y + z)/2``, a difference of differences) exchangeability of the
+    conditions does *not* make ``S_j`` symmetric, because a relabelling does not negate the
+    contrast; there the guarantee is under the symmetry null only (an exact test of the
+    exchangeability null is :func:`cluster_randomization_lattice`).
+
+    Method: enumeration of the ``2^k`` sign vectors when ``k <= exact_max`` (``p_method``
+    "enumeration"); else :func:`sign_flip_lattice` ("lattice", the same count by convolution);
+    only when neither is feasible (no lattice scale ``<= max_scale``, or half-width
+    ``> max_width``) the Monte-Carlo ``(b + 1)/(m + 1)`` over ``n_flips`` ("monte_carlo"). The
+    Monte-Carlo p is always reported as ``p_perm`` (descriptive).
+
+    Keys as :func:`sign_flip_test` (``p_exact`` = the exact p whenever one exists) plus
+    ``p_method`` and ``min_attainable_p``: 2^-k for an exact p, max(2^-k, 1/(n_flips + 1)) for
+    the Monte-Carlo p (both doubled two-sided). Round 3's :func:`sign_flip_test` is unchanged.
+    """
+    s = np.asarray(sums, dtype=float)
+    k = int(np.count_nonzero(np.abs(s) > _TOL))
+    p_mc, pm_mc = sign_flip_mc_with_mid(s, n_flips=n_flips, seed=seed, alternative=alternative)
+    sided = 2.0 if alternative == "two-sided" else 1.0
+    floor = min(1.0, sided * 2.0 ** -k) if k else 1.0
+    p_ex: float | None = None
+    pm_ex: float | None = None
+    if k <= exact_max:
+        p_ex, pm_ex = sign_flip_exact_with_mid(s, alternative)
+        method = "enumeration"
+    else:
+        lat = sign_flip_lattice(s, alternative, max_scale, max_width)
+        if lat is not None:
+            p_ex, pm_ex, method = lat["p"], lat["p_mid"], "lattice"
+        else:
+            method = "monte_carlo"
+            floor = max(floor, min(1.0, sided / (1 + n_flips)))
+    return {
+        "statistic": float(s.sum()),
+        "mean_page_sum": float(s.mean()) if s.size else 0.0,
+        "p_perm": float(p_mc),
+        "p_exact": None if p_ex is None else float(p_ex),
+        "p": float(p_ex if p_ex is not None else p_mc),
+        "p_mid": float(pm_ex if pm_ex is not None else pm_mc),
+        "p_mid_exact": None if pm_ex is None else float(pm_ex),
+        "p_mid_perm": float(pm_mc),
+        "p_method": method,
+        "min_attainable_p": float(floor),
+        "n_pages": int(s.size),
+        "n_pages_nonzero": k,
+        "n_flips": int(n_flips),
+        "seed": int(seed),
+        "alternative": alternative,
+    }
+
+
+def _conv_power(kern: np.ndarray, c: int) -> np.ndarray:
+    """``kern`` convolved with itself ``c`` times (binary exponentiation)."""
+    out = np.ones(1)
+    base = kern
+    while c:
+        if c & 1:
+            out = np.convolve(out, base)
+        c >>= 1
+        if c:
+            base = np.convolve(base, base)
+    return out
+
+
+def randomization_law(groups: Sequence[tuple[Sequence[int], int]]) -> tuple[np.ndarray, int]:
+    """The null law of ``T* = Σ`` of independent cluster scores, each uniform on an integer
+    multiset. ``groups`` = ``[(values, count), ...]``: ``count`` clusters share the multiset
+    ``values``. Returns ``(dist, lo)``: ``dist[i] = P(T* = lo + i)``."""
+    dist = np.ones(1)
+    lo = 0
+    for vals, c in groups:
+        v = np.asarray(vals, dtype=np.int64)
+        if c <= 0 or v.size == 0:
+            continue
+        kern = np.bincount(v - v.min()).astype(float) / v.size
+        dist = np.convolve(dist, _conv_power(kern, int(c)))
+        lo += int(v.min()) * int(c)
+    return dist, lo
+
+
+def _group_supports(ints: Sequence[np.ndarray]) -> list[tuple[tuple[int, ...], int]]:
+    """Identical multisets (sorted) grouped with their counts; degenerate ones dropped."""
+    cnt: dict[tuple[int, ...], int] = {}
+    for v in ints:
+        if v.size and v.min() != v.max():
+            key = tuple(sorted(int(x) for x in v))
+            cnt[key] = cnt.get(key, 0) + 1
+    return sorted(cnt.items())
+
+
+def cluster_randomization_lattice(supports: Sequence[Floats], observed: float,
+                                  alternative: Alternative = "greater",
+                                  max_scale: int = LATTICE_MAX_SCALE,
+                                  max_width: int = LATTICE_MAX_WIDTH) -> dict[str, Any] | None:
+    """Exact randomization p for ``T = Σ_j S_j`` when, under the null, unit ``j``'s score is
+    uniform on the finite multiset ``supports[j]`` (its values under every equally likely
+    relabelling of the conditions within the unit), independently across units.
+
+    The sign flip is the special case ``supports[j] = (S_j, −S_j)``. For a contrast of more
+    than two conditions (H2's ``n − (r1 + r2)/2`` per question, H1b's ``mean(D_G) − D_C`` per
+    paper) the label-exchangeability null gives each unit the contrast's values under the
+    permutations of its labels, which is not a symmetric set; this is the exact test of that
+    null. A unit whose multiset is constant is inert: it shifts the law by its value (the
+    offset is kept, so ``observed`` may include it). Units with identical multisets are
+    convolved at once (binary exponentiation). ``p``/``p_mid`` as :func:`sign_flip_lattice`;
+    ``min_attainable_p`` is the null mass of the most extreme value (the product over units of
+    the share of their values at the extreme). None when the values are off a ``<= max_scale``
+    lattice or the half-width exceeds ``max_width``.
+    """
+    vals = [np.asarray(v, dtype=float) for v in supports]
+    m = lattice_scale(np.concatenate([*vals, [float(observed)]]), max_scale) if vals else 1
+    if m is None:
+        return None
+    ints = [np.rint(m * v).astype(np.int64) for v in vals]
+    groups = _group_supports(ints)
+    offset = sum(int(v[0]) for v in ints if v.size and v.min() == v.max())
+    k = sum(c for _, c in groups)
+    if k == 0:
+        return {"p": 1.0, "p_mid": 0.5, "min_attainable_p": 1.0, "scale": m, "width": 0, "n_nonzero": 0}
+    width = sum((g[-1] - g[0]) * c for g, c in groups)
+    if width > max_width:
+        return None
+    dist, lo = randomization_law(groups)
+    lo += offset                                # the inert units' constant contribution
+    p, p_mid = _lattice_tail(dist, lo, int(np.rint(m * observed)), alternative)
+    hi = lo + dist.size - 1
+    extreme = {"greater": hi, "less": lo}.get(alternative, max(abs(lo), abs(hi)))
+    floor = _lattice_tail(dist, lo, extreme, alternative)[0]
+    return {"p": p, "p_mid": p_mid, "min_attainable_p": floor, "scale": m, "width": width, "n_nonzero": k}
+
+
+def _randomization_floor(supports: Sequence[np.ndarray], alternative: Alternative) -> float:
+    """One-sided ``P(T* at its extreme)`` = Π over units of the share of values at the unit's
+    extreme (only the all-extreme draw reaches it); two-sided: the larger tail's floor plus the
+    other tail's when its extreme has the same magnitude, bounded by 1. Constant units count
+    (share 1, but their value moves the two-sided extremes)."""
+    def side(sign: float) -> tuple[float, float]:
+        logp, ext = 0.0, 0.0
+        for v in supports:
+            e = float(v.max() if sign > 0 else v.min())
+            logp += math.log(float(np.count_nonzero(np.abs(v - e) <= _TOL)) / v.size)
+            ext += e
+        return math.exp(logp), ext
+    if alternative == "greater":
+        return side(1.0)[0]
+    if alternative == "less":
+        return side(-1.0)[0]
+    (fp, ep), (fm, em) = side(1.0), side(-1.0)
+    if abs(abs(ep) - abs(em)) <= _TOL:
+        return min(1.0, fp + fm)
+    return fp if abs(ep) > abs(em) else fm
+
+
+def cluster_randomization_test(
+    supports: Sequence[Floats],
+    observed: float,
+    n_draws: int = N_FLIPS,
+    seed: int = SEED,
+    alternative: Alternative = "greater",
+    max_scale: int = LATTICE_MAX_SCALE,
+    max_width: int = LATTICE_MAX_WIDTH,
+) -> dict[str, Any]:
+    """The alias study's H1b test (prereg §7, owner 2026-11-02): the exact randomization p
+    of the **label-exchangeability null** (within each unit the condition labels are
+    exchangeable: every relabelling in ``supports[j]`` is equally likely, independently across
+    units). Under it ``P(p <= α) <= α`` exactly.
+
+    Exact by :func:`cluster_randomization_lattice` whenever the values sit on a ``<= max_scale``
+    lattice of half-width ``<= max_width`` (``p_method`` "lattice"); otherwise Monte Carlo over
+    ``n_draws`` independent relabellings with ``p = (b + 1)/(n_draws + 1)`` ("monte_carlo").
+    ``min_attainable_p``: the exact floor (:func:`_randomization_floor`) for the lattice p,
+    max(floor, 1/(n_draws + 1)) for the Monte-Carlo p. ``p_perm`` (the Monte-Carlo p) is
+    computed only on the fallback (None otherwise). ``n_nonzero`` counts the non-inert units.
+    """
+    vals = [np.asarray(v, dtype=float) for v in supports]
+    live = [v for v in vals if v.size and float(v.max() - v.min()) > _TOL]
+    floor = _randomization_floor([v for v in vals if v.size], alternative) if live else 1.0
+    lat = cluster_randomization_lattice(vals, observed, alternative, max_scale, max_width)
+    p_mc: float | None = None
+    pm_mc: float | None = None
+    if lat is None:
+        rng = np.random.default_rng(seed)
+        draws = np.zeros(n_draws)
+        for v in live:
+            draws += v[rng.integers(0, v.size, size=n_draws)]
+        draws += sum(float(v[0]) for v in vals if v.size and float(v.max() - v.min()) <= _TOL)
+        b = _tail_count(draws, float(observed), alternative)
+        p_mc = (1 + b) / (1 + n_draws)
+        pm_mc = _mid_count(draws, float(observed), alternative) / n_draws
+        floor = max(floor, min(1.0, 1.0 / (1 + n_draws)))
+    return {
+        "statistic": float(observed),
+        "p_exact": None if lat is None else float(lat["p"]),
+        "p_perm": p_mc,
+        "p": float(lat["p"] if lat is not None else p_mc),  # type: ignore[arg-type]
+        "p_mid": float(lat["p_mid"] if lat is not None else pm_mc),  # type: ignore[arg-type]
+        "p_method": "lattice" if lat is not None else "monte_carlo",
+        "min_attainable_p": float(floor),
+        "n_units": len(vals),
+        "n_nonzero": len(live),
+        "n_draws": int(n_draws),
+        "seed": int(seed),
+        "alternative": alternative,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Page cluster bootstrap
 # --------------------------------------------------------------------------- #
 def _bootstrap_net_shares(

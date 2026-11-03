@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 _EVAL = Path(__file__).resolve().parents[2] / "scripts" / "eval"
@@ -48,11 +49,38 @@ def test_simulation_monotone_and_near_the_approximation() -> None:
     assert null < 0.12
 
 
-def test_h2_rho1_matches_the_three_valued_approximation_and_averaging_helps() -> None:
-    three = pw.simulate_h2(300, 3, 0.02, 0.85, rho=1.0, sd_p=0.0, n_sims=600, n_flips=600, seed=4)["0.025"]
-    avg = pw.simulate_h2(300, 3, 0.02, 0.85, rho=0.0, sd_p=0.0, n_sims=600, n_flips=600, seed=4)["0.025"]
+def test_h2_sign_flip_power_level_and_scatter_is_not_an_effect() -> None:
+    """H2's exact paper sign-flip (§7, 2026-11-02): near the three-valued approximation at
+    rho = 1, averaging two draws helps, and a neighbour arm that differs more often with no
+    direction (rho = 1, p = .5: the S8 null that decided the test) holds level. The arm-label
+    randomization test rejects that same data well above level, so the check is not vacuous."""
+    three = pw.simulate_h2(300, 3, 0.02, 0.85, rho=1.0, sd_p=0.0, n_sims=600, seed=4)["0.025"]
+    avg = pw.simulate_h2(300, 3, 0.02, 0.85, rho=0.0, sd_p=0.0, n_sims=600, seed=4)["0.025"]
     assert abs(three["test_only"] - pw.normal_power(900, 0.02, 0.85, 0.025)) < 0.06
     assert avg["test_only"] > three["test_only"]
+    churn = pw.simulate_h2(300, 3, 0.05, 0.5, rho=1.0, sd_p=0.0, agreements=(1.0,), n_sims=1500, seed=5)
+    assert churn["0.05"]["test_only"] <= 0.05 + 2 * (0.05 * 0.95 / 1500) ** 0.5
+    # the same S8-type data under the label-randomization test (single-one / single-zero questions)
+    rng = np.random.default_rng(5)
+    rej = 0
+    for _ in range(800):
+        disc = rng.random(900) < 0.05
+        up = rng.random(900) < 0.5                       # neighbour is the odd arm, no direction
+        n_one, n_zero = int((disc & up).sum()), int((disc & ~up).sum())
+        obs2 = 2 * (n_one - n_zero)
+        rej += pw._rand_p([((2, -1, -1), n_one), ((-2, 1, 1), n_zero)], obs2, "less") <= 0.05
+    assert rej / 800 > 0.075
+
+
+def test_h1b_randomization_test_level_and_power() -> None:
+    null = pw.simulate_h1b(300, 0.05, 0.5, sd_p=0.0, n_sims=1500, seed=6)["0.05"]
+    assert null <= 0.05 + 2 * (0.05 * 0.95 / 1500) ** 0.5
+    lo = pw.simulate_h1b(300, 0.05, 0.85, n_sims=400, seed=7)["0.05"]
+    hi = pw.simulate_h1b(300, 0.10, 0.85, n_sims=400, seed=7)["0.05"]
+    assert null < lo < hi
+    # C rising as much as G is not evidence for H1b
+    same = pw.simulate_h1b(300, 0.10, 0.85, p_c=0.85, sd_p=0.0, n_sims=600, seed=8)["0.05"]
+    assert same < 0.09
 
 
 def test_h2_gold_gate_costs_power_when_gold_disagrees() -> None:
@@ -64,6 +92,31 @@ def test_h2_gold_gate_costs_power_when_gold_disagrees() -> None:
 def test_compute_refuses_another_layout() -> None:
     with pytest.raises(SystemExit):
         pw.compute({"clusters": 10, "shapes": [[2, 1], [1, 1]]}, None, 10, 10)
+
+
+def test_caps_lever_reads_confirm_power_at_the_configured_agreement(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lever reads confirm_a<a>, not test_only; a = 0.7 by default (O11); None: undecided."""
+    fake: dict[str, object] = {"0.025": {"test_only": 0.90, "confirm_a1": 0.90, "confirm_a0.8": 0.85, "confirm_a0.6": 0.70,
+                      "confirm_a0.7": 0.79, "confirm_a0.75": 0.81}, "0.05": {}}
+    monkeypatch.setattr(pw, "simulate_h1", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
+    monkeypatch.setattr(pw, "simulate_h1b", lambda *a, **k: {"0.025": 1.0, "0.05": 1.0})
+    seen: list[tuple[float, ...]] = []
+
+    def h2(*a: object, agreements: tuple[float, ...] = pw.AGREEMENTS, **k: object) -> dict[str, object]:
+        seen.append(tuple(agreements))
+        return fake
+    monkeypatch.setattr(pw, "simulate_h2", h2)
+    lay = {"clusters": 300, "shapes": [[2, 1]]}
+    assert pw.LEVER_AGREEMENT == 0.7
+    default = pw.compute(lay, None, 10, 10)
+    assert default["h2_caps_lever_fires"] is True and default["caps_lever_agreement"] == 0.7  # test_only .90 would not fire
+    assert default["caps_lever_by_agreement"] == {"a1": False, "a0.8": False, "a0.7": True, "a0.6": True}
+    assert pw.compute(lay, None, 10, 10, lever_agreement=None)["h2_caps_lever_fires"] is None
+    assert pw.compute(lay, None, 10, 10, lever_agreement=0.8)["h2_caps_lever_fires"] is False
+    assert pw.compute(lay, None, 10, 10, lever_agreement=0.75)["h2_caps_lever_fires"] is False  # an a outside the grid
+    assert seen[-1] == (1.0, 0.8, 0.7, 0.6, 0.75)
+    with pytest.raises(SystemExit):
+        pw.compute(lay, None, 10, 10, lever_agreement=1.5)
 
 
 def test_dose_scales_q_with_realised_added_papers() -> None:
@@ -87,9 +140,9 @@ def test_main_passes_the_dose_scaled_q_to_compute(tmp_path: Path, monkeypatch: p
     seen: dict = {}
     real = pw.compute
 
-    def fake_compute(layout, q_scale, n_sims, n_flips, dose=1.0):
-        seen.update(q_scale=q_scale, dose=dose)
-        return real(layout, q_scale, 2, 2, dose=dose)
+    def fake_compute(layout, q_scale, n_sims, n_flips, lever_agreement=pw.LEVER_AGREEMENT, dose=1.0):
+        seen.update(q_scale=q_scale, dose=dose, lever_agreement=lever_agreement)
+        return real(layout, q_scale, 2, 2, lever_agreement, dose=dose)
 
     monkeypatch.setattr(pw, "compute", fake_compute)
     counts = tmp_path / "counts.json"
@@ -97,6 +150,7 @@ def test_main_passes_the_dose_scaled_q_to_compute(tmp_path: Path, monkeypatch: p
     rc = pw.main(["--records", str(tmp_path / "r.jsonl"), "--neighbour-counts", str(counts), "--out",
                   str(tmp_path / "out.json"), "--sims", "2", "--flips", "2"])
     assert rc == 0 and seen["dose"] == pytest.approx(2100 / 2800)
+    assert seen["lever_agreement"] == pw.LEVER_AGREEMENT == 0.7   # #907's lever survives the dose wiring
     assert sum(seen["q_scale"]) / 300 == pytest.approx(2100 / 2800)
     assert seen["q_scale"][1] == pytest.approx(10 / (2800 / 300))
     assert json.loads((tmp_path / "out.json").read_text())["h2_dose"] == pytest.approx(0.75)

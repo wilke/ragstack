@@ -31,9 +31,10 @@ gateway, ``alias-judge/2``, 4096, default temperature, ``fallback_model ""``); a
 re-issued once by the harness, and an unparseable or truncated one once more as ``argon_r2``;
 still no label -> **unjudged** (not answering in the primary analysis). ``opus`` (Claude Opus
 5.5, ``alias-judge/1``, 1 rep, 2048) re-labels the batch's **drift sample**: 5 % of the batch,
-``round(0.05 n)``, allocated equally across the three arms (the remainder to base, then
-neighbour), each stratum capped at its size and not re-allocated, the first pairs of each
-stratum in the order ``sha256(261101|alias|drift|<batch>|<pair>)``. An Opus reply with no
+``0.05 n`` rounded half up, allocated equally across the three arms (the remainder to base, then
+neighbour), a stratum smaller than its share taken whole and its shortfall reallocated equally to
+the arms that still have pairs (until the size is reached or the strata are exhausted), the first
+pairs of each stratum in the order ``sha256(261101|alias|drift|<batch>|<pair>)``. An Opus reply with no
 verdict (empty after the re-issue, refused, unparseable) is **filtered**: not a drift failure,
 excluded from the agreement and counted per arm.
 
@@ -49,8 +50,10 @@ A batch can be labelled only after every earlier batch is finalized.
 refuses without ``--notice-acknowledged`` and a preflight of the same plan, which includes the
 batch and the sha256 of its selection); the harness's budget stop (exit 76, PAUSE) and call cap
 (``limits``) apply; and the study's caps (§14 O7, ``caps``): the cumulative calls of a backend
-(its calls log) plus the planned selection may not exceed ``argon_share`` / ``opus_share`` of the
-registry's pairs, nor ``argon_max_calls`` / ``opus_max_calls`` when set.
+(its calls log, one row per HTTP call the gateway client makes, so the harness's re-issue of an
+empty reply and the ``argon_r2`` re-issue count) plus the planned selection may not exceed
+``argon_share`` / ``opus_share`` (0.07, §6.5) of the registry's (deduplicated) pairs, nor
+``argon_max_calls`` / ``opus_max_calls`` when set.
 """
 from __future__ import annotations
 
@@ -61,6 +64,7 @@ import os
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -94,7 +98,7 @@ FIXED: dict[str, dict[str, Any]] = {
 DEFAULTS: dict[str, Any] = {
     "batch_size": 2000,
     "drift": {"share": 0.05, "min_pairs": 100, "overall": 0.97, "per_arm": 0.95},
-    "caps": {"argon_share": 0.04, "opus_share": 0.06, "argon_max_calls": None, "opus_max_calls": None},
+    "caps": {"argon_share": 0.04, "opus_share": 0.07, "argon_max_calls": None, "opus_max_calls": None},
     "unjudged_flag_share": 0.01,
 }
 GW_ROLE = {"argon": "tiebreak", "argon_r2": "tiebreak", "opus": "drift_ref"}
@@ -275,19 +279,44 @@ def batches(pairs: Sequence[Mapping[str, Any]], size: int) -> list[list[str]]:
     return [ids[i:i + size] for i in range(0, len(ids), size)]
 
 
+def drift_size(n: int, share: float) -> int:
+    """§6.3: ``share x n`` rounded half up (100.5 -> 101), in exact decimal arithmetic so that no
+    float product of a configured share lands just below a half."""
+    x = Fraction(str(share)) * n
+    return math.floor(x + Fraction(1, 2))
+
+
+def drift_allocation(n_total: int, sizes: Mapping[str, int]) -> dict[str, int]:
+    """§6.3: ``n_total`` split equally across the arms (the remainder to base, then neighbour); a
+    stratum smaller than its share is taken whole and its shortfall is reallocated equally to
+    the arms that still have pairs (the remainder again in arm order), until ``n_total`` is
+    reached or every stratum is exhausted."""
+    per = dict.fromkeys(asc.ARM_GROUPS, 0)
+    left = min(n_total, sum(int(sizes.get(a, 0)) for a in asc.ARM_GROUPS))
+    while left > 0:
+        open_ = [a for a in asc.ARM_GROUPS if per[a] < int(sizes.get(a, 0))]
+        share = dict.fromkeys(open_, left // len(open_))
+        for a in open_[: left % len(open_)]:
+            share[a] += 1
+        for a in open_:
+            take = min(share[a], int(sizes.get(a, 0)) - per[a])
+            per[a] += take
+            left -= take
+    return per
+
+
 def drift_sample(batch_no: int, pairs: Sequence[Mapping[str, Any]], share: float) -> list[str]:
-    """§6.3: ``round(share x n)`` pairs, equally across the three arms (remainder to base, then
-    neighbour), each stratum capped at its size, seeded per batch."""
-    n_total = int(share * len(pairs) + 0.5)
-    per = dict.fromkeys(asc.ARM_GROUPS, n_total // 3)
-    for a in asc.ARM_GROUPS[: n_total % 3]:
-        per[a] += 1
+    """§6.3: :func:`drift_size` pairs allocated by :func:`drift_allocation` (equal across the
+    three arms, a capped stratum's shortfall reallocated), the first pairs of each stratum in the
+    order ``sha256(261101|alias|drift|<batch>|<pair>)``."""
     seed = asc.SEEDS["drift"]
+    strata = {a: sorted((p for p in pairs if p["arm"] == a),
+                        key=lambda p: asc.seeded_key(seed, str(batch_no), p["pair_id"]))
+              for a in asc.ARM_GROUPS}
+    per = drift_allocation(drift_size(len(pairs), share), {a: len(v) for a, v in strata.items()})
     out: list[str] = []
     for a in asc.ARM_GROUPS:
-        stratum = sorted((p for p in pairs if p["arm"] == a),
-                         key=lambda p: asc.seeded_key(seed, str(batch_no), p["pair_id"]))
-        out += [p["pair_id"] for p in stratum[: per[a]]]
+        out += [p["pair_id"] for p in strata[a][: per[a]]]
     return out
 
 

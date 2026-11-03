@@ -391,3 +391,86 @@ def test_the_frozen_record_set_reproduces() -> None:
     recs = asc.load_records(PRIVATE)
     ident = asc.verify_record_set(PRIVATE, recs)
     assert (ident["records"], ident["balanced"], ident["descriptive"]) == (1091, 900, 191)
+
+
+# ------------------------------------------------------------------ the exact member p (§7)
+
+def test_member_test_uses_the_exact_lattice_p_above_20_papers() -> None:
+    """30 papers, scores multiples of 1/2: the p is the exact lattice p (not Monte Carlo), and
+    the minimum attainable p is 2^-30, not the Monte-Carlo floor 1/(n_perm + 1) = 1/2001."""
+    import chunktrial_stats as cs
+
+    clusters, vals = [], []
+    for i in range(30):
+        clusters += [f"P{i}", f"P{i}"]
+        vals += [1.0, 0.5 if i % 3 else -1.5]
+    t = st.member_test(clusters, vals, "greater", AN)
+    assert t["p_method"] == "lattice" and t["n_nonzero"] == 30
+    _, sums, _ = st.cluster_sums(clusters, vals)
+    assert t["p"] == pytest.approx(cs.sign_flip_lattice(sums, "greater")["p"], abs=1e-15)
+    assert t["p"] != t["p_perm"]
+    assert t["min_attainable_p"] == pytest.approx(2.0 ** -30)
+    # all 30 papers positive: p = 2^-30 is reachable, where the round-3 MC p bottoms at 1/2001
+    top = st.member_test([f"P{i}" for i in range(30)], [1.0] * 30, "greater", AN)
+    assert top["p"] == pytest.approx(2.0 ** -30) and top["p_perm"] == pytest.approx(1 / 2001)
+
+
+# ------------------------------------------------------------------ H1b / H2: label randomization (§7, 2026-11-02)
+
+def test_h1b_label_supports_by_hand() -> None:
+    recs = recs_balanced(2)
+    none = lambda r: (0, 0)  # noqa: E731
+    merged = lambda r: (1, 1) if r["kind"] == "G" and r["record_id"].endswith("g0") else (0, 0)  # noqa: E731
+    o = outcomes(recs, {st.L("base", "none", "default"): none, st.L("base", "merged", "default"): merged})
+    cl, v, sup, _ = st.h1b_label_supports(recs, o)
+    # D = (1, 0 | C 0): C on the gaining record -> 0 - 1 = -1, else 1/2 - 0
+    assert v == [0.5, 0.5] and [sorted(s) for s in sup] == [[-1.0, 0.5, 0.5]] * 2
+    # one G record excluded: 1 G + 1 C, two assignments, +-D_G
+    gone = next(r for r in recs if r["kind"] == "G" and r["record_id"].endswith("g0"))
+    o[st.L("base", "merged", "default")][gone["record_id"]] = None
+    cl1, v1, sup1, miss = st.h1b_label_supports(recs, o)
+    i = cl1.index(str(gone["paper"]))
+    assert miss == 1 and len(sup1[i]) == 2 and sorted(sup1[i]) == sorted([v1[i], -v1[i]])
+    assert len(sup1[1 - i]) == 3
+
+
+def test_exchange_supports_permute_the_three_arm_labels() -> None:
+    recs = recs_balanced(1)[:1]
+    o = outcomes(recs, {st.L("neighbour", "none", "default"): lambda r: (0, 0),
+                        st.L("random1", "none", "default"): lambda r: (1, 1),
+                        st.L("random2", "none", "default"): lambda r: (1, 1)})
+    (sup,) = st.exchange_supports(recs, o, st.H2_SPEC)
+    assert sorted(sup) == [-1.0, -1.0, 0.5, 0.5, 0.5, 0.5]
+    two = [(1.0, st.L("neighbour", "none", "default")), (-1.0, st.L("random1", "none", "default"))]
+    assert sorted(st.exchange_supports(recs, o, two)[0]) == [-1.0, 1.0]     # two labels: the sign flip
+
+
+def test_layer1_tests_h1b_by_label_randomization_h1_and_h2_by_sign_flip() -> None:
+    import chunktrial_stats as cs
+
+    recs, o = h2_world(True)
+    r = st.layer1(recs, o, {}, None, AN)
+    assert "sign-flip" in r["H1"]["test"] and "sign-flip" in r["H2"]["test"]
+    assert "randomization" in r["H1b"]["test"] and "paper" in r["H1b"]["test"]
+    cl, v, _ = st.contrast_values(recs, o, st.H2_SPEC)
+    _, sums, _ = st.cluster_sums(cl, v)
+    want = cs.sign_flip_test_exact(sums, alternative="less")
+    assert r["H2"]["p"] == pytest.approx(want["p"], abs=1e-15)
+    assert r["H2"]["min_attainable_p"] == pytest.approx(want["min_attainable_p"])
+    # not the arm-label randomization p (decided against for H2: scatter is not a mean drop)
+    rand = cs.cluster_randomization_lattice(st.exchange_supports(recs, o, st.H2_SPEC), sum(v), "less")
+    assert rand is not None and r["H2"]["p"] != pytest.approx(rand["p"])
+    # H1b's p is the G / C label randomization p
+    clb, vb, supb, _ = st.h1b_label_supports(recs, o)
+    wb = cs.cluster_randomization_lattice(supb, sum(vb), "greater")
+    assert wb is not None and r["H1b"]["p"] == pytest.approx(wb["p"], abs=1e-15)
+
+
+def test_randomization_floor_drives_gate_not_evaluable() -> None:
+    """H1b's minimum attainable p is its randomization floor: 3 papers each (1, 0 | C 0) have
+    floor (2/3)^3 ~ 0.30 > 0.05 under "greater", so H1b is GATE-NOT-EVALUABLE however extreme."""
+    t = st.member_randomization(["P1", "P2", "P3"], [0.5, 0.5, 0.5], [[-1.0, 0.5, 0.5]] * 3,
+                                "greater", "paper", AN)
+    assert t["min_attainable_p"] == pytest.approx((2 / 3) ** 3) and t["p"] == pytest.approx((2 / 3) ** 3)
+    r = st.layer1_procedure({"H1": m(0.001), "H2": m(0.001), "H1b": {**t, "gates": []}})
+    assert r["H1b"]["status"] == st.GATE
