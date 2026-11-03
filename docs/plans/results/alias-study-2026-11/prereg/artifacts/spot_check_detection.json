@@ -1,0 +1,103 @@
+{
+ "schema": "alias-prereg-spot-check-detection/1",
+ "what": "detection probability of the judged-pair spot check's < 0.90 rule (prereg DRAFT v3 \u00a713.5, R15); exact binomial, a planning calculation, no study data",
+ "rule": "fires when owner-judge agreement (n - X) / n < 0.90 at the point estimate",
+ "model": "X ~ Binomial(n, e), e the judge's true error rate on the stratum, owner labels as truth",
+ "sheets": {
+  "R5_60_pairs": {
+   "split_answers_not_tiebroken": [
+    30,
+    20,
+    10
+   ],
+   "answers_stratum": {
+    "n": 30,
+    "fires_at_disagreements": 4,
+    "detection": {
+     "e0.1": 0.3526,
+     "e0.15": 0.6783,
+     "e0.2": 0.8773
+    }
+   },
+   "whole_sheet": {
+    "n": 60,
+    "fires_at_disagreements": 7,
+    "detection": {
+     "e0.1": 0.3935,
+     "e0.15": 0.8152,
+     "e0.2": 0.9692
+    }
+   }
+  },
+  "R15_100_pairs": {
+   "split_answers_not_tiebroken": [
+    50,
+    33,
+    17
+   ],
+   "answers_stratum": {
+    "n": 50,
+    "fires_at_disagreements": 6,
+    "detection": {
+     "e0.1": 0.3839,
+     "e0.15": 0.7806,
+     "e0.2": 0.952
+    }
+   },
+   "whole_sheet": {
+    "n": 100,
+    "fires_at_disagreements": 11,
+    "detection": {
+     "e0.1": 0.4168,
+     "e0.15": 0.9006,
+     "e0.2": 0.9943
+    }
+   }
+  }
+ },
+ "detection_at_e0.1_by_n": {
+  "20": 0.3231,
+  "30": 0.3526,
+  "40": 0.371,
+  "50": 0.3839,
+  "60": 0.3935,
+  "80": 0.4073,
+  "100": 0.4168,
+  "150": 0.4318,
+  "200": 0.4408
+ },
+ "note": "at e = 0.10 the true agreement equals the threshold, so detection stays below 0.5 at any n",
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.21+b6f3037",
+  "describe": "v1.6.21-218-gb6f3037",
+  "commit": "b6f30372884e60b7832ee7be3844ddb551121768",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "n_docs": 5,
+    "n_spans": 40,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4",
+    "segmenter_version": "punkt-abbrev-v1"
+   }
+  ],
+  "python": "3.12.13",
+  "host": "coconut",
+  "recorded_at": "2026-11-03T13:21:52Z",
+  "citable": true,
+  "warnings": [
+   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+  ]
+ }
+}

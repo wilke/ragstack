@@ -1,8 +1,9 @@
 # Pre-registration, alias study (OA-1000)
 
 **Status: DRAFT — not frozen; owner review pending.** No sha is recorded because nothing is frozen yet.
-Current draft: **v2, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1) and the changes the owner
-approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), folded in. The
+Current draft: **v3, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1), the changes the owner
+approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), and the owner's
+decisions of 2026-11-03 (R12–R19) folded in. The
 record set (§4 of the prereg: 1,091 accepted records, the balanced set of 900 on 300 papers) was built
 before v1. No retrieval has been run on any study record. The pre-freeze pilot (prereg §5.6) will
 retrieve and judge the 191 held-out records before the freeze; the 900 balanced records stay unretrieved
@@ -11,6 +12,8 @@ until after it.
 | file | tier | what |
 |---|---|---|
 | [PREREG-alias-study.md](PREREG-alias-study.md) | record, once frozen; a draft until then | the design: question, prior results (§2), the two layers (Layer 1: Family G, H1 then H1b in fixed sequence, and Family N, H2, each at one-sided α = 0.05; Layer 2: serving decisions on CI-based rules with a harm rule, H3 descriptive), the record set as built, the 24 cells (4 corpus arms × 3 retrievers × 2 glossary arms) plus 4 noise repeats and a placebo glossary leg, the pre-freeze pilot and the two post-freeze stages, outcome and judge, analysis, power, gates, open decisions (§14), pre-freeze checklist (§15) |
+| [artifacts/c_cost_rule.py](artifacts/c_cost_rule.py), [artifacts/c_cost_rule.json](artifacts/c_cost_rule.json) | record, once the prereg is frozen | the C cost rule's operating characteristics (prereg §3.3, R12): pass rates of the v2 and the R12 rule on 300 C records, and the −3.6-point bound's derivation; a planning calculation, no study data |
+| [artifacts/spot_check_detection.py](artifacts/spot_check_detection.py), [artifacts/spot_check_detection.json](artifacts/spot_check_detection.json) | record, once the prereg is frozen | the judged-pair spot check's detection probabilities under the < 0.90 rule at 60 and 100 pairs (prereg §13.5, R15); exact binomial, no study data |
 
 Background notes, not part of the record: `docs/plans/alias-study-2026-11/` (ABBREV, VERIFIER,
 JUDGE-CALIBRATION, JUDGE-VALIDATION-PLAN, TIEBREAKER-PLAN).
@@ -40,8 +43,10 @@ JUDGE-CALIBRATION, JUDGE-VALIDATION-PLAN, TIEBREAKER-PLAN).
 
 The prereg's §15 is the checklist. The items that need work outside this repository are:
 
-- the neighbour and two random selection manifests (OpenAlex metadata only), and H2's power recomputed
-  on them, raising the caps if it falls below .80;
+- the neighbour and two random selection manifests (OpenAlex metadata only) of the **v4** build (the v3
+  pass with the nearest-band fill and the repetition screen, prereg R16–R18), their counts entered in
+  prereg §5.1, and H2's power recomputed on them, raising the caps if it falls below .80;
+- the test form of the H2 chunk-volume covariate sensitivity (prereg §14 O13);
 - the three expanded corpora, built and censused on bench copies within a management window;
 - glossaries for the added papers in every arm, made by the same pipeline, and the offline reach count;
 - the record-set sha, the balanced set and the overlap counts recomputed by committed code;
@@ -76,3 +81,18 @@ The prereg's §15 is the checklist. The items that need work outside this reposi
   retry); the judged-pair spot check stratified by judge label; fixed sensitivities with a *fragile*
   label; a placebo glossary leg; a pre-freeze pilot on the 191 held-out records; two post-freeze stages
   with judging on demand; a signed public freeze tag; H2's estimand stated.
+- **v3, 2026-11-03:** the owner's decisions of 2026-11-03 (prereg R12–R19). The C cost rule reads the
+  point estimate (*do not attach* when ΔC < −1 point) and the CI's lower bound (C_lo < −3.6 points, the
+  smallest C change 300 C records detect with 80 % power at 5 % discordance), with the statement that a
+  C cost smaller than about 3.6 points cannot be ruled out; pass rates at 5 % C discordance and a true C
+  change of 0 / −1 / −2 points are .16 / .05 / .01 for the v2 rule and .76 / .49 / .22 for the R12 rule
+  (`artifacts/c_cost_rule.json`). The H2 false-yes bound always uses U = max(random arm, pooled).
+  *Fragile* applies to H1 and H2 only, through the studentized test, topic clustering and (H2) the
+  chunk-volume covariate; subgroup splits never make anything fragile, and H1b is exempt. The judged-pair
+  spot check grows to 100 pairs (50 / 33 / 17); at a true 10 % error rate the *answers*-stratum rule
+  fires with probability .38 (.35 at 60 pairs; `artifacts/spot_check_detection.json`). The corpus
+  build's v3 facts (six length bands with the top band split at 80, the carry-over re-draw, seeds
+  unchanged, the fetch budget, relaxation source → type → band), a nearest-band fill at the last
+  relaxation level, a repetition screen (distinct-chunk ratio < 0.90 excluded) for every added paper,
+  and the ± 5 % chunk-volume target read as a build target covered by the covariate sensitivity, with a
+  placeholder for the v4 counts. New open item: the covariate sensitivity's test form (§14 O13).
