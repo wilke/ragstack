@@ -378,6 +378,10 @@ class RetrieveRequest(BaseModel):
     exclude_boilerplate: bool = False
     # See QueryRequest — per-request cross-encoder override (no generation here).
     reranker: str | None = None
+    # Return each source's symbol glossary (#754) as ``Source.symbol_glossary``
+    # — on EVERY source, ``""`` when the chunk has none. /v1/retrieve only; the
+    # default leaves the response byte-identical. See _glossary_for_sources.
+    include_symbol_glossary: bool = False
 
     @field_validator("top_k")
     @classmethod
@@ -640,12 +644,21 @@ _SourceKey = tuple[str | None, str]
 def _to_sources(
     scored: list[ScoredChunk],
     context: dict[_SourceKey, list[ContextChunk]] | None = None,
+    *,
+    include_symbol_glossary: bool = False,
 ) -> list[Source]:
     """Sources in ``scored`` order. ``context`` (from :func:`_expand_sources`)
     is keyed by (collection, chunk id); a source with no entry gets no
     ``context`` key at all (omitted from the response — see ``Source``), never
     an empty list. ``collection`` is the multi-collection stamp (#253), omitted
-    the same way when absent."""
+    the same way when absent.
+
+    ``include_symbol_glossary`` (#754, ``/v1/retrieve`` only) puts the chunk's
+    ``symbol_glossary`` on EVERY source — ``""`` when it has none — and is the
+    only way the key appears: ``False`` leaves it ``None``, which the
+    serializer omits, so the response is byte-identical to before the field
+    existed. Hydrate ``scored`` first (:func:`_glossary_for_sources`); this
+    only copies what the chunk carries."""
     context = context or {}
     return [
         Source(
@@ -656,9 +669,44 @@ def _to_sources(
             metadata=_source_metadata(r.chunk),
             context=context.get((r.collection, r.chunk.id)),
             collection=r.collection,
+            symbol_glossary=(r.chunk.symbol_glossary or "") if include_symbol_glossary else None,
         )
         for r in scored
     ]
+
+
+async def _glossary_for_sources(
+    retriever: Any,
+    scored: list[ScoredChunk],
+    filters: dict[str, Any],
+    tenant_id: str | None,
+) -> list[ScoredChunk]:
+    """``scored`` — the FINAL, already reranked and ``top_k``-cut list — with
+    every chunk's ``symbol_glossary`` filled in from its own collection's text
+    index, for ``include_symbol_glossary`` (#754).
+
+    The same machinery the reranker uses (``retrieval/glossary.py``,
+    :func:`hydrate_symbol_glossary`), applied once more at the end so it
+    holds whether or not a reranker ran and whether or not
+    ``RERANK_INCLUDE_SYMBOL_GLOSSARY`` is on: a BM25 hit already carries its
+    glossary and is not looked up; a vector-only hit (Qdrant stores none) is;
+    a graph pseudo-chunk never is. One batched, tenant-scoped request per
+    collection — on a multi-collection request each source is looked up in
+    ITS collection's index with that leg's scope — over the returned sources
+    only, never the candidate pool: this runs after the cut. Bounded by
+    ``RERANK_GLOSSARY_TIMEOUT`` and never raises: an unreachable or slow text
+    index, or a collection without one, leaves the chunk's glossary ``""``
+    (the module logs one rate-limited warning per collection per minute and
+    counts the failure) and the request still answers 200. Timed as the
+    ``glossary`` stage: it is an Elasticsearch round trip, so it belongs with
+    the external time ADR-0006 subtracts."""
+    if not scored:
+        return scored
+    with stage("glossary"):
+        return await hydrate_symbol_glossary(
+            retriever, scored, filters=filters, tenant_id=tenant_id,
+            timeout=settings.rerank_glossary_timeout,
+        )
 
 
 async def _expand_sources(
@@ -982,12 +1030,22 @@ async def retrieve(
         degraded=degraded,
         rerank_shared=reranker is shared_reranker,
     )
+    # The glossary read (#754) is one more batched text-index round trip over
+    # the FINAL sources — after the rerank and the top_k cut, so it can touch
+    # neither the ranking nor the pool, and only when asked for.
+    if request.include_symbol_glossary:
+        scored = await _glossary_for_sources(retriever, scored, filters, tenant)
     # `expand` likewise: N batched get_chunks round trips to the vector store.
     # Recorded even when context_window=0 makes it a no-op — "we timed it and it
     # was zero" is a fact; a missing field is an unanswered question.
     with stage("expand"):
         context = await _expand_sources(targets, scored, request.context_window)
-    return RetrieveResponse(sources=_to_sources(scored, context), degraded=degraded or None)
+    return RetrieveResponse(
+        sources=_to_sources(
+            scored, context, include_symbol_glossary=request.include_symbol_glossary
+        ),
+        degraded=degraded or None,
+    )
 
 
 class PromptTemplatesResponse(BaseModel):
