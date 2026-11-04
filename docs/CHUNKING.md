@@ -437,6 +437,19 @@ the other documents of the batch go on. An in-process ingest of a source whose
 only document fails ends with that error. `embed_shard.py` and
 `ingest_jsonl.py` print the count; with structure metadata on,
 `enrichment.structure.text_render_failed` counts them by error class.
+When nothing survives because renders failed, no path reports success:
+
+- an `ingest_shard.py` batch fails (exit 1, `text_render_failed: …` as the
+  receipt error; each row keeps its own reason);
+- an `embed_shard.py` shard fails with an error naming `text_render_failed`;
+- in `ingest_jsonl.py`, a batch whose every document failed is a failed
+  batch: the checkpoint stops there, `--resume` retries it, and the run exits
+  1. Its documents' metrics rows say `text_render_failed`. A batch with any
+  surviving document completes, and its failed documents are counted, not
+  retried.
+
+`ingest_jsonl.py --max-doc-chars` measures the record's RAW text, before the
+render.
 
 **Not with a glossary file (yet).** A glossary file (`glossary_step.py`, #847)
 is built from, and checked against, the raw record text, while a marked
@@ -453,7 +466,11 @@ any entry that records a marker.
 **Not on GoWe deployments until the repin.** On `INGEST_BACKEND=gowe`,
 `POST /v1/collections` refuses (400) a collection that records any marker
 until the repin step R, because the shipped workflows' tools image predates
-the markers and would ingest it unmarked. R lifts this. Note that the API's
+the markers and would ingest it unmarked. An entry that arrived another way
+(seeded, a collections file, a registry shared with an in-process deployment)
+is refused when an ingest is dispatched (422, before anything is uploaded or a
+version reserved). The dispatch also refuses `text_render` on a workflow that
+builds a glossary file. R lifts the first refusal. Note that the API's
 scatter workflow (`pdf-ingest-scatter.cwl`) runs the glossary step and passes
 `--glossary-file` to `ingest_shard.py`; until glossary files follow the
 render, a `text_render` collection cannot be ingested through it even after R.
