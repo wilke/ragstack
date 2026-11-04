@@ -17,13 +17,17 @@ deterministic-id contract above.
 """
 from __future__ import annotations
 
+import bisect
+import dataclasses
 import logging
 import math
 import re
 import sys
 import uuid
+from collections import Counter
 from collections.abc import Callable, Sequence
 
+from ragstack.ingestion.structure import Segment, cut_segments
 from ragstack.ingestion.tokenization import TokenCounter
 from ragstack.models import Chunk, Document
 
@@ -873,7 +877,237 @@ def _warn_regex_fallback_once() -> None:
         REGEX_SEGMENTER_VERSION, SEGMENTER_VERSION)
 
 
-class SentenceChunker:
+# --------------------------------------------------------------------------- #
+# Section-preferred cuts (#828 §7.1: the ``structure_cuts`` marker)
+# --------------------------------------------------------------------------- #
+# Under the marker a structured document is split into SEGMENTS
+# (structure.cut_segments: each leaf section, each parent's lead text, a
+# heading-only segment folded into the one that follows it) and every chunk
+# stays inside one segment. Units (sentences, words) are found ONCE over the
+# whole document — never per segment, so sentence_spans and its fingerprint are
+# unchanged (§7.1 "does not change sentence_spans") — and a unit that straddles
+# a segment edge is split there. Offsets stay document-global, so ids are still
+# uuid5(doc_id:start:end). Without the marker (``structure_cuts is None``) every
+# chunker takes its original code path, byte for byte.
+
+#: ``chunk_params.structure_cuts`` values the chunkers apply.
+STRUCTURE_CUTS_SECTIONS = "sections/1"
+STRUCTURE_CUTS: tuple[str, ...] = (STRUCTURE_CUTS_SECTIONS,)
+
+
+def doc_cut_segments(doc: Document) -> list[Segment] | None:
+    """The cut segments of ``doc`` (:func:`~ragstack.ingestion.structure.cut_segments`),
+    or ``None`` when it has no usable structure — none, one that raises, or one
+    whose segments do not partition the text (a structure is validated where
+    it is attached, so this is a backstop). A whitespace-only segment is folded
+    into the segment before it (the first one into the one after it): it would
+    otherwise be a chunk of nothing."""
+    text = doc.content
+    if doc.structure is None or not text:
+        return None
+    try:
+        segs = cut_segments(doc.structure, text)
+    except Exception:  # noqa: BLE001 - an unusable structure chunks as today, counted
+        return None
+    if (not segs or segs[0].start != 0 or segs[-1].end != len(text)
+            or any(a.end != b.start for a, b in zip(segs, segs[1:], strict=False))):
+        return None
+    out: list[Segment] = []
+    pending: int | None = None
+    for seg in segs:
+        if not text[seg.start:seg.end].strip():
+            if out:
+                out[-1] = dataclasses.replace(out[-1], end=seg.end)
+            elif pending is None:
+                pending = seg.start
+            continue
+        if pending is not None:
+            seg = dataclasses.replace(seg, start=pending)
+            pending = None
+        out.append(seg)
+    return out or None
+
+
+def _units_by_segment(
+    spans: list[tuple[int, int]], segs: list[Segment]
+) -> list[list[tuple[int, int]]]:
+    """Partition unit ``spans`` (which tile the text) at the segment edges: one
+    list per segment, a unit that straddles an edge split there into two."""
+    out: list[list[tuple[int, int]]] = []
+    k = 0
+    for seg in segs:
+        while k < len(spans) and spans[k][1] <= seg.start:
+            k += 1
+        part: list[tuple[int, int]] = []
+        j = k
+        while j < len(spans) and spans[j][0] < seg.end:
+            s, e = max(spans[j][0], seg.start), min(spans[j][1], seg.end)
+            if e > s:
+                part.append((s, e))
+            j += 1
+        out.append(part)
+        # A unit that runs past this segment is visited again by the next one.
+        k = j - 1 if j > k and spans[j - 1][1] > seg.end else j
+    return out
+
+
+def _segment_walls(segs: list[Segment]) -> Callable[[tuple[int, int], tuple[int, int]], bool]:
+    """The ``may_join`` predicate of the #831 merge under ``structure_cuts``
+    (§7.1, owner decision 2026-11-04): two adjacent pieces may merge when both
+    lie in ONE segment, or when both are whole segments (or runs of whole
+    segments) and every segment involved has the same group — a parent's lead
+    text with its first child, or sibling leaves. A fragment of one segment
+    never joins any part of another."""
+    starts = [g.start for g in segs]
+
+    def locate(r: tuple[int, int]) -> tuple[int, int, bool]:
+        lo = bisect.bisect_right(starts, r[0]) - 1
+        hi = bisect.bisect_right(starts, r[1] - 1) - 1
+        return lo, hi, r[0] == segs[lo].start and r[1] == segs[hi].end
+
+    def may_join(left: tuple[int, int], right: tuple[int, int]) -> bool:
+        l0, l1, l_whole = locate(left)
+        r0, r1, r_whole = locate(right)
+        if l0 == l1 == r0 == r1:
+            return True
+        return l_whole and r_whole and len({segs[k].group for k in range(l0, r1 + 1)}) == 1
+
+    return may_join
+
+
+def _crossing_ranges(ranges: list[tuple[int, int]], segs: list[Segment]) -> int:
+    """How many ``ranges`` overlap two or more segments (whole-segment merges)."""
+    starts = [g.start for g in segs]
+    return sum(1 for s, e in ranges
+               if e > s and bisect.bisect_right(starts, s) != bisect.bisect_right(starts, e - 1))
+
+
+def _whole_span(
+    doc: Document, start: int, end: int,
+    max_tokens: int | None, token_counter: TokenCounter | None,
+) -> list[Chunk]:
+    """:func:`_whole_doc` for one segment (``chunk_size == -1`` under cuts)."""
+    if max_tokens is not None and token_counter is not None:
+        return _token_split_span(doc, start, end, max_tokens, token_counter)
+    return [_make_chunk(doc, start, end)]
+
+
+class _StructureCuts:
+    """The ``structure_cuts`` state every cutting chunker shares: the marker,
+    and the per-document counts :func:`take_cut_stats` hands to the ingest
+    loop's ``enrichment.structure`` record (keyed by document id, so threads
+    chunking different documents do not mix their counts)."""
+
+    structure_cuts: str | None = None
+
+    def _init_cuts(self, structure_cuts: str | None) -> None:
+        if structure_cuts is not None and structure_cuts not in STRUCTURE_CUTS:
+            raise ValueError(
+                f"unknown structure_cuts {structure_cuts!r}; valid: {', '.join(STRUCTURE_CUTS)}")
+        self.structure_cuts = structure_cuts
+        self._cut_stats: dict[str, Counter[str]] = {}
+
+    def _cut_plan(self, doc: Document) -> list[Segment] | None:
+        """``None`` → chunk exactly as without the marker. Under the marker, a
+        document with no usable structure is chunked as today too, and counted
+        (``unsegmented``)."""
+        if self.structure_cuts is None:
+            return None
+        segs = doc_cut_segments(doc)
+        if segs is None:
+            self._cut_stats[doc.id] = Counter(unsegmented=1)
+        return segs
+
+    def _add_cut_stats(self, doc: Document, **counts: int) -> None:
+        stats = self._cut_stats.setdefault(doc.id, Counter())
+        stats.update({k: v for k, v in counts.items() if v})
+
+
+def take_cut_stats(chunker: object, doc_id: str) -> Counter[str]:
+    """Pop what ``structure_cuts`` did to document ``doc_id`` — ``cuts:unsegmented``
+    (no usable structure, chunked as today), ``cuts:short_pieces`` (pieces left
+    under ``min_piece`` because no allowed merge fitted), ``cuts:sibling_merges``
+    (chunks made of whole segments, the ones stamped ``section_crossing``) —
+    for the ingest loop's structure counts. Empty for a chunker without the
+    marker, so an unmarked receipt is unchanged."""
+    stash = getattr(chunker, "_cut_stats", None)
+    got = stash.pop(doc_id, None) if stash else None
+    if not got:
+        return Counter()
+    return Counter({f"cuts:{k}": n for k, n in got.items() if n})
+
+
+def _tolerant_range(
+    doc: Document,
+    spans: list[tuple[int, int]],
+    lo: int,
+    hi: int,
+    target: int,
+    ceiling: int,
+    counter: TokenCounter,
+    run: Callable[[int, int], list[Chunk]],
+) -> list[Chunk]:
+    """The #831 tolerance over units ``spans[lo:hi]``: at or under ``ceiling``
+    tokens they are one chunk; over it, each unit over ``target`` is isolated —
+    kept whole when it fits the ceiling, hard-split at the target only when it
+    does not — and each run of units between them goes to ``run(a, b)``. Shared
+    by the semantic chunker (a block) and the ``sentence`` chunker under
+    ``structure_cuts`` (a segment)."""
+    text = doc.content
+    start, end = spans[lo][0], spans[hi - 1][1]
+    if counter.count(text[start:end]) <= ceiling:
+        return [_make_chunk(doc, start, end)]
+    out: list[Chunk] = []
+    first = lo
+    for i in range(lo, hi):
+        s, e = spans[i]
+        n = counter.count(text[s:e])
+        if n <= target:
+            continue
+        if first < i:
+            out.extend(run(first, i))
+        out.extend([_make_chunk(doc, s, e)] if n <= ceiling
+                   else _token_split_span(doc, s, e, target, counter))
+        first = i + 1
+    if first < hi:
+        out.extend(run(first, hi))
+    return out
+
+
+def _pack_segments(
+    chunker: SentenceChunker | WordChunker, doc: Document, segs: list[Segment],
+    units: Callable[[str], list[tuple[int, int]]],
+) -> list[Chunk]:
+    """``sentence`` / ``words`` under ``structure_cuts``: units found once over
+    the whole document, split at the segment edges, and each segment packed on
+    its own by the method's own packer (so overlap restarts at every segment).
+    ``sentence`` with the #831 tolerance goes to :meth:`SentenceChunker._tolerant_cut`."""
+    text = doc.content
+    if chunker.chunk_size == -1:
+        out: list[Chunk] = []
+        for g in segs:
+            out.extend(_whole_span(doc, g.start, g.end, chunker.max_tokens, chunker.token_counter))
+        return out
+    spans = units(text)
+    if not spans:
+        return [_make_chunk(doc, 0, len(text))]
+    parts = _units_by_segment(spans, segs)
+    if isinstance(chunker, SentenceChunker) and chunker.ceiling_tokens is not None:
+        return chunker._tolerant_cut(doc, segs, parts)
+    out = []
+    for g, part in zip(segs, parts, strict=True):
+        if not part:  # pragma: no cover — units tile the text, so never empty
+            out.append(_make_chunk(doc, g.start, g.end))
+            continue
+        out.extend(_pack_spans(
+            doc, part, chunker.chunk_size, chunker.chunk_overlap,
+            max_tokens=chunker.max_tokens, token_counter=chunker.token_counter,
+            budget_mode=chunker.budget_mode, size_unit=chunker.size_unit,
+        ))
+    return out
+
+
+class SentenceChunker(_StructureCuts):
     """Group whole sentences into chunks of ~``chunk_size`` chars with overlap.
 
     Sentence boundaries come from NLTK Punkt when the ``chunking`` extra is
@@ -892,6 +1126,17 @@ class SentenceChunker:
     how a chunk is measured against the token budget — ``"joined"`` (default:
     fill to the budget on the joined text, then cut back to a sentence boundary)
     or ``"summed"`` (legacy, under-filling); see :func:`_pack_spans_tokens`.
+
+    ``structure_cuts`` (#828 §7.1): sentences are found over the whole
+    document, split at section-segment edges, and each segment is packed on its
+    own. ``size_tolerance`` / ``min_piece`` (#831, owner decision 2026-11-04;
+    only under ``structure_cuts``, with ``size_unit="tokens"`` and no overlap):
+    ``chunk_size`` becomes a target, a segment at or under the ceiling
+    ``min(floor(chunk_size * (1 + size_tolerance)), max_tokens)`` stays whole,
+    a longer one is split at sentence boundaries aimed at the target (a
+    sentence over the target but within the ceiling kept whole), and pieces
+    under ``min_piece`` merge inside their segment, or as whole segments of one
+    group, when the result fits the ceiling (:meth:`_tolerant_cut`).
     """
 
     def __init__(
@@ -903,6 +1148,9 @@ class SentenceChunker:
         token_counter: TokenCounter | None = None,
         budget_mode: str = DEFAULT_BUDGET_MODE,
         size_unit: str = DEFAULT_SIZE_UNIT,
+        structure_cuts: str | None = None,
+        size_tolerance: float | None = None,
+        min_piece_tokens: int | None = None,
     ) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -910,11 +1158,59 @@ class SentenceChunker:
         self.token_counter = token_counter
         self.budget_mode = _validate_budget_mode(budget_mode)
         self.size_unit = _validate_size_unit(size_unit, chunk_size, token_counter)
+        self._init_cuts(structure_cuts)
+        #: The #831 tolerance (only under ``structure_cuts``), else ``None``.
+        self.size_tolerance: float | None = None
+        self.min_piece_tokens: int | None = None
+        self.ceiling_tokens: int | None = None
+        self.target_tokens: int | None = None
+        if min_piece_tokens is not None and size_tolerance is None:
+            raise ValueError(
+                "min_piece needs size_tolerance: the small-piece merge is part of "
+                "the opt-in size tolerance (#831)")
+        if size_tolerance is not None:
+            if structure_cuts is None:
+                raise ValueError(
+                    "size_tolerance/min_piece on chunk_method='sentence' need "
+                    "structure_cuts (#828 PR 7: the merge runs inside section walls)")
+            if self.size_unit != "tokens":
+                raise ValueError(
+                    "size_tolerance on chunk_method='sentence' needs size_unit='tokens': "
+                    "the target and the ceiling are token counts")
+            if chunk_overlap:
+                raise ValueError(
+                    f"size_tolerance on chunk_method='sentence' needs chunk_overlap=0; "
+                    f"got {chunk_overlap} (merged pieces cannot also overlap)")
+            if (isinstance(size_tolerance, bool)
+                    or not 0.0 <= size_tolerance <= MAX_SIZE_TOLERANCE):
+                raise ValueError(
+                    f"size_tolerance must be between 0 and {MAX_SIZE_TOLERANCE}; "
+                    f"got {size_tolerance!r}")
+            if chunk_size < 1:
+                raise ValueError(
+                    f"size_tolerance needs chunk_size >= 1 token; got {chunk_size}")
+            if min_piece_tokens is None:
+                min_piece_tokens = default_min_piece(chunk_size)
+            if not 0 <= min_piece_tokens <= chunk_size:
+                raise ValueError(
+                    f"min_piece must be between 0 and chunk_size ({chunk_size}) "
+                    f"tokens; got {min_piece_tokens}")
+            self.size_tolerance = size_tolerance
+            self.min_piece_tokens = min_piece_tokens
+            self.target_tokens = chunk_size if max_tokens is None else min(chunk_size, max_tokens)
+            self.ceiling_tokens = semantic_ceiling(chunk_size, size_tolerance, max_tokens)
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
         if not text:
             return []
+        segs = self._cut_plan(doc)
+        if segs is None and self.ceiling_tokens is not None:
+            # A marked tolerant collection's unstructured document: the whole
+            # document is one segment (sized and merged, with no walls).
+            segs = [Segment(0, len(text), -1, -1)]
+        if segs is not None:
+            return _pack_segments(self, doc, segs, sentence_spans)
         if self.chunk_size == -1:
             return _whole_doc(doc, self.max_tokens, self.token_counter)
 
@@ -927,6 +1223,44 @@ class SentenceChunker:
             max_tokens=self.max_tokens, token_counter=self.token_counter,
             budget_mode=self.budget_mode, size_unit=self.size_unit,
         )
+
+    def _tolerant_cut(
+        self, doc: Document, segs: list[Segment], parts: list[list[tuple[int, int]]]
+    ) -> list[Chunk]:
+        """The #831 tolerance and small-piece merge inside section walls (owner
+        decision 2026-11-04). Each segment: whole at or under the ceiling, else
+        split at sentence boundaries aimed at the target (:func:`_tolerant_range`,
+        a run over the ceiling greedily packed to the target). Then every piece
+        under ``min_piece`` merges under :func:`_segment_walls` when the joined
+        text fits the ceiling; one that cannot stays short and is counted."""
+        counter = self.token_counter
+        target, ceiling = self.target_tokens, self.ceiling_tokens
+        min_piece = self.min_piece_tokens
+        assert counter is not None and target is not None and ceiling is not None
+        assert min_piece is not None
+        text = doc.content
+        pieces: list[tuple[int, int]] = []
+        for g, part in zip(segs, parts, strict=True):
+            if not part:  # pragma: no cover — sentence spans tile the text
+                pieces.append((g.start, g.end))
+                continue
+
+            def run(a: int, b: int, part: list[tuple[int, int]] = part) -> list[Chunk]:
+                start, end = part[a][0], part[b - 1][1]
+                if counter.count(text[start:end]) <= ceiling:
+                    return [_make_chunk(doc, start, end)]
+                return _cap_unit_range(doc, part, a, b, target, counter)
+
+            chunks = _tolerant_range(doc, part, 0, len(part), target, ceiling, counter, run)
+            pieces.extend((c.start_char, c.end_char) for c in chunks)
+        merged = _merge_small_pieces(
+            text, pieces, min_piece=min_piece, ceiling=ceiling, token_counter=counter,
+            strength=lambda _offset: 0.0, may_join=_segment_walls(segs),
+        )
+        short = sum(1 for s, e in merged if counter.count(text[s:e]) < min_piece)
+        self._add_cut_stats(doc, short_pieces=short,
+                            sibling_merges=_crossing_ranges(merged, segs))
+        return [_make_chunk(doc, s, e) for s, e in merged]
 
 
 # --------------------------------------------------------------------------- #
@@ -951,7 +1285,7 @@ def word_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
-class WordChunker:
+class WordChunker(_StructureCuts):
     """Group whole words into chunks of ~``chunk_size`` chars with overlap.
 
     Word boundaries are non-whitespace runs; trailing whitespace stays attached
@@ -963,6 +1297,9 @@ class WordChunker:
     and a word is split only when it alone is over it. ``budget_mode="summed"``
     under-fills a word-unit token chunk to ~0.68 of the budget; see
     :func:`_pack_spans_tokens`.
+
+    ``structure_cuts`` (#828 §7.1): words split at section-segment edges, each
+    segment packed on its own, hard walls (no merge in this PR).
     """
 
     def __init__(
@@ -974,6 +1311,7 @@ class WordChunker:
         token_counter: TokenCounter | None = None,
         budget_mode: str = DEFAULT_BUDGET_MODE,
         size_unit: str = DEFAULT_SIZE_UNIT,
+        structure_cuts: str | None = None,
     ) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -981,11 +1319,15 @@ class WordChunker:
         self.token_counter = token_counter
         self.budget_mode = _validate_budget_mode(budget_mode)
         self.size_unit = _validate_size_unit(size_unit, chunk_size, token_counter)
+        self._init_cuts(structure_cuts)
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
         if not text:
             return []
+        segs = self._cut_plan(doc)
+        if segs is not None:
+            return _pack_segments(self, doc, segs, word_spans)
         if self.chunk_size == -1:
             return _whole_doc(doc, self.max_tokens, self.token_counter)
 
@@ -1154,6 +1496,7 @@ def _merge_small_pieces(
     token_counter: TokenCounter,
     strength: Callable[[int], float],
     barriers: frozenset[int] = frozenset(),
+    may_join: Callable[[tuple[int, int], tuple[int, int]], bool] | None = None,
 ) -> list[tuple[int, int]]:
     """Merge every piece under ``min_piece`` tokens into a neighbour (#831).
 
@@ -1165,9 +1508,12 @@ def _merge_small_pieces(
     left. After a merge the result is examined again (it may still be small), so
     a run of small pieces coalesces as far as the ceiling allows.
 
-    ``barriers`` are offsets no merge may cross. SEAM for #828's document
-    structure: once sections exist, their start offsets go here so a piece never
-    merges across a section boundary. Nothing passes them today.
+    ``barriers`` are offsets no merge may cross. ``may_join(left, right)`` is
+    the general form (#828 §7.1): it is asked about every candidate pair of
+    adjacent ranges and a ``False`` rules that merge out. ``structure_cuts``
+    passes :func:`_segment_walls`, which allows a merge inside one segment or
+    between two WHOLE segments of one group, and nothing else — a set of
+    offsets cannot say that. ``None`` (default) is the barrier test alone.
 
     Pure range arithmetic plus token counts: no embedding.
     """
@@ -1186,6 +1532,9 @@ def _merge_small_pieces(
                 continue
             boundary = out[i][0] if side == 0 else out[i][1]
             if boundary in barriers:
+                continue
+            if may_join is not None and not (
+                    may_join(out[j], out[i]) if side == 0 else may_join(out[i], out[j])):
                 continue
             a, b = (out[j][0], out[i][1]) if side == 0 else (out[i][0], out[j][1])
             n = token_counter.count(text[a:b])
@@ -1521,7 +1870,7 @@ def _pack_spans_tokens(
 # the eval harness's ``token_window_chunks`` (chunking_compare_7way.py).
 
 
-class FixedTokenWindowChunker:
+class FixedTokenWindowChunker(_StructureCuts):
     """Sliding TOKEN-window chunker with exact source char offsets.
 
     Tokenizes the whole document with the embedding model's HF fast tokenizer
@@ -1547,6 +1896,14 @@ class FixedTokenWindowChunker:
     because silently degrading to a single whole-doc chunk per document would be an
     invisible corpus-wide chunking regression. ``chunk_size``/``chunk_overlap`` are
     **tokens**, unlike the char-based chunkers.
+
+    ``structure_cuts`` (#828 §7.1): the document is still tokenised once; the
+    window slides over each section segment's tokens on its own, the first
+    window of a segment starts at the segment start, spans are clipped to the
+    segment, and overlap never reaches back across a segment edge.
+    ``max_tokens`` is recorded for the embed side (the window budget a heading
+    prefix must fit, #828 §7 ``embed_heading_path``); it does not size chunks
+    — the window does.
     """
 
     def __init__(
@@ -1555,6 +1912,8 @@ class FixedTokenWindowChunker:
         chunk_overlap: int = 64,
         *,
         token_counter: TokenCounter | None = None,
+        structure_cuts: str | None = None,
+        max_tokens: int | None = None,
     ) -> None:
         # fixed_token needs the HF fast tokenizer's offset mapping. A non-HF counter
         # (estimate/endpoint) has no offset map and would yield ONE whole-doc chunk
@@ -1574,6 +1933,8 @@ class FixedTokenWindowChunker:
         self.chunk_overlap = chunk_overlap
         self.token_counter: TokenCounter = token_counter
         self._get_tokenizer = tok
+        self.max_tokens = max_tokens
+        self._init_cuts(structure_cuts)
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
@@ -1588,6 +1949,9 @@ class FixedTokenWindowChunker:
             return [_make_chunk(doc, 0, len(text))]
         window = max(1, self.chunk_size)
         overlap = max(0, min(self.chunk_overlap, window - 1))
+        segs = self._cut_plan(doc)
+        if segs is not None:
+            return self._window_segments(doc, offsets, segs, window, overlap)
         chunks: list[Chunk] = []
         start_tok = 0
         while start_tok < n:
@@ -1621,6 +1985,51 @@ class FixedTokenWindowChunker:
             # guarantees forward progress even if overlap spans the whole window.
             start_tok = max(start_tok + 1, end_tok - overlap)
         # A whitespace-only or degenerate tail can leave no chunk; never drop text.
+        if not chunks:
+            return [_make_chunk(doc, 0, len(text))]
+        return chunks
+
+    def _window_segments(
+        self, doc: Document, offsets: Sequence[tuple[int, int]], segs: list[Segment],
+        window: int, overlap: int,
+    ) -> list[Chunk]:
+        """The sliding window per segment (``structure_cuts``). A segment's
+        tokens are those whose offset starts inside it; its first window starts
+        at the segment start (so the tail of a token that straddles the edge
+        travels with the segment it lands in), every span is clipped to the
+        segment, and the window restarts — overlap included — at each segment.
+        The re-count trim runs on a full window and on a first window that was
+        widened to the segment start. A segment with no token start of its own
+        is one chunk when it holds text (a whitespace gap is left out, as
+        between windows)."""
+        text = doc.content
+        counter = self.token_counter
+        tok_starts = [o[0] for o in offsets]
+        chunks: list[Chunk] = []
+        for g in segs:
+            lo = bisect.bisect_left(tok_starts, g.start)
+            hi = bisect.bisect_left(tok_starts, g.end)
+            if lo >= hi:
+                if text[g.start:g.end].strip():
+                    chunks.append(_make_chunk(doc, g.start, g.end))
+                continue
+            start_tok = lo
+            while start_tok < hi:
+                end_tok = min(start_tok + window, hi)
+                char_start = g.start if start_tok == lo else offsets[start_tok][0]
+                char_end = min(offsets[end_tok - 1][1], g.end)
+                if end_tok - start_tok >= window or char_start < offsets[start_tok][0]:
+                    while (
+                        end_tok - 1 > start_tok
+                        and counter.count(text[char_start:char_end]) > window
+                    ):
+                        end_tok -= 1
+                        char_end = min(offsets[end_tok - 1][1], g.end)
+                if char_end > char_start:
+                    chunks.append(_make_chunk(doc, char_start, char_end))
+                if end_tok >= hi:
+                    break
+                start_tok = max(start_tok + 1, end_tok - overlap)
         if not chunks:
             return [_make_chunk(doc, 0, len(text))]
         return chunks
@@ -1722,7 +2131,7 @@ def _mean_pool(vectors: Sequence[Sequence[float]]) -> list[float]:
     return [x / n for x in acc]
 
 
-class SemanticChunker:
+class SemanticChunker(_StructureCuts):
     """Split a document at topic boundaries detected via embedding similarity.
 
     Algorithm (adapted from distllm / LlamaIndex):
@@ -1740,6 +2149,13 @@ class SemanticChunker:
     embed function is synchronous too (``api/deps.py`` bridges the async
     embedder). No text is ever dropped — chunk spans tile the source and offsets
     reconstruct it exactly.
+
+    ``structure_cuts`` (#828 §7.1): sentences and the breakpoint embeddings
+    are computed over the whole document exactly as without it; every
+    section-segment edge is then a forced breakpoint, ``min_chunk_length``
+    merges stay inside a segment, the #831 merge runs under
+    :func:`_segment_walls`, and the oversized-document fallback cuts per
+    segment.
     """
 
     def __init__(
@@ -1763,7 +2179,9 @@ class SemanticChunker:
         breakpoint_cap_tokens: int | None = None,
         size_tolerance: float | None = None,
         min_piece_tokens: int | None = None,
+        structure_cuts: str | None = None,
     ) -> None:
+        self._init_cuts(structure_cuts)
         if cap_split not in CAP_SPLITS:
             raise ValueError(
                 f"unknown cap_split {cap_split!r}; valid: {', '.join(CAP_SPLITS)}"
@@ -1906,7 +2324,9 @@ class SemanticChunker:
         self._fallback_chunker: FixedTokenWindowChunker | None = None
         self._fallback_built = False
 
-    def _oversize_fallback(self, doc: Document, n_spans: int) -> list[Chunk]:
+    def _oversize_fallback(
+        self, doc: Document, n_spans: int, segs: list[Segment] | None = None
+    ) -> list[Chunk]:
         """Chunk an oversized doc via the fixed_token machinery — no per-span embed.
 
         Prefers :class:`FixedTokenWindowChunker` (a real sliding token window with
@@ -1929,12 +2349,22 @@ class SemanticChunker:
                     chunk_size=self.chunk_size,
                     chunk_overlap=self.chunk_overlap,
                     token_counter=self.token_counter,
+                    # #828 §7.1: under structure_cuts the fallback window cuts
+                    # per segment too. None: exactly the old fallback.
+                    structure_cuts=self.structure_cuts,
                 )
         if self._fallback_chunker is not None:
-            return self._fallback_chunker.chunk(doc)
+            out = self._fallback_chunker.chunk(doc)
+            moved = self._fallback_chunker._cut_stats.pop(doc.id, None)
+            if moved:
+                self._add_cut_stats(doc, **moved)
+            return out
         # No HF offset tokenizer: token-budget split the whole doc (via the same
         # _token_split_span the other chunkers use). Bounded and lossless; without a
-        # counter at all, _emit yields a single whole-doc chunk.
+        # counter at all, _emit yields a single whole-doc chunk. Under
+        # structure_cuts (``segs``), the same per segment.
+        if segs is not None:
+            return [c for g in segs for c in self._emit(doc, g.start, g.end)]
         return self._emit(doc, 0, len(doc.content))
 
     def _emit(self, doc: Document, start: int, end: int) -> list[Chunk]:
@@ -2022,26 +2452,10 @@ class SemanticChunker:
         """
         assert self.token_counter is not None and self.size_cap_tokens is not None
         assert self.ceiling_tokens is not None
-        counter, target, ceiling = self.token_counter, self.size_cap_tokens, self.ceiling_tokens
-        text = doc.content
-        start, end = spans[lo][0], spans[hi - 1][1]
-        if counter.count(text[start:end]) <= ceiling:
-            return [_make_chunk(doc, start, end)]
-        out: list[Chunk] = []
-        run = lo
-        for i in range(lo, hi):
-            s, e = spans[i]
-            n = counter.count(text[s:e])
-            if n <= target:
-                continue
-            if run < i:
-                out.extend(self._tolerant_run(doc, spans, run, i, distances))
-            out.extend([_make_chunk(doc, s, e)] if n <= ceiling
-                       else _token_split_span(doc, s, e, target, counter))
-            run = i + 1
-        if run < hi:
-            out.extend(self._tolerant_run(doc, spans, run, hi, distances))
-        return out
+        return _tolerant_range(
+            doc, spans, lo, hi, self.size_cap_tokens, self.ceiling_tokens, self.token_counter,
+            lambda a, b: self._tolerant_run(doc, spans, a, b, distances),
+        )
 
     def _tolerant_run(
         self,
@@ -2073,13 +2487,15 @@ class SemanticChunker:
         chunks: list[Chunk],
         spans: list[tuple[int, int]],
         distances: Sequence[float],
+        may_join: Callable[[tuple[int, int], tuple[int, int]], bool] | None = None,
     ) -> list[Chunk]:
         """The #831 small-piece merge over a document's emitted chunks.
 
         A boundary at the start of sentence ``m`` is as strong as
         ``distances[m - 1]`` (the breakpoint series already computed); a boundary
-        inside a sentence (a hard split) is the weakest there is. No barriers
-        are passed yet: see :func:`_merge_small_pieces` for the #828 seam.
+        inside a sentence (a hard split) is the weakest there is. ``may_join``
+        is :func:`_segment_walls` under ``structure_cuts`` (#828 §7.1), else
+        ``None`` (no wall).
         """
         assert self.token_counter is not None and self.ceiling_tokens is not None
         assert self.min_piece_tokens is not None
@@ -2095,7 +2511,7 @@ class SemanticChunker:
         merged = _merge_small_pieces(
             doc.content, ranges, min_piece=self.min_piece_tokens,
             ceiling=self.ceiling_tokens, token_counter=self.token_counter,
-            strength=strength,
+            strength=strength, may_join=may_join,
         )
         if merged == ranges:
             return chunks
@@ -2206,6 +2622,9 @@ class SemanticChunker:
         text = doc.content
         if not text:
             return []
+        segs = self._cut_plan(doc)
+        if segs is not None:
+            return self._chunk_cut(doc, segs)
 
         spans = sentence_spans(text)
         if not spans:
@@ -2257,6 +2676,86 @@ class SemanticChunker:
             # #831: after min_chunk_length (chars, above) and the split (per block),
             # small pieces join a neighbour across the weaker boundary.
             out = self._merge_small(doc, out, spans, distances)
+        return out
+
+    def _chunk_cut(self, doc: Document, segs: list[Segment]) -> list[Chunk]:
+        """:meth:`chunk` under ``structure_cuts`` (#828 §7.1).
+
+        Sentence spans, the oversized-document check, the buffer embeddings and
+        the breakpoint distances are computed over the WHOLE document exactly
+        as without the marker, so their cost and the sentence fingerprint do not
+        change. The breakpoint groups are then cut at every segment edge (a
+        sentence that straddles one is split there), ``min_chunk_length``
+        merges run per segment, each piece is emitted as a block over the cut
+        units, and the #831 merge (when on) runs under :func:`_segment_walls`.
+        """
+        text = doc.content
+        spans = sentence_spans(text)
+        if len(spans) <= 1:
+            out: list[Chunk] = []
+            for g in segs:
+                out.extend(self._emit(doc, g.start, g.end))
+            return out
+        if (
+            self.max_breakpoint_sentences is not None
+            and len(spans) > self.max_breakpoint_sentences
+        ):
+            return self._oversize_fallback(doc, len(spans), segs)
+        embeddings = self._buffer_embeddings(text, spans)
+        distances = [
+            _cosine_distance(embeddings[i], embeddings[i + 1])
+            for i in range(len(embeddings) - 1)
+        ]
+        if self.distance_round is not None:
+            distances = [round(d, self.distance_round) for d in distances]
+        groups = self._breakpoint_groups(distances, len(spans))
+
+        # The cut units, and the breakpoint series re-indexed onto them: the
+        # boundary before cut unit m is the original sentence boundary it sits
+        # on, or -inf for an edge inside a sentence (as weak as a hard split).
+        parts = _units_by_segment(spans, segs)
+        cut_spans = [u for part in parts for u in part]
+        orig_at: dict[int, int] = {}
+        for i, (s, _e) in enumerate(spans):
+            orig_at.setdefault(s, i)
+        cut_distances: list[float] = []
+        for s, _e in cut_spans[1:]:
+            k = orig_at.get(s)
+            cut_distances.append(distances[k - 1] if k else float("-inf"))
+
+        # Group ranges split at the segment edges, per segment.
+        seg_starts = [g.start for g in segs]
+        per_seg: list[list[tuple[int, int]]] = [[] for _ in segs]
+        for gs, ge in groups:
+            if ge <= gs:
+                continue
+            a, b = spans[gs][0], spans[ge - 1][1]
+            k = bisect.bisect_right(seg_starts, a) - 1
+            while a < b:
+                cut = min(b, segs[k].end)
+                per_seg[k].append((a, cut))
+                a, k = cut, k + 1
+        first_of: dict[int, int] = {}
+        past_of: dict[int, int] = {}
+        for i, (s, e) in enumerate(cut_spans):
+            first_of.setdefault(s, i)
+            past_of[e] = i + 1
+        out = []
+        for ranges in per_seg:
+            for s, e in self._merge_short(ranges):
+                out.extend(self._emit_block(doc, cut_spans, first_of[s], past_of[e],
+                                            cut_distances))
+        if self.min_piece_tokens:
+            out = self._merge_small(doc, out, cut_spans, cut_distances,
+                                    may_join=_segment_walls(segs))
+            assert self.token_counter is not None
+            ranges = [(c.start_char, c.end_char) for c in out]
+            self._add_cut_stats(
+                doc,
+                short_pieces=sum(1 for c in out
+                                 if self.token_counter.count(c.content) < self.min_piece_tokens),
+                sibling_merges=_crossing_ranges(ranges, segs),
+            )
         return out
 
     def _breakpoint_groups(
@@ -2331,11 +2830,44 @@ def semantic_chunking_provenance(chunker: object) -> dict | None:
     }
 
 
+def sentence_tolerance_provenance(chunker: object) -> dict | None:
+    """What a ``sentence`` chunker applies of the #831 tolerance under
+    ``structure_cuts`` (#828 PR 7), for the receipt's ``chunking`` object:
+    ``method``, the target ``chunk_size`` (tokens), ``size_tolerance``,
+    ``min_piece``, the applied ``ceiling`` (already clamped to the window) and
+    ``window_budget``. ``None`` for every other chunker and for a sentence
+    chunker without the tolerance, so their receipts are unchanged."""
+    if not isinstance(chunker, SentenceChunker) or chunker.size_tolerance is None:
+        return None
+    return {
+        "method": "sentence",
+        "chunk_size": chunker.target_tokens,
+        "size_tolerance": chunker.size_tolerance,
+        "min_piece": chunker.min_piece_tokens,
+        "ceiling": chunker.ceiling_tokens,
+        "window_budget": chunker.max_tokens,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Factory
 # --------------------------------------------------------------------------- #
 
 CHUNK_METHODS = ("fixed", "fixed_token", "sentence", "words", "semantic", "semantic_pooled")
+
+_FIXED_CUTS_LOGGED = False
+
+
+def _log_fixed_cuts_once() -> None:
+    """``structure_cuts`` on ``fixed`` (characters): allowed but pointless (§7)
+    — logged once per process, never applied."""
+    global _FIXED_CUTS_LOGGED
+    if _FIXED_CUTS_LOGGED:
+        return
+    _FIXED_CUTS_LOGGED = True
+    logger.info(
+        "structure_cuts on chunk_method='fixed' is recorded but not applied: a "
+        "character window has no seam to cut at (#828 §7, 'allowed but pointless')")
 
 
 def make_chunker(
@@ -2359,6 +2891,7 @@ def make_chunker(
     breakpoint_cap: str | None = None,
     size_tolerance: float | None = None,
     min_piece: int | None = None,
+    structure_cuts: str | None = None,
 ):
     """Build the chunker named by ``method``.
 
@@ -2405,7 +2938,19 @@ def make_chunker(
     the opt-in tolerance — ``chunk_size`` becomes a target, chunks may reach the
     ceiling, and pieces under ``min_piece`` tokens are merged (see
     :data:`DEFAULT_SIZE_TOLERANCE`). ``None`` (default) is the strict cap.
+
+    ``structure_cuts`` (#828 §7.1, a ``chunk_params`` marker; one of
+    :data:`STRUCTURE_CUTS`): section-segment edges become cut points for
+    ``fixed_token``, ``sentence``, ``words`` and the semantic methods. On
+    ``fixed`` it is accepted and logged, and changes nothing (§7: "allowed but
+    pointless"). ``None`` (default): every chunker exactly as before. Under it,
+    ``sentence`` also accepts ``size_tolerance`` / ``min_piece`` (owner decision
+    2026-11-04): the #831 tolerance and merge, inside the section walls.
     """
+    if structure_cuts is not None and structure_cuts not in STRUCTURE_CUTS:
+        raise ValueError(
+            f"unknown structure_cuts {structure_cuts!r}; valid: {', '.join(STRUCTURE_CUTS)}")
+    sentence_tolerance = method == "sentence" and structure_cuts is not None
     if cap_split not in CAP_SPLITS:
         raise ValueError(f"unknown cap_split {cap_split!r}; valid: {', '.join(CAP_SPLITS)}")
     if size_cap is not None and size_cap not in SIZE_CAPS:
@@ -2416,12 +2961,13 @@ def make_chunker(
         )
     if method not in ("semantic", "semantic_pooled") and (
         size_cap is not None or cap_split != DEFAULT_CAP_SPLIT or breakpoint_cap is not None
-        or size_tolerance is not None or min_piece is not None
+        or (not sentence_tolerance and (size_tolerance is not None or min_piece is not None))
     ):
         # Same rule as size_unit: a knob this method ignores must not look applied.
         raise ValueError(
             f"size_cap/cap_split/breakpoint_cap/size_tolerance/min_piece apply only "
-            f"to the semantic methods, not chunk_method={method!r}"
+            f"to the semantic methods (size_tolerance/min_piece also to "
+            f"chunk_method='sentence' under structure_cuts), not chunk_method={method!r}"
         )
     if size_cap is None and breakpoint_cap is not None:
         raise ValueError(
@@ -2434,6 +2980,8 @@ def make_chunker(
             f"unknown size_unit {size_unit!r}; valid: {', '.join(SIZE_UNITS)}"
         )
     if method == "fixed":
+        if structure_cuts is not None:
+            _log_fixed_cuts_once()
         return RecursiveCharacterChunker(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             max_tokens=max_tokens, token_counter=token_counter,
@@ -2456,14 +3004,23 @@ def make_chunker(
             )
         return FixedTokenWindowChunker(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
-            token_counter=token_counter,
+            token_counter=token_counter, structure_cuts=structure_cuts,
+            max_tokens=max_tokens,
         )
-    if method in ("sentence", "words"):
-        cls = SentenceChunker if method == "sentence" else WordChunker
-        return cls(
+    if method == "sentence":
+        return SentenceChunker(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             max_tokens=max_tokens, token_counter=token_counter,
             budget_mode=budget_mode, size_unit=size_unit,
+            structure_cuts=structure_cuts,
+            size_tolerance=size_tolerance, min_piece_tokens=min_piece,
+        )
+    if method == "words":
+        return WordChunker(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            max_tokens=max_tokens, token_counter=token_counter,
+            budget_mode=budget_mode, size_unit=size_unit,
+            structure_cuts=structure_cuts,
         )
     if method in ("semantic", "semantic_pooled"):
         if embed_fn is None:
@@ -2507,5 +3064,6 @@ def make_chunker(
             ),
             size_tolerance=size_tolerance,
             min_piece_tokens=min_piece,
+            structure_cuts=structure_cuts,
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")
