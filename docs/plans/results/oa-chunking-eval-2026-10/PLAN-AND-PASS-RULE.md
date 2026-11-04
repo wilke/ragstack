@@ -114,3 +114,20 @@ Ingest facts checked 2026-11-03 at v1.6.22 (dev's checkout):
 - Corpus per arm: the eval sample plus about 20,000 background OA articles, identical in every arm.
 - Addendum A approved. Freeze after the noise run (margins, N, seed recorded then).
 - Harness: go (worktree, this branch). Branch is pushed for the record; eval text stays private.
+
+## Owner decisions, 2026-11-04
+- Scope: "bacteria/virus" = PubMed MeSH Major Topic Bacteria OR Viruses, open-access filter;
+  171,994 PMCIDs present in the OA corpus (list kept privately).
+- Sample: 2,600 eval articles (expected ~2,260 usable questions) + 20,000 background,
+  stratified by journal family (8 families) x length band (tertiles); seed recorded privately.
+  The manifest has no year field, so year is not a stratum. Smallest cell: 13 eval articles.
+- Retrieval: run BOTH production settings (reranker on, graph off, hybrid) and vector-only,
+  no reranker. Which one is primary is named before the freeze (proposal: production primary).
+- Tie-break: cheapest first stands as the working rule, to be discussed before the freeze.
+  Open point: a cheap arm passes by non-inferiority while a mid/expensive arm passes by
+  proven superiority; options are (a) cheapest passing arm, (b) highest passing class,
+  cheapest within it, (c) the costlier arm only if it beats the cheaper passing arm in a
+  direct paired test. Fixed before any main-run result is seen.
+- Stratum guard size: report all strata. The minimum stratum size for the guard is chosen
+  at the freeze from the noise run (interval width vs stratum size), not from main-run
+  results; strata below it are reported, marked "below cut-off".
