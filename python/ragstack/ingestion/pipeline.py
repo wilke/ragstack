@@ -13,8 +13,11 @@ from ragstack.ingestion.chunker_config import NO_STRUCTURE_MARKERS, StructureMar
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
 from ragstack.ingestion.structure import (
+    TEXT_RENDER_FAILED,
+    TextRenderFailed,
     apply_text_render,
     attach_structure,
+    render_failure_of,
     stamp_documents,
     structure_provenance,
 )
@@ -259,6 +262,12 @@ class IngestionPipeline:
         refused = [d for d in documents if refusal_of(d)]
         if refused and len(refused) == len(documents):
             raise DuplicateWork(refusal_of(refused[0]))
+        # #828: a document the collection's text_render could not render is
+        # left out, never ingested raw; when that leaves nothing, the item
+        # fails with the reason (one source = one job item).
+        failed = [d for d in documents if render_failure_of(d)]
+        if failed and len(failed) + len(refused) == len(documents):
+            raise TextRenderFailed(render_failure_of(failed[0]))
         return PreparedSource(
             source=source, doc_ids=[d.id for d in documents if not refusal_of(d)],
             chunks=chunks, produced=produced,
@@ -301,6 +310,7 @@ class IngestionPipeline:
                 policy=check.policy, source=source, seen=check.seen,
             )
         await self._render_text(to_chunk)
+        to_chunk = [d for d in to_chunk if not render_failure_of(d)]
         await self._attach_structure(to_chunk)
         all_chunks: list[Chunk] = []
         for doc in to_chunk:
@@ -489,6 +499,13 @@ class IngestionPipeline:
         finally:
             self.structure_counts.update(local)
 
+    def text_render_failures(self) -> int:
+        """How many documents the ``text_render`` step could not render (each
+        left out, never ingested raw) — so a tool can say so even when the
+        structure step, and with it ``enrichment.structure``, is off."""
+        return sum(n for k, n in self.structure_counts.items()
+                   if k.startswith(f"{TEXT_RENDER_FAILED}:"))
+
     async def _attach_structure(self, documents: list[Document]) -> None:
         """Run the ingest adapters (#828 §2: Markdown raw mode, ``markdown/1``)
         when the structure step is on. Off the event loop, like the stamp: a
@@ -621,6 +638,7 @@ class IngestionPipeline:
         documents: list[Document] = self.loader.load(source)
         await self._apply_doi_enrichment(documents)
         await self._render_text(documents)
+        documents = [d for d in documents if not render_failure_of(d)]
         await self._attach_structure(documents)
         step = max(1, group_size)
         for start in range(0, len(documents), step):

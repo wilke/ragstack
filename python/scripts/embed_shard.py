@@ -170,6 +170,11 @@ def _applied_chunking(args, chunker, target=None,
 def _build_pipeline(args, http: httpx.AsyncClient, spec=None) -> IngestionPipeline:
     chunker = _build_chunker(args, spec)  # fail fast on a bad chunk config, before any I/O
     markers = _structure_markers(args, spec)
+    if markers:
+        # What this worker applies (#828 §7), as ingest_shard prints it; the
+        # header's and the receipt's `chunking` objects carry the same keys.
+        print("[chunker] structure markers: " + " ".join(
+            f"{k}={v}" for k, v in markers.applied().items()), file=sys.stderr)
     # None -> scale with the fleet: 8 in-flight PER endpoint. A fixed total
     # silently caps a wider fleet at a narrower fleet's throughput.
     concurrency = args.embedding_max_concurrency or 8 * max(len(args.embedding_url), 1)
@@ -269,6 +274,10 @@ async def amain(args, target=None) -> int:
     # (None when none, so an unmarked receipt is unchanged).
     receipt.chunking = pipeline.structure_markers.applied() or None
     receipt.write(args.receipt)
+    if pipeline.text_render_failures():
+        print(f"[{args.shard_id or os.path.basename(args.shard)}] text_render failed on "
+              f"{pipeline.text_render_failures()} document(s): left out, not embedded raw",
+              file=sys.stderr, flush=True)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"chunks={receipt.n_chunks} → {args.out}"
           + (f"  ERROR: {receipt.error}" if receipt.error else ""), flush=True)

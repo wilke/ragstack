@@ -96,6 +96,7 @@ from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fing
 from ragstack.ingestion.structure import (
     apply_text_render,
     attach_structure,
+    render_failure_of,
     require_structure_backends_or_exit,
     stamp_documents,
     structure_from_record,
@@ -984,6 +985,11 @@ async def run(
                                                 markers.text_render, rendered)
                     finally:
                         structure_counts.update(rendered)
+                    if render_failure_of(doc):
+                        # Left out, never ingested raw (logged and counted by
+                        # apply_text_render; reported in the final line).
+                        stats["text_render_failed"] = stats.get("text_render_failed", 0) + 1
+                        return []
                 if structure_on:
                     attached: Counter[str] = Counter()
                     try:
@@ -1273,6 +1279,9 @@ async def run(
     if stats.get("boilerplate_flagged") or stats.get("boilerplate_dropped"):
         print(f"boilerplate: {stats['boilerplate_flagged']} chunks flagged, "
               f"{stats['boilerplate_dropped']} dropped", file=sys.stderr)
+    if stats.get("text_render_failed"):
+        print(f"text_render failed on {stats['text_render_failed']} document(s); "
+              "left out, not ingested raw", file=sys.stderr)
     if structure_dropped:
         print("structure dropped, document kept: " + ", ".join(
             f"{k} on {n} record(s)" for k, n in sorted(structure_dropped.items())),

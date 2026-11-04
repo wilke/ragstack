@@ -80,6 +80,7 @@ from ragstack.ingestion.receipts import (
     DocRow,
     ShardReceipt,
 )
+from ragstack.ingestion.structure import render_failure_of
 from ragstack.ingestion.work_identity import POLICY_OFF, refusal_of
 
 log = logging.getLogger(__name__)
@@ -242,7 +243,10 @@ async def run_shard(
     for c in kept:
         ids_by_doc.setdefault(c.doc_id, []).append(c.id)
     # Rows copied the metadata at load; the refusal is on the documents.
-    refusals = {d.id: refusal_of(d) for d in docs if refusal_of(d)}
+    # ... and so is a document the collection's text_render could not render
+    # (#828: left out, never ingested raw).
+    refusals = {d.id: refusal_of(d) or render_failure_of(d) for d in docs
+                if refusal_of(d) or render_failure_of(d)}
     for row in rows:
         if row.error:
             continue

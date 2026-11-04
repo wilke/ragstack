@@ -868,11 +868,17 @@ def apply_text_render(
     A structure that arrived with the document is dropped: it was bound to the
     text being replaced. A rendered structure that fails validation is dropped
     and counted under ``structure_invalid:<reason>`` — the CONTENT is still the
-    render (metadata may degrade; identity may not). Any other failure of the
-    render propagates and fails the document's ingest: falling back to the raw
-    text would mix two renders in one collection. A missing parser propagates
-    as :class:`StructureBackendUnavailable`. Each structure kept counts
-    ``backend:<parser>`` (the audit of §6)."""
+    render (metadata may degrade; identity may not).
+
+    **A render that fails on one document fails THAT document only** (#828 PR 4
+    review): it is never ingested as raw text (that would mix two renders in
+    one collection) — its ``content`` is emptied, its structure dropped, and
+    :func:`render_failure_of` names the reason, which every chunk loop reads to
+    leave it out (and ``run_shard`` writes on its receipt row); counted under
+    ``text_render_failed:<exception class>`` and logged at ERROR. The other
+    documents continue. A missing parser is not such a failure: it propagates
+    as :class:`StructureBackendUnavailable` (the configuration refusal). Each
+    structure kept counts ``backend:<parser>`` (the audit of §6)."""
     if render is None:
         return 0
     table = TEXT_RENDERS.get(render)
@@ -883,7 +889,20 @@ def apply_text_render(
         fn = table.get(Path(doc.source).suffix.lower())
         if fn is None:
             continue
-        text, built = fn(doc)
+        try:
+            text, built = fn(doc)
+        except StructureBackendUnavailable:
+            raise
+        except Exception as e:  # noqa: BLE001 - one document fails, never the batch
+            reason = f"{TEXT_RENDER_FAILED}: {type(e).__name__}: {e}"
+            doc.content = ""
+            doc.structure = None
+            doc.metadata[RENDER_FAILURE_KEY] = reason
+            if counts is not None:
+                counts[f"{TEXT_RENDER_FAILED}:{type(e).__name__}"] += 1
+            log.error("text_render %s failed for %r; the document is left out: %s",
+                      render, doc.source or doc.id, e)
+            continue
         doc.content = text
         doc.structure = None
         if built is not None:
@@ -900,6 +919,29 @@ def apply_text_render(
         if built is not None and counts is not None:
             counts[f"backend:{_RENDER_BACKENDS[render]()}"] += 1
     return done
+
+
+#: The label a document's render failure starts with (receipt rows, counts).
+TEXT_RENDER_FAILED = "text_render_failed"
+#: Where :func:`apply_text_render` marks a document it could not render. Never
+#: reaches a chunk: a marked document is chunked by no loop.
+RENDER_FAILURE_KEY = "_text_render_failure"
+
+
+def render_failure_of(doc: Document) -> str:
+    """Why the collection's ``text_render`` could not render ``doc``, or ``""``."""
+    return str(doc.metadata.get(RENDER_FAILURE_KEY) or "")
+
+
+class TextRenderFailed(RuntimeError):
+    """Every document of a source failed its render (one source = one job
+    item): the item fails with the reason as its error, before any embed or
+    store write. ``job_error`` follows the ``DuplicateWork`` convention."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        # Caller-safe: the label and the exception class, not its message.
+        self.job_error = ": ".join(reason.split(": ")[:2])
 
 
 def _markdown_backend() -> str:
@@ -1106,6 +1148,10 @@ def structure_provenance(
                if k.startswith("structure_invalid:")}
     if invalid:
         rec["structure_invalid"] = invalid
+    failed = {k.split(":", 1)[1]: n for k, n in sorted(done.items())
+              if k.startswith(f"{TEXT_RENDER_FAILED}:")}
+    if failed:
+        rec[TEXT_RENDER_FAILED] = failed
     backends = sorted(k.split(":", 1)[1] for k, n in done.items()
                       if k.startswith("backend:") and n)
     if backends:
@@ -1137,7 +1183,8 @@ __all__ = [
     "Block", "DocumentStructure", "Section",
     "STAMP_KEYS", "STAMP_VERSION", "ROLES_V1", "RULES_VERSION", "DECLARED_VERSION",
     "IngestAdapter", "StructureBackendUnavailable", "StructureIndex", "StructureInvalid",
-    "TEXT_RENDERS", "apply_text_render", "attach_structure", "citations",
+    "RENDER_FAILURE_KEY", "TEXT_RENDERS", "TEXT_RENDER_FAILED", "TextRenderFailed",
+    "apply_text_render", "render_failure_of", "attach_structure", "citations",
     "require_structure_backends", "require_structure_backends_or_exit", "structure_step_on",
     "classify_roles", "classify_title", "content_sha256", "merge_enrichment",
     "normalise_label", "normalise_title", "stamp", "stamp_documents",
