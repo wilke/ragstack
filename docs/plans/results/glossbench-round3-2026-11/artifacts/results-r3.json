@@ -1,0 +1,5504 @@
+{
+ "schema": "glossbench-r3-results/1",
+ "artifact_provenance": {
+  "label": "RECORD - family F (H1-H3) on set O: H1 not confirmed; H2, H3 GATE-NOT-EVALUABLE. D-5 sensitivities EXPLORATORY. Set A descriptive only (D-6 caveat). Set P stopped at its pilot (D-1).",
+  "what": "counts-only copy of round 3's harness outputs: found10.py analyse (confirmatory and the D-5 sensitivity), the D-5 census breakdown, the wording proxy (M2, manipulation check), the per-arm found10 run summaries, the swap restores, and the drafting / verification totals per batch",
+  "derived_by": "artifacts/make_results_r3.py (this directory): a mechanical copy; no test is recomputed",
+  "source_sha256": {
+   "out/A-run2/acceptance-summary-A.json": "7f3217001f57e8e64dc78b9333fe10cc28b8ca543cdfeb6a29bf487e4072b868",
+   "out/A-run2/draft-totals-A.json": "13025324a4a29e1cdf64a7a7631b60ae3327c56b8c1aa65a82386fe1e6b9c0f3",
+   "out/A-run2/proxy-A.json": "0e52ee4a7f671ab49ef23dcfe6472d19dcbc40030964ddd61c9588651f25af2b",
+   "out/A-run2/verify-totals-A.json": "4cd983f9497d1b298806d1162fbdd510028efc3355280dd378617eb2f1491096",
+   "out/P-pilot-run2/acceptance-summary-P-pilot.json": "3df1efbb8d05f3246708464b9dbc5ad3d2a57e0b8524d20406e0a6aac9f6fc23",
+   "out/P-pilot-run2/verify-totals-P-pilot.json": "247b9d14ce965e83a9e064151407bd58eea24eca34dc3bd717740fd99da4c14e",
+   "out/acceptance-summary-O.json": "dc3303e7272f95e5ce56befa4810a31e053202bcf6cf29c1a814e101ef1e2a82",
+   "out/analysis/d5-exclusions-O.json": "e62902d62951d688d42fc5e346bc524f3916b9d6b736ce4319bb730f63b6c397",
+   "out/analysis/results-found10-r3-d5-sensitivity-EXPLORATORY.json": "f45b95355e93a5e3044a4f0877b4c401586ea27acb97b1d9810337466d64714b",
+   "out/analysis/results-found10-r3.json": "92cd4326c205326dd3bf2aeb17c56d35fd3d22e23a6f9273f59fc14e4fa44b3b",
+   "out/draft-totals-A.json": "26ea69cc974d02818b51d4f098856c7b36cfc107011f8547d9895dcf1288a704",
+   "out/draft-totals-O.json": "b1b7d35f196cc72d8ea3090c9cd9e65a3731134cc5387e4cbd11a10aaf7cfda5",
+   "out/draft-totals-P-pilot.json": "2e8707a749ab174b37c4b8da7003f367f58bb2a6b8c2b438b95e36a9ad84f38d",
+   "out/found10/A/mention-shuf.summary.json": "f05625aab1354b183edc02f20b067f362df9561cd9210724bf021df306fb5841",
+   "out/found10/A/mention.summary.json": "6bb981695f37bb369c94c35e53ade1ffa4faa32c19dec38b74a55c586bdac185",
+   "out/found10/A/none.summary.json": "d411f5f51337d1dc3a91acb7e7fe89e6f7171e445fe074999c5abeb9021a2a8f",
+   "out/found10/A/rules-mention.summary.json": "d703f86e35fd704135524c0607b879b8a5eb198d146ef8cc299a5ba82bfa4b04",
+   "out/found10/A/rules-value.summary.json": "253e1e08f94663b16f86bd9015a249561c17b8c078b6b89d2d9611d0b7cd1111",
+   "out/found10/A/value#2.summary.json": "e517cec7a69fbcad73998728b35d0b2a8f430cc043517cdbe09afaa4e144ef98",
+   "out/found10/A/value.summary.json": "d4783fbd44013e63b64fd838263650676815edfa8efb62f396ed6a09bf8fa3a6",
+   "out/found10/O/mention-shuf.summary.json": "e5fff61347772f848bc63a0b7702639666a7ff75b4f5401c223718c776d670ea",
+   "out/found10/O/mention.summary.json": "a88050e27ca3d743700a962dc6bdf2f447ce2482b4dfc55ce7e0b7fdcaec8e74",
+   "out/found10/O/none.summary.json": "f121294f1e2c39ff0270e8dedae2ea39d748430272888e2e9a43071d0c11da08",
+   "out/found10/O/rules-mention.summary.json": "2c0abfdcac8acdfae090da445297923178d037a6a24093bde0bc787ddecfc5ac",
+   "out/found10/O/rules-value.summary.json": "2b48642064ed11d53798a97f08bda1f6df50c117f7827e5f8f28f1bbde2f64c1",
+   "out/found10/O/value#2.summary.json": "85732b3e873bacdd24faaa7aaf38ece37358bbf35caedd9d8402530b5bee287b",
+   "out/found10/O/value.summary.json": "57b4ae32c68fc8b911dd2691cd303e33e6d77990bb89c74ca2b98effc5a0770b",
+   "out/found10/SHA256": "c76010c8c2cc30f03970cf304cb72f2065bd67abe06a3de85a66c748722fc632",
+   "out/proxy-O.json": "9ee29311c395a7263353ff5b3fe6e3445dffd17736fc0c837093fb1eb22bea1d",
+   "out/verify-totals-O.json": "5ff5b6957703a62963bfe94c921b9e54a606b1bd45088b51be946fdc878a3b27",
+   "swap/A/restore.json": "b24ea60babb75f230104c6d82823536148d4dec7fecf598bd6e2ab47e6142a6c",
+   "swap/O/restore.json": "8bbea9831b6b8ab0b1b9217c373155ebb3bbb4c10af0b512d195a5c353c2c243"
+  },
+  "source_commits": [
+   "6b434e86fa16a7ca9c4aebecf257e5890c61ad12"
+  ],
+  "public_copy": "counts only: no record id, chunk id, document id, question, quote, binding term, field name, path, host, index, collection or endpoint; provenance host/image/installed_distribution redacted",
+  "citable": true,
+  "citable_reason": "every harness output records citable true: found10.py analyse, run and the wording proxy ran from a clean detached worktree (dirty false, untracked 0) at the commit in source_commits; not from a versioned tools image (in_image false, warning kept)",
+  "not_citable_parts": "none of the copied figures; the drafting totals record their own commits (6e620c2, b501ec7, 4c0bbb8) and citable flags beside them",
+  "private_data": "accepted records, pools, per-record retrieval rows, verdict files and arm files stay with the run outputs, off GitHub"
+ },
+ "confirmatory": {
+  "schema_of_source": "glossbench-r3-found10-analysis/1",
+  "citable": true,
+  "test": "paper sign-flip permutation (standard p; exact when <= 20 non-zero papers; H2 two-sided), paper-cluster bootstrap percentile CI of the net share, Holm over the family (gated or missing members at p = 1.0), McNemar descriptive; each member on its own strata",
+  "analysis": {
+   "alpha": 0.05,
+   "ci_level": 0.9,
+   "family_condition": "base",
+   "family_corpora": [
+    "O"
+   ],
+   "hypotheses": {
+    "H1": [
+     "mention",
+     "value",
+     "superiority",
+     "found",
+     [
+      "M_num"
+     ]
+    ],
+    "H2": [
+     "mention",
+     "value",
+     "two-sided",
+     "found",
+     [
+      "V"
+     ]
+    ],
+    "H3": [
+     "mention",
+     "mention-shuf",
+     "superiority",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ]
+   },
+   "n_boot": 10000,
+   "n_perm": 10000,
+   "repeat_arm": "value",
+   "round": 3,
+   "secondary": {
+    "mention - rules-mention (two-sided)": [
+     "mention",
+     "rules-mention",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "mention-none": [
+     "mention",
+     "none",
+     "superiority",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "pooled mention-value (two-sided)": [
+     "mention",
+     "value",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "rules-mention - rules-value (two-sided)": [
+     "rules-mention",
+     "rules-value",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "value - rules-value (two-sided)": [
+     "value",
+     "rules-value",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "value-none": [
+     "value",
+     "none",
+     "superiority",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ]
+   },
+   "seed": 261103,
+   "split_field": "symbol_is_the_quantity"
+  },
+  "family": {
+   "condition": "base",
+   "corpora": [
+    "OA-1000 (set O)"
+   ],
+   "order": [
+    "H1",
+    "H2",
+    "H3"
+   ],
+   "hypotheses": {
+    "H1": {
+     "status": "not confirmed",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "M_num"
+     ],
+     "n": 149,
+     "n_records_population": 149,
+     "excluded_missing": 0,
+     "discordant": 10,
+     "gained": 1,
+     "lost": 9,
+     "net": -8,
+     "net_share": -0.053691275167785234,
+     "ci": [
+      -0.09027777777777778,
+      -0.019867549668874173
+     ],
+     "ci_level": 0.9,
+     "p": 0.998046875,
+     "p_exact": 0.998046875,
+     "p_mid": 0.990234375,
+     "p_perm": 0.9977002299770023,
+     "p_mcnemar": 0.9990234375,
+     "p_mcnemar_two_sided": 0.021484375,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.001953125,
+     "mde_split_alpha": [
+      9,
+      1
+     ],
+     "mde_split_holm_worst": [
+      9,
+      1
+     ],
+     "n_pages": 46,
+     "n_pages_nonzero": 9,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "H2": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "V"
+     ],
+     "n": 57,
+     "n_records_population": 57,
+     "excluded_missing": 0,
+     "discordant": 5,
+     "gained": 0,
+     "lost": 5,
+     "net": -5,
+     "net_share": -0.08771929824561403,
+     "ci": [
+      -0.14925373134328357,
+      -0.03389830508474576
+     ],
+     "ci_level": 0.9,
+     "p": 0.0625,
+     "p_exact": 0.0625,
+     "p_mid": 0.03125,
+     "p_perm": 0.059194080591940805,
+     "p_mcnemar": 0.0625,
+     "p_mcnemar_two_sided": 0.0625,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.0625,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.0625 > alpha 0.05 (5 non-zero papers)",
+     "sign": null,
+     "n_pages": 30,
+     "n_pages_nonzero": 5,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "H3": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - mention-shuf",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "excluded_missing": 0,
+     "discordant": 3,
+     "gained": 1,
+     "lost": 2,
+     "net": -1,
+     "net_share": -0.0048543689320388345,
+     "ci": [
+      -0.019230769230769232,
+      0.009478672985781991
+     ],
+     "ci_level": 0.9,
+     "p": 0.875,
+     "p_exact": 0.875,
+     "p_mid": 0.6875,
+     "p_perm": 0.8664133586641336,
+     "p_mcnemar": 0.875,
+     "p_mcnemar_two_sided": 1.0,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.125,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.125 > alpha 0.05 (3 non-zero papers)",
+     "n_pages": 48,
+     "n_pages_nonzero": 3,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    }
+   }
+  },
+  "family_missing_as_not_found": {
+   "hypotheses": {
+    "H1": {
+     "status": "not confirmed",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "M_num"
+     ],
+     "n": 149,
+     "n_records_population": 149,
+     "discordant": 10,
+     "gained": 1,
+     "lost": 9,
+     "net": -8,
+     "net_share": -0.053691275167785234,
+     "ci": [
+      -0.09027777777777778,
+      -0.019867549668874173
+     ],
+     "ci_level": 0.9,
+     "p": 0.998046875,
+     "p_exact": 0.998046875,
+     "p_mid": 0.990234375,
+     "p_perm": 0.9977002299770023,
+     "p_mcnemar": 0.9990234375,
+     "p_mcnemar_two_sided": 0.021484375,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.001953125,
+     "mde_split_alpha": [
+      9,
+      1
+     ],
+     "mde_split_holm_worst": [
+      9,
+      1
+     ],
+     "n_pages": 46,
+     "n_pages_nonzero": 9,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "scored_not_found": 0
+    },
+    "H2": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "V"
+     ],
+     "n": 57,
+     "n_records_population": 57,
+     "discordant": 5,
+     "gained": 0,
+     "lost": 5,
+     "net": -5,
+     "net_share": -0.08771929824561403,
+     "ci": [
+      -0.14925373134328357,
+      -0.03389830508474576
+     ],
+     "ci_level": 0.9,
+     "p": 0.0625,
+     "p_exact": 0.0625,
+     "p_mid": 0.03125,
+     "p_perm": 0.059194080591940805,
+     "p_mcnemar": 0.0625,
+     "p_mcnemar_two_sided": 0.0625,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.0625,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.0625 > alpha 0.05 (5 non-zero papers)",
+     "sign": null,
+     "n_pages": 30,
+     "n_pages_nonzero": 5,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "scored_not_found": 0
+    },
+    "H3": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - mention-shuf",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "discordant": 3,
+     "gained": 1,
+     "lost": 2,
+     "net": -1,
+     "net_share": -0.0048543689320388345,
+     "ci": [
+      -0.019230769230769232,
+      0.009478672985781991
+     ],
+     "ci_level": 0.9,
+     "p": 0.875,
+     "p_exact": 0.875,
+     "p_mid": 0.6875,
+     "p_perm": 0.8664133586641336,
+     "p_mcnemar": 0.875,
+     "p_mcnemar_two_sided": 1.0,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.125,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.125 > alpha 0.05 (3 non-zero papers)",
+     "n_pages": 48,
+     "n_pages_nonzero": 3,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "scored_not_found": 0
+    }
+   }
+  },
+  "power_realised": {
+   "family_size": 3,
+   "members": {
+    "H1": {
+     "alternative": "greater",
+     "n_papers": 46,
+     "n_records": 149,
+     "rows": [
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.7,
+       "mc_se": 0.0087,
+       "power": 0.1835
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.85,
+       "mc_se": 0.0106,
+       "power": 0.6575
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.7,
+       "mc_se": 0.0107,
+       "power": 0.3555
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.85,
+       "mc_se": 0.0068,
+       "power": 0.8985
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.7,
+       "mc_se": 0.0112,
+       "power": 0.5305
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.85,
+       "mc_se": 0.0033,
+       "power": 0.978
+      }
+     ]
+    },
+    "H2": {
+     "alternative": "two-sided",
+     "n_papers": 30,
+     "n_records": 57,
+     "rows": [
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.7,
+       "mc_se": 0.0027,
+       "power": 0.0145
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.85,
+       "mc_se": 0.0055,
+       "power": 0.064
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.7,
+       "mc_se": 0.0049,
+       "power": 0.0515
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.85,
+       "mc_se": 0.0097,
+       "power": 0.249
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.7,
+       "mc_se": 0.0067,
+       "power": 0.1005
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.85,
+       "mc_se": 0.0112,
+       "power": 0.48
+      }
+     ]
+    },
+    "H3": {
+     "alternative": "greater",
+     "n_papers": 48,
+     "n_records": 206,
+     "rows": [
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.7,
+       "mc_se": 0.0102,
+       "power": 0.2935
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.85,
+       "mc_se": 0.0088,
+       "power": 0.8065
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.7,
+       "mc_se": 0.0112,
+       "power": 0.4965
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.85,
+       "mc_se": 0.004,
+       "power": 0.9665
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.7,
+       "mc_se": 0.0106,
+       "power": 0.665
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.85,
+       "mc_se": 0.0016,
+       "power": 0.995
+      }
+     ]
+    }
+   },
+   "n_sims": 2000,
+   "seed": 261103,
+   "share_sd": 0.15
+  },
+  "inputs_sha256": {
+   "accepted-A.jsonl": "dff0d37db3d1749435627be20707415392b1d7222627660dca08852bc76fba33",
+   "accepted-O.jsonl": "e67378b50050af975b1d127a8990e7712e61453e771bbc3e60906fd6a4761013"
+  },
+  "provenance": {
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "describe": "v1.6.21-99-g6b434e8",
+   "dirty": false,
+   "in_image": false,
+   "python": "3.12.13",
+   "recorded_at": "2026-10-30T22:55:23Z",
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+6b434e8",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ],
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution"
+   ]
+  },
+  "census_breakdown_beside": {
+   "H1": {
+    "M_num": {
+     "clean": 27,
+     "not_a_quantity": 6,
+     "worded": 2,
+     "wrong_quantity": 1
+    }
+   },
+   "H2": {
+    "V": {
+     "clean": 14,
+     "not_a_quantity": 2,
+     "wrong_quantity": 1
+    }
+   },
+   "H3": {
+    "M_num": {
+     "clean": 27,
+     "not_a_quantity": 6,
+     "worded": 2,
+     "wrong_quantity": 1
+    },
+    "V": {
+     "clean": 14,
+     "not_a_quantity": 2,
+     "wrong_quantity": 1
+    }
+   }
+  },
+  "discriminating_records_by_stratum": {
+   "M_num": 36,
+   "V": 17
+  }
+ },
+ "exploratory_d5_sensitivity": {
+  "label": "EXPLORATORY (DEVIATIONS.md D-5): census-flagged records excluded per hypothesis's own stratum; never replaces H1-H3",
+  "per_hypothesis": {
+   "H1": "M_num minus its 9 flagged",
+   "H2": "V minus its 3 flagged",
+   "H3": "V u M_num minus all 12"
+  },
+  "rule": "flagged = rejected by the papers-OC owner's census or noted as not a quantity; only the 53 discriminating records of set O were judged",
+  "excluded_by_stratum": {
+   "M_num": 9,
+   "V": 3
+  },
+  "census_inputs_sha256": {
+   "accepted-O.jsonl": "e67378b50050af975b1d127a8990e7712e61453e771bbc3e60906fd6a4761013",
+   "census_verdicts": "f5183e80497247e854ddb2fed134c718237396119e665f873950145dc8a6b1e1",
+   "census_notes": "ea3cfa5cc2256522caa548a8fd0f7f1dda3eed499fc534c8fc99de7b1168a3dd"
+  },
+  "schema_of_source": "glossbench-r3-found10-analysis/1",
+  "citable": true,
+  "test": "paper sign-flip permutation (standard p; exact when <= 20 non-zero papers; H2 two-sided), paper-cluster bootstrap percentile CI of the net share, Holm over the family (gated or missing members at p = 1.0), McNemar descriptive; each member on its own strata",
+  "analysis": {
+   "alpha": 0.05,
+   "ci_level": 0.9,
+   "family_condition": "base",
+   "family_corpora": [
+    "O"
+   ],
+   "hypotheses": {
+    "H1": [
+     "mention",
+     "value",
+     "superiority",
+     "found",
+     [
+      "M_num"
+     ]
+    ],
+    "H2": [
+     "mention",
+     "value",
+     "two-sided",
+     "found",
+     [
+      "V"
+     ]
+    ],
+    "H3": [
+     "mention",
+     "mention-shuf",
+     "superiority",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ]
+   },
+   "n_boot": 10000,
+   "n_perm": 10000,
+   "repeat_arm": "value",
+   "round": 3,
+   "secondary": {
+    "mention - rules-mention (two-sided)": [
+     "mention",
+     "rules-mention",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "mention-none": [
+     "mention",
+     "none",
+     "superiority",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "pooled mention-value (two-sided)": [
+     "mention",
+     "value",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "rules-mention - rules-value (two-sided)": [
+     "rules-mention",
+     "rules-value",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "value - rules-value (two-sided)": [
+     "value",
+     "rules-value",
+     "two-sided",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ],
+    "value-none": [
+     "value",
+     "none",
+     "superiority",
+     "found",
+     [
+      "V",
+      "M_num"
+     ]
+    ]
+   },
+   "seed": 261103,
+   "split_field": "symbol_is_the_quantity"
+  },
+  "family": {
+   "condition": "base",
+   "corpora": [
+    "OA-1000 (set O)"
+   ],
+   "order": [
+    "H1",
+    "H2",
+    "H3"
+   ],
+   "hypotheses": {
+    "H1": {
+     "status": "not confirmed",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "M_num"
+     ],
+     "n": 140,
+     "n_records_population": 140,
+     "excluded_missing": 0,
+     "discordant": 9,
+     "gained": 1,
+     "lost": 8,
+     "net": -7,
+     "net_share": -0.05,
+     "ci": [
+      -0.08461538461538462,
+      -0.018287139689578794
+     ],
+     "ci_level": 0.9,
+     "p": 0.998046875,
+     "p_exact": 0.998046875,
+     "p_mid": 0.9892578125,
+     "p_perm": 0.9977002299770023,
+     "p_mcnemar": 0.998046875,
+     "p_mcnemar_two_sided": 0.0390625,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.001953125,
+     "mde_split_alpha": [
+      8,
+      1
+     ],
+     "mde_split_holm_worst": [
+      9,
+      0
+     ],
+     "n_pages": 44,
+     "n_pages_nonzero": 9,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "H2": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "V"
+     ],
+     "n": 54,
+     "n_records_population": 54,
+     "excluded_missing": 0,
+     "discordant": 5,
+     "gained": 0,
+     "lost": 5,
+     "net": -5,
+     "net_share": -0.09259259259259259,
+     "ci": [
+      -0.16,
+      -0.03571428571428571
+     ],
+     "ci_level": 0.9,
+     "p": 0.0625,
+     "p_exact": 0.0625,
+     "p_mid": 0.03125,
+     "p_perm": 0.059194080591940805,
+     "p_mcnemar": 0.0625,
+     "p_mcnemar_two_sided": 0.0625,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.0625,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.0625 > alpha 0.05 (5 non-zero papers)",
+     "sign": null,
+     "n_pages": 29,
+     "n_pages_nonzero": 5,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "H3": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - mention-shuf",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 194,
+     "n_records_population": 194,
+     "excluded_missing": 0,
+     "discordant": 2,
+     "gained": 0,
+     "lost": 2,
+     "net": -2,
+     "net_share": -0.010309278350515464,
+     "ci": [
+      -0.023809523809523808,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mid": 0.875,
+     "p_perm": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 0.5,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.25,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.25 > alpha 0.05 (2 non-zero papers)",
+     "n_pages": 48,
+     "n_pages_nonzero": 2,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    }
+   }
+  },
+  "family_missing_as_not_found": {
+   "hypotheses": {
+    "H1": {
+     "status": "not confirmed",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "M_num"
+     ],
+     "n": 140,
+     "n_records_population": 140,
+     "discordant": 9,
+     "gained": 1,
+     "lost": 8,
+     "net": -7,
+     "net_share": -0.05,
+     "ci": [
+      -0.08461538461538462,
+      -0.018287139689578794
+     ],
+     "ci_level": 0.9,
+     "p": 0.998046875,
+     "p_exact": 0.998046875,
+     "p_mid": 0.9892578125,
+     "p_perm": 0.9977002299770023,
+     "p_mcnemar": 0.998046875,
+     "p_mcnemar_two_sided": 0.0390625,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.001953125,
+     "mde_split_alpha": [
+      8,
+      1
+     ],
+     "mde_split_holm_worst": [
+      9,
+      0
+     ],
+     "n_pages": 44,
+     "n_pages_nonzero": 9,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "scored_not_found": 0
+    },
+    "H2": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "V"
+     ],
+     "n": 54,
+     "n_records_population": 54,
+     "discordant": 5,
+     "gained": 0,
+     "lost": 5,
+     "net": -5,
+     "net_share": -0.09259259259259259,
+     "ci": [
+      -0.16,
+      -0.03571428571428571
+     ],
+     "ci_level": 0.9,
+     "p": 0.0625,
+     "p_exact": 0.0625,
+     "p_mid": 0.03125,
+     "p_perm": 0.059194080591940805,
+     "p_mcnemar": 0.0625,
+     "p_mcnemar_two_sided": 0.0625,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.0625,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.0625 > alpha 0.05 (5 non-zero papers)",
+     "sign": null,
+     "n_pages": 29,
+     "n_pages_nonzero": 5,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "scored_not_found": 0
+    },
+    "H3": {
+     "status": "GATE-NOT-EVALUABLE",
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - mention-shuf",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 194,
+     "n_records_population": 194,
+     "discordant": 2,
+     "gained": 0,
+     "lost": 2,
+     "net": -2,
+     "net_share": -0.010309278350515464,
+     "ci": [
+      -0.023809523809523808,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mid": 0.875,
+     "p_perm": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 0.5,
+     "p_holm": 1.0,
+     "p_holm_mid": 1.0,
+     "significant": false,
+     "significant_mid": false,
+     "min_attainable_p": 0.25,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.25 > alpha 0.05 (2 non-zero papers)",
+     "n_pages": 48,
+     "n_pages_nonzero": 2,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000,
+     "scored_not_found": 0
+    }
+   }
+  },
+  "power_realised": {
+   "family_size": 3,
+   "members": {
+    "H1": {
+     "alternative": "greater",
+     "n_papers": 44,
+     "n_records": 140,
+     "rows": [
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.7,
+       "mc_se": 0.0079,
+       "power": 0.1455
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.85,
+       "mc_se": 0.0109,
+       "power": 0.602
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.7,
+       "mc_se": 0.0105,
+       "power": 0.332
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.85,
+       "mc_se": 0.0075,
+       "power": 0.8695
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.7,
+       "mc_se": 0.0112,
+       "power": 0.4975
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.85,
+       "mc_se": 0.0037,
+       "power": 0.9725
+      }
+     ]
+    },
+    "H2": {
+     "alternative": "two-sided",
+     "n_papers": 29,
+     "n_records": 54,
+     "rows": [
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.7,
+       "mc_se": 0.0023,
+       "power": 0.0105
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.85,
+       "mc_se": 0.0046,
+       "power": 0.044
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.7,
+       "mc_se": 0.0044,
+       "power": 0.0395
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.85,
+       "mc_se": 0.0091,
+       "power": 0.208
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.7,
+       "mc_se": 0.0066,
+       "power": 0.098
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.85,
+       "mc_se": 0.0111,
+       "power": 0.4245
+      }
+     ]
+    },
+    "H3": {
+     "alternative": "greater",
+     "n_papers": 48,
+     "n_records": 194,
+     "rows": [
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.7,
+       "mc_se": 0.0098,
+       "power": 0.2625
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.1,
+       "gain_share": 0.85,
+       "mc_se": 0.0091,
+       "power": 0.792
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.7,
+       "mc_se": 0.0111,
+       "power": 0.45
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.17,
+       "gain_share": 0.85,
+       "mc_se": 0.005,
+       "power": 0.947
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.7,
+       "mc_se": 0.0107,
+       "power": 0.648
+      },
+      {
+       "alpha_test": 0.016666666666666666,
+       "discordance": 0.25,
+       "gain_share": 0.85,
+       "mc_se": 0.0018,
+       "power": 0.9935
+      }
+     ]
+    }
+   },
+   "n_sims": 2000,
+   "seed": 261103,
+   "share_sd": 0.15
+  },
+  "inputs_sha256": {
+   "accepted-O.d5-clean.jsonl": "8c555d31a2698bb81037144e16f26430e9210f6d208fa266d81c514175270cb1"
+  },
+  "provenance": {
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "describe": "v1.6.21-99-g6b434e8",
+   "dirty": false,
+   "in_image": false,
+   "python": "3.12.13",
+   "recorded_at": "2026-10-30T22:55:58Z",
+   "schema": 1,
+   "segmentation": [
+    {
+     "backend": "punkt",
+     "kind": "sentences",
+     "n_docs": 5,
+     "n_spans": 40,
+     "nltk": "3.9.4",
+     "producer": "ragstack.ingestion.chunkers.sentence_spans",
+     "sample": "canonical-1",
+     "segmenter_version": "punkt-abbrev-v1",
+     "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+     "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+    }
+   ],
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.21+6b434e8",
+   "warnings": [
+    "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+   ],
+   "redacted": [
+    "host",
+    "image",
+    "installed_distribution"
+   ]
+  }
+ },
+ "secondary": {
+  "note": "outside the confirmatory family; unadjusted",
+  "contrasts": {
+   "A": {
+    "mention - rules-mention (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - rules-mention",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 63,
+     "n_records_population": 63,
+     "excluded_missing": 0,
+     "discordant": 3,
+     "gained": 0,
+     "lost": 3,
+     "net": -3,
+     "net_share": -0.047619047619047616,
+     "ci": [
+      -0.08928571428571429,
+      -0.014492753623188406
+     ],
+     "ci_level": 0.9,
+     "p": 0.25,
+     "p_exact": 0.25,
+     "p_mid": 0.125,
+     "p_perm": 0.24947505249475052,
+     "p_mcnemar": 0.25,
+     "p_mcnemar_two_sided": 0.25,
+     "min_attainable_p": 0.25,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.25 > alpha 0.05 (3 non-zero papers)",
+     "n_pages": 22,
+     "n_pages_nonzero": 3,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "mention-none": {
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - none",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 63,
+     "n_records_population": 63,
+     "excluded_missing": 0,
+     "discordant": 6,
+     "gained": 0,
+     "lost": 6,
+     "net": -6,
+     "net_share": -0.09523809523809523,
+     "ci": [
+      -0.1694915254237288,
+      -0.03333333333333333
+     ],
+     "ci_level": 0.9,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mid": 0.984375,
+     "p_perm": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 0.03125,
+     "significant_unadjusted": false,
+     "min_attainable_p": 0.03125,
+     "n_pages": 22,
+     "n_pages_nonzero": 5,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "pooled mention-value (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 63,
+     "n_records_population": 63,
+     "excluded_missing": 0,
+     "discordant": 6,
+     "gained": 0,
+     "lost": 6,
+     "net": -6,
+     "net_share": -0.09523809523809523,
+     "ci": [
+      -0.1694915254237288,
+      -0.03333333333333333
+     ],
+     "ci_level": 0.9,
+     "p": 0.0625,
+     "p_exact": 0.0625,
+     "p_mid": 0.03125,
+     "p_perm": 0.059194080591940805,
+     "p_mcnemar": 0.03125,
+     "p_mcnemar_two_sided": 0.03125,
+     "min_attainable_p": 0.0625,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.0625 > alpha 0.05 (5 non-zero papers)",
+     "n_pages": 22,
+     "n_pages_nonzero": 5,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "rules-mention - rules-value (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "rules-mention - rules-value",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 63,
+     "n_records_population": 63,
+     "excluded_missing": 0,
+     "discordant": 3,
+     "gained": 0,
+     "lost": 3,
+     "net": -3,
+     "net_share": -0.047619047619047616,
+     "ci": [
+      -0.1,
+      -0.013333333333333334
+     ],
+     "ci_level": 0.9,
+     "p": 0.25,
+     "p_exact": 0.25,
+     "p_mid": 0.125,
+     "p_perm": 0.24947505249475052,
+     "p_mcnemar": 0.25,
+     "p_mcnemar_two_sided": 0.25,
+     "min_attainable_p": 0.25,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.25 > alpha 0.05 (3 non-zero papers)",
+     "n_pages": 22,
+     "n_pages_nonzero": 3,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "value - rules-value (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "value - rules-value",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 63,
+     "n_records_population": 63,
+     "excluded_missing": 0,
+     "discordant": 0,
+     "gained": 0,
+     "lost": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "min_attainable_p": 1.0,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 1 > alpha 0.05 (0 non-zero papers)",
+     "n_pages": 22,
+     "n_pages_nonzero": 0,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "value-none": {
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "value - none",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 63,
+     "n_records_population": 63,
+     "excluded_missing": 0,
+     "discordant": 0,
+     "gained": 0,
+     "lost": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "min_attainable_p": 1.0,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 1 > alpha 0.05 (0 non-zero papers)",
+     "n_pages": 22,
+     "n_pages_nonzero": 0,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    }
+   },
+   "O": {
+    "mention - rules-mention (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - rules-mention",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "excluded_missing": 0,
+     "discordant": 10,
+     "gained": 1,
+     "lost": 9,
+     "net": -8,
+     "net_share": -0.038834951456310676,
+     "ci": [
+      -0.06403940886699508,
+      -0.014925373134328358
+     ],
+     "ci_level": 0.9,
+     "p": 0.021484375,
+     "p_exact": 0.021484375,
+     "p_mid": 0.01171875,
+     "p_perm": 0.0202979702029797,
+     "p_mcnemar": 0.021484375,
+     "p_mcnemar_two_sided": 0.021484375,
+     "significant_unadjusted": true,
+     "min_attainable_p": 0.001953125,
+     "sign": "A < B",
+     "n_pages": 48,
+     "n_pages_nonzero": 10,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "mention-none": {
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "mention - none",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "excluded_missing": 0,
+     "discordant": 15,
+     "gained": 1,
+     "lost": 14,
+     "net": -13,
+     "net_share": -0.06310679611650485,
+     "ci": [
+      -0.09473684210526316,
+      -0.03431372549019608
+     ],
+     "ci_level": 0.9,
+     "p": 0.99993896484375,
+     "p_exact": 0.99993896484375,
+     "p_mid": 0.999542236328125,
+     "p_perm": 1.0,
+     "p_mcnemar": 0.999969482421875,
+     "p_mcnemar_two_sided": 0.0009765625,
+     "significant_unadjusted": false,
+     "min_attainable_p": 6.103515625e-05,
+     "n_pages": 48,
+     "n_pages_nonzero": 14,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "pooled mention-value (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "mention - value",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "excluded_missing": 0,
+     "discordant": 15,
+     "gained": 1,
+     "lost": 14,
+     "net": -13,
+     "net_share": -0.06310679611650485,
+     "ci": [
+      -0.09473684210526316,
+      -0.03431372549019608
+     ],
+     "ci_level": 0.9,
+     "p": 0.001708984375,
+     "p_exact": 0.001708984375,
+     "p_mid": 0.00091552734375,
+     "p_perm": 0.0015998400159984002,
+     "p_mcnemar": 0.0009765625,
+     "p_mcnemar_two_sided": 0.0009765625,
+     "significant_unadjusted": true,
+     "min_attainable_p": 0.0001220703125,
+     "sign": "A < B",
+     "n_pages": 48,
+     "n_pages_nonzero": 14,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "rules-mention - rules-value (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "rules-mention - rules-value",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "excluded_missing": 0,
+     "discordant": 5,
+     "gained": 0,
+     "lost": 5,
+     "net": -5,
+     "net_share": -0.024271844660194174,
+     "ci": [
+      -0.042328042328042326,
+      -0.009345794392523364
+     ],
+     "ci_level": 0.9,
+     "p": 0.0625,
+     "p_exact": 0.0625,
+     "p_mid": 0.03125,
+     "p_perm": 0.059194080591940805,
+     "p_mcnemar": 0.0625,
+     "p_mcnemar_two_sided": 0.0625,
+     "min_attainable_p": 0.0625,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 0.0625 > alpha 0.05 (5 non-zero papers)",
+     "n_pages": 48,
+     "n_pages_nonzero": 5,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "value - rules-value (two-sided)": {
+     "type": "superiority (two-sided)",
+     "alternative": "two-sided",
+     "contrast": "value - rules-value",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "excluded_missing": 0,
+     "discordant": 0,
+     "gained": 0,
+     "lost": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "min_attainable_p": 1.0,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 1 > alpha 0.05 (0 non-zero papers)",
+     "n_pages": 48,
+     "n_pages_nonzero": 0,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    },
+    "value-none": {
+     "type": "superiority",
+     "alternative": "greater",
+     "contrast": "value - none",
+     "condition": "base",
+     "strata": [
+      "V",
+      "M_num"
+     ],
+     "n": 206,
+     "n_records_population": 206,
+     "excluded_missing": 0,
+     "discordant": 0,
+     "gained": 0,
+     "lost": 0,
+     "net": 0,
+     "net_share": 0.0,
+     "ci": [
+      0.0,
+      0.0
+     ],
+     "ci_level": 0.9,
+     "p": 1.0,
+     "p_exact": 1.0,
+     "p_mid": 0.5,
+     "p_perm": 1.0,
+     "p_mcnemar": 1.0,
+     "p_mcnemar_two_sided": 1.0,
+     "min_attainable_p": 1.0,
+     "gate": "GATE-NOT-EVALUABLE",
+     "gate_reason": "minimum attainable p 1 > alpha 0.05 (0 non-zero papers)",
+     "n_pages": 48,
+     "n_pages_nonzero": 0,
+     "seed": 261103,
+     "n_boot": 10000,
+     "n_flips": 10000
+    }
+   }
+  },
+  "family|bm25": {
+   "H1": {
+    "type": "superiority",
+    "alternative": "greater",
+    "contrast": "mention - value",
+    "condition": "bm25",
+    "strata": [
+     "M_num"
+    ],
+    "n": 149,
+    "n_records_population": 149,
+    "excluded_missing": 0,
+    "discordant": 34,
+    "gained": 0,
+    "lost": 34,
+    "net": -34,
+    "net_share": -0.22818791946308725,
+    "ci": [
+     -0.28368794326241137,
+     -0.17532467532467533
+    ],
+    "ci_level": 0.9,
+    "p": 1.0,
+    "p_exact": null,
+    "p_mid": 1.0,
+    "p_perm": 1.0,
+    "p_mcnemar": 1.0,
+    "p_mcnemar_two_sided": 1.1641532182693481e-10,
+    "significant_unadjusted": false,
+    "min_attainable_p": 9.999000099990002e-05,
+    "n_pages": 46,
+    "n_pages_nonzero": 26,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   },
+   "H2": {
+    "type": "superiority (two-sided)",
+    "alternative": "two-sided",
+    "contrast": "mention - value",
+    "condition": "bm25",
+    "strata": [
+     "V"
+    ],
+    "n": 57,
+    "n_records_population": 57,
+    "excluded_missing": 0,
+    "discordant": 13,
+    "gained": 1,
+    "lost": 12,
+    "net": -11,
+    "net_share": -0.19298245614035087,
+    "ci": [
+     -0.2923076923076923,
+     -0.09433962264150944
+    ],
+    "ci_level": 0.9,
+    "p": 0.009765625,
+    "p_exact": 0.009765625,
+    "p_mid": 0.00537109375,
+    "p_perm": 0.0110988901109889,
+    "p_mcnemar": 0.00341796875,
+    "p_mcnemar_two_sided": 0.00341796875,
+    "significant_unadjusted": true,
+    "min_attainable_p": 0.0009765625,
+    "sign": "A < B",
+    "n_pages": 30,
+    "n_pages_nonzero": 11,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   },
+   "H3": {
+    "type": "superiority",
+    "alternative": "greater",
+    "contrast": "mention - mention-shuf",
+    "condition": "bm25",
+    "strata": [
+     "V",
+     "M_num"
+    ],
+    "n": 206,
+    "n_records_population": 206,
+    "excluded_missing": 0,
+    "discordant": 14,
+    "gained": 3,
+    "lost": 11,
+    "net": -8,
+    "net_share": -0.038834951456310676,
+    "ci": [
+     -0.06282722513089005,
+     -0.01507537688442211
+    ],
+    "ci_level": 0.9,
+    "p": 0.9990234375,
+    "p_exact": 0.9990234375,
+    "p_mid": 0.994140625,
+    "p_perm": 0.9996000399960004,
+    "p_mcnemar": 0.9935302734375,
+    "p_mcnemar_two_sided": 0.057373046875,
+    "significant_unadjusted": false,
+    "min_attainable_p": 0.0009765625,
+    "n_pages": 48,
+    "n_pages_nonzero": 10,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   }
+  },
+  "family|norerank": {
+   "H1": {
+    "type": "superiority",
+    "alternative": "greater",
+    "contrast": "mention - value",
+    "condition": "norerank",
+    "strata": [
+     "M_num"
+    ],
+    "n": 149,
+    "n_records_population": 149,
+    "excluded_missing": 0,
+    "discordant": 13,
+    "gained": 6,
+    "lost": 7,
+    "net": -1,
+    "net_share": -0.006711409395973154,
+    "ci": [
+     -0.04375,
+     0.0285817060637203
+    ],
+    "ci_level": 0.9,
+    "p": 0.7255859375,
+    "p_exact": 0.7255859375,
+    "p_mid": 0.61279296875,
+    "p_perm": 0.7249275072492751,
+    "p_mcnemar": 0.70947265625,
+    "p_mcnemar_two_sided": 1.0,
+    "significant_unadjusted": false,
+    "min_attainable_p": 0.00048828125,
+    "n_pages": 46,
+    "n_pages_nonzero": 11,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   },
+   "H2": {
+    "type": "superiority (two-sided)",
+    "alternative": "two-sided",
+    "contrast": "mention - value",
+    "condition": "norerank",
+    "strata": [
+     "V"
+    ],
+    "n": 57,
+    "n_records_population": 57,
+    "excluded_missing": 0,
+    "discordant": 7,
+    "gained": 2,
+    "lost": 5,
+    "net": -3,
+    "net_share": -0.05263157894736842,
+    "ci": [
+     -0.12962962962962962,
+     0.0196078431372549
+    ],
+    "ci_level": 0.9,
+    "p": 0.453125,
+    "p_exact": 0.453125,
+    "p_mid": 0.2890625,
+    "p_perm": 0.45145485451454853,
+    "p_mcnemar": 0.453125,
+    "p_mcnemar_two_sided": 0.453125,
+    "significant_unadjusted": false,
+    "min_attainable_p": 0.015625,
+    "sign": null,
+    "n_pages": 30,
+    "n_pages_nonzero": 7,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   },
+   "H3": {
+    "type": "superiority",
+    "alternative": "greater",
+    "contrast": "mention - mention-shuf",
+    "condition": "norerank",
+    "strata": [
+     "V",
+     "M_num"
+    ],
+    "n": 206,
+    "n_records_population": 206,
+    "excluded_missing": 0,
+    "discordant": 9,
+    "gained": 5,
+    "lost": 4,
+    "net": 1,
+    "net_share": 0.0048543689320388345,
+    "ci": [
+     -0.013452914798206279,
+     0.02358490566037736
+    ],
+    "ci_level": 0.9,
+    "p": 0.5,
+    "p_exact": 0.5,
+    "p_mid": 0.34375,
+    "p_perm": 0.5034496550344966,
+    "p_mcnemar": 0.5,
+    "p_mcnemar_two_sided": 1.0,
+    "significant_unadjusted": false,
+    "min_attainable_p": 0.03125,
+    "n_pages": 48,
+    "n_pages_nonzero": 5,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   }
+  },
+  "other_sets": {
+   "A": {
+    "base": {
+     "H1": {
+      "type": "superiority",
+      "alternative": "greater",
+      "contrast": "mention - value",
+      "condition": "base",
+      "strata": [
+       "M_num"
+      ],
+      "n": 57,
+      "n_records_population": 57,
+      "excluded_missing": 0,
+      "discordant": 6,
+      "gained": 0,
+      "lost": 6,
+      "net": -6,
+      "net_share": -0.10526315789473684,
+      "ci": [
+       -0.1864406779661017,
+       -0.037037037037037035
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.984375,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 0.03125,
+      "significant_unadjusted": false,
+      "min_attainable_p": 0.03125,
+      "n_pages": 22,
+      "n_pages_nonzero": 5,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     },
+     "H2": {
+      "type": "superiority (two-sided)",
+      "alternative": "two-sided",
+      "contrast": "mention - value",
+      "condition": "base",
+      "strata": [
+       "V"
+      ],
+      "n": 6,
+      "n_records_population": 6,
+      "excluded_missing": 0,
+      "discordant": 0,
+      "gained": 0,
+      "lost": 0,
+      "net": 0,
+      "net_share": 0.0,
+      "ci": [
+       0.0,
+       0.0
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.5,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 1.0,
+      "min_attainable_p": 1.0,
+      "gate": "GATE-NOT-EVALUABLE",
+      "gate_reason": "minimum attainable p 1 > alpha 0.05 (0 non-zero papers)",
+      "n_pages": 5,
+      "n_pages_nonzero": 0,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     },
+     "H3": {
+      "type": "superiority",
+      "alternative": "greater",
+      "contrast": "mention - mention-shuf",
+      "condition": "base",
+      "strata": [
+       "V",
+       "M_num"
+      ],
+      "n": 63,
+      "n_records_population": 63,
+      "excluded_missing": 0,
+      "discordant": 0,
+      "gained": 0,
+      "lost": 0,
+      "net": 0,
+      "net_share": 0.0,
+      "ci": [
+       0.0,
+       0.0
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.5,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 1.0,
+      "min_attainable_p": 1.0,
+      "gate": "GATE-NOT-EVALUABLE",
+      "gate_reason": "minimum attainable p 1 > alpha 0.05 (0 non-zero papers)",
+      "n_pages": 22,
+      "n_pages_nonzero": 0,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     }
+    },
+    "bm25": {
+     "H1": {
+      "type": "superiority",
+      "alternative": "greater",
+      "contrast": "mention - value",
+      "condition": "bm25",
+      "strata": [
+       "M_num"
+      ],
+      "n": 57,
+      "n_records_population": 57,
+      "excluded_missing": 0,
+      "discordant": 11,
+      "gained": 0,
+      "lost": 11,
+      "net": -11,
+      "net_share": -0.19298245614035087,
+      "ci": [
+       -0.2692612942612943,
+       -0.12
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.99951171875,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 0.0009765625,
+      "significant_unadjusted": false,
+      "min_attainable_p": 0.0009765625,
+      "n_pages": 22,
+      "n_pages_nonzero": 10,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     },
+     "H2": {
+      "type": "superiority (two-sided)",
+      "alternative": "two-sided",
+      "contrast": "mention - value",
+      "condition": "bm25",
+      "strata": [
+       "V"
+      ],
+      "n": 6,
+      "n_records_population": 6,
+      "excluded_missing": 0,
+      "discordant": 1,
+      "gained": 0,
+      "lost": 1,
+      "net": -1,
+      "net_share": -0.16666666666666666,
+      "ci": [
+       -0.5,
+       0.0
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.5,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 1.0,
+      "min_attainable_p": 1.0,
+      "gate": "GATE-NOT-EVALUABLE",
+      "gate_reason": "minimum attainable p 1 > alpha 0.05 (1 non-zero papers)",
+      "n_pages": 5,
+      "n_pages_nonzero": 1,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     },
+     "H3": {
+      "type": "superiority",
+      "alternative": "greater",
+      "contrast": "mention - mention-shuf",
+      "condition": "bm25",
+      "strata": [
+       "V",
+       "M_num"
+      ],
+      "n": 63,
+      "n_records_population": 63,
+      "excluded_missing": 0,
+      "discordant": 1,
+      "gained": 0,
+      "lost": 1,
+      "net": -1,
+      "net_share": -0.015873015873015872,
+      "ci": [
+       -0.04225352112676056,
+       0.0
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.75,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 1.0,
+      "min_attainable_p": 0.5,
+      "gate": "GATE-NOT-EVALUABLE",
+      "gate_reason": "minimum attainable p 0.5 > alpha 0.05 (1 non-zero papers)",
+      "n_pages": 22,
+      "n_pages_nonzero": 1,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     }
+    },
+    "norerank": {
+     "H1": {
+      "type": "superiority",
+      "alternative": "greater",
+      "contrast": "mention - value",
+      "condition": "norerank",
+      "strata": [
+       "M_num"
+      ],
+      "n": 57,
+      "n_records_population": 57,
+      "excluded_missing": 0,
+      "discordant": 8,
+      "gained": 0,
+      "lost": 8,
+      "net": -8,
+      "net_share": -0.14035087719298245,
+      "ci": [
+       -0.2222222222222222,
+       -0.06153846153846154
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.9921875,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 0.0078125,
+      "significant_unadjusted": false,
+      "min_attainable_p": 0.015625,
+      "n_pages": 22,
+      "n_pages_nonzero": 6,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     },
+     "H2": {
+      "type": "superiority (two-sided)",
+      "alternative": "two-sided",
+      "contrast": "mention - value",
+      "condition": "norerank",
+      "strata": [
+       "V"
+      ],
+      "n": 6,
+      "n_records_population": 6,
+      "excluded_missing": 0,
+      "discordant": 0,
+      "gained": 0,
+      "lost": 0,
+      "net": 0,
+      "net_share": 0.0,
+      "ci": [
+       0.0,
+       0.0
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.5,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 1.0,
+      "min_attainable_p": 1.0,
+      "gate": "GATE-NOT-EVALUABLE",
+      "gate_reason": "minimum attainable p 1 > alpha 0.05 (0 non-zero papers)",
+      "n_pages": 5,
+      "n_pages_nonzero": 0,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     },
+     "H3": {
+      "type": "superiority",
+      "alternative": "greater",
+      "contrast": "mention - mention-shuf",
+      "condition": "norerank",
+      "strata": [
+       "V",
+       "M_num"
+      ],
+      "n": 63,
+      "n_records_population": 63,
+      "excluded_missing": 0,
+      "discordant": 3,
+      "gained": 0,
+      "lost": 3,
+      "net": -3,
+      "net_share": -0.047619047619047616,
+      "ci": [
+       -0.08955223880597014,
+       -0.014492753623188406
+      ],
+      "ci_level": 0.9,
+      "p": 1.0,
+      "p_exact": 1.0,
+      "p_mid": 0.9375,
+      "p_perm": 1.0,
+      "p_mcnemar": 1.0,
+      "p_mcnemar_two_sided": 0.25,
+      "min_attainable_p": 0.125,
+      "gate": "GATE-NOT-EVALUABLE",
+      "gate_reason": "minimum attainable p 0.125 > alpha 0.05 (3 non-zero papers)",
+      "n_pages": 22,
+      "n_pages_nonzero": 3,
+      "seed": 261103,
+      "n_boot": 10000,
+      "n_flips": 10000
+     }
+    }
+   }
+  },
+  "m_num_split": {
+   "incidental": {
+    "type": "superiority",
+    "alternative": "greater",
+    "contrast": "mention - value",
+    "condition": "base",
+    "strata": [
+     "M_num"
+    ],
+    "n": 128,
+    "n_records_population": 128,
+    "excluded_missing": 0,
+    "discordant": 9,
+    "gained": 1,
+    "lost": 8,
+    "net": -7,
+    "net_share": -0.0546875,
+    "ci": [
+     -0.0967741935483871,
+     -0.015873015873015872
+    ],
+    "ci_level": 0.9,
+    "p": 0.99609375,
+    "p_exact": 0.99609375,
+    "p_mid": 0.982421875,
+    "p_perm": 0.9966003399660034,
+    "p_mcnemar": 0.998046875,
+    "p_mcnemar_two_sided": 0.0390625,
+    "significant_unadjusted": false,
+    "min_attainable_p": 0.00390625,
+    "n_pages": 46,
+    "n_pages_nonzero": 8,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   },
+   "symbol-bound": {
+    "type": "superiority",
+    "alternative": "greater",
+    "contrast": "mention - value",
+    "condition": "base",
+    "strata": [
+     "M_num"
+    ],
+    "n": 21,
+    "n_records_population": 21,
+    "excluded_missing": 0,
+    "discordant": 1,
+    "gained": 0,
+    "lost": 1,
+    "net": -1,
+    "net_share": -0.047619047619047616,
+    "ci": [
+     -0.13636363636363635,
+     0.0
+    ],
+    "ci_level": 0.9,
+    "p": 1.0,
+    "p_exact": 1.0,
+    "p_mid": 0.75,
+    "p_perm": 1.0,
+    "p_mcnemar": 1.0,
+    "p_mcnemar_two_sided": 1.0,
+    "min_attainable_p": 0.5,
+    "gate": "GATE-NOT-EVALUABLE",
+    "gate_reason": "minimum attainable p 0.5 > alpha 0.05 (1 non-zero papers)",
+    "n_pages": 16,
+    "n_pages_nonzero": 1,
+    "seed": 261103,
+    "n_boot": 10000,
+    "n_flips": 10000
+   },
+   "unrecorded": 0
+  }
+ },
+ "descriptives": {
+  "found_at_10": {
+   "A": {
+    "M_num": {
+     "base": {
+      "mention": {
+       "failed": 0,
+       "found": 42,
+       "n": 57,
+       "rate": 0.7368
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 42,
+       "n": 57,
+       "rate": 0.7368
+      },
+      "none": {
+       "failed": 0,
+       "found": 48,
+       "n": 57,
+       "rate": 0.8421
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 45,
+       "n": 57,
+       "rate": 0.7895
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 48,
+       "n": 57,
+       "rate": 0.8421
+      },
+      "value": {
+       "failed": 0,
+       "found": 48,
+       "n": 57,
+       "rate": 0.8421
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 48,
+       "n": 57,
+       "rate": 0.8421
+      }
+     },
+     "bm25": {
+      "mention": {
+       "failed": 0,
+       "found": 35,
+       "n": 57,
+       "rate": 0.614
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 36,
+       "n": 57,
+       "rate": 0.6316
+      },
+      "none": {
+       "failed": 0,
+       "found": 46,
+       "n": 57,
+       "rate": 0.807
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 42,
+       "n": 57,
+       "rate": 0.7368
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 46,
+       "n": 57,
+       "rate": 0.807
+      },
+      "value": {
+       "failed": 0,
+       "found": 46,
+       "n": 57,
+       "rate": 0.807
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 46,
+       "n": 57,
+       "rate": 0.807
+      }
+     },
+     "norerank": {
+      "mention": {
+       "failed": 0,
+       "found": 32,
+       "n": 57,
+       "rate": 0.5614
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 35,
+       "n": 57,
+       "rate": 0.614
+      },
+      "none": {
+       "failed": 0,
+       "found": 40,
+       "n": 57,
+       "rate": 0.7018
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 38,
+       "n": 57,
+       "rate": 0.6667
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 40,
+       "n": 57,
+       "rate": 0.7018
+      },
+      "value": {
+       "failed": 0,
+       "found": 40,
+       "n": 57,
+       "rate": 0.7018
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 40,
+       "n": 57,
+       "rate": 0.7018
+      }
+     }
+    },
+    "V": {
+     "base": {
+      "mention": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "none": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "value": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      }
+     },
+     "bm25": {
+      "mention": {
+       "failed": 0,
+       "found": 5,
+       "n": 6,
+       "rate": 0.8333
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 5,
+       "n": 6,
+       "rate": 0.8333
+      },
+      "none": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "value": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      }
+     },
+     "norerank": {
+      "mention": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "none": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "value": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 6,
+       "n": 6,
+       "rate": 1.0
+      }
+     }
+    }
+   },
+   "O": {
+    "M_num": {
+     "base": {
+      "mention": {
+       "failed": 0,
+       "found": 134,
+       "n": 149,
+       "rate": 0.8993
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 134,
+       "n": 149,
+       "rate": 0.8993
+      },
+      "none": {
+       "failed": 0,
+       "found": 142,
+       "n": 149,
+       "rate": 0.953
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 139,
+       "n": 149,
+       "rate": 0.9329
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 142,
+       "n": 149,
+       "rate": 0.953
+      },
+      "value": {
+       "failed": 0,
+       "found": 142,
+       "n": 149,
+       "rate": 0.953
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 142,
+       "n": 149,
+       "rate": 0.953
+      }
+     },
+     "bm25": {
+      "mention": {
+       "failed": 0,
+       "found": 103,
+       "n": 149,
+       "rate": 0.6913
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 109,
+       "n": 149,
+       "rate": 0.7315
+      },
+      "none": {
+       "failed": 0,
+       "found": 139,
+       "n": 149,
+       "rate": 0.9329
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 126,
+       "n": 149,
+       "rate": 0.8456
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 138,
+       "n": 149,
+       "rate": 0.9262
+      },
+      "value": {
+       "failed": 0,
+       "found": 137,
+       "n": 149,
+       "rate": 0.9195
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 137,
+       "n": 149,
+       "rate": 0.9195
+      }
+     },
+     "norerank": {
+      "mention": {
+       "failed": 0,
+       "found": 121,
+       "n": 149,
+       "rate": 0.8121
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 120,
+       "n": 149,
+       "rate": 0.8054
+      },
+      "none": {
+       "failed": 0,
+       "found": 122,
+       "n": 149,
+       "rate": 0.8188
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 123,
+       "n": 149,
+       "rate": 0.8255
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 124,
+       "n": 149,
+       "rate": 0.8322
+      },
+      "value": {
+       "failed": 0,
+       "found": 122,
+       "n": 149,
+       "rate": 0.8188
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 122,
+       "n": 149,
+       "rate": 0.8188
+      }
+     }
+    },
+    "V": {
+     "base": {
+      "mention": {
+       "failed": 0,
+       "found": 51,
+       "n": 57,
+       "rate": 0.8947
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 52,
+       "n": 57,
+       "rate": 0.9123
+      },
+      "none": {
+       "failed": 0,
+       "found": 56,
+       "n": 57,
+       "rate": 0.9825
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 54,
+       "n": 57,
+       "rate": 0.9474
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 56,
+       "n": 57,
+       "rate": 0.9825
+      },
+      "value": {
+       "failed": 0,
+       "found": 56,
+       "n": 57,
+       "rate": 0.9825
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 56,
+       "n": 57,
+       "rate": 0.9825
+      }
+     },
+     "bm25": {
+      "mention": {
+       "failed": 0,
+       "found": 40,
+       "n": 57,
+       "rate": 0.7018
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 42,
+       "n": 57,
+       "rate": 0.7368
+      },
+      "none": {
+       "failed": 0,
+       "found": 51,
+       "n": 57,
+       "rate": 0.8947
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 46,
+       "n": 57,
+       "rate": 0.807
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 51,
+       "n": 57,
+       "rate": 0.8947
+      },
+      "value": {
+       "failed": 0,
+       "found": 51,
+       "n": 57,
+       "rate": 0.8947
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 51,
+       "n": 57,
+       "rate": 0.8947
+      }
+     },
+     "norerank": {
+      "mention": {
+       "failed": 0,
+       "found": 47,
+       "n": 57,
+       "rate": 0.8246
+      },
+      "mention-shuf": {
+       "failed": 0,
+       "found": 47,
+       "n": 57,
+       "rate": 0.8246
+      },
+      "none": {
+       "failed": 0,
+       "found": 49,
+       "n": 57,
+       "rate": 0.8596
+      },
+      "rules-mention": {
+       "failed": 0,
+       "found": 49,
+       "n": 57,
+       "rate": 0.8596
+      },
+      "rules-value": {
+       "failed": 0,
+       "found": 49,
+       "n": 57,
+       "rate": 0.8596
+      },
+      "value": {
+       "failed": 0,
+       "found": 50,
+       "n": 57,
+       "rate": 0.8772
+      },
+      "value#2": {
+       "failed": 0,
+       "found": 50,
+       "n": 57,
+       "rate": 0.8772
+      }
+     }
+    }
+   }
+  },
+  "noise_floor": {
+   "A": {
+    "base": {
+     "arm": "value",
+     "condition": "base",
+     "discordant": 0,
+     "excluded_missing": 0,
+     "n": 63,
+     "repeat": "value#2",
+     "repeat_gained": 0,
+     "repeat_lost": 0
+    },
+    "bm25": {
+     "arm": "value",
+     "condition": "bm25",
+     "discordant": 0,
+     "excluded_missing": 0,
+     "n": 63,
+     "repeat": "value#2",
+     "repeat_gained": 0,
+     "repeat_lost": 0
+    },
+    "norerank": {
+     "arm": "value",
+     "condition": "norerank",
+     "discordant": 0,
+     "excluded_missing": 0,
+     "n": 63,
+     "repeat": "value#2",
+     "repeat_gained": 0,
+     "repeat_lost": 0
+    }
+   },
+   "O": {
+    "base": {
+     "arm": "value",
+     "condition": "base",
+     "discordant": 0,
+     "excluded_missing": 0,
+     "n": 206,
+     "repeat": "value#2",
+     "repeat_gained": 0,
+     "repeat_lost": 0
+    },
+    "bm25": {
+     "arm": "value",
+     "condition": "bm25",
+     "discordant": 0,
+     "excluded_missing": 0,
+     "n": 206,
+     "repeat": "value#2",
+     "repeat_gained": 0,
+     "repeat_lost": 0
+    },
+    "norerank": {
+     "arm": "value",
+     "condition": "norerank",
+     "discordant": 0,
+     "excluded_missing": 0,
+     "n": 206,
+     "repeat": "value#2",
+     "repeat_gained": 0,
+     "repeat_lost": 0
+    }
+   }
+  },
+  "sizes": {
+   "by_corpus_stratum": {
+    "A": {
+     "M_num": 57,
+     "V": 6
+    },
+    "O": {
+     "M_num": 149,
+     "V": 57
+    }
+   },
+   "family_members": {
+    "H1": 149,
+    "H2": 57,
+    "H3": 206
+   },
+   "records": 269
+  },
+  "gated_arms": {}
+ },
+ "proxy_manipulation_check": {
+  "O": {
+   "schema_of_source": "wording-proxy/1",
+   "citable": true,
+   "totals": {
+    "mention": {
+     "n": 206,
+     "pass": 12,
+     "rate": 0.0583,
+     "records_with_field": 63
+    },
+    "mention-shuf": {
+     "n": 206,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 63
+    },
+    "none": {
+     "n": 206,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 0
+    },
+    "rules-mention": {
+     "n": 206,
+     "pass": 4,
+     "rate": 0.0194,
+     "records_with_field": 36
+    },
+    "rules-value": {
+     "n": 206,
+     "pass": 1,
+     "rate": 0.0049,
+     "records_with_field": 4
+    },
+    "value": {
+     "n": 206,
+     "pass": 7,
+     "rate": 0.034,
+     "records_with_field": 12
+    }
+   },
+   "by_stratum": {
+    "mention": {
+     "M_num": {
+      "n": 149,
+      "pass": 2,
+      "records_with_field": 36
+     },
+     "V": {
+      "n": 57,
+      "pass": 10,
+      "records_with_field": 27
+     }
+    },
+    "mention-shuf": {
+     "M_num": {
+      "n": 149,
+      "pass": 0,
+      "records_with_field": 36
+     },
+     "V": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 27
+     }
+    },
+    "none": {
+     "M_num": {
+      "n": 149,
+      "pass": 0,
+      "records_with_field": 0
+     },
+     "V": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 0
+     }
+    },
+    "rules-mention": {
+     "M_num": {
+      "n": 149,
+      "pass": 2,
+      "records_with_field": 17
+     },
+     "V": {
+      "n": 57,
+      "pass": 2,
+      "records_with_field": 19
+     }
+    },
+    "rules-value": {
+     "M_num": {
+      "n": 149,
+      "pass": 0,
+      "records_with_field": 0
+     },
+     "V": {
+      "n": 57,
+      "pass": 1,
+      "records_with_field": 4
+     }
+    },
+    "value": {
+     "M_num": {
+      "n": 149,
+      "pass": 0,
+      "records_with_field": 0
+     },
+     "V": {
+      "n": 57,
+      "pass": 7,
+      "records_with_field": 12
+     }
+    }
+   },
+   "subset_violations_counted_from_per_record": {
+    "value_pass_mention_fail": 0,
+    "rules_value_pass_rules_mention_fail": 0
+   },
+   "arms": {
+    "mention": {
+     "chunks": 32765,
+     "chunks_with_field": 5918,
+     "sha256": "1e1845dd70e7e106cb32c44db4ca4bf3429e5a19fc7d01b87a2478fbefa3c7a3",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 12560,
+      "verified_ws": 0
+     }
+    },
+    "mention-shuf": {
+     "chunks": 32765,
+     "chunks_with_field": 5918,
+     "sha256": "1e1845dd70e7e106cb32c44db4ca4bf3429e5a19fc7d01b87a2478fbefa3c7a3",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 12560,
+      "verified_ws": 0
+     },
+     "shuffle": {
+      "scheme": "shuf/1",
+      "seed": "261103|shuf",
+      "fixed_points": 0,
+      "moved": 5918,
+      "populated": 5918,
+      "multiset_sha256": "c788496dcce19ef744b647617b1d8050afc3624532f4b8e62883cf9ce2ab34df",
+      "permutation_sha256": "42934547726f82c08514a1a226210c9b08c22fe7042692dd97e978d6ba92e75f"
+     }
+    },
+    "none": {
+     "chunks": 32765,
+     "chunks_with_field": 0,
+     "sha256": "1cad6d3c141bee9478a5f390761239be3250f86193257f1bdc417d4eba64d844",
+     "glossary_versions": [
+      "none+merge=none"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 12560,
+      "verified_ws": 0
+     }
+    },
+    "rules-mention": {
+     "chunks": 32765,
+     "chunks_with_field": 1720,
+     "sha256": "701380e5de3c35d3267edacfb4c31279293b45682e3c146c1bc29b8edb3d8fed",
+     "glossary_versions": [
+      "rules/3+attach=mention"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 12560,
+      "verified_ws": 0
+     }
+    },
+    "rules-value": {
+     "chunks": 32765,
+     "chunks_with_field": 104,
+     "sha256": "5facfee4041e4c03b39d495d24e59ee2d39e6aed116187670aa4a8c12011a509",
+     "glossary_versions": [
+      "rules/3"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 12560,
+      "verified_ws": 0
+     }
+    },
+    "value": {
+     "chunks": 32765,
+     "chunks_with_field": 300,
+     "sha256": "4c6f8bef8861223716ae1cf717024098e26c42ca27b8eedf43b757219c4b489f",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 12560,
+      "verified_ws": 0
+     }
+    }
+   },
+   "provenance": {
+    "citable": true,
+    "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+    "describe": "v1.6.21-99-g6b434e8",
+    "dirty": false,
+    "in_image": false,
+    "python": "3.12.13",
+    "recorded_at": "2026-10-30T22:30:59Z",
+    "schema": 1,
+    "segmentation": [
+     {
+      "backend": "punkt",
+      "kind": "sentences",
+      "n_docs": 5,
+      "n_spans": 40,
+      "nltk": "3.9.4",
+      "producer": "ragstack.ingestion.chunkers.sentence_spans",
+      "sample": "canonical-1",
+      "segmenter_version": "punkt-abbrev-v1",
+      "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+      "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+     }
+    ],
+    "source": "git",
+    "untracked": 0,
+    "version": "v1.6.21+6b434e8",
+    "warnings": [
+     "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+    ],
+    "redacted": [
+     "host",
+     "image",
+     "installed_distribution"
+    ]
+   }
+  },
+  "A": {
+   "schema_of_source": "wording-proxy/1",
+   "citable": true,
+   "totals": {
+    "mention": {
+     "n": 63,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 14
+    },
+    "mention-shuf": {
+     "n": 63,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 14
+    },
+    "none": {
+     "n": 63,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 0
+    },
+    "rules-mention": {
+     "n": 63,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 2
+    },
+    "rules-value": {
+     "n": 63,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 0
+    },
+    "value": {
+     "n": 63,
+     "pass": 0,
+     "rate": 0.0,
+     "records_with_field": 0
+    }
+   },
+   "by_stratum": {
+    "mention": {
+     "M_num": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 11
+     },
+     "V": {
+      "n": 6,
+      "pass": 0,
+      "records_with_field": 3
+     }
+    },
+    "mention-shuf": {
+     "M_num": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 11
+     },
+     "V": {
+      "n": 6,
+      "pass": 0,
+      "records_with_field": 3
+     }
+    },
+    "none": {
+     "M_num": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 0
+     },
+     "V": {
+      "n": 6,
+      "pass": 0,
+      "records_with_field": 0
+     }
+    },
+    "rules-mention": {
+     "M_num": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 2
+     },
+     "V": {
+      "n": 6,
+      "pass": 0,
+      "records_with_field": 0
+     }
+    },
+    "rules-value": {
+     "M_num": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 0
+     },
+     "V": {
+      "n": 6,
+      "pass": 0,
+      "records_with_field": 0
+     }
+    },
+    "value": {
+     "M_num": {
+      "n": 57,
+      "pass": 0,
+      "records_with_field": 0
+     },
+     "V": {
+      "n": 6,
+      "pass": 0,
+      "records_with_field": 0
+     }
+    }
+   },
+   "subset_violations_counted_from_per_record": {
+    "value_pass_mention_fail": 0,
+    "rules_value_pass_rules_mention_fail": 0
+   },
+   "arms": {
+    "mention": {
+     "chunks": 27418,
+     "chunks_with_field": 6246,
+     "sha256": "6a263a602f974a22730b3dc19ea8dee9a47491a2924066acd518ceab9a09a262",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 1000,
+      "verified_ws": 0
+     }
+    },
+    "mention-shuf": {
+     "chunks": 27418,
+     "chunks_with_field": 6246,
+     "sha256": "6a263a602f974a22730b3dc19ea8dee9a47491a2924066acd518ceab9a09a262",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 1000,
+      "verified_ws": 0
+     },
+     "shuffle": {
+      "scheme": "shuf/1",
+      "seed": "261103|shuf",
+      "fixed_points": 0,
+      "moved": 6246,
+      "populated": 6246,
+      "multiset_sha256": "f86c243fcec16e8c0279115eb3a4c52ec542970668a3129e0b374bd63bc0090b",
+      "permutation_sha256": "2e026866f06cb74a27bbffca526287aedcdceca190f0288d80466ef16764f7c6"
+     }
+    },
+    "none": {
+     "chunks": 27418,
+     "chunks_with_field": 0,
+     "sha256": "0718a4725cf5d7a8245437f8ff35449f3ad8943fac1b0a49afec3500a238c6e3",
+     "glossary_versions": [
+      "none+merge=none"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 1000,
+      "verified_ws": 0
+     }
+    },
+    "rules-mention": {
+     "chunks": 27418,
+     "chunks_with_field": 850,
+     "sha256": "1186552569260019096a9889eef8e00d58177adf18beabbea3fbdd90766ec964",
+     "glossary_versions": [
+      "rules/3+attach=mention"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 1000,
+      "verified_ws": 0
+     }
+    },
+    "rules-value": {
+     "chunks": 27418,
+     "chunks_with_field": 3,
+     "sha256": "e17725422ebdfe59d7e9ae1cd958c6e147ca287a594fcab15eef8dbc8d1e1d7e",
+     "glossary_versions": [
+      "rules/3"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 1000,
+      "verified_ws": 0
+     }
+    },
+    "value": {
+     "chunks": 27418,
+     "chunks_with_field": 7,
+     "sha256": "59d5ce2ee9eba1deb598d50fe35de0a6fb0abe68822cd171f95097844a2ee1d4",
+     "glossary_versions": [
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only"
+     ],
+     "documents": {
+      "unverified": 0,
+      "verified": 1000,
+      "verified_ws": 0
+     }
+    }
+   },
+   "provenance": {
+    "citable": true,
+    "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+    "describe": "v1.6.21-99-g6b434e8",
+    "dirty": false,
+    "in_image": false,
+    "python": "3.12.13",
+    "recorded_at": "2026-10-30T22:31:14Z",
+    "schema": 1,
+    "segmentation": [
+     {
+      "backend": "punkt",
+      "kind": "sentences",
+      "n_docs": 5,
+      "n_spans": 40,
+      "nltk": "3.9.4",
+      "producer": "ragstack.ingestion.chunkers.sentence_spans",
+      "sample": "canonical-1",
+      "segmenter_version": "punkt-abbrev-v1",
+      "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+      "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+     }
+    ],
+    "source": "git",
+    "untracked": 0,
+    "version": "v1.6.21+6b434e8",
+    "warnings": [
+     "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+    ],
+    "redacted": [
+     "host",
+     "image",
+     "installed_distribution"
+    ]
+   }
+  }
+ },
+ "runs": {
+  "A/mention-shuf": {
+   "arm": "mention-shuf",
+   "run_label": "mention-shuf",
+   "calls": 189,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "mention",
+    "glossary_file_sha256": "6a263a602f974a22730b3dc19ea8dee9a47491a2924066acd518ceab9a09a262",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1+shuf/1:261103|shuf:6d69a572eb7c": 27418
+     },
+     "total": 27418
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1+shuf/1:261103|shuf:6d69a572eb7c": 27418
+     },
+     "total": 27418
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1+shuf/1:261103|shuf:6d69a572eb7c": 27418
+     },
+     "total": 27418
+    },
+    "swap_record_sha256": "6db65e41bdcfcb465181d50987e7fe37985f3f170c2dfaa7e0dc3296599847d7"
+   },
+   "boost": {
+    "status": "active",
+    "verdict": "active",
+    "declared": null,
+    "declared_label": null,
+    "gate": null,
+    "n_probes": 4,
+    "n_passed": 4,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 18,
+    "chunks_with_glossary": 6246,
+    "probe_results": [
+     "pass",
+     "pass",
+     "pass",
+     "pass"
+    ]
+   },
+   "conditions": {
+    "base": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 48,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 63
+     }
+    },
+    "bm25": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 41,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 41,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "A/mention": {
+   "arm": "mention",
+   "run_label": "mention",
+   "calls": 189,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "mention",
+    "glossary_file_sha256": "6a263a602f974a22730b3dc19ea8dee9a47491a2924066acd518ceab9a09a262",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1": 27418
+     },
+     "total": 27418
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1": 27418
+     },
+     "total": 27418
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1": 27418
+     },
+     "total": 27418
+    },
+    "swap_record_sha256": "52a87cbb30a028898c2dfe8fd575c5911828209d5db764a5a2629b76a0815041"
+   },
+   "boost": {
+    "status": "active",
+    "verdict": "active",
+    "declared": null,
+    "declared_label": null,
+    "gate": null,
+    "n_probes": 4,
+    "n_passed": 4,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 18,
+    "chunks_with_glossary": 6246,
+    "probe_results": [
+     "pass",
+     "pass",
+     "pass",
+     "pass"
+    ]
+   },
+   "conditions": {
+    "base": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 48,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 63
+     }
+    },
+    "bm25": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 40,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 38,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "A/none": {
+   "arm": "none",
+   "run_label": "none",
+   "calls": 189,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "0718a4725cf5d7a8245437f8ff35449f3ad8943fac1b0a49afec3500a238c6e3",
+    "live_before": {
+     "stamps": {
+      "none+merge=none@file/1": 27418
+     },
+     "total": 27418
+    },
+    "live_after": {
+     "stamps": {
+      "none+merge=none@file/1": 27418
+     },
+     "total": 27418
+    },
+    "verified": {
+     "stamps": {
+      "none+merge=none@file/1": 27418
+     },
+     "total": 27418
+    },
+    "swap_record_sha256": "ad52e59e364545a02a093acbb65b05207936bfdaf5163d20ffefb9128fff7f0d"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 0,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 54,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 63
+     }
+    },
+    "bm25": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 52,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 46,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "A/rules-mention": {
+   "arm": "rules-mention",
+   "run_label": "rules-mention",
+   "calls": 189,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "mention",
+    "glossary_file_sha256": "1186552569260019096a9889eef8e00d58177adf18beabbea3fbdd90766ec964",
+    "live_before": {
+     "stamps": {
+      "rules/3+attach=mention@file/1": 27418
+     },
+     "total": 27418
+    },
+    "live_after": {
+     "stamps": {
+      "rules/3+attach=mention@file/1": 27418
+     },
+     "total": 27418
+    },
+    "verified": {
+     "stamps": {
+      "rules/3+attach=mention@file/1": 27418
+     },
+     "total": 27418
+    },
+    "swap_record_sha256": "4647eda59e57c24f3abc92ca8b201275e6c7914de167f9fdc82c237f58bc9337"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 850,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 51,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 63
+     }
+    },
+    "bm25": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 48,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 44,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "A/rules-value": {
+   "arm": "rules-value",
+   "run_label": "rules-value",
+   "calls": 189,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "e17725422ebdfe59d7e9ae1cd958c6e147ca287a594fcab15eef8dbc8d1e1d7e",
+    "live_before": {
+     "stamps": {
+      "rules/3@file/1": 27418
+     },
+     "total": 27418
+    },
+    "live_after": {
+     "stamps": {
+      "rules/3@file/1": 27418
+     },
+     "total": 27418
+    },
+    "verified": {
+     "stamps": {
+      "rules/3@file/1": 27418
+     },
+     "total": 27418
+    },
+    "swap_record_sha256": "0ace5d0006e6cdb90543112380987d8b34a9987b3ab01a3f1702c0ae43955b5f"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 3,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 54,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 63
+     }
+    },
+    "bm25": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 52,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 46,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "A/value#2": {
+   "arm": "value",
+   "run_label": "value#2",
+   "calls": 189,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "59d5ce2ee9eba1deb598d50fe35de0a6fb0abe68822cd171f95097844a2ee1d4",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 27418
+     },
+     "total": 27418
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 27418
+     },
+     "total": 27418
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 27418
+     },
+     "total": 27418
+    },
+    "swap_record_sha256": "712b06e97881c2186a3d07cfa0b68549d07edee8bf2b0a5f571ecc0b344c84e9"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 7,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 54,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 63
+     }
+    },
+    "bm25": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 52,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 46,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "A/value": {
+   "arm": "value",
+   "run_label": "value",
+   "calls": 189,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "59d5ce2ee9eba1deb598d50fe35de0a6fb0abe68822cd171f95097844a2ee1d4",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 27418
+     },
+     "total": 27418
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 27418
+     },
+     "total": 27418
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 27418
+     },
+     "total": 27418
+    },
+    "swap_record_sha256": "ddbec9bfb5d22846071f5ef7e3e39d3526ac3b42f4f1e99cd03ef5277bdb773f"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 7,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 54,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 63
+     }
+    },
+    "bm25": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 52,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 63,
+     "rows": 63,
+     "ok": 63,
+     "failed": 0,
+     "found10": 46,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "O/mention-shuf": {
+   "arm": "mention-shuf",
+   "run_label": "mention-shuf",
+   "calls": 618,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "mention",
+    "glossary_file_sha256": "1e1845dd70e7e106cb32c44db4ca4bf3429e5a19fc7d01b87a2478fbefa3c7a3",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1+shuf/1:261103|shuf:a12bcbabbb08": 32765
+     },
+     "total": 32765
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1+shuf/1:261103|shuf:a12bcbabbb08": 32765
+     },
+     "total": 32765
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1+shuf/1:261103|shuf:a12bcbabbb08": 32765
+     },
+     "total": 32765
+    },
+    "swap_record_sha256": "bf4664702192a607d8f62e042b47fd433c59d942c7f99b41d98a54ae98a9b860"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 2,
+    "chunks_with_glossary": 5918,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 186,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 206
+     }
+    },
+    "bm25": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 151,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 167,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "O/mention": {
+   "arm": "mention",
+   "run_label": "mention",
+   "calls": 618,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "mention",
+    "glossary_file_sha256": "1e1845dd70e7e106cb32c44db4ca4bf3429e5a19fc7d01b87a2478fbefa3c7a3",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1": 32765
+     },
+     "total": 32765
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1": 32765
+     },
+     "total": 32765
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only+attach=mention@file/1": 32765
+     },
+     "total": 32765
+    },
+    "swap_record_sha256": "7aa9916f116c3f63d4eab381f06589de0ce21b45d2542d50d13566aa865a27d3"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 2,
+    "chunks_with_glossary": 5918,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 185,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 206
+     }
+    },
+    "bm25": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 143,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 168,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "O/none": {
+   "arm": "none",
+   "run_label": "none",
+   "calls": 618,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "1cad6d3c141bee9478a5f390761239be3250f86193257f1bdc417d4eba64d844",
+    "live_before": {
+     "stamps": {
+      "none+merge=none@file/1": 32765
+     },
+     "total": 32765
+    },
+    "live_after": {
+     "stamps": {
+      "none+merge=none@file/1": 32765
+     },
+     "total": 32765
+    },
+    "verified": {
+     "stamps": {
+      "none+merge=none@file/1": 32765
+     },
+     "total": 32765
+    },
+    "swap_record_sha256": "3f4e8b7bdbff2292534bfba95b731338e84df5b1f73b287115f817d84ac3f621"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 0,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 198,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 206
+     }
+    },
+    "bm25": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 190,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 171,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "O/rules-mention": {
+   "arm": "rules-mention",
+   "run_label": "rules-mention",
+   "calls": 618,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "mention",
+    "glossary_file_sha256": "701380e5de3c35d3267edacfb4c31279293b45682e3c146c1bc29b8edb3d8fed",
+    "live_before": {
+     "stamps": {
+      "rules/3+attach=mention@file/1": 32765
+     },
+     "total": 32765
+    },
+    "live_after": {
+     "stamps": {
+      "rules/3+attach=mention@file/1": 32765
+     },
+     "total": 32765
+    },
+    "verified": {
+     "stamps": {
+      "rules/3+attach=mention@file/1": 32765
+     },
+     "total": 32765
+    },
+    "swap_record_sha256": "45b34ca960ba76f7c3c733a61dcf85e80b0a7bfa11ef83746cead6a4548d4a17"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 1720,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 193,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 206
+     }
+    },
+    "bm25": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 172,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 172,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "O/rules-value": {
+   "arm": "rules-value",
+   "run_label": "rules-value",
+   "calls": 618,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "5facfee4041e4c03b39d495d24e59ee2d39e6aed116187670aa4a8c12011a509",
+    "live_before": {
+     "stamps": {
+      "rules/3@file/1": 32765
+     },
+     "total": 32765
+    },
+    "live_after": {
+     "stamps": {
+      "rules/3@file/1": 32765
+     },
+     "total": 32765
+    },
+    "verified": {
+     "stamps": {
+      "rules/3@file/1": 32765
+     },
+     "total": 32765
+    },
+    "swap_record_sha256": "d9903954e724fa9a5efd3d814c37505fdc4a1c126ec7be71ee2e10a5fce1fb79"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 104,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 198,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 206
+     }
+    },
+    "bm25": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 189,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 173,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "O/value#2": {
+   "arm": "value",
+   "run_label": "value#2",
+   "calls": 618,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "4c6f8bef8861223716ae1cf717024098e26c42ca27b8eedf43b757219c4b489f",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 32765
+     },
+     "total": 32765
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 32765
+     },
+     "total": 32765
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 32765
+     },
+     "total": 32765
+    },
+    "swap_record_sha256": "72e4ea6211f2289d6d9bb30101f2dd2edcedf9ae5a647043c1da82bf16d82604"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 300,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 198,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 206
+     }
+    },
+    "bm25": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 188,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 172,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  },
+  "O/value": {
+   "arm": "value",
+   "run_label": "value",
+   "calls": 618,
+   "failed_calls": 0,
+   "citable": true,
+   "commit": "6b434e86fa16a7ca9c4aebecf257e5890c61ad12",
+   "census": {
+    "source": "swap_record+live",
+    "attach": "value",
+    "glossary_file_sha256": "4c6f8bef8861223716ae1cf717024098e26c42ca27b8eedf43b757219c4b489f",
+    "live_before": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 32765
+     },
+     "total": 32765
+    },
+    "live_after": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 32765
+     },
+     "total": 32765
+    },
+    "verified": {
+     "stamps": {
+      "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 32765
+     },
+     "total": 32765
+    },
+    "swap_record_sha256": "905f6fd60aadd0b56d75212bda3e42b00f3a6f624343f18a2ff60590a30357b6"
+   },
+   "boost": {
+    "status": "declared",
+    "verdict": null,
+    "declared": 1.0,
+    "declared_label": "declared (--boost-declared), not read back",
+    "gate": null,
+    "n_probes": 0,
+    "n_passed": 0,
+    "min_probes": 3,
+    "chunks_with_a_qualifying_token": 0,
+    "chunks_with_glossary": 300,
+    "probe_results": []
+   },
+   "conditions": {
+    "base": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 198,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null,
+     "identical_to_norerank": {
+      "identical": 0,
+      "records": 206
+     }
+    },
+    "bm25": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 188,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    },
+    "norerank": {
+     "records": 206,
+     "rows": 206,
+     "ok": 206,
+     "failed": 0,
+     "found10": 172,
+     "requested": 50,
+     "served_min": 50,
+     "served_max": 50,
+     "depth_short": 0,
+     "depth_over": 0,
+     "exhausted_verified": 0,
+     "exhaustion_verdicts": {},
+     "gate": null
+    }
+   }
+  }
+ },
+ "restore": {
+  "O": {
+   "utc_start": "2026-10-30T22:43:16Z",
+   "utc_end": "2026-10-30T22:44:55Z",
+   "census_before": {
+    "utc": "2026-10-30T22:43:16Z",
+    "total": 32765,
+    "stamps": {
+     "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 32765
+    }
+   },
+   "census_after": {
+    "utc": "2026-10-30T22:44:55Z",
+    "total": 32765,
+    "stamps": {
+     "rules/3": 32765
+    }
+   },
+   "apply": {
+    "dry_run": false,
+    "chunks": 32765,
+    "chunks_written": 32765,
+    "chunks_with_glossary": 104,
+    "docs": 12560,
+    "reassembly_gaps": 0,
+    "reassembly_length_mismatches": 0
+   }
+  },
+  "A": {
+   "utc_start": "2026-10-30T22:50:27Z",
+   "utc_end": "2026-10-30T22:51:51Z",
+   "census_before": {
+    "utc": "2026-10-30T22:50:27Z",
+    "total": 27418,
+    "stamps": {
+     "llm/2:Qwen3.6-35B-A3B:dcb924271b1e:w80000x4:t4096:k0:r0+merge=llm-only@file/1": 27418
+    }
+   },
+   "census_after": {
+    "utc": "2026-10-30T22:51:51Z",
+    "total": 27418,
+    "stamps": {
+     "rules/3": 27418
+    }
+   },
+   "apply": {
+    "dry_run": false,
+    "chunks": 27418,
+    "chunks_written": 27418,
+    "chunks_with_glossary": 3,
+    "docs": 1000,
+    "reassembly_gaps": 0,
+    "reassembly_length_mismatches": 0
+   }
+  }
+ },
+ "drafting": {
+  "P_pilot": {
+   "draft": {
+    "set": "P",
+    "stage": "draft",
+    "status": "complete",
+    "reason": null,
+    "model": "Gemini 2.5 Pro",
+    "served_models": {
+     "Gemini 2.5 Pro": 105
+    },
+    "rows": 105,
+    "row_status": {
+     "ok": 105
+    },
+    "totals_since_start": {
+     "gateway_calls": 105,
+     "gateway_completion_tokens": 2185,
+     "gateway_prompt_tokens": 94614
+    },
+    "cumulative_with_prior": {
+     "gateway_calls": 105,
+     "gateway_completion_tokens": 2185,
+     "gateway_prompt_tokens": 94614
+    },
+    "cost_usd": null,
+    "config_sha256": "e02266c9ddcf89173a43381b68b1cf24432d6be4807f174901ce87ffd43e7c9d",
+    "pool_sha256": "37b1c4760664c9fc3796002318ffef1255be94802f2af360e4a8810a61e6cc05",
+    "prereg_sha256": "43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765",
+    "updated": "2026-10-30T15:57:28Z",
+    "citable": true,
+    "commit": "6e620c290de49e4a8af7bf6f5bbbfaed156ace98"
+   },
+   "verify_run2": {
+    "set": "P",
+    "stage": "verify",
+    "status": "complete",
+    "reason": null,
+    "model": "claude-opus-5-5",
+    "served_models": {
+     "claude-opus-5-5": 6,
+     "gpt-6-astra": 1
+    },
+    "rows": 7,
+    "row_status": {
+     "ok": 7
+    },
+    "totals_since_start": {
+     "cli_calls": 7,
+     "cli_completion_tokens": 1016,
+     "cli_prompt_tokens": 15504,
+     "cli_refusals": 1,
+     "codex_calls": 1,
+     "codex_completion_tokens": 79,
+     "codex_prompt_tokens": 3331
+    },
+    "cumulative_with_prior": {
+     "cli_calls": 7,
+     "cli_completion_tokens": 1016,
+     "cli_prompt_tokens": 15504,
+     "cli_refusals": 1,
+     "codex_calls": 1,
+     "codex_completion_tokens": 79,
+     "codex_prompt_tokens": 3331
+    },
+    "cost_usd": 0.1443,
+    "config_sha256": "e02266c9ddcf89173a43381b68b1cf24432d6be4807f174901ce87ffd43e7c9d",
+    "pool_sha256": "37b1c4760664c9fc3796002318ffef1255be94802f2af360e4a8810a61e6cc05",
+    "prereg_sha256": "43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765",
+    "updated": "2026-10-30T17:30:36Z",
+    "citable": true,
+    "commit": "b501ec74019f0160a2bb23f2160d2c7ea42ad55c"
+   },
+   "acceptance_run2": {
+    "set": "P",
+    "status_label": "our three-layer check (layers 1-2)",
+    "pilot": true,
+    "draft_mode": "fields",
+    "accepted_sha256": "77e408094be5d28ecd950f1b85803c3da227d40c6c513eff79737cdaa044fb6a",
+    "counts": {
+     "accepted": {
+      "M_num": 3,
+      "V": 2
+     },
+     "accepted_total": 5,
+     "attempts_by_number": {
+      "a1": 100,
+      "a2": 5
+     },
+     "attempts_per_accepted": 21.0,
+     "attempts_per_accepted_by_stratum": {
+      "M_num": 16.666666666666668,
+      "V": 27.5
+     },
+     "draft_attempts": {
+      "M_num": 50,
+      "V": 55
+     },
+     "gateway_calls_per_accepted": 21.0,
+     "papers_with_accepted": 3,
+     "sampled_chunks": {
+      "M_num": 50,
+      "V": 50
+     },
+     "yield_per_sampled_chunk": {
+      "M_num": 0.06,
+      "V": 0.04
+     }
+    },
+    "excluded": {
+     "verifier_unavailable": 0
+    },
+    "layer1_value_bound": null,
+    "layer2_by_verifier": {
+     "claude": {
+      "pass": 4,
+      "reject": 2
+     },
+     "codex": {
+      "pass": 1
+     }
+    },
+    "verifier_refused": {
+     "claude": 1
+    },
+    "rejects_by_code": {
+     "l2_single_reading": {
+      "V": 2
+     },
+     "lexical_leak": {
+      "V": 4
+     },
+     "no_quantity": {
+      "M_num": 47,
+      "V": 42
+     },
+     "quantity_not_in_quote": {
+      "V": 5
+     },
+     "unit_incompatible": {
+      "V": 3
+     }
+    },
+    "round3": {
+     "symbol_bound_by_stratum": {
+      "M_num": {
+       "False": 3
+      },
+      "V": {
+       "None": 2
+      }
+     }
+    },
+    "citable": true,
+    "commit": "b501ec74019f0160a2bb23f2160d2c7ea42ad55c"
+   }
+  },
+  "O": {
+   "draft": {
+    "set": "O",
+    "stage": "draft",
+    "status": "complete",
+    "reason": null,
+    "model": "Gemini 2.5 Pro",
+    "served_models": {
+     "Gemini 2.5 Pro": 859
+    },
+    "rows": 859,
+    "row_status": {
+     "ok": 859
+    },
+    "totals_since_start": {
+     "gateway_calls": 863,
+     "gateway_completion_tokens": 113145,
+     "gateway_failures:http_502": 1,
+     "gateway_failures:http_503": 2,
+     "gateway_prompt_tokens": 687111
+    },
+    "cumulative_with_prior": {
+     "gateway_calls": 968,
+     "gateway_completion_tokens": 115330,
+     "gateway_failures:http_502": 1,
+     "gateway_failures:http_503": 2,
+     "gateway_prompt_tokens": 781725
+    },
+    "cost_usd": null,
+    "config_sha256": "8b8683a246a6d90f5a5e50e4b200995865d899fbe4a24eac1104c051e24d62e2",
+    "pool_sha256": "f89cbd74260018f99be13ee18860d447a77248b7fd8c9a50d7466b2f68d9c5c9",
+    "prereg_sha256": "43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765",
+    "updated": "2026-10-30T19:10:22Z",
+    "citable": true,
+    "commit": "4c0bbb86698302b955e41d00d9a11bfdeb128594"
+   },
+   "verify": {
+    "set": "O",
+    "stage": "verify",
+    "status": "complete",
+    "reason": null,
+    "model": "claude-opus-5-5",
+    "served_models": {
+     "claude-opus-5-5": 253,
+     "gpt-6-astra": 1
+    },
+    "rows": 254,
+    "row_status": {
+     "ok": 254
+    },
+    "totals_since_start": {
+     "cli_calls": 254,
+     "cli_completion_tokens": 39983,
+     "cli_prompt_tokens": 637879,
+     "cli_refusals": 1,
+     "codex_calls": 1,
+     "codex_completion_tokens": 64,
+     "codex_prompt_tokens": 3425
+    },
+    "cumulative_with_prior": {
+     "cli_calls": 254,
+     "cli_completion_tokens": 39983,
+     "cli_prompt_tokens": 637879,
+     "cli_refusals": 1,
+     "codex_calls": 1,
+     "codex_completion_tokens": 64,
+     "codex_prompt_tokens": 3425,
+     "gateway_calls": 105,
+     "gateway_completion_tokens": 2185,
+     "gateway_prompt_tokens": 94614
+    },
+    "cost_usd": 6.1406,
+    "config_sha256": "8b8683a246a6d90f5a5e50e4b200995865d899fbe4a24eac1104c051e24d62e2",
+    "pool_sha256": "f89cbd74260018f99be13ee18860d447a77248b7fd8c9a50d7466b2f68d9c5c9",
+    "prereg_sha256": "43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765",
+    "updated": "2026-10-30T19:17:56Z",
+    "citable": true,
+    "commit": "4c0bbb86698302b955e41d00d9a11bfdeb128594"
+   },
+   "acceptance": {
+    "set": "O",
+    "status_label": "our three-layer check (layers 1-2)",
+    "pilot": false,
+    "draft_mode": "open",
+    "accepted_sha256": "e67378b50050af975b1d127a8990e7712e61453e771bbc3e60906fd6a4761013",
+    "counts": {
+     "accepted": {
+      "M_num": 149,
+      "V": 57
+     },
+     "accepted_total": 206,
+     "attempts_by_number": {
+      "a1": 534,
+      "a2": 325
+     },
+     "attempts_per_accepted": 4.169902912621359,
+     "attempts_per_accepted_by_stratum": {
+      "M_num": 2.9731543624161074,
+      "V": 7.298245614035087
+     },
+     "draft_attempts": {
+      "M_num": 443,
+      "V": 416
+     },
+     "gateway_calls_per_accepted": 4.169902912621359,
+     "papers_with_accepted": 48,
+     "sampled_chunks": {
+      "M_num": 293,
+      "V": 241
+     },
+     "yield_per_sampled_chunk": {
+      "M_num": 0.5085324232081911,
+      "V": 0.23651452282157676
+     }
+    },
+    "excluded": {
+     "verifier_unavailable": 0
+    },
+    "layer1_value_bound": "reject",
+    "layer2_by_verifier": {
+     "claude": {
+      "pass": 205,
+      "reject": 48
+     },
+     "codex": {
+      "pass": 1
+     }
+    },
+    "verifier_refused": {
+     "claude": 1
+    },
+    "rejects_by_code": {
+     "binding_terms_invalid": {
+      "M_num": 70,
+      "V": 60
+     },
+     "binding_word_not_in_paper": {
+      "M_num": 58,
+      "V": 49
+     },
+     "duplicate_question": {
+      "V": 2
+     },
+     "l2_same_case": {
+      "M_num": 10,
+      "V": 12
+     },
+     "l2_single_reading": {
+      "M_num": 18,
+      "V": 17
+     },
+     "l2_supports": {
+      "M_num": 4
+     },
+     "l2_symbol_unique": {
+      "M_num": 3,
+      "V": 15
+     },
+     "lexical_leak": {
+      "M_num": 61,
+      "V": 44
+     },
+     "no_quantity": {
+      "M_num": 40,
+      "V": 17
+     },
+     "number_in_question": {
+      "M_num": 7,
+      "V": 5
+     },
+     "quantity_not_in_quote": {
+      "M_num": 10,
+      "V": 6
+     },
+     "quote_not_in_paper": {
+      "M_num": 21,
+      "V": 13
+     },
+     "quote_not_unique": {
+      "M_num": 14,
+      "V": 17
+     },
+     "quote_too_long": {
+      "M_num": 15,
+      "V": 7
+     },
+     "symbol_in_question": {
+      "M_num": 34,
+      "V": 54
+     },
+     "symbol_missing": {
+      "V": 141
+     },
+     "symbol_not_in_chunk": {
+      "M_num": 9,
+      "V": 16
+     },
+     "unparseable": {
+      "M_num": 9,
+      "V": 21
+     },
+     "value_is_bound": {
+      "M_num": 18,
+      "V": 10
+     }
+    },
+    "round3": {
+     "symbol_bound_by_stratum": {
+      "M_num": {
+       "False": 128,
+       "True": 21
+      },
+      "V": {
+       "None": 57
+      }
+     }
+    },
+    "citable": true,
+    "commit": "4c0bbb86698302b955e41d00d9a11bfdeb128594"
+   }
+  },
+  "A": {
+   "draft_segment1": {
+    "set": "A",
+    "stage": "draft",
+    "status": "paused",
+    "reason": "low_yield: 28 of 100 jobs passed layer 1 (28.0% < 30%), 100 jobs left; resume with --accept-low-yield",
+    "model": "Gemini 2.5 Pro",
+    "served_models": {
+     "Gemini 2.5 Pro": 169
+    },
+    "rows": 169,
+    "row_status": {
+     "cut": 2,
+     "ok": 167
+    },
+    "totals_since_start": {
+     "gateway_calls": 170,
+     "gateway_completion_tokens": 368458,
+     "gateway_failures:http_502": 1,
+     "gateway_prompt_tokens": 147996
+    },
+    "cumulative_with_prior": {
+     "gateway_calls": 1138,
+     "gateway_completion_tokens": 483788,
+     "gateway_failures:http_502": 1,
+     "gateway_prompt_tokens": 929721
+    },
+    "cost_usd": null,
+    "config_sha256": "7a58162befe3abc36f3ab4d34f61adb467a5c3ac03c8d6c7e9b180e5c3ee2b78",
+    "pool_sha256": "0eec0a798d7c59697230e622df3e83efac108abd3f6119ebc73e1382500aabf2",
+    "prereg_sha256": "43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765",
+    "updated": "2026-10-30T20:26:58Z",
+    "citable": true,
+    "commit": "4c0bbb86698302b955e41d00d9a11bfdeb128594"
+   },
+   "draft_segment2": {
+    "set": "A",
+    "stage": "draft",
+    "status": "complete",
+    "reason": null,
+    "model": "Gemini 2.5 Pro",
+    "served_models": {
+     "Gemini 2.5 Pro": 325
+    },
+    "rows": 325,
+    "row_status": {
+     "cut": 2,
+     "ok": 323
+    },
+    "totals_since_start": {
+     "gateway_calls": 156,
+     "gateway_completion_tokens": 356582,
+     "gateway_prompt_tokens": 135499
+    },
+    "cumulative_with_prior": {
+     "gateway_calls": 1294,
+     "gateway_completion_tokens": 840370,
+     "gateway_prompt_tokens": 1065220
+    },
+    "cost_usd": null,
+    "config_sha256": "c100afb655a98a686795cbbff26877b1deaf14fbb41955bae309328723cd3209",
+    "pool_sha256": "0eec0a798d7c59697230e622df3e83efac108abd3f6119ebc73e1382500aabf2",
+    "prereg_sha256": "43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765",
+    "updated": "2026-10-30T22:24:01Z",
+    "citable": true,
+    "commit": "4c0bbb86698302b955e41d00d9a11bfdeb128594"
+   },
+   "verify": {
+    "set": "A",
+    "stage": "verify",
+    "status": "complete",
+    "reason": null,
+    "model": "claude-opus-5-5",
+    "served_models": {
+     "claude-opus-5-5": 72,
+     "gpt-6-astra": 5
+    },
+    "rows": 77,
+    "row_status": {
+     "ok": 77
+    },
+    "totals_since_start": {
+     "cli_calls": 77,
+     "cli_completion_tokens": 11104,
+     "cli_prompt_tokens": 200366,
+     "cli_refusals": 5,
+     "codex_calls": 5,
+     "codex_completion_tokens": 360,
+     "codex_prompt_tokens": 16851
+    },
+    "cumulative_with_prior": {
+     "cli_calls": 77,
+     "cli_completion_tokens": 11104,
+     "cli_prompt_tokens": 200366,
+     "cli_refusals": 5,
+     "codex_calls": 5,
+     "codex_completion_tokens": 360,
+     "codex_prompt_tokens": 16851,
+     "gateway_calls": 1138,
+     "gateway_completion_tokens": 483788,
+     "gateway_prompt_tokens": 929721
+    },
+    "cost_usd": 1.886,
+    "config_sha256": "c100afb655a98a686795cbbff26877b1deaf14fbb41955bae309328723cd3209",
+    "pool_sha256": "0eec0a798d7c59697230e622df3e83efac108abd3f6119ebc73e1382500aabf2",
+    "prereg_sha256": "43637555d234922323655ca6f51216ca08c39596422f53d2d5437419f10d3765",
+    "updated": "2026-10-30T22:27:04Z",
+    "citable": true,
+    "commit": "4c0bbb86698302b955e41d00d9a11bfdeb128594"
+   },
+   "acceptance": {
+    "set": "A",
+    "status_label": "our three-layer check (layers 1-2)",
+    "pilot": false,
+    "draft_mode": "open",
+    "accepted_sha256": "dff0d37db3d1749435627be20707415392b1d7222627660dca08852bc76fba33",
+    "counts": {
+     "accepted": {
+      "M_num": 57,
+      "V": 6
+     },
+     "accepted_total": 63,
+     "attempts_by_number": {
+      "a1": 200,
+      "a2": 125
+     },
+     "attempts_per_accepted": 5.158730158730159,
+     "attempts_per_accepted_by_stratum": {
+      "M_num": 4.035087719298246,
+      "V": 15.833333333333334
+     },
+     "draft_attempts": {
+      "M_num": 230,
+      "V": 95
+     },
+     "gateway_calls_per_accepted": 5.158730158730159,
+     "papers_with_accepted": 22,
+     "sampled_chunks": {
+      "M_num": 150,
+      "V": 50
+     },
+     "yield_per_sampled_chunk": {
+      "M_num": 0.38,
+      "V": 0.12
+     }
+    },
+    "excluded": {
+     "verifier_unavailable": 0
+    },
+    "layer1_value_bound": "reject",
+    "layer2_by_verifier": {
+     "claude": {
+      "pass": 58,
+      "reject": 14
+     },
+     "codex": {
+      "pass": 5
+     }
+    },
+    "verifier_refused": {
+     "claude": 5
+    },
+    "rejects_by_code": {
+     "binding_terms_invalid": {
+      "M_num": 34,
+      "V": 10
+     },
+     "binding_word_not_in_paper": {
+      "M_num": 26,
+      "V": 10
+     },
+     "cut": {
+      "M_num": 1,
+      "V": 1
+     },
+     "l2_same_case": {
+      "M_num": 5,
+      "V": 1
+     },
+     "l2_single_reading": {
+      "M_num": 8,
+      "V": 1
+     },
+     "l2_supports": {
+      "M_num": 2,
+      "V": 1
+     },
+     "l2_symbol_unique": {
+      "M_num": 6,
+      "V": 2
+     },
+     "lexical_leak": {
+      "M_num": 38,
+      "V": 18
+     },
+     "no_quantity": {
+      "M_num": 26
+     },
+     "number_in_question": {
+      "M_num": 1
+     },
+     "quantity_not_in_quote": {
+      "M_num": 5
+     },
+     "quote_not_in_paper": {
+      "M_num": 61,
+      "V": 21
+     },
+     "quote_not_unique": {
+      "M_num": 8,
+      "V": 2
+     },
+     "quote_too_long": {
+      "V": 1
+     },
+     "symbol_in_question": {
+      "M_num": 11,
+      "V": 31
+     },
+     "symbol_missing": {
+      "V": 31
+     },
+     "symbol_not_in_chunk": {
+      "M_num": 2,
+      "V": 7
+     },
+     "unparseable": {
+      "M_num": 2,
+      "V": 1
+     },
+     "value_is_bound": {
+      "M_num": 7,
+      "V": 1
+     }
+    },
+    "round3": {
+     "symbol_bound_by_stratum": {
+      "M_num": {
+       "False": 53,
+       "True": 4
+      },
+      "V": {
+       "None": 6
+      }
+     }
+    },
+    "citable": true,
+    "commit": "4c0bbb86698302b955e41d00d9a11bfdeb128594"
+   }
+  }
+ }
+}

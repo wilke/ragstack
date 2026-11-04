@@ -1,0 +1,683 @@
+{
+ "schema": "rr-P-gold-sensitivity/1",
+ "label": "EXPLORATORY SENSITIVITY — set P (papers-OC, the owner's 155 held records) of the dedicated reranker test, re-scored under four gold variants; the record's own figures are the 'committed' column (artifacts/reranker-P-r2.json). Every H1-H3 stays GATE-NOT-EVALUABLE.",
+ "columns": {
+  "committed": "the record: the papers-OC owner's quote rule as #871 implements it (DEVIATIONS D-3)",
+  "v1": "committed rule + a 30-character floor on the boundary (first/last 60 %) fallback",
+  "v2": "short-anchor (< 30 chars) boundary matches count only if the chunk also carries every figure and symbol token of the quote (the papers-OC owner's symbol-token rule, aad81fe, external)",
+  "v3": "short-anchor boundary matches under the papers-OC owner's assignment rule (6c71ef1, external; our implementation from its description)",
+  "v3b": "v3 implemented from the papers-OC owner's 14 published match vectors (6fbd3f0, external); a cross-check of v3, not a fifth variant",
+  "v4": "v3 + source-paper scoping: gold restricted to chunks of the record's own source paper"
+ },
+ "n_included": {
+  "committed": 153,
+  "v1": 151,
+  "v2": 153,
+  "v3": 153,
+  "v3b": 153,
+  "v4": 151
+ },
+ "found@10": {
+  "A0": {
+   "committed": 61,
+   "v1": 57,
+   "v2": 58,
+   "v3": 58,
+   "v3b": 58,
+   "v4": 57
+  },
+  "A1": {
+   "committed": 9,
+   "v1": 7,
+   "v2": 7,
+   "v3": 7,
+   "v3b": 7,
+   "v4": 7
+  },
+  "A2": {
+   "committed": 50,
+   "v1": 46,
+   "v2": 46,
+   "v3": 46,
+   "v3b": 46,
+   "v4": 46
+  },
+  "A3": {
+   "committed": 20,
+   "v1": 17,
+   "v2": 18,
+   "v3": 18,
+   "v3b": 18,
+   "v4": 17
+  },
+  "A4-10": {
+   "committed": 50,
+   "v1": 46,
+   "v2": 46,
+   "v3": 46,
+   "v3b": 46,
+   "v4": 46
+  },
+  "A4-100": {
+   "committed": 54,
+   "v1": 51,
+   "v2": 53,
+   "v3": 53,
+   "v3b": 53,
+   "v4": 49
+  },
+  "A4-20": {
+   "committed": 54,
+   "v1": 51,
+   "v2": 52,
+   "v3": 52,
+   "v3b": 52,
+   "v4": 51
+  },
+  "A4-50": {
+   "committed": 52,
+   "v1": 49,
+   "v2": 51,
+   "v3": 51,
+   "v3b": 51,
+   "v4": 47
+  },
+  "A5-10": {
+   "committed": 61,
+   "v1": 57,
+   "v2": 58,
+   "v3": 58,
+   "v3b": 58,
+   "v4": 57
+  },
+  "A5-100": {
+   "committed": 59,
+   "v1": 56,
+   "v2": 58,
+   "v3": 58,
+   "v3b": 58,
+   "v4": 56
+  },
+  "A5-20": {
+   "committed": 62,
+   "v1": 59,
+   "v2": 60,
+   "v3": 60,
+   "v3b": 60,
+   "v4": 59
+  },
+  "A5-50": {
+   "committed": 54,
+   "v1": 51,
+   "v2": 53,
+   "v3": 53,
+   "v3b": 53,
+   "v4": 49
+  },
+  "A6": {
+   "committed": 15,
+   "v1": 13,
+   "v2": 13,
+   "v3": 13,
+   "v3b": 13,
+   "v4": 13
+  },
+  "A7-content": {
+   "committed": 43,
+   "v1": 39,
+   "v2": 41,
+   "v3": 41,
+   "v3b": 41,
+   "v4": 36
+  },
+  "A7-content+gloss": {
+   "committed": 52,
+   "v1": 49,
+   "v2": 51,
+   "v3": 51,
+   "v3b": 51,
+   "v4": 47
+  },
+  "A7-content+shuffled": {
+   "committed": 41,
+   "v1": 38,
+   "v2": 40,
+   "v3": 40,
+   "v3b": 40,
+   "v4": 35
+  },
+  "A7-gloss+content": {
+   "committed": 40,
+   "v1": 37,
+   "v2": 38,
+   "v3": 38,
+   "v3b": 38,
+   "v4": 35
+  },
+  "A7-gloss-only": {
+   "committed": 55,
+   "v1": 51,
+   "v2": 52,
+   "v3": 52,
+   "v3b": 52,
+   "v4": 51
+  },
+  "A9-bm25": {
+   "committed": 62,
+   "v1": 59,
+   "v2": 61,
+   "v3": 61,
+   "v3b": 61,
+   "v4": 59
+  },
+  "A9-fused": {
+   "committed": 44,
+   "v1": 40,
+   "v2": 42,
+   "v3": 42,
+   "v3b": 42,
+   "v4": 40
+  }
+ },
+ "ceilings": {
+  "bm25@10": {
+   "committed": 61,
+   "v1": 57,
+   "v2": 58,
+   "v3": 58,
+   "v3b": 58,
+   "v4": 57
+  },
+  "bm25@100": {
+   "committed": 94,
+   "v1": 91,
+   "v2": 92,
+   "v3": 92,
+   "v3b": 92,
+   "v4": 91
+  },
+  "bm25@20": {
+   "committed": 75,
+   "v1": 71,
+   "v2": 72,
+   "v3": 72,
+   "v3b": 72,
+   "v4": 69
+  },
+  "bm25@50": {
+   "committed": 82,
+   "v1": 78,
+   "v2": 80,
+   "v3": 80,
+   "v3b": 80,
+   "v4": 76
+  },
+  "hybrid@10": {
+   "committed": 50,
+   "v1": 46,
+   "v2": 46,
+   "v3": 46,
+   "v3b": 46,
+   "v4": 46
+  },
+  "hybrid@100": {
+   "committed": 93,
+   "v1": 88,
+   "v2": 90,
+   "v3": 90,
+   "v3b": 90,
+   "v4": 86
+  },
+  "hybrid@20": {
+   "committed": 65,
+   "v1": 59,
+   "v2": 60,
+   "v3": 60,
+   "v3b": 60,
+   "v4": 59
+  },
+  "hybrid@50": {
+   "committed": 83,
+   "v1": 78,
+   "v2": 80,
+   "v3": 80,
+   "v3b": 80,
+   "v4": 74
+  },
+  "vector@10": {
+   "committed": 9,
+   "v1": 7,
+   "v2": 7,
+   "v3": 7,
+   "v3b": 7,
+   "v4": 7
+  },
+  "vector@100": {
+   "committed": 34,
+   "v1": 29,
+   "v2": 30,
+   "v3": 30,
+   "v3b": 30,
+   "v4": 22
+  },
+  "vector@20": {
+   "committed": 12,
+   "v1": 8,
+   "v2": 8,
+   "v3": 8,
+   "v3b": 8,
+   "v4": 8
+  },
+  "vector@50": {
+   "committed": 19,
+   "v1": 14,
+   "v2": 14,
+   "v3": 14,
+   "v3b": 14,
+   "v4": 14
+  }
+ },
+ "hypotheses": {
+  "H1": {
+   "committed": {
+    "gained": 20,
+    "lost": 11,
+    "p": 0.5,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v1": {
+    "gained": 19,
+    "lost": 11,
+    "p": 0.5,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v2": {
+    "gained": 19,
+    "lost": 12,
+    "p": 0.5,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v3": {
+    "gained": 19,
+    "lost": 12,
+    "p": 0.5,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v3b": {
+    "gained": 19,
+    "lost": 12,
+    "p": 0.5,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v4": {
+    "gained": 19,
+    "lost": 9,
+    "p": 0.5,
+    "status": "GATE-NOT-EVALUABLE"
+   }
+  },
+  "H2": {
+   "committed": {
+    "gained": 2,
+    "lost": 3,
+    "p": 0.875,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v1": {
+    "gained": 2,
+    "lost": 2,
+    "p": 0.75,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v2": {
+    "gained": 2,
+    "lost": 2,
+    "p": 0.75,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v3": {
+    "gained": 2,
+    "lost": 2,
+    "p": 0.75,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v3b": {
+    "gained": 2,
+    "lost": 2,
+    "p": 0.75,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v4": {
+    "gained": 4,
+    "lost": 2,
+    "p": 0.375,
+    "status": "GATE-NOT-EVALUABLE"
+   }
+  },
+  "H3": {
+   "committed": {
+    "gained": 11,
+    "lost": 18,
+    "p": 0.265625,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v1": {
+    "gained": 11,
+    "lost": 17,
+    "p": 0.1171875,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v2": {
+    "gained": 12,
+    "lost": 17,
+    "p": 0.0078125,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v3": {
+    "gained": 12,
+    "lost": 17,
+    "p": 0.0078125,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v3b": {
+    "gained": 12,
+    "lost": 17,
+    "p": 0.0078125,
+    "status": "GATE-NOT-EVALUABLE"
+   },
+   "v4": {
+    "gained": 9,
+    "lost": 17,
+    "p": 0.5078125,
+    "status": "GATE-NOT-EVALUABLE"
+   }
+  }
+ },
+ "differences": {
+  "A0 - A4-50 (found@10; H1's contrast)": {
+   "committed": 9,
+   "v1": 8,
+   "v2": 7,
+   "v3": 7,
+   "v3b": 7,
+   "v4": 10
+  },
+  "A5-50 - A0 (found@10; H3's contrast)": {
+   "committed": -7,
+   "v1": -6,
+   "v2": -5,
+   "v3": -5,
+   "v3b": -5,
+   "v4": -8
+  },
+  "A9-bm25 - A4-50 (found@10)": {
+   "committed": 10,
+   "v1": 10,
+   "v2": 10,
+   "v3": 10,
+   "v3b": 10,
+   "v4": 12
+  },
+  "bm25@50 - hybrid@50 (ceiling; H2's contrast)": {
+   "committed": -1,
+   "v1": 0,
+   "v2": 0,
+   "v3": 0,
+   "v3b": 0,
+   "v4": 2
+  }
+ },
+ "exploratory_sign_changes_vs_committed": [
+  {
+   "A5-100 - A0": [
+    -2,
+    -1,
+    0,
+    0,
+    0,
+    -1
+   ]
+  }
+ ],
+ "gold": {
+  "size_hist": {
+   "committed": {
+    "1": 87,
+    "2": 56,
+    "4": 3,
+    "11": 3,
+    "32": 2,
+    "50": 2
+   },
+   "v1": {
+    "1": 90,
+    "2": 56,
+    "3": 3,
+    "4": 2
+   },
+   "v2": {
+    "1": 91,
+    "2": 56,
+    "4": 1,
+    "6": 2,
+    "8": 3
+   },
+   "v3": {
+    "1": 91,
+    "2": 57,
+    "5": 2,
+    "8": 3
+   },
+   "v4": {
+    "1": 146,
+    "3": 5
+   }
+  },
+  "v1": {
+   "floor": 30,
+   "records_below_floor": 11,
+   "records_gold_changed": 10,
+   "newly_excluded": 2,
+   "unfloored_rebuild_equals_committed_gold": true
+  },
+  "v2": {
+   "records_short_anchor": 23,
+   "records_gold_changed": 9,
+   "short_anchor_matches": {
+    "short_anchor_kept": 24,
+    "short_anchor_rejected": 165
+   },
+   "newly_excluded": 0
+  },
+  "v3": {
+   "records_short_anchor_with_assignment": 23,
+   "records_differ_from_v2": 3,
+   "match_decisions": {
+    "assign_rule": 189,
+    "v2_keep_v3_reject": 4
+   }
+  },
+  "v3b": {
+   "records_gold_differs_from_v3": 1,
+   "match_vectors": {
+    "sha256": "aea0c258435b89cfc486a564f46eb544c362bd6f42aabae64ea3fc6cb007e954",
+    "n": 14,
+    "v3_pass": 14,
+    "v3b_pass": 14
+   }
+  },
+  "v4": {
+   "counts": {
+    "lost_cross_paper_long>=50": 50,
+    "n_long>=50": 130,
+    "n_short<50": 23,
+    "lost_cross_paper_short<50": 14,
+    "excluded_short<50": 2
+   },
+   "excluded": {
+    "no_gold_chunk_in_source_paper": 2,
+    "no_gold_chunk_in_index": 2
+   },
+   "records_losing_cross_paper_gold": 64,
+   "papers_mapped": 7,
+   "mapping_equals_round2_exclusion_list": true
+  }
+ },
+ "v4_document_identity_check": {
+  "removed_chunks_by_doc_kind": {
+   "sha": 78
+  },
+  "removed_docs": 2,
+  "removed_docs_by_kind": {
+   "sha": 2
+  },
+  "removed_docs_max_share_of_a_source_paper_long_sentences": 0.036,
+  "source_papers_with_a_copy_ge_50pct": 0,
+  "n_source_papers": 7,
+  "bench_doc_kinds": {
+   "pmcid": 238,
+   "doi": 15,
+   "sha": 21,
+   "other": 1
+  }
+ },
+ "pair_with_32_committed_gold_chunks_under_v3": {
+  "records": 2,
+  "gold_v3": 5,
+  "full_containment": 4,
+  "boundary_only": 1,
+  "documents_holding_full_containment": 2,
+  "boundary_chunk_same_doc_as_a_full_match": false,
+  "boundary_chunk_straddles_a_join": false,
+  "boundary_chunk_assigns_same_variable_same_value": true
+ },
+ "artifact_provenance": {
+  "citable": false,
+  "citable_reason": "the gold variants were built by uncommitted offline scripts (sha256 below); the stats step is the committed harness at a clean commit, but its entry point was outside the checkout. Exploratory sensitivity, reportable, not a citable result",
+  "derived_by": "artifacts/make_rr_gold_sensitivity.py (this directory): a mechanical copy",
+  "committed_column_reproduced_by_harness_rerun": true,
+  "stats_provenance": {
+   "repro": {
+    "schema": 1,
+    "version": "v1.6.21+6e620c2",
+    "describe": "v1.6.21-78-g6e620c2",
+    "commit": "6e620c290de49e4a8af7bf6f5bbbfaed156ace98",
+    "dirty": false,
+    "untracked": 0,
+    "source": "git",
+    "citable": true,
+    "recorded_at": "2026-10-30T16:50:44Z",
+    "warnings": [
+     "not in an image",
+     "entry point outside checkout"
+    ]
+   },
+   "floored": {
+    "schema": 1,
+    "version": "v1.6.21+6e620c2",
+    "describe": "v1.6.21-78-g6e620c2",
+    "commit": "6e620c290de49e4a8af7bf6f5bbbfaed156ace98",
+    "dirty": false,
+    "untracked": 0,
+    "source": "git",
+    "citable": true,
+    "recorded_at": "2026-10-30T16:50:45Z",
+    "warnings": [
+     "not in an image",
+     "entry point outside checkout"
+    ]
+   },
+   "v2": {
+    "schema": 1,
+    "version": "v1.6.21+6e620c2",
+    "describe": "v1.6.21-78-g6e620c2",
+    "commit": "6e620c290de49e4a8af7bf6f5bbbfaed156ace98",
+    "dirty": false,
+    "untracked": 0,
+    "source": "git",
+    "citable": true,
+    "recorded_at": "2026-10-30T16:57:44Z",
+    "warnings": [
+     "not in an image",
+     "entry point outside checkout"
+    ]
+   },
+   "v3": {
+    "schema": 1,
+    "version": "v1.6.21+6e620c2",
+    "describe": "v1.6.21-78-g6e620c2",
+    "commit": "6e620c290de49e4a8af7bf6f5bbbfaed156ace98",
+    "dirty": false,
+    "untracked": 0,
+    "source": "git",
+    "citable": true,
+    "recorded_at": "2026-10-30T17:08:45Z",
+    "warnings": [
+     "not in an image",
+     "entry point outside checkout"
+    ]
+   },
+   "v3b": {
+    "schema": 1,
+    "version": "v1.6.21+6e620c2",
+    "describe": "v1.6.21-78-g6e620c2",
+    "commit": "6e620c290de49e4a8af7bf6f5bbbfaed156ace98",
+    "dirty": false,
+    "untracked": 0,
+    "source": "git",
+    "citable": true,
+    "recorded_at": "2026-10-30T17:23:05Z",
+    "warnings": [
+     "not in an image",
+     "entry point outside checkout"
+    ]
+   },
+   "v4": {
+    "schema": 1,
+    "version": "v1.6.21+6e620c2",
+    "describe": "v1.6.21-78-g6e620c2",
+    "commit": "6e620c290de49e4a8af7bf6f5bbbfaed156ace98",
+    "dirty": false,
+    "untracked": 0,
+    "source": "git",
+    "citable": true,
+    "recorded_at": "2026-10-30T17:23:06Z",
+    "warnings": [
+     "not in an image",
+     "entry point outside checkout"
+    ]
+   }
+  },
+  "source_sha256": {
+   "r2-v1-v2-v3-v3b-v4.json": "41b8634989ebe9fcc720962273af7f4ff7f34dadca848f0c78bb4f5bc276f7c4",
+   "floored-vs-committed.json": "aea698b7ab52d85e944507ddb24a87c26c77b96a820cec60ffcf4fa2e5191c26",
+   "gold-floored-counts.json": "0d40787b31c857ba972522f466621908452b24062a5dd64337f5fce2ca52bdc7",
+   "gold-v2-counts.json": "0c08daef9c326f6ae2ea3af321dbd1f6481b3626591c74ff53539d67b5456064",
+   "gold-v3-counts.json": "3152ed8c4bd1ba04824468b044ae6ab3d61fd0a4f84d8b5e46675ebc6959e8a2",
+   "gold-v4-counts.json": "56976e3fac1888eeff8169520b12ed1c784e803c3c710e4eef3e6fb854a8d643",
+   "vectors-check.json": "42b7f770a17ed3a1ff6fd6d9ce15d691371d1c6aec053648aecd0b30b71ffaf6",
+   "v4-identity-check.json": "1a76c211fe40e97f2fdbde75b49439ef2d08d0d2368424997658307c1280c822",
+   "fifth-chunk.json": "07edf3f5d3362d25f649d90040da98c9935b817910ea519593e3932ca139d0a7",
+   "P-stats-repro.json": "4a186bc956fef3868f5db20c39cc015499e1d75bb59b29e9e9a2cd5187c04348",
+   "P-stats-floored.json": "b150aef37e9696046feed0a1d708177a4dff9a3c7c863605438b57baae3d7023",
+   "P-stats-v2.json": "d1dab78ff3d88266ce19f476bebeda203b4122ffd697c70fb6bd7fc3066b836f",
+   "P-stats-v3.json": "8f7989148b50a355383c743aa0c5ea0bb71ff21f1a46fadb11d628a4548bcdc2",
+   "P-stats-v3b.json": "6c83d4b9191ecf90fa788c4bc6bd2fb995094205eec237acffc04dcc06a29306",
+   "P-stats-v4.json": "712656ffeee173db244560481e7c1f899cb05c11ae6d4e5dc4a20d3761c35c9a"
+  },
+  "uncommitted_code_sha256": {
+   "floor.py": "1193544025df8f723276ee1eb27ea9a97dd879d36781731e0cc56d2f717351eb",
+   "variant2.py": "cfb9184959197551d62a5efd0886dbc78e7b5189f78a8374216becbefe3208a5",
+   "variant3.py": "c658d632956366e2bbad7fc76253567971f9d79e63d977db5552cbb24de2cd23",
+   "variant3b.py": "08fc194c6885f4752fb8832f0c47063897087c44ac00c3085d5f8454be5f848c",
+   "variant4.py": "1bfb7ae49cb15f89c52e513958b51917836bc57d8be45fff8a778624e28ddafe",
+   "v4check.py": "986826ef28279ef8c68ccaee81b9feef9e20d39facd9e72da0d7c115a60672a0",
+   "fifth.py": "8bb4dd7310bb63e04f9406b0ded1b8986a197755f50cadbd8a7a3333a228985b",
+   "fifth2.py": "121f7e67025229ee0844ce5d27fe55fe1d77de6effecc99bcef62f35db2eff16",
+   "stats.py": "e86e1b6f17995ecd1ae927637c75499fd2d88d0066df7e77f6a92612ebefc7bc",
+   "compare.py": "194d8b11ad8a5b79d31c90b6eee3971fe4a7c9f3014830a2d8c198521b45a803",
+   "compare3.py": "1d79baddf8d0e7c61c58083a0ec21de61ea9e522f52f4c9911674b77112519ac"
+  },
+  "public_copy": "counts only: no query, quote or chunk text; no record, paper, document or chunk id; no path, host or collection name"
+ }
+}

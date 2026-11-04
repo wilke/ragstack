@@ -94,6 +94,24 @@ glossary", which the backfill's replace guard relies on) and says the field came
 from a file rather than from an in-process attach. Whatever G2 makes ``merged``
 (a union of the two halves), its version string must still BEGIN with ``llm/``
 whenever it holds any LLM entry, or the backfill's ``llm/`` guards misfire.
+
+**Re-derived files** (:func:`rederive_file`, ``glossary_file.py rederive``)
+re-decide ``merged`` from the two halves a row already holds, under a named
+rule (:data:`MERGE_MODES`), and mark it: ``merged.version`` =
+``<base>+merge=<mode>`` — e.g. the pure LLM arm
+``llm/2:<model>:<hash>:w80000x4:t4096:k0:r0+merge=llm-only@file/1`` on a chunk.
+The ``llm/`` prefix is kept wherever the base is an LLM version.
+
+**Re-configured attachment** (glossary benchmark round 3; ``rederive --attach
+value|mention``, alone or with ``--merge``) writes a copy whose header
+``config.attach_only_with_value`` is set to the rule (:data:`ATTACH_RULES`), so
+every reader that renders under the file's config (the load, the backfill, the
+wording proxy) renders the same entries under that rule, and marks every
+``merged.version`` ``+attach=<rule>`` AFTER any ``+merge=`` marker:
+``<base>[+merge=<mode>][+attach=<rule>]@file/1[+shuf/1:<seed>:<perm12>]`` —
+e.g. ``llm/2:<model>:…+merge=llm-only+attach=mention@file/1``. Without the mark
+two files that differ only in the header's rule would stamp every chunk
+identically and a census could not tell the arms apart.
 """
 from __future__ import annotations
 
@@ -104,7 +122,7 @@ import re
 import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -585,6 +603,197 @@ def choose_merged(rules: Glossary, llm: Glossary | None) -> Glossary:
     return llm if llm is not None and llm.entries else rules
 
 
+# --- re-deriving ``merged`` under another rule ---------------------------------
+
+#: The merge rules :func:`rederive_file` can apply. ``merged`` is
+#: :func:`choose_merged` (the LLM half when it has an entry, else the rules);
+#: ``llm-only`` is the PURE LLM glossary — the LLM half alone, no rules
+#: fallback, so a document whose LLM half is empty or absent renders "";
+#: ``rules-only`` is the rules half alone; ``none`` renders "" everywhere.
+MERGE_MODES = ("llm-only", "rules-only", "merged", "none")
+
+#: The marker a re-derived row's ``merged.version`` carries:
+#: ``<base version>+merge=<mode>``. It sits BEFORE the ``@file/1`` stamp, so a
+#: census of ``metadata.symbol_glossary_version`` tells every re-derived arm
+#: apart from the others and from a file the step wrote directly. The base keeps
+#: its prefix (``llm/…`` stays ``llm/…``), which the backfill's replace guard
+#: keys on.
+MERGE_MARK = "+merge="
+
+#: The base version of a re-derived glossary that has no half to name:
+#: ``none`` mode, or ``llm-only`` on a document whose row records no LLM
+#: version at all.
+NO_GLOSSARY_VERSION = "none"
+
+
+#: The attachment rules ``rederive --attach`` can write, and the header's
+#: ``attach_only_with_value`` each one sets: ``value`` (the served default: an
+#: entry renders where its symbol occurs WITH a value) and ``mention`` (wherever
+#: its symbol occurs). Every other config field is kept.
+ATTACH_RULES: dict[str, bool] = {"value": True, "mention": False}
+
+#: The marker a re-configured row's ``merged.version`` carries:
+#: ``<base>[+merge=<mode>]+attach=<rule>``, BEFORE the ``@file/1`` stamp.
+ATTACH_MARK = "+attach="
+
+
+def attach_rule_of_config(config: GlossaryConfig) -> str:
+    """The :data:`ATTACH_RULES` name of ``config``'s attachment."""
+    return "value" if config.attach_only_with_value else "mention"
+
+
+_ATTACH_TAIL = re.compile(r"\+attach=(?P<rule>[a-z][a-z-]*)(?P<rest>@file/.*)?$")
+
+
+def version_attach(version: str) -> tuple[str, str | None]:
+    """``(version without its attach mark, the rule or None)``. The mark is the
+    last part of a version (only a ``@file/…`` stamp may follow it), so a
+    ``+attach=`` elsewhere in a model name is not read as one."""
+    m = _ATTACH_TAIL.search(version)
+    if m is None:
+        return version, None
+    return version[:m.start()] + (m.group("rest") or ""), m.group("rule")
+
+
+def attach_mark_problems(gfile: GlossaryFile) -> list[str]:
+    """Where a file's version marks disagree with its header's rule: a row
+    marked ``+attach=<r>`` whose ``r`` is not the header's rule, or a file whose
+    header says ``mention`` with an unmarked row (an unmarked file is read as
+    the served ``value`` rule; ``mention`` is only ever written by ``rederive
+    --attach``, which marks every row). Empty = consistent."""
+    rule = attach_rule_of_config(gfile.config)
+    out: list[str] = []
+    for doc_id, row in gfile.rows.items():
+        marked = version_attach(row.glossary_version)[1]
+        if marked is not None and marked != rule:
+            out.append(f"{doc_id!r}: marked +attach={marked}, header rule {rule}")
+        elif marked is None and rule != "value":
+            out.append(f"{doc_id!r}: unmarked, header rule {rule}")
+    return out
+
+
+def _llm_version_of(row: GlossaryRow) -> str | None:
+    """The LLM version of a row: its LLM half's, else the one the step recorded
+    in ``provenance.llm.version`` when it did not run the model on the document
+    (``skipped``, a degraded call) — so a pure file stamps the same model on
+    every document."""
+    if row.llm is not None:
+        return row.llm.version
+    llm = row.provenance.get("llm") if isinstance(row.provenance, dict) else None
+    v = llm.get("version") if isinstance(llm, dict) else None
+    return v if isinstance(v, str) and v.startswith("llm/") else None
+
+
+def rederive_row(row: GlossaryRow, mode: str | None, *, attach: str | None = None) -> GlossaryRow:
+    """``row`` with ``merged`` re-decided under ``mode`` (:data:`MERGE_MODES`)
+    and its version marked ``+merge=<mode>``; with ``attach``
+    (:data:`ATTACH_RULES`), the version also marked ``+attach=<rule>`` (any
+    earlier attach mark replaced). ``mode=None`` keeps ``merged``'s entries and
+    its version up to the attach mark. Without ``attach`` an attach mark the row
+    already carries is kept (the re-derived file keeps its source's config).
+    Both halves, the drops, the identity and ``degraded`` are kept unchanged;
+    ``provenance`` gains a ``rederived`` record (the mode, the rule when given,
+    and the source row's ``glossary_version``)."""
+    if mode is None and attach is None:
+        raise GlossaryFileError("rederive: name a merge mode, an attach rule, or both")
+    if attach is not None and attach not in ATTACH_RULES:
+        raise GlossaryFileError(f"unknown attach rule {attach!r} (one of {', '.join(ATTACH_RULES)})")
+    unmarked, had_attach = version_attach(row.merged.version)
+    if mode is None:
+        entries, version = row.merged.entries, unmarked
+    else:
+        if mode == "merged":
+            chosen: Glossary = choose_merged(row.rules, row.llm)
+            entries, base = chosen.entries, chosen.version
+        elif mode == "llm-only":
+            entries = row.llm.entries if row.llm is not None else ()
+            base = _llm_version_of(row) or NO_GLOSSARY_VERSION
+        elif mode == "rules-only":
+            entries, base = row.rules.entries, row.rules.version
+        elif mode == "none":
+            entries, base = (), NO_GLOSSARY_VERSION
+        else:
+            raise GlossaryFileError(f"unknown merge mode {mode!r} (one of {', '.join(MERGE_MODES)})")
+        base = version_attach(base.split(MERGE_MARK, 1)[0])[0]
+        version = f"{base}{MERGE_MARK}{mode}"
+    rule = attach if attach is not None else had_attach
+    if rule is not None:
+        version = f"{version}{ATTACH_MARK}{rule}"
+    merged = Glossary(tuple(entries), version)
+    rec: dict[str, Any] = {"merge": mode} if attach is None else {"merge": mode, "attach": attach}
+    prov = {**row.provenance,
+            "rederived": {**rec, "source_glossary_version": row.glossary_version}}
+    return GlossaryRow(row.doc_id, row.text_sha256, row.text_chars, row.text_ws_sha256,
+                       row.rules, row.llm, merged, dict(row.drops), prov, row.degraded)
+
+
+def rederive_file(src: str | Path, out: str | Path, mode: str | None = None, *,
+                  attach: str | None = None) -> dict[str, Any]:
+    """Write ``out`` from ``src`` with every row re-derived under ``mode``
+    and/or ``attach`` (:func:`rederive_row`). Offline; no model call. The header
+    keeps the source's config — except ``attach_only_with_value``, which
+    ``attach`` sets (:data:`ATTACH_RULES`) — and ``created`` (so the same input
+    gives the same bytes); the producer names the mode / rule and the source's
+    sha256 and producer.
+
+    Refused (:class:`GlossaryFileError`): neither a mode nor a rule; an unknown
+    mode or rule; ``llm-only`` on a file in which no row has an LLM half or
+    records an LLM version (a rules file — its pure LLM arm would be empty by
+    construction, almost certainly the wrong input); ``out`` resolving to
+    ``src``.
+
+    Returns the counts plus a census of what the mode did per row:
+    ``rows_with_entries``, ``rows_empty`` and, for ``llm-only``,
+    ``llm_absent`` (no LLM half: skipped or degraded), ``llm_empty`` (the LLM
+    half kept nothing) and ``degraded``. With ``attach`` the result also names
+    the rule and the written config, and ``rows_entries_changed`` (always 0 when
+    no mode is given: the entries are the source's)."""
+    if mode is None and attach is None:
+        raise GlossaryFileError("rederive: name a merge mode (--merge), an attach rule (--attach), or both")
+    if mode is not None and mode not in MERGE_MODES:
+        raise GlossaryFileError(f"unknown merge mode {mode!r} (one of {', '.join(MERGE_MODES)})")
+    if attach is not None and attach not in ATTACH_RULES:
+        raise GlossaryFileError(f"unknown attach rule {attach!r} (one of {', '.join(ATTACH_RULES)})")
+    sp, op = Path(src), Path(out)
+    if op.exists() and op.resolve() == sp.resolve():
+        raise GlossaryFileError(f"rederive: --out {op} is the input file")
+    gfile = read_glossary_file(sp)
+    rows = list(gfile.rows.values())
+    if mode == "llm-only" and not any(_llm_version_of(r) for r in rows):
+        raise GlossaryFileError(
+            f"rederive --merge llm-only: {sp} has no LLM half in any row (a rules-only file?)")
+    new = [rederive_row(r, mode, attach=attach) for r in rows]
+    census: Counter[str] = Counter()
+    for r, n in zip(rows, new, strict=True):
+        census["rows_with_entries" if n.merged.entries else "rows_empty"] += 1
+        if mode == "llm-only":
+            census["llm_absent"] += int(r.llm is None)
+            census["llm_empty"] += int(r.llm is not None and not r.llm.entries)
+            census["degraded"] += int(r.degraded is not None)
+        if attach is not None:
+            census["rows_entries_changed"] += int(n.merged.entries != r.merged.entries)
+    src_sha = file_sha256(sp)
+    config = gfile.config
+    if attach is None:
+        producer = (f"scripts/glossary_file.py rederive --merge {mode} "
+                    f"(source sha256 {src_sha}; source producer: {gfile.header['producer']})")
+    else:
+        config = replace(config, attach_only_with_value=ATTACH_RULES[attach])
+        flags = (f"--merge {mode} " if mode is not None else "") + f"--attach {attach}"
+        producer = (f"scripts/glossary_file.py rederive {flags} "
+                    f"(source sha256 {src_sha}; source producer: {gfile.header['producer']})")
+    counts = write_glossary_file(op, new, producer=producer, config=config,
+                                 created=gfile.header["created"])
+    result: dict[str, Any] = {
+        "out": str(op), "merge": mode, "source": str(sp), "source_sha256": src_sha,
+        "counts": counts, "census": dict(sorted(census.items())),
+        "glossary_versions": sorted({n.glossary_version for n in new})}
+    if attach is not None:
+        result.update({"attach": attach, "config": config_dict(config),
+                       "out_sha256": file_sha256(op)})
+    return result
+
+
 # --- combining files -----------------------------------------------------------
 
 
@@ -619,6 +828,170 @@ def merge_files(paths: Iterable[str | Path], out: str | Path) -> dict[str, int]:
     rows = (row for f in files for row in f.rows.values())
     return write_glossary_file(out, rows, producer=f"merge({', '.join(producers)})",
                                config=config, created=created)
+
+
+# --- subsets by document id (glossary benchmark round 2) ---------------------------
+
+#: ``keep``: only the rows / documents whose id is in the list; ``drop``: all but those.
+SUBSET_MODES = ("keep", "drop")
+
+
+def read_id_list(path: str | Path) -> list[str]:
+    """One document id per line (surrounding whitespace stripped, blank lines
+    skipped). Refused (:class:`GlossaryFileError`): an empty list, a duplicate id."""
+    p = Path(path)
+    ids: list[str] = []
+    seen: set[str] = set()
+    with p.open(encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, start=1):
+            s = line.strip()
+            if not s:
+                continue
+            if s in seen:
+                raise GlossaryFileError(f"{p}:{lineno}: duplicate id {s!r} in the id list")
+            seen.add(s)
+            ids.append(s)
+    if not ids:
+        raise GlossaryFileError(f"{p}: the id list is empty")
+    return ids
+
+
+def _subset_ids(mode: str, ids: list[str], present: Iterable[str], allow_missing: bool,
+                what: str) -> tuple[set[str], list[str]]:
+    if mode not in SUBSET_MODES:
+        raise GlossaryFileError(f"unknown subset mode {mode!r} (one of {', '.join(SUBSET_MODES)})")
+    have = set(present)
+    missing = [i for i in ids if i not in have]
+    if missing and not allow_missing:
+        raise GlossaryFileError(
+            f"subset: {len(missing)} id(s) of the list are not in {what} (e.g. {missing[:3]}); "
+            "pass allow_missing / --allow-missing to accept that")
+    return set(ids), missing
+
+
+def _refuse_overwrite(targets: Iterable[Path], inputs: Iterable[tuple[Path, str]]) -> None:
+    for target in targets:
+        for other, name in inputs:
+            if target.exists() and target.resolve() == other.resolve():
+                raise GlossaryFileError(f"subset: {target} is {name}")
+
+
+def subset_file(src: str | Path, out: str | Path, ids_path: str | Path, mode: str, *,
+                allow_missing: bool = False) -> dict[str, Any]:
+    """Write ``out`` with the rows of ``src`` whose ``doc_id`` is (``keep``) or is
+    not (``drop``) in the id list at ``ids_path`` (:func:`read_id_list`).
+
+    The kept rows are written UNCHANGED -- same glossaries, versions, provenance
+    and order as in ``src`` -- so a chunk rendered from the subset carries the
+    stamp it would carry from ``src``, and ``keep`` + ``drop`` of one list,
+    merged (:func:`merge_files`), hold exactly the source's rows. What the
+    subset is lives in the header only (stamp-neutral): the ``producer`` names
+    the mode, the source's sha256, the id list's sha256 and size, the number of
+    listed ids absent from the source, and the source's producer; ``created``
+    and ``config`` are the source's, so the same inputs give the same bytes.
+
+    Refused (:class:`GlossaryFileError`): an unknown mode; listed ids absent
+    from ``src`` unless ``allow_missing``; ``out`` resolving to ``src`` or to
+    the id list."""
+    sp, op, ip = Path(src), Path(out), Path(ids_path)
+    _refuse_overwrite([op], [(sp, "the input file"), (ip, "the id list")])
+    ids = read_id_list(ip)
+    gfile = read_glossary_file(sp)
+    listed, missing = _subset_ids(mode, ids, gfile.rows, allow_missing, str(sp))
+    rows = [r for d, r in gfile.rows.items() if (d in listed) == (mode == "keep")]
+    src_sha, ids_sha = file_sha256(sp), file_sha256(ip)
+    producer = (f"scripts/glossary_file.py subset --{mode} (source sha256 {src_sha}; "
+                f"ids sha256 {ids_sha}, {len(ids)} ids, {len(missing)} not in source; "
+                f"source producer: {gfile.header['producer']})")
+    counts = write_glossary_file(op, rows, producer=producer, config=gfile.config,
+                                 created=gfile.header["created"])
+    return {"out": str(op), "mode": mode, "source": str(sp), "source_sha256": src_sha,
+            "ids_sha256": ids_sha, "ids": len(ids), "ids_missing": len(missing),
+            "source_rows": len(gfile.rows), "rows": len(rows), "counts": counts,
+            "out_sha256": file_sha256(op)}
+
+
+#: The record :func:`subset_shard` writes beside its output (``<out>.subset.json``).
+SHARD_SUBSET_SCHEMA = "ragstack.shard_subset/v1"
+
+
+def subset_shard(src: str | Path, out: str | Path, ids_path: str | Path, mode: str, *,
+                 allow_missing: bool = False) -> dict[str, Any]:
+    """The same keep/drop filter over a ``JsonlLoader`` shard (one
+    ``{"text", "path", "metadata"}`` object per line -- the input of
+    ``glossary_step.py``, ``glossary_file.py build`` and the ingest tools), by
+    the document id the loader derives for each line
+    (:class:`~ragstack.ingestion.loaders.JsonlLoader` itself decides, so the ids
+    cannot drift from the loader's).
+
+    A kept line is written byte for byte as it stands in ``src`` (its line end
+    normalised to ``\\n``), in source order, so a document's text -- and so its
+    glossary row's ``text_sha256`` -- is unchanged. A line the loader yields no
+    document for (malformed JSON, an empty-text record) is in NEITHER output and
+    is counted (``lines_without_document``): ``keep`` + ``drop`` load exactly
+    the source's documents. Written atomically; the record of what was done --
+    mode, source / id-list / output sha256, counts -- goes to
+    ``<out>.subset.json`` (the shard format has no header to carry it) and is
+    returned.
+
+    Refused (:class:`GlossaryFileError`): an unknown mode; a document id on two
+    lines of ``src``; listed ids absent from ``src`` unless ``allow_missing``;
+    ``out`` or its record resolving to ``src`` or to the id list."""
+    from ragstack.ingestion.loaders import JsonlLoader
+
+    sp, op, ip = Path(src), Path(out), Path(ids_path)
+    rec_path = op.with_name(op.name + ".subset.json")
+    _refuse_overwrite([op, rec_path], [(sp, "the input shard"), (ip, "the id list")])
+    ids = read_id_list(ip)
+    loader = JsonlLoader()
+    lines: list[tuple[str, bytes]] = []
+    without = 0
+    seen: set[str] = set()
+    with sp.open("rb") as fh:
+        for lineno, raw in enumerate(fh, start=1):
+            body = raw.rstrip(b"\r\n")
+            if not body.strip():
+                continue
+            try:
+                record = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                record = None
+            doc = loader._document(record) if isinstance(record, dict) else None
+            if doc is None:
+                without += 1
+                continue
+            if doc.id in seen:
+                raise GlossaryFileError(f"{sp}:{lineno}: duplicate document id {doc.id!r}")
+            seen.add(doc.id)
+            lines.append((doc.id, body))
+    listed, missing = _subset_ids(mode, ids, seen, allow_missing, str(sp))
+    chosen = [b for d, b in lines if (d in listed) == (mode == "keep")]
+    data = b"".join(b + b"\n" for b in chosen)
+    _atomic_bytes(op, data)
+    record_out = {"schema": SHARD_SUBSET_SCHEMA, "mode": mode,
+                  "source_sha256": file_sha256(sp), "ids_sha256": file_sha256(ip),
+                  "ids": len(ids), "ids_missing": len(missing), "source_documents": len(lines),
+                  "lines_without_document": without, "documents": len(chosen),
+                  "out_sha256": hashlib.sha256(data).hexdigest(),
+                  "id_rule": "JsonlLoader document id (deterministic_doc_id of the record's path)"}
+    _atomic_bytes(rec_path, (json.dumps(record_out, indent=2, sort_keys=True) + "\n").encode())
+    return {"out": str(op), "record": str(rec_path), **record_out}
+
+
+def _atomic_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(name, path)
+        name = ""
+    finally:
+        if name:
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass
 
 
 # --- the load-side check and render -------------------------------------------

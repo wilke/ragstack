@@ -108,7 +108,14 @@ from ragstack.observability.context import MISSING, current_context
 #: Anything not listed here is treated as in-process. That default is the
 #: conservative one — see the module docstring.
 EXTERNAL_STAGES = frozenset(
-    {"embed", "vector", "text", "graph", "rerank", "rewrite", "authz", "expand", "generate"}
+    {
+        "embed", "vector", "text", "graph", "rerank", "rewrite", "authz", "expand",
+        "generate",
+        # ``include_symbol_glossary`` on /v1/retrieve: one batched text-index
+        # (Elasticsearch) read per collection for the returned sources. Only
+        # emitted when the request asked for it.
+        "glossary",
+    }
 )
 
 #: Every stage name this codebase emits. Not enforced at runtime (a caller may

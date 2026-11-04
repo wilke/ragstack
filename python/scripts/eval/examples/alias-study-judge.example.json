@@ -1,0 +1,64 @@
+{
+ "_comment": "alias_study_judge.py --config: private. The model settings are pinned by the prereg (\u00a76.3) and checked; only endpoints, caps and timeouts are free.",
+ "out_dir": "/private/alias-study/judge",
+ "runs_dir": "/private/alias-study/runs",
+ "records": "/private/alias-study/accepted-alias-O.jsonl",
+ "chunk_exports": {
+  "base": "/private/alias-study/exports/chunks-base.jsonl",
+  "neighbour": "/private/alias-study/exports/added-neighbour.jsonl",
+  "random1": "/private/alias-study/exports/added-random1.jsonl",
+  "random2": "/private/alias-study/exports/added-random2.jsonl"
+ },
+ "glossary": "/private/alias-study/glossary/merged-all-arms.jsonl",
+ "batch_size": 2000,
+ "drift": {
+  "share": 0.05,
+  "min_pairs": 100,
+  "overall": 0.97,
+  "per_arm": 0.95
+ },
+ "caps": {
+  "argon_share": 0.04,
+  "opus_share": 0.06,
+  "argon_max_calls": null,
+  "opus_max_calls": null
+ },
+ "judge_c": {
+  "base_url": "http://<local Qwen3.6 endpoint>/v1",
+  "model": "Qwen3.6-35B-A3B",
+  "n": 5,
+  "temperature": 0.7,
+  "max_tokens": 8192,
+  "enable_thinking": true,
+  "judge_version": "alias-judge/2",
+  "require_served_model": true,
+  "inflight": 4
+ },
+ "judge_e": {
+  "base_url": "http://<local Qwen3.8 endpoint>/v1",
+  "model": "Qwen3.8-27B",
+  "n": 1,
+  "temperature": 0.7,
+  "max_tokens": 8192,
+  "enable_thinking": true,
+  "judge_version": "alias-judge/2",
+  "require_served_model": true,
+  "inflight": 4
+ },
+ "tiebreak": {
+  "base_url": "http://127.0.0.1:<gateway port>/v1",
+  "model": "Gemini 4 Argon",
+  "judge_version": "alias-judge/2",
+  "max_tokens": 4096,
+  "temperature": null,
+  "inflight": 4
+ },
+ "drift_ref": {
+  "base_url": "http://127.0.0.1:<gateway port>/v1",
+  "model": "Claude Opus 5.5",
+  "judge_version": "alias-judge/1",
+  "max_tokens": 2048,
+  "temperature": null,
+  "inflight": 4
+ }
+}

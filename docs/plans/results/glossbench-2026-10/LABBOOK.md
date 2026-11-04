@@ -496,3 +496,258 @@ This is OpenChia's order, adopted.
 | Pure-LLM condition (no rules fallback) | not started; needed before any corpus-wide claim |
 | Round 2 (multi-paper, pre-registered) | not started |
 | Default glossary model | lab-book recommendation: Qwen3.6, operational, exploratory |
+
+## Addendum, 2026-10-29 (evening): "85 against 65" pairs two different tests
+
+Corrected by OpenChia on 2026-10-29. Part 3's reading, the Threats section and What's next item (d) quote
+"85 against 65 on the live papers-OC collection" as a BM25-against-reranked comparison, and attribute it
+to OpenChia. Both parts are wrong. The two numbers come from different tests:
+
+- **85 of 155** is BM25 alone with the glossary field boost raised from **0 to 1** (28 → 85; review point
+  5). No reranker is involved.
+- **65 of 155** is the **reranker** with `content` + `symbol_glossary` as its input, against 53 for
+  `content` alone and 57 for a shuffled glossary. It reranks a **50-candidate pool that holds a gold
+  chunk for only 105 of the 155 records**, so no reranker could exceed 105 at that depth. The 50-pool's
+  own fused top 10, unreranked, finds 33.
+
+The source is [Test 3 in the symbol-glossary plan](../../symbol-glossary.md). It was measured **on this
+host** by another session, against the quote gold. It was not measured through OpenChia's gateway, which
+has never served a 50-candidate pool.
+
+So "85 against 65" is **not** evidence that the reranker costs recall on the live collection. It is
+withdrawn as a contrast wherever it appears above. The bench-copy figures in Part 3 (62/52, 67/55, 79/68,
+82/70) are unaffected and stand as recorded: one run each, uncorrected, exploratory. What's next item (d)
+now reads: *a dedicated test of the reranker that reports the candidate pool's ceiling (gold present at
+depth D) beside every reranked figure.* That test is being pre-registered separately.
+
+The earlier text stays in place; this entry supersedes it.
+
+## Addendum, 2026-10-29 (evening): status
+
+- **Round 2 and the reranker test are being pre-registered.** Both drafts follow OpenChia's order:
+  - multi-paper evaluation sets;
+  - a pure-LLM condition;
+  - the wording proxy with a shuffled-glossary control;
+  - precision kept separate from retrieval;
+  - the model choice last.
+
+  The harness code comes first, then a review, then the freeze. No gateway call and no store write
+  happens before the freeze.
+- **OpenChia's user lifted the "never copy" rule** on its 155-record evaluation set for this project's
+  **private** experiments repository. Answer quotes still never go into a public repository; this record
+  keeps counts and ids only.
+
+## Addendum, 2026-10-30: round 2 stopped at its reach gate; the reranker test has not started
+
+Both pre-registrations froze at 2026-10-30T02:19:33Z (commit 9e109c3). What happened next is in their own
+records; this entry only points at them.
+
+- **Round 2 is closed — GATE-NOT-EVALUABLE on every set, no confirmatory hypothesis tested.** The record
+  is [`../glossbench-round2-2026-11/RESULTS.md`](../glossbench-round2-2026-11/RESULTS.md); its deviations
+  D-1 to D-5 are in [`../glossbench-round2-2026-11/DEVIATIONS.md`](../glossbench-round2-2026-11/DEVIATIONS.md);
+  the only artifact is the counts-only
+  [`reach-r2.json`](../glossbench-round2-2026-11/artifacts/reach-r2.json). In one line each:
+  - the 25 eval papers of each set hold **144 / 119 / 72** value-statement chunks (OA-1000 / ASM-1000 /
+    papers-OC), so the confirmatory stratum S1 could never reach the gate of 150 under any glossary arm.
+    The gate was unattainable by construction of the sample — a design error the frozen text did not catch,
+    knowable before freezing from a count that was not run (D-5). The owner stopped the round at the gate:
+    no drafting, no pilot, no swap, no retrieval, no proxy, no precision;
+  - the one batch that ran, GPT-5.5 on the 26 set-O documents, hit `max_tokens` 4,096 on 30 of 58 calls
+    (the papers-OC owner's gateway audit, external); its glossaries are truncated outputs, not a measure
+    of the model (D-4);
+  - descriptively, the served value-only attachment reaches **8.8 %** of OA-1000's value-statement
+    chunks under pure Qwen3.6 and **2.1 %** of ASM-1000's (rules 3.1 % / 0.9 %). Part 3's papers-OC gain
+    was therefore measured on a question set concentrated on glossaried chunks; the R1 set's own
+    attachment rate was not measured (absent).
+- **The reranker test has not run an arm.** Its preparation found three input problems before `pools`
+  (the part-4 identity reference's key layout, the held set's live-collection ids and missing quotes,
+  the docs-A cluster field); the fixes are PR #871 (merged `b300d0e`, 2026-10-30T03:32:47Z). Its deviations D-1 to
+  D-3 — the pre-committed re-score yields A4-50 only; the reader fixes and pin; **set P's gold uses the
+  papers-OC owner's actual quote rule (whitespace collapsed, 60 % boundary clause), which differs from the
+  rule the frozen Terms name on 16 of 155 records** — are in
+  [`../reranker-test-2026-11/DEVIATIONS.md`](../reranker-test-2026-11/DEVIATIONS.md).
+- **What's next, item (a)** (a multi-paper evaluation set) is not done: round 2 did not produce one.
+  Round 3 is to be pre-registered with the value-statement count per paper measured before its sample
+  size, gate and population are frozen. Items (b)–(e) are unchanged; (d) is the reranker test above.
+
+## Addendum, 2026-10-30 (afternoon): the reranker test is complete — What's next item (d)
+
+Item (d) — *a dedicated test of the reranker that reports the candidate pool's ceiling beside every reranked
+figure* — is done. The record is [`../reranker-test-2026-11/RESULTS.md`](../reranker-test-2026-11/RESULTS.md),
+its deviations D-1 to D-7 in [`../reranker-test-2026-11/DEVIATIONS.md`](../reranker-test-2026-11/DEVIATIONS.md),
+the counts-only artifacts in [`../reranker-test-2026-11/artifacts/`](../reranker-test-2026-11/artifacts/).
+Run at `f408b7a`, clean, 2026-10-30T13:49–14:31Z. In one line each:
+
+- **docs-A / T512o0 (confirmatory, 732 of 735 questions, 208 pages):** H3 **confirmed** — the reranker fed
+  BM25's own 50 candidates is non-inferior to BM25's own order (688 vs 629 at top 10, 65 gained / 6 lost,
+  Holm 3.0 × 10⁻⁴, CI lower bound +0.060 above −δ = 0.05). H1 and H2 **not confirmed**, and both reversed:
+  the default finds 707 to BM25's 629 (84 / 6); the fused 50-pool's recall is 727 to BM25's 703. Reranker
+  inputs never exceeded the declared 4,096 XLM-R tokens (max 692).
+- **papers-OC, the owner's 155 (exploratory):** every hypothesis **GATE-NOT-EVALUABLE** — 7 papers (< 8),
+  and `bm25@100` served short on 19 records (verified as index exhaustion, D-5; the API route cannot tell,
+  so the mark stands). Descriptively: pool ceilings at depth 50 are **82 (BM25) vs 83 (fused)**, so the
+  loss against BM25 alone is ordering, not the pool — the default finds 52 (31 ordering losses), rerank over
+  BM25's pool 54, BM25 alone 61. Over the same 50 candidates the reranker reading `content` alone finds 43,
+  `content+gloss` 52, `content+shuffled` 41 (our seeded permutation over all 241 glossaried chunks, not the
+  owner's derangement over pool chunks). One run, 153 records, 138 in one paper; no inference.
+- **Absent:** family B (round 2 produced no set), the L replication (D-7: the docs-A bench copy is chunked
+  512 / 0, so L there equals T512o0 chunk for chunk; no copy at the live chunking exists), A8, E7, E8,
+  depth 200 on P.
+- **Part 3's reading stands as recorded** (one run each, exploratory). What this test adds is the
+  decomposition: on papers-OC the reranker's ordering, not the fused pool, is where the records are lost;
+  and the glossary in the reranker's input is where part of the gain comes back. Both descriptive.
+
+What's next items (a)–(c) and (e) are unchanged; (d) is closed by the record above.
+
+## Addendum, 2026-10-30 (evening): the papers-OC owner's corrected reading of Part 3 — Scout over rules is unresolved
+
+**Mapping.** The papers-OC owner calls the measurement behind Part 3 (Results)
+its **"round 2"**. In this lab book it is **round 1, step 8** (2026-10-29): the four-condition table on the
+owner's 155 records. This entry follows that table. It is not about this project's glossbench round 2, which
+stopped at its reach gate and produced no retrieval result.
+
+The owner re-scored the step-8 runs with a corrected matching rule and then with source-paper scoping. Its
+addenda are at 4a9030d (the Scout figures; it supersedes 7a10f05's) and 7a10f05 (the quote-rule
+correction), with the matching rule at aad81fe. The owner later replaced that rule with an assignment rule
+(6c71ef1) and reports that the two agree on every scoring decision of this measurement. All four are
+external: they are in the owner's repository, and we have not re-measured them. The corrected rule disproportionately removed
+false credit from the rules baseline. The figures below are the owner's, exploratory, and from one run
+each. The bootstrap is within the dominant paper (138 records), not at the corpus level.
+
+**Scout vs rules, no-reranker arm.** Records gained, with 95 % interval, under three defensible scorings:
+
+| scoring | rules → scout, norerank |
+|---|---|
+| as recorded in Part 3 (the owner's original quote matching) | +8 [−2, +18] |
+| corrected matching rule, 138-record single-paper analysis | **+11 [+1, +22]** |
+| corrected rule + source-paper scoping | +6 [−4, +16] |
+
+Under the corrected rule and under scoping, Scout's other two arms (base, bm25) still include zero.
+
+**Reading.**
+
+- **Scout over rules is unresolved.** The one contrast that excluded zero did so under one of three
+  scorings, and it includes zero again under the third. Part 3's "Scout does not [beat rules]" was too
+  strong as a null, and the owner's own earlier reading, that Scout's gain was "noise", is too strong as a
+  dismissal; the owner says so too. Neither "Scout beats rules" nor "Scout does
+  not" is supported.
+- **Both Qwen models beat rules on every arm under every scoring.** Under the corrected rule the effects
+  grew slightly. That finding of Part 3 stands.
+- **Qwen3.6 and Qwen3.8 remain indistinguishable.**
+
+The reranker test's [gold-scope addendum](../reranker-test-2026-11/ADDENDUM-2026-10-30-gold-scope.md) finds
+the same pattern on the reranker arms. A loose quote rule and cross-paper gold bias in opposite directions,
+so a scoring choice can move a small contrast across zero. What's next is unchanged.
+
+## Addendum, 2026-10-30 (night): round 3 is complete — mention attachment did not find more
+
+Round 3 held the glossary fixed (pure Qwen3.6, round 2's files) and changed only the attachment rule:
+`value` (served; an entry attaches where its symbol states a value) against `mention` (on every chunk that
+mentions the symbol). The record is [`../glossbench-round3-2026-11/RESULTS.md`](../glossbench-round3-2026-11/RESULTS.md).
+Deviations D-1 to D-6 are in [`../glossbench-round3-2026-11/DEVIATIONS.md`](../glossbench-round3-2026-11/DEVIATIONS.md),
+and the counts-only artifact is
+[`results-r3.json`](../glossbench-round3-2026-11/artifacts/results-r3.json). Retrieval and analysis ran at
+`6b434e8` (clean), 2026-10-30T22:33–22:56Z. In one line each:
+
+- **H1 (set O, M_num, the served rule's blind spot): not confirmed.** `mention` found 134 against
+  `value`'s 142 of 149 at top 10, with 1 gained and 9 lost. The power was .90 at the planned effect, so
+  this is a powered null for the hypothesised gain. The test was one-sided, so the adverse direction is
+  descriptive.
+- **H2 (V) and H3 (right against shuffled entries): GATE-NOT-EVALUABLE.** Their discordant records sit in 5
+  and 3 papers. Neither is a null.
+- **Input against outcome.** Under `mention`, more records' gold chunks carry the asked quantity's words (7
+  → 12 of 206), but `mention` puts a field on 18 % of OA-1000's chunks instead of 0.9 %. On the
+  unadjusted secondaries, the losses are largest under `bm25` and nearly absent under `norerank`.
+- **Value-only stays the served rule, as a no-change decision, not a demonstrated benefit.** On this set
+  `mention` did not beat `value`, and `value` did not beat no glossary: under `base` it found exactly the
+  records that no glossary found. Nothing here supports switching to `mention`; nothing shows value-only
+  better than none.
+- **Set A** (descriptive) was drafted after the drafter model's upstream change (D-6). **Set P** stopped at
+  its pilot and was not promoted (D-1). The R1 replication and the layer-3 spot-check are **absent**.
+
+What's next is unchanged, apart from this: the attachment question that round 3 was built to inform now
+has its record, and the record does not support switching the served rule to `mention`.
+
+## Addendum, 2026-10-30 (late night): round 3's spot-check validity is measured
+
+Round 3's record reported the layer-3 owner spot-check as **absent**: the labels had not been imported when
+`RESULTS.md` was committed. They are now. The figures are in the record's
+[spot-validity addendum](../glossbench-round3-2026-11/ADDENDUM-2026-10-30-spot-validity.md), with the
+counts-only artifact [`spot-validity-r3.json`](../glossbench-round3-2026-11/artifacts/spot-validity-r3.json).
+The rule is round 2's §3.3, carried into round 3: point-estimate validity below 0.85 marks a set *validity
+below threshold*.
+
+- **Set O: 39 / 40 valid, 0.975, Wilson 95% [0.871, 0.996].** As typed it was 40 / 40. One item was
+  labelled valid, but the owner's own note called its question ambiguous or wrong, and the record is one
+  of the census's 12 flags. The owner counted it as not valid. Either way, O is above the threshold, and
+  its status label is now *our three-layer check*, owner-spot-checked.
+- **Set A: 40 / 40 valid, 1.000, Wilson 95% [0.912, 1.000].** Two items were labelled valid, but the
+  owner's notes say their numbers come from a journal citation. The owner counted both as typed, valid. Had
+  they counted as not valid it would be 38 / 40, 0.950 [0.835, 0.986], still above the threshold at the
+  point estimate. It is descriptive only, and D-6 concerns its drafting, not this check.
+- **8 of O's 40 sampled records** are among the census's 53 discriminating records, and 1 is among its 12
+  flags. The two checks cover different populations.
+- A sample of 40 bounds the invalid rate (upper bound 0.129 on O); it does not show zero. The labels were
+  made after `RESULTS.md`'s figures existed, from sheets that name no arm.
+
+`RESULTS.md` is unchanged, and so is what's next.
+
+## Addendum, 2026-10-30 (night): the papers-OC owner's document-scoped gold, cross-checked against v4
+
+**Tier: lab book.** This changes no figure in the reranker test's
+[`RESULTS.md`](../reranker-test-2026-11/RESULTS.md) or its
+[gold-scope addendum](../reranker-test-2026-11/ADDENDUM-2026-10-30-gold-scope.md), and edits neither.
+
+The papers-OC owner regenerated its gold ids document-scoped: the corrected holds rule, with gold scoped to
+each pair's source paper by PMCID or DOI. It is a **private set**, cited by sha256
+`5983c046fe57f170d8bedab00db8ae85cbe1bc7475cb9223b959db22d1519237`, and it supersedes by reference the
+2026-10-22 set (sha256 `24a2bdcf…`). Gold chunks went 467 → 295 → 188, and 153 of 155 records keep at
+least one. External: we hold the digest, not the set.
+
+We compared it with the addendum's v4, our source-paper scoping on the bench copy. v4 was rebuilt
+byte-identically from `variant4.py` (sha256 `1bfb7ae4…`).
+
+- **Chunk ids are not portable across chunkings.** None of the owner's gold chunk ids occurs among the bench
+  copy's 14,456 chunks, and no chunk matches exactly in content. For one paper the bench copy has 35 chunks
+  and the owner's has 43.
+- **Gold agrees at the document level on 153 of 155 records.** All 155 join by source file, and 132 also have
+  the same gold count. Totals are 161 chunks ours against 188 theirs; those are not comparable across
+  chunkings.
+- **PMCID-only keying in v4 made no difference.** Every record's source paper carries a PMCID that names a
+  bench-copy paper; the bench copy's DOI-named papers are none of them.
+- **The residual 2 records** share one 11-character value quote. It sits whole in one chunk of the owner's
+  chunking and straddles a boundary in the bench chunking. The same rule keeps it there and rejects the
+  tail-only match here, which is the rule behaving as designed.
+
+The papers-OC owner verified both points independently on its side.
+
+**Disposition: no result changes.** The 153 of 155 is evidence that the gold construction is reproducible
+across chunkings. It is not evidence that the id sets match, and they do not. What's next is unchanged.
+
+## Addendum, 2026-10-30 (night): why the reranker orders papers-OC worse than BM25 — an exploratory reading
+
+**Tier: lab book (pointer).** The record is [`../reranker-test-2026-11/why/WHY.md`](../reranker-test-2026-11/why/WHY.md).
+Its plan was committed before computing and after the reranker test's results were known, so it is
+**post-hoc and exploratory**. The counts-only artifact is
+[`why-results.json`](../reranker-test-2026-11/why/why-results.json), run at `6c09a0d` (clean); the independent review's checks are
+[`review-checks.json`](../reranker-test-2026-11/why/review-checks.json), run at `d408b18` (clean). Both use the
+run's existing lists and cached scores only. No retrieval, reranker or model call was made. `RESULTS.md`
+and the gold-scope addendum are unchanged.
+
+- **Exact-token task: not supported** (exploratory). 16 of the 20 records the reranker loses against
+  BM25 have no symbol, digit or unit in the query. Per distinct query, though, the 8 lost queries split 4
+  plain and 4 digit, and only 2 of the 8 lack a rare token. On symbol queries the reranker gains 2 and
+  loses 0. Nothing here shows the reverse of the prediction.
+- **Same-paper distractors: not supported** (exploratory). The first reading called it reversed: in the
+  lost records, 9.8 % (46 / 469) of the reranker's above-gold chunks are same-paper, against 62 % (41 / 66)
+  of BM25's. The review checks undo that reading. With equal top-10 windows, the gap is one 11-record
+  query's; the other 9 records give 27 % against 27 %. The reranker's share equals the source paper's
+  base rate in the fused pool (12 %).
+- **Symbol tokenisation: mixed.** Symbol-dense gold ranks somewhat worse after reranking (ρ +0.27, against
+  −0.05 under BM25), but only 21 distinct gold chunks lie behind it. The glossary lifts gold mostly on
+  non-symbol queries (up on 36 of 50).
+- **Gold definition: not the explanation.** Under v4 the shape holds: the plain class still gains 7 and loses 15,
+  and the above-gold shares are 10 % against 60 %.
+- **Caveat:** the 20 lost records carry 8 distinct queries, all in the dominant paper.
+
+What's next is unchanged.

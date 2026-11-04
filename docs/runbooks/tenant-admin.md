@@ -1080,7 +1080,7 @@ a collection whose chunks carry a glossary change order without any boost.
 | `SYMBOL_GLOSSARY_EXTRACTION` | `rules` (since #783; was `off`) | Ingest side, both paths. `rules` attaches a glossary to each chunk that states a value for a symbol, preferring a cached offline LLM glossary when one exists. `off` leaves ingest unchanged. On a gowe tenant the API sends it as the `symbol_glossary` workflow input. |
 | `SYMBOL_GLOSSARY_CONFIG_JSON` | empty | Extractor overrides as a JSON object; malformed JSON falls back to the defaults. In-process ingests only: a gowe worker runs the default config. |
 | `SYMBOL_GLOSSARY_CACHE_PATH` | empty | The offline LLM glossary cache (JSONL), read-only at ingest. In-process ingests only: a gowe worker uses no LLM cache. |
-| `RERANK_GLOSSARY_TIMEOUT` | `2` | Seconds. Bound on the one Elasticsearch read that gives vector-only rerank candidates their glossary; `0` turns that read off. |
+| `RERANK_GLOSSARY_TIMEOUT` | `2` | Seconds. Bound on the one Elasticsearch read that gives vector-only rerank candidates their glossary. At `0` (or below) it turns off both the rerank-time read and the `/v1/retrieve` `include_symbol_glossary` lookup (every source then gets `""`). |
 | `RERANK_INCLUDE_SYMBOL_GLOSSARY` | `true` | Rerank side. The cross-encoder scores a chunk's `content`, a newline, then its `symbol_glossary`, instead of `content` alone. A chunk without a glossary is scored exactly as before. Independent of the boost. See [The reranker reads the glossary](#the-reranker-reads-the-glossary). |
 
 The boost only has an effect on an index whose chunks carry a `symbol_glossary`
@@ -1214,10 +1214,14 @@ is one collection and one query set, not a promise.
   waits at most that long. A collection with no text index, or whose ES index
   does not exist, is skipped. If the read fails, the API reranks those chunks
   without their glossary and the query does not fail; it logs
-  `rerank glossary hydration failed for collection <id>` at most once a minute
+  `symbol glossary hydration failed for collection <id>` at most once a minute
   per collection, with a running failure count. `RERANK_GLOSSARY_TIMEOUT=0`
-  turns the read off (only BM25 hits are then scored with their glossary). The
-  time is counted in the `rerank` stage of the query summary line.
+  turns the read off (only BM25 hits are then scored with their glossary), and
+  also the `/v1/retrieve` `include_symbol_glossary` lookup (every source then
+  gets `""`). The same lookup runs again after the `top_k` cut for
+  `include_symbol_glossary`; that time counts in the `glossary` stage, not
+  `rerank`. The rerank-time time is counted in the `rerank` stage of the query
+  summary line.
 - It does nothing when reranking is off (`RERANK_ENABLED=false`, or a request
   with `rerank: false`).
 

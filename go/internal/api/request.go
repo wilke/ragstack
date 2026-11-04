@@ -67,6 +67,19 @@ type RetrieveRequest struct {
 	ExcludeBoilerplate bool `json:"exclude_boilerplate,omitempty"`
 	// Reranker is a per-request reranker model override (registered id); nil = default.
 	Reranker *string `json:"reranker,omitempty"`
+	// IncludeSymbolGlossary (#754): true asks for each returned Source to
+	// carry `symbol_glossary` (the chunk's ingest-time symbol definitions, ""
+	// when it has none), filled after rerank and the top_k cut from each
+	// source's own collection's text index. /v1/retrieve only. Schema mirror
+	// only — the handler is a stub per ADR-0006 and returns no sources.
+	//
+	// TODO(parity, #754): when Go retrieves for real, hydrate the glossary of
+	// the FINAL sources from the text index (Python
+	// ragstack.retrieval.glossary.hydrate_symbol_glossary: one batched,
+	// tenant-scoped lookup per collection, bounded by RERANK_GLOSSARY_TIMEOUT,
+	// failure → "" and HTTP 200) and set Source.SymbolGlossary on every source
+	// iff this is true. Never invent a separate glossary store.
+	IncludeSymbolGlossary bool `json:"include_symbol_glossary,omitempty"`
 }
 
 // IngestRequest is the request body for POST /v1/ingest.

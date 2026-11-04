@@ -46,6 +46,11 @@ Two entry points:
 * :func:`hydrate_chunks` — the library one, for callers that hold a text index
   and plain chunks (the eval scripts' ``--rerank-symbol-glossary``); it needs
   no router, request context or settings.
+
+The API entry point has a second caller: ``/v1/retrieve`` with
+``include_symbol_glossary: true`` (``routers/query.py::_glossary_for_sources``)
+runs it once more over the FINAL, top_k-cut sources so each can carry its
+glossary in the response — same batching, scope, timeout and degrade rules.
 """
 from __future__ import annotations
 
@@ -87,8 +92,8 @@ def _note_failure(label: str, e: BaseException) -> None:
     _last_warned[label] = now
     suppressed = _suppressed.pop(label, 0)
     log.warning(
-        "rerank glossary hydration failed for collection %s (%s: %s); reranking "
-        "those candidates without their glossary [%d failure(s) total, %d not "
+        "symbol glossary hydration failed for collection %s (%s: %s); continuing "
+        "with those chunks without their glossary [%d failure(s) total, %d not "
         "logged in the last %gs]",
         label, type(e).__name__, e, failure_counts[label], suppressed, WARN_INTERVAL_S,
     )

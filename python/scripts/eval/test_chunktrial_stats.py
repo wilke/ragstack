@@ -367,3 +367,178 @@ def test_standard_p_unchanged_vs_frozen_reference() -> None:
             t = cs.sign_flip_test(sums, n_flips=300, seed=5, alternative=alt)
             assert t["p"] == old_exact(sums, alt) and t["p_perm"] == old_mc(sums, 300, 5, alt)
             assert 0.0 <= t["p_mid"] <= t["p"] + 1e-12
+
+
+# ------------------------------------------- exact p on the lattice (alias study, prereg §7)
+def _brute(sums: list[float], alternative: str) -> tuple[float, float]:
+    """Independent reference: enumerate every sign vector of the non-zero sums with itertools."""
+    import itertools
+    from fractions import Fraction
+
+    s = [Fraction(x).limit_denominator(100) for x in sums if x != 0]
+    t = sum(s, Fraction(0))
+    ge = gt = 0
+    for eps in itertools.product((1, -1), repeat=len(s)):
+        v = sum((e * x for e, x in zip(eps, s, strict=True)), Fraction(0))
+        a, b = (v, t) if alternative == "greater" else (-v, -t) if alternative == "less" else (abs(v), abs(t))
+        ge += a >= b
+        gt += a > b
+    n = 2 ** len(s)
+    return ge / n, (gt + 0.5 * (ge - gt)) / n
+
+
+@pytest.mark.parametrize("alternative", ["greater", "less", "two-sided"])
+def test_lattice_p_equals_brute_force_enumeration(alternative: Any) -> None:
+    rng = np.random.default_rng(7)
+    grid = [-3, -2, -1.5, -1, -0.5, 0, 0, 0.5, 1, 1.5, 2, 2.5]
+    for _ in range(150):
+        sums = [float(x) for x in rng.choice(grid, size=int(rng.integers(0, 13)))]
+        p, p_mid = _brute(sums, alternative)
+        lat = cs.sign_flip_lattice(sums, alternative)
+        assert lat is not None
+        assert lat["p"] == pytest.approx(p, abs=1e-12) and lat["p_mid"] == pytest.approx(p_mid, abs=1e-12)
+        k = sum(1 for x in sums if x != 0)
+        assert lat["min_attainable_p"] == pytest.approx(min(1.0, (2 if alternative == "two-sided" else 1) * 2.0 ** -k)
+                                                        if k else 1.0)
+    # thirds lattice (a cluster mean over three records)
+    sums = [1 / 3, 2 / 3, -1 / 3, 1.0, 4 / 3]
+    assert cs.lattice_scale(sums) == 3
+    assert cs.sign_flip_lattice(sums, alternative)["p"] == pytest.approx(_brute(sums, alternative)[0], abs=1e-12)
+
+
+def test_exact_test_above_20_is_lattice_and_matches_enumeration() -> None:
+    rng = np.random.default_rng(3)
+    sums = rng.choice([-1, -0.5, 0.5, 1, 1.5, 2], size=23) * rng.choice([1, 1, 1, -1], size=23)
+    res = cs.sign_flip_test_exact(sums, n_flips=999, seed=0)
+    assert res["p_method"] == "lattice" and res["n_pages_nonzero"] == 23
+    p, p_mid = cs.sign_flip_exact_with_mid(sums)          # the enumeration still allows k <= 25
+    assert res["p"] == res["p_exact"] == pytest.approx(p, abs=1e-12)
+    assert res["p_mid"] == pytest.approx(p_mid, abs=1e-12)
+    # the floor is 2^-k, not the Monte-Carlo 1/(n_flips + 1) the round-3 test is limited to
+    assert res["min_attainable_p"] == pytest.approx(2.0 ** -23)
+    top = cs.sign_flip_test_exact([1.0] * 25, n_flips=999)
+    assert top["p"] == pytest.approx(2.0 ** -25) and top["p_method"] == "lattice"
+    assert cs.sign_flip_test([1.0] * 25, n_flips=999)["p"] == pytest.approx(1 / 1000)   # round 3 unchanged
+    small = cs.sign_flip_test_exact([2, 1, -1])
+    assert small["p_method"] == "enumeration" and small["p"] == pytest.approx(3 / 8)
+
+
+def test_exact_test_falls_back_to_monte_carlo_only_when_the_lattice_is_infeasible() -> None:
+    off = [1 / 13 + i for i in range(25)]                 # needs scale 13 > LATTICE_MAX_SCALE
+    assert cs.lattice_scale(off) is None and cs.sign_flip_lattice(off) is None
+    r = cs.sign_flip_test_exact(off, n_flips=999, seed=0)
+    assert r["p_method"] == "monte_carlo" and r["p_exact"] is None and r["p"] == r["p_perm"]
+    assert r["min_attainable_p"] == pytest.approx(1 / 1000)
+    wide = cs.sign_flip_test_exact([1.0] * 25, n_flips=999, max_width=24)
+    assert wide["p_method"] == "monte_carlo"
+    assert cs.sign_flip_test_exact([1.0] * 25, n_flips=999, max_width=25)["p_method"] == "lattice"
+
+
+def test_exact_p_is_level_alpha_under_the_sharp_null_and_the_check_can_fail() -> None:
+    """Sharp null: magnitudes arbitrary, signs fair coins. P(p <= α) <= α must hold for the exact
+    p. The same simulation flags the p with ties left out of the tail, so it is not vacuous."""
+    rng = np.random.default_rng(11)
+    n_sim, alpha = 4000, 0.05
+    rej = rej_strict = 0
+    for _ in range(n_sim):
+        k = int(rng.integers(21, 40))                     # the lattice path, heavy ties
+        mags = rng.choice([0.5, 1.0, 1.0, 1.0, 2.0], size=k)
+        r = cs.sign_flip_lattice(mags * rng.choice([-1.0, 1.0], size=k))
+        assert r is not None
+        rej += r["p"] <= alpha
+        rej_strict += 2 * r["p_mid"] - r["p"] <= alpha    # P(T* > T): ties dropped
+    se = (alpha * (1 - alpha) / n_sim) ** 0.5
+    assert rej / n_sim <= alpha + 2 * se
+    assert rej_strict / n_sim > alpha + 2 * se            # dropping the ties would be caught
+
+
+def test_randomization_lattice_reduces_to_the_sign_flip_and_handles_asymmetric_supports() -> None:
+    import itertools
+
+    sums = [1.0, 0.5, -1.5, 2.0, 0.5]
+    for alt in ("greater", "less", "two-sided"):
+        r = cs.cluster_randomization_lattice([(x, -x) for x in sums], sum(sums), alt)  # type: ignore[arg-type]
+        assert r is not None and r["p"] == pytest.approx(cs.sign_flip_p_exact(sums, alt), abs=1e-12)  # type: ignore[arg-type]
+    # 3-condition contrast x - (y + z)/2 under exchangeability: per cluster, the values over the
+    # 3! label permutations; brute force over the product of the clusters' permutation sets
+    rows = [(1, 0, 0), (1, 1, 0), (0, 0, 1), (1, 0, 0)]
+    sup = [[a - (b + c) / 2 for a, b, c in itertools.permutations(r)] for r in rows]
+    obs = sum(a - (b + c) / 2 for a, b, c in rows)
+    allv = [sum(v) for v in itertools.product(*sup)]
+    want = sum(v >= obs - 1e-12 for v in allv) / len(allv)
+    r = cs.cluster_randomization_lattice(sup, obs, "greater")
+    assert r is not None and r["p"] == pytest.approx(want, abs=1e-12)
+    assert r["min_attainable_p"] == pytest.approx(sum(v >= max(allv) - 1e-12 for v in allv) / len(allv))
+
+
+def test_randomization_test_exact_level_fallback_and_floor() -> None:
+    """Label exchangeability with asymmetric supports (H2's single-one / single-zero questions):
+    the exact p holds level; dropping ties would not (non-vacuous); off-lattice -> MC."""
+    rng = np.random.default_rng(5)
+    types = [np.array([1.0, -0.5, -0.5]), np.array([-1.0, 0.5, 0.5])]
+    n_sim, alpha = 3000, 0.05
+    rej = rej_strict = 0
+    for _ in range(n_sim):
+        k = int(rng.integers(8, 30))
+        sup = [types[int(rng.integers(0, 2))] for _ in range(k)]
+        obs = float(sum(s[int(rng.integers(0, 3))] for s in sup))
+        r = cs.cluster_randomization_test(sup, obs, alternative="less")
+        assert r["p_method"] == "lattice"
+        rej += r["p"] <= alpha
+        rej_strict += 2 * r["p_mid"] - r["p"] <= alpha
+    se = (alpha * (1 - alpha) / n_sim) ** 0.5
+    assert rej / n_sim <= alpha + 2 * se and rej_strict / n_sim > alpha + 2 * se
+    sup3 = [[1.0, -0.5, -0.5]] * 3
+    r = cs.cluster_randomization_test(sup3, -1.5, alternative="less")
+    assert r["p"] == pytest.approx((2 / 3) ** 3) and r["min_attainable_p"] == pytest.approx((2 / 3) ** 3)
+    mc = cs.cluster_randomization_test(sup3, -1.5, n_draws=999, alternative="less", max_width=1)
+    assert mc["p_method"] == "monte_carlo" and mc["p_exact"] is None and mc["p"] == mc["p_perm"]
+    assert mc["min_attainable_p"] == pytest.approx((2 / 3) ** 3)          # > 1/1000, so the exact floor
+    assert abs(mc["p"] - (2 / 3) ** 3) < 0.05
+    tiny = cs.cluster_randomization_test([[1.0, -1.0]] * 30, 30.0, n_draws=99, max_width=1)
+    assert tiny["min_attainable_p"] == pytest.approx(1 / 100)              # MC floor 1/(m + 1) dominates 2^-30
+    off = cs.cluster_randomization_test([[1 / 13, -1 / 13]] * 3, 3 / 13, n_draws=99)
+    assert off["p_method"] == "monte_carlo"
+
+
+def test_randomization_constant_units_shift_the_law() -> None:
+    """Review #907: a unit whose multiset is constant but non-zero is inert yet adds its value to
+    T*; the lattice law must carry that offset (the observed statistic includes it), and the
+    two-sided floor must see it. Brute force over the product of the units' multisets."""
+    import itertools
+    from fractions import Fraction
+
+    rng = np.random.default_rng(907)
+    checked = 0
+    for _ in range(300):
+        sup: list[list[float]] = []
+        for _ in range(int(rng.integers(1, 6))):
+            if rng.random() < 0.4:
+                sup.append([float(rng.integers(-2, 3))] * int(rng.integers(1, 4)))
+            else:
+                sup.append([float(x) for x in rng.integers(-4, 5, size=int(rng.integers(1, 4))) / 2])
+        if all(len(set(v)) == 1 for v in sup):
+            continue
+        obs = float(sum(v[int(rng.integers(0, len(v)))] for v in sup))
+        law: dict[Fraction, Fraction] = {}
+        for combo in itertools.product(*[range(len(v)) for v in sup]):
+            t = sum((Fraction(v[i]) for v, i in zip(sup, combo, strict=True)), Fraction(0))
+            w = Fraction(1)
+            for v in sup:
+                w /= len(v)
+            law[t] = law.get(t, Fraction(0)) + w
+        for alt in ("greater", "less", "two-sided"):
+            def tail(o: Fraction, alt: str = alt, law: dict[Fraction, Fraction] = law) -> float:
+                return float(sum(w for t, w in law.items()
+                                 if (t >= o if alt == "greater" else t <= o if alt == "less" else abs(t) >= abs(o))))
+            ext = max(law) if alt == "greater" else min(law) if alt == "less" else max(abs(t) for t in law)
+            r = cs.cluster_randomization_test(sup, obs, n_draws=50, alternative=alt)  # type: ignore[arg-type]
+            assert r["p_method"] == "lattice"
+            assert r["p"] == pytest.approx(tail(Fraction(obs)), abs=1e-12)
+            assert r["min_attainable_p"] == pytest.approx(tail(ext), abs=1e-12)
+            checked += 1
+    assert checked > 300
+    # the Monte-Carlo fallback agrees on a case with a constant unit
+    mc = cs.cluster_randomization_test([[2.0, 2.0], [1.0, -1.0], [1.0, -1.0]], 4.0, n_draws=4000, seed=1,
+                                       max_width=1)
+    assert mc["p_method"] == "monte_carlo" and abs(mc["p"] - 0.25) < 0.03

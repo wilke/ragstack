@@ -304,7 +304,7 @@ async def test_hydration_degrades_to_no_glossary_on_error(caplog) -> None:
         )
     assert ti.calls == 1
     assert out is scored
-    assert any("rerank glossary hydration failed" in r.getMessage() for r in caplog.records)
+    assert any("symbol glossary hydration failed" in r.getMessage() for r in caplog.records)
 
 
 async def test_multi_collection_hydrates_each_candidate_from_its_own_collection() -> None:

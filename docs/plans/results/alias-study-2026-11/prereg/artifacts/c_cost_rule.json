@@ -1,0 +1,257 @@
+{
+ "schema": "alias-prereg-c-cost-rule/1",
+ "what": "operating characteristics of the C cost rule (prereg DRAFT v3 \u00a73.3, R12): pass rates of the v2 rule and the v3 rule on 300 C records; a planning calculation, no study data",
+ "model": "d in {-1,0,+1} per C record, P(d != 0) = q, mean = true change / 100; records independent (one per paper)",
+ "bootstrap": "95 % paper-bootstrap percentile CI, numpy.percentile 2.5 (linear), resamples drawn as Multinomial(300, observed shares) (equal in distribution to paper-index resampling)",
+ "rules": {
+  "as_written": "pass iff C_lo >= -1 point (prereg v2, R2)",
+  "v3": "pass iff dC >= -1 point and C_lo >= -3.6 points (R12)"
+ },
+ "n_c_records": 300,
+ "studies_per_scenario": 10000,
+ "bootstrap_resamples": 10000,
+ "seed": "261101|alias|power",
+ "seed_rule": "numpy seed = int.from_bytes(sha256(seed string)[:8], 'big'); seed string '<seed>|c-cost|q<q>|cost<cost>' per scenario",
+ "bound_derivation": {
+  "formula": "mu = k sqrt(q / (n + k^2)), k = z(0.975) + z(0.80) (prereg \u00a78)",
+  "n": 300,
+  "q": 0.05,
+  "mde80_two_sided_points": 3.57,
+  "rounded": 3.6,
+  "normal_power_at_rounded_two_sided_0.05": 0.8066,
+  "mde80_points_other_q": {
+   "q0.02": 2.258,
+   "q0.05": 3.57,
+   "q0.1": 5.049
+  }
+ },
+ "scenarios": [
+  {
+   "q": 0.02,
+   "true_c_change_points": 0.0,
+   "p_plus": 0.01,
+   "p_minus": 0.01,
+   "seed_string": "261101|alias|power|c-cost|q0.02|cost0",
+   "as_written": {
+    "pass_rate": 0.3761,
+    "mc_se": 0.0048
+   },
+   "v3": {
+    "pass_rate": 0.9269,
+    "mc_se": 0.0026
+   },
+   "v3_blocked_by_point_estimate": 0.0729,
+   "v3_blocked_by_ci_bound": 0.0238,
+   "mean_c_lo_points": -1.548
+  },
+  {
+   "q": 0.02,
+   "true_c_change_points": -1.0,
+   "p_plus": 0.005,
+   "p_minus": 0.015,
+   "seed_string": "261101|alias|power|c-cost|q0.02|cost-1",
+   "as_written": {
+    "pass_rate": 0.0831,
+    "mc_se": 0.0028
+   },
+   "v3": {
+    "pass_rate": 0.5928,
+    "mc_se": 0.0049
+   },
+   "v3_blocked_by_point_estimate": 0.4072,
+   "v3_blocked_by_ci_bound": 0.1868,
+   "mean_c_lo_points": -2.619
+  },
+  {
+   "q": 0.02,
+   "true_c_change_points": -2.0,
+   "p_plus": 0.0,
+   "p_minus": 0.02,
+   "seed_string": "261101|alias|power|c-cost|q0.02|cost-2",
+   "as_written": {
+    "pass_rate": 0.0158,
+    "mc_se": 0.0012
+   },
+   "v3": {
+    "pass_rate": 0.1421,
+    "mc_se": 0.0035
+   },
+   "v3_blocked_by_point_estimate": 0.8579,
+   "v3_blocked_by_ci_bound": 0.566,
+   "mean_c_lo_points": -3.692
+  },
+  {
+   "q": 0.05,
+   "true_c_change_points": 0.0,
+   "p_plus": 0.025,
+   "p_minus": 0.025,
+   "seed_string": "261101|alias|power|c-cost|q0.05|cost0",
+   "as_written": {
+    "pass_rate": 0.1643,
+    "mc_se": 0.0037
+   },
+   "v3": {
+    "pass_rate": 0.762,
+    "mc_se": 0.0043
+   },
+   "v3_blocked_by_point_estimate": 0.183,
+   "v3_blocked_by_ci_bound": 0.2298,
+   "mean_c_lo_points": -2.516
+  },
+  {
+   "q": 0.05,
+   "true_c_change_points": -1.0,
+   "p_plus": 0.02,
+   "p_minus": 0.03,
+   "seed_string": "261101|alias|power|c-cost|q0.05|cost-1",
+   "as_written": {
+    "pass_rate": 0.0455,
+    "mc_se": 0.0021
+   },
+   "v3": {
+    "pass_rate": 0.4933,
+    "mc_se": 0.005
+   },
+   "v3_blocked_by_point_estimate": 0.439,
+   "v3_blocked_by_ci_bound": 0.4919,
+   "mean_c_lo_points": -3.515
+  },
+  {
+   "q": 0.05,
+   "true_c_change_points": -2.0,
+   "p_plus": 0.015,
+   "p_minus": 0.035,
+   "seed_string": "261101|alias|power|c-cost|q0.05|cost-2",
+   "as_written": {
+    "pass_rate": 0.0068,
+    "mc_se": 0.0008
+   },
+   "v3": {
+    "pass_rate": 0.2184,
+    "mc_se": 0.0041
+   },
+   "v3_blocked_by_point_estimate": 0.7428,
+   "v3_blocked_by_ci_bound": 0.7594,
+   "mean_c_lo_points": -4.55
+  },
+  {
+   "q": 0.05,
+   "true_c_change_points": -3.6,
+   "p_plus": 0.007,
+   "p_minus": 0.043,
+   "seed_string": "261101|alias|power|c-cost|q0.05|cost-3.6",
+   "as_written": {
+    "pass_rate": 0.0,
+    "mc_se": 0.0
+   },
+   "v3": {
+    "pass_rate": 0.0213,
+    "mc_se": 0.0014
+   },
+   "v3_blocked_by_point_estimate": 0.9764,
+   "v3_blocked_by_ci_bound": 0.9642,
+   "mean_c_lo_points": -6.186
+  },
+  {
+   "q": 0.1,
+   "true_c_change_points": 0.0,
+   "p_plus": 0.05,
+   "p_minus": 0.05,
+   "seed_string": "261101|alias|power|c-cost|q0.1|cost0",
+   "as_written": {
+    "pass_rate": 0.0961,
+    "mc_se": 0.0029
+   },
+   "v3": {
+    "pass_rate": 0.4948,
+    "mc_se": 0.005
+   },
+   "v3_blocked_by_point_estimate": 0.2627,
+   "v3_blocked_by_ci_bound": 0.5052,
+   "mean_c_lo_points": -3.565
+  },
+  {
+   "q": 0.1,
+   "true_c_change_points": -1.0,
+   "p_plus": 0.045,
+   "p_minus": 0.055,
+   "seed_string": "261101|alias|power|c-cost|q0.1|cost-1",
+   "as_written": {
+    "pass_rate": 0.033,
+    "mc_se": 0.0018
+   },
+   "v3": {
+    "pass_rate": 0.2802,
+    "mc_se": 0.0045
+   },
+   "v3_blocked_by_point_estimate": 0.4673,
+   "v3_blocked_by_ci_bound": 0.7198,
+   "mean_c_lo_points": -4.592
+  },
+  {
+   "q": 0.1,
+   "true_c_change_points": -2.0,
+   "p_plus": 0.04,
+   "p_minus": 0.06,
+   "seed_string": "261101|alias|power|c-cost|q0.1|cost-2",
+   "as_written": {
+    "pass_rate": 0.0112,
+    "mc_se": 0.0011
+   },
+   "v3": {
+    "pass_rate": 0.1419,
+    "mc_se": 0.0035
+   },
+   "v3_blocked_by_point_estimate": 0.6801,
+   "v3_blocked_by_ci_bound": 0.8581,
+   "mean_c_lo_points": -5.568
+  },
+  {
+   "q": 0.1,
+   "true_c_change_points": -3.6,
+   "p_plus": 0.032,
+   "p_minus": 0.068,
+   "seed_string": "261101|alias|power|c-cost|q0.1|cost-3.6",
+   "as_written": {
+    "pass_rate": 0.0007,
+    "mc_se": 0.0003
+   },
+   "v3": {
+    "pass_rate": 0.0279,
+    "mc_se": 0.0016
+   },
+   "v3_blocked_by_point_estimate": 0.9122,
+   "v3_blocked_by_ci_bound": 0.9721,
+   "mean_c_lo_points": -7.175
+  }
+ ],
+ "provenance": {
+  "schema": 1,
+  "version": "v1.6.21+123ff70",
+  "describe": "v1.6.21-261-g123ff70",
+  "commit": "123ff709c1ab117c9914e0b6a59c7255361f9710",
+  "dirty": false,
+  "untracked": 0,
+  "source": "git",
+  "in_image": false,
+  "image": null,
+  "installed_distribution": null,
+  "segmentation": [
+   {
+    "kind": "sentences",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "n_docs": 5,
+    "n_spans": 40,
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+    "sample": "canonical-1",
+    "backend": "punkt",
+    "nltk": "3.9.4",
+    "segmenter_version": "punkt-abbrev-v1"
+   }
+  ],
+  "python": "3.12.13",
+  "recorded_at": "2026-11-03T17:56:26Z",
+  "citable": true
+ }
+}

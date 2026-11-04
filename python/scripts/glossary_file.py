@@ -20,12 +20,45 @@ the loader produces. Exit 1 on a mismatch or a document with no row.
 workflow run — into one, refusing a ``doc_id`` in two inputs and inputs built
 under different configs. Deterministic: the same inputs give the same bytes.
 
+``rederive`` (glossary benchmark round 2) writes a new file from an existing
+one with ``merged`` re-decided from the two halves every row already holds:
+``--merge llm-only`` (the PURE LLM glossary: the LLM half only, no rules
+fallback — an empty or absent LLM half renders ""), ``rules-only``, ``merged``
+(today's rule, :func:`choose_merged`) or ``none`` (empty everywhere). No model
+is called. Every row's version is marked ``+merge=<mode>`` and the producer
+names the mode and the source's sha256, so the files, and a census of an index
+loaded from one, tell the arms apart. Prints the counts and a per-row census.
+``--attach value|mention`` (glossary benchmark round 3; alone or with
+``--merge``) sets the header's ``attach_only_with_value`` instead — every
+reader renders under the file's config, so the same entries render where the
+symbol states a value (``value``, the served rule) or wherever it occurs
+(``mention``) — and marks every version ``+attach=<rule>`` after any
+``+merge=`` marker. Without ``--merge`` the entries are the source's, untouched.
+
+``subset`` (glossary benchmark round 2) writes a new file with only the rows
+whose ``doc_id`` is in an id list (``--keep``) or all but those (``--drop``).
+Kept rows are written unchanged (their versions, so their chunk stamps, too);
+the header's producer records the mode, the source's sha256 and the id list's
+sha256. Listed ids absent from the source are refused unless
+``--allow-missing``. ``subset --keep`` and ``subset --drop`` of one list,
+``merge``d, hold exactly the source's rows. ``shard-subset`` is the same filter
+over a ``JsonlLoader`` shard (the input of ``build`` and ``glossary_step.py``),
+by the loader's own document id; kept lines are copied byte for byte and the
+record (mode and sha256s) goes to ``<out>.subset.json``. Both are
+deterministic: the same inputs give the same bytes.
+
 Usage::
 
     python scripts/glossary_file.py build --jsonl docs.jsonl [--llm-cache cache.jsonl] \\
         --out glossary.jsonl
     python scripts/glossary_file.py verify glossary.jsonl [--jsonl docs.jsonl]
     python scripts/glossary_file.py merge --out glossary.jsonl batch0.jsonl batch1.jsonl ...
+    python scripts/glossary_file.py rederive --merge llm-only glossary.jsonl --out pure.jsonl
+    python scripts/glossary_file.py rederive --attach mention pure.jsonl --out pure-mention.jsonl
+    python scripts/glossary_file.py subset (--keep|--drop) IDS.txt glossary.jsonl --out part.jsonl \\
+        [--allow-missing]
+    python scripts/glossary_file.py shard-subset (--keep|--drop) IDS.txt shard.jsonl --out part.jsonl \\
+        [--allow-missing]
 """
 from __future__ import annotations
 
@@ -36,11 +69,16 @@ import sys
 from collections.abc import Iterator
 
 from ragstack.ingestion.glossary_file import (
+    ATTACH_RULES,
+    MERGE_MODES,
     GlossaryFileError,
     GlossaryRow,
     build_row,
     merge_files,
     read_glossary_file,
+    rederive_file,
+    subset_file,
+    subset_shard,
     write_glossary_file,
 )
 from ragstack.ingestion.loaders import JsonlLoader
@@ -131,8 +169,39 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("merge", help="concatenate glossary files into one")
     m.add_argument("files", nargs="+")
     m.add_argument("--out", required=True, help="the merged glossary.jsonl (atomically)")
+    r = sub.add_parser("rederive",
+                       help="a new glossary.jsonl with merged re-decided from the halves")
+    r.add_argument("file", help="the source glossary.jsonl (read strictly, never written)")
+    r.add_argument("--merge", default=None, choices=MERGE_MODES,
+                   help="llm-only = pure LLM (no rules fallback); rules-only; merged; none")
+    r.add_argument("--attach", default=None, choices=tuple(ATTACH_RULES),
+                   help="set the header's attachment rule: value (attach_only_with_value true, "
+                        "the served rule) or mention (false); marks every version +attach=<rule>")
+    r.add_argument("--out", required=True, help="the re-derived glossary.jsonl (atomically)")
+    for name, what, help_ in (("subset", "glossary.jsonl", "keep or drop rows by doc_id"),
+                              ("shard-subset", "JsonlLoader shard", "keep or drop shard lines by document id")):
+        s = sub.add_parser(name, help=help_)
+        g = s.add_mutually_exclusive_group(required=True)
+        g.add_argument("--keep", metavar="IDS", help="id list (one per line): write only these")
+        g.add_argument("--drop", metavar="IDS", help="id list (one per line): write all but these")
+        s.add_argument("file", help=f"the source {what} (read, never written)")
+        s.add_argument("--out", required=True, help="the subset (atomically)")
+        s.add_argument("--allow-missing", action="store_true",
+                       help="accept listed ids absent from the source (counted, else refused)")
     args = p.parse_args(argv)
+    if args.command == "rederive" and args.merge is None and args.attach is None:
+        p.error("rederive: name --merge, --attach, or both")
     try:
+        if args.command in ("subset", "shard-subset"):
+            fn = subset_file if args.command == "subset" else subset_shard
+            mode, ids = ("keep", args.keep) if args.keep else ("drop", args.drop)
+            print(json.dumps(fn(args.file, args.out, ids, mode, allow_missing=args.allow_missing),
+                             sort_keys=True))
+            return 0
+        if args.command == "rederive":
+            print(json.dumps(rederive_file(args.file, args.out, args.merge, attach=args.attach),
+                             sort_keys=True))
+            return 0
         if args.command == "merge":
             counts = merge_files(args.files, args.out)
             print(json.dumps({"out": args.out, "counts": counts}, sort_keys=True))

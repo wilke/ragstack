@@ -50,6 +50,33 @@ conditions, every test two-sided and uncorrected (exploratory). Each contrast
 carries ``min_attainable_p``: the sign-flip floor in the regime its p was
 computed in (``exact`` or ``monte_carlo``) and the exact McNemar floor.
 
+**The shuffled control** (``--shuffle-rendered NAME=SEED``, repeatable; glossary
+benchmark round 2): condition NAME's rendered fields are permuted, per arm (each
+arm is its own index), among the chunks of that arm that carry a non-empty one
+(:func:`ragstack.ingestion.glossary_shuffle.shuffle_rendered`, keyed by chunk
+id, seeded, deterministic): the populated chunks and the multiset of strings
+are unchanged, only which chunk carries which string. To contrast true with
+shuffled, pass the same file under two names (``qwen36p=F``,
+``qwen36p-shuf=F``) and shuffle the second. The backfill's flag takes a bare
+SEED (one index per run); here several conditions share a run, so the flag
+names its condition. Each shuffled condition's record carries ``shuffle``:
+per arm, the seed, ``permutation_sha256``, populated/empty counts, residual
+fixed points and the multiset hash.
+
+**The retrieval store** (``--write-retrieval PATH``, optional; for the reranker
+test's identity gate, ``reranker_test.py rerank --identity-reference PATH
+--identity-arm ARM``): one glossary condition's reranked lists (the reference,
+or ``--write-retrieval-condition NAME``) in part 4's own retrieval-store layout,
+one row ``{"k": ckey("retrieval", qid, arm), "rr": [chunk ids]}`` per valid
+question and arm, preceded by one ``part4-glossary-retrieval|-|-|-|-`` header row
+carrying the provenance (the reader skips rows that are not ``retrieval``). The
+lists are the very ones the re-score above consumed, not recomputed. The file is
+written atomically, mode 0600, only after the results; it must end ``.jsonl``,
+lie outside the repository, not be the part-4 store itself and not exist yet
+(the gate records a reference by file name only, so a reference is written
+once; remove it to rewrite). Without the flag nothing changes: the results file
+does not mention it.
+
 Exit codes: 0 done; 1 the manipulation check or the same-chunks check failed;
 6 (``GLOSSARY_REFUSED_EXIT_CODE``) a glossary file was refused. Nothing is
 built or retrieved before every file has resolved.
@@ -66,7 +93,7 @@ import json
 import re
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +107,8 @@ import section_aware_trial as sat  # noqa: E402
 from section_aware_trial import C, log, norm  # noqa: E402
 
 RESULTS_SCHEMA = "part4-glossary/1"
+RETRIEVAL_SCHEMA = "part4-glossary-retrieval/1"
+RETRIEVAL_HEADER_STEP = "part4-glossary-retrieval"
 DEFAULT_RESULTS = "part4-glossary-results.json"
 EXIT_OK, EXIT_HARD_STOP = p4.EXIT_OK, p4.EXIT_HARD_STOP
 #: A page whose text differs from the reassembly of its own live rows (the T/X
@@ -130,6 +159,43 @@ def parse_specs(values: list[str] | None) -> list[tuple[str, Path]]:
     if not out:
         raise SystemExit("part4-glossary needs at least one --glossary-file NAME=PATH")
     return out
+
+
+def parse_shuffles(values: list[str] | None, names: list[str]) -> dict[str, str]:
+    """``NAME=SEED`` per ``--shuffle-rendered``; NAME must be a declared condition."""
+    from ragstack.ingestion.glossary_shuffle import ShuffleError, check_seed
+
+    out: dict[str, str] = {}
+    for v in values or []:
+        name, sep, seed = v.partition("=")
+        if not sep or name not in names:
+            raise SystemExit(f"--shuffle-rendered wants NAME=SEED with NAME one of the "
+                             f"--glossary-file conditions {names}, got {v!r}")
+        if name in out:
+            raise SystemExit(f"--shuffle-rendered: condition {name!r} given twice")
+        try:
+            out[name] = check_seed(seed)
+        except ShuffleError as e:
+            raise SystemExit(f"--shuffle-rendered {name}: {e}") from e
+    return out
+
+
+def shuffle_arms(arms: dict[str, list[C]], seed: str) -> tuple[dict[str, list[C]], dict[str, Any]]:
+    """Every arm's rendered glossary fields permuted among its populated chunks
+    (new :class:`C` objects; the input is not mutated). Returns the arms and the
+    per-arm :meth:`ShuffleResult.record`."""
+    from ragstack.ingestion.glossary_shuffle import shuffle_rendered
+
+    out: dict[str, list[C]] = {}
+    records: dict[str, Any] = {}
+    for a, chunks in arms.items():
+        fields = {c.id: c.glossary for c in chunks}
+        if len(fields) != len(chunks):
+            raise SystemExit(f"part4-glossary: arm {a} has duplicate chunk ids; cannot shuffle")
+        res = shuffle_rendered(fields, seed)
+        out[a] = [replace(c, glossary=res.rendered(c.id, c.glossary)) for c in chunks]
+        records[a] = res.record()
+    return out, records
 
 
 def resolve_condition(name: str, path: Path, pages: dict[str, dict[str, Any]],
@@ -211,8 +277,55 @@ def manifest_check(pages: dict[str, dict[str, Any]], path: Path) -> dict[str, An
     return {"manifest": "checked", "docs": len(man), "drift_docs": len(drift)}
 
 
+def check_retrieval_path(path: Path, repo: Path, part4_store: Path | None) -> Path:
+    """Where ``--write-retrieval`` may write: a ``.jsonl`` (the reader's store form)
+    outside the repository, never the part-4 retrieval store itself, and not an
+    existing file: ``reranker_test`` records the gate's reference by file name
+    only, so a reference replaced in place would be untraceable."""
+    rp = path.resolve()
+    if rp.suffix != ".jsonl":
+        raise SystemExit("part4-glossary: --write-retrieval must end .jsonl (the part-4 retrieval-store form)")
+    if rp == repo or repo in rp.parents:
+        raise SystemExit("part4-glossary: refusing to write the retrieval store inside the repository")
+    if part4_store is not None and rp == part4_store.resolve():
+        raise SystemExit("part4-glossary: refusing to overwrite the part-4 retrieval store")
+    if not rp.parent.is_dir():
+        raise SystemExit("part4-glossary: --write-retrieval: the directory does not exist")
+    if rp.exists():
+        raise SystemExit(f"part4-glossary: --write-retrieval: {rp} exists; an identity reference is written once "
+                         "(remove it to rewrite)")
+    return rp
+
+
+def write_retrieval_store(path: Path, header: dict[str, Any], lists: Mapping[str, Mapping[str, list[str]]],
+                          qids: list[str]) -> int:
+    """``lists`` is ``{arm: {qid: ranked ids}}``. Header row first, then one
+    ``retrieval`` row per (arm, question) in arm then question order; atomic
+    (temp file in the same directory, fsync, rename), mode 0600. Returns the row count."""
+    import os
+    import tempfile
+
+    rows = [{"k": p4.ckey(RETRIEVAL_HEADER_STEP, "-"), **header}]
+    rows += [{"k": p4.ckey("retrieval", q, a), "rr": list(by_q[q])} for a, by_q in lists.items() for q in qids]
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return len(rows) - 1
+
+
 def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]], *,
-            allow_unverifiable: bool = False, results: str = DEFAULT_RESULTS) -> int:
+            allow_unverifiable: bool = False, results: str = DEFAULT_RESULTS,
+            shuffles: Mapping[str, str] | None = None, write_retrieval: str | None = None,
+            write_retrieval_condition: str | None = None) -> int:
     from ragstack.ingestion.glossary_file import GLOSSARY_REFUSED_EXIT_CODE
 
     cfg = dt.load_private_config(str(cfg_path))
@@ -223,6 +336,17 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
     rp = rpath.resolve()
     if rp == repo or repo in rp.parents:
         raise SystemExit("part4-glossary: refusing to write the results inside the repository")
+    wr_path: Path | None = None
+    wr_cond = write_retrieval_condition or (specs[0][0] if specs else None)
+    if write_retrieval_condition is not None and write_retrieval is None:
+        raise SystemExit("part4-glossary: --write-retrieval-condition needs --write-retrieval PATH")
+    if write_retrieval is not None:
+        if wr_cond not in [n for n, _ in specs]:
+            raise SystemExit(f"part4-glossary: --write-retrieval-condition {wr_cond!r} is not a --glossary-file condition")
+        p4_store = out / files["retrieval"] if files.get("retrieval") else None
+        wr_path = check_retrieval_path(Path(write_retrieval), repo, p4_store)
+        if wr_path == rp:
+            raise SystemExit("part4-glossary: --write-retrieval is the results file")
     qpath = out / files["questions"]
     if not qpath.is_file():
         raise SystemExit(f"part4-glossary: the part-4 questions file is missing: {files['questions']}")
@@ -242,6 +366,13 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
             f"versions {gc.record['glossary_versions']}")
     arm_names, conditions = list(p4c["arms"]), p4c["conditions"]
     built = {gc.name: env.build_arms(pages, arm_names, gc.glossaries, gc.config) for gc in conds}
+    for gc in conds:
+        if gc.name in (shuffles or {}):
+            seed = (shuffles or {})[gc.name]
+            built[gc.name], per_arm = shuffle_arms(built[gc.name], seed)
+            gc.record["shuffle"] = {"seed": seed, "arms": per_arm}
+            log(f"part4-glossary: {gc.name}: shuffled rendered fields, seed {seed!r}, "
+                f"{ {a: r['permutation_sha256'][:12] for a, r in per_arm.items()} }")
     ref = conds[0].name
     exp = p4c["expected_chunks"]
     manip = {a: {"chunks": len(built[ref].get(a, [])), "expected": exp.get(a),
@@ -256,11 +387,14 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
                 return EXIT_HARD_STOP
     # ---- retrieval and the delivered contexts, per glossary condition
     per_item: dict[str, Any] = {r["record_id"]: {} for r in valid}
+    #: the ranked lists exactly as consumed below, kept for --write-retrieval only
+    consumed: dict[str, dict[str, dict[str, list[str]]]] = {}
     for gc in conds:
         g = gc.name
         by_id = {c.id: c for cs in built[g].values() for c in cs}
         for a in arm_names:
             ranked = env.retrieve(a, built[g][a], valid)
+            consumed.setdefault(g, {})[a] = ranked
             for r in valid:
                 q = r["record_id"]
                 golds = [norm(x) for x in r["gold"]]
@@ -301,6 +435,7 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
         "provenance": prov, "citable": citable,
         "glossary_conditions": [gc.record for gc in conds],
         "reference_condition": ref,
+        "shuffled_conditions": dict(shuffles or {}),
         "design": {"arms": arm_names, "conditions": conditions, "seed": seed,
                    "analysis": {k: an[k] for k in ("n_perm", "n_boot", "ci_level")},
                    "allow_unverifiable": allow_unverifiable,
@@ -322,6 +457,19 @@ def rescore(cfg_path: Path, out: Path, env: GEnv, specs: list[tuple[str, Path]],
     }
     p4.write_json_atomic(rpath, report)
     log(f"part4-glossary: wrote {rpath}")
+    if wr_path is not None:
+        assert wr_cond is not None
+        header = {"schema": RETRIEVAL_SCHEMA, "exploratory": True,
+                  "note": ("part 4 retrieval-store layout ({'k': ckey('retrieval', qid, arm), 'rr': ranked ids}) "
+                           "for one glossary condition: the reranked lists the part4-glossary re-score consumed"),
+                  "glossary_condition": wr_cond, "reference_condition": ref,
+                  "glossary_file": records[wr_cond], "shuffle_seed": (shuffles or {}).get(wr_cond),
+                  "arms": arm_names, "n_questions": len(qids),
+                  "config_sha256": report["config_sha256"], "questions": report["questions"],
+                  "results": {"file": rpath.name, "sha256": p4.file_sha(rpath)},
+                  "provenance": prov, "citable": citable}
+        n = write_retrieval_store(wr_path, header, consumed[wr_cond], qids)
+        log(f"part4-glossary: wrote {n} retrieval rows ({wr_cond}) to {wr_path}")
     return EXIT_OK
 
 
@@ -349,9 +497,12 @@ def production_genv(out: Path, embed_urls: str, rerank_url: str) -> GEnv:
 def cmd_part4_glossary(args: argparse.Namespace) -> int:
     out = Path(args.out_dir)
     specs = parse_specs(args.glossary_file)
+    shuffles = parse_shuffles(getattr(args, "shuffle_rendered", None), [n for n, _ in specs])
     env = production_genv(out, args.embed_urls, args.rerank_url)
     return rescore(Path(args.private_config), out, env, specs,
-                   allow_unverifiable=args.glossary_allow_unverifiable, results=args.results)
+                   allow_unverifiable=args.glossary_allow_unverifiable, results=args.results,
+                   shuffles=shuffles, write_retrieval=args.write_retrieval,
+                   write_retrieval_condition=args.write_retrieval_condition)
 
 
 def add_parser(sub: Any) -> None:
@@ -363,5 +514,13 @@ def add_parser(sub: Any) -> None:
                    help="a glossary condition: NAME and its glossary.jsonl (repeatable; the first is the reference)")
     r.add_argument("--glossary-allow-unverifiable", action="store_true",
                    help="render pages whose live chunks do not reassemble their full text (else refused)")
+    r.add_argument("--shuffle-rendered", action="append", metavar="NAME=SEED", default=None,
+                   help="the shuffled control: permute condition NAME's rendered glossary fields "
+                        "among each arm's populated chunks, seeded (repeatable)")
+    r.add_argument("--write-retrieval", default=None, metavar="PATH",
+                   help="also write one condition's reranked lists as a part-4 retrieval store (.jsonl, "
+                        "outside the repo; the reranker test's --identity-reference)")
+    r.add_argument("--write-retrieval-condition", default=None, metavar="NAME",
+                   help="the glossary condition --write-retrieval writes (default: the reference, the first)")
     r.add_argument("--results", default=DEFAULT_RESULTS,
                    help=f"results file (relative to the output directory; default {DEFAULT_RESULTS})")

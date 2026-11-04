@@ -1,0 +1,382 @@
+{
+  "schema": "glossbench-r3-spot-validity/1",
+  "what": "round 3 layer-3 owner spot-check: 40 accepted records per set, labelled valid/invalid by the owner, blind to stratum and arm; counts only",
+  "prereg_rule": {
+    "source": "round-3 prereg §3.2 (round 2's §3.2-3.3 'apply unchanged'), which points at round-2 prereg §3.3 layer 3 for the rule",
+    "verbatim_round2_s3_3": "a seeded random sample of **40** accepted records per set (`261101|spot|<set>`), shown blind to stratum and arm; the owner marks valid / invalid. Reported: validity with a Wilson 95% CI. **Rule:** validity below **0.85** at the point estimate makes every result from that set carry *validity below threshold* in the sentence; the set is not rebuilt (that would be a forking path).",
+    "verbatim_round3_s3_2": "owner spot-check of 40 per set with the 0.85 validity rule, seed `<spot.seed_base>|<set>` with `spot.seed_base` set to **`261103|spot`** in the private config",
+    "threshold": 0.85,
+    "compared": "point estimate k/n, not an interval bound",
+    "wilson_z": 1.959963984540054,
+    "label_if_below": "validity below threshold"
+  },
+  "sets": {
+    "O": {
+      "corpus": "OA-1000",
+      "export_id": "spot-a0ac920796d0",
+      "seed": "261103|spot|O",
+      "population_accepted": 206,
+      "population_by_stratum": {
+        "M_num": 149,
+        "V": 57
+      },
+      "n_items": 40,
+      "sample_by_stratum": {
+        "M_num": 32,
+        "V": 8
+      },
+      "blind": {
+        "sheet_item_fields": [
+          "answer",
+          "item",
+          "label",
+          "passage",
+          "quantity_asked",
+          "question",
+          "quote"
+        ],
+        "unblinding_fields_present": [],
+        "note": "the passage is the raw chunk text, with no glossary field rendered; the sheet names no arm, stratum, condition or record id; the key is a separate file"
+      },
+      "labels": {
+        "label": {
+          "valid": 40
+        },
+        "denotes_quantity": {
+          "unsure": 1,
+          "yes": 39
+        },
+        "label_by_denotes_quantity": {
+          "valid|unsure": 1,
+          "valid|yes": 39
+        },
+        "items_with_a_note": 1
+      },
+      "as_typed": {
+        "n_valid": 40,
+        "n": 40,
+        "validity": 1.0,
+        "wilson95": [
+          0.9123783988027135,
+          1.0
+        ],
+        "wilson95_3dp": [
+          0.912,
+          1.0
+        ],
+        "below_threshold": false
+      },
+      "decisions": [
+        {
+          "item": "s010",
+          "record_alias_sha256_12": "54b3ce7c4394",
+          "typed": {
+            "label": "valid",
+            "denotes_quantity": "unsure",
+            "note_present": true
+          },
+          "counted_as": "invalid",
+          "reason_code": "OWNER_NOTE_QUESTION_AMBIGUOUS_OR_WRONG__DENOTES_QUANTITY_UNSURE",
+          "reason": "typed 'valid', but the owner's own note on the item says the question is ambiguous or wrong, and denotes_quantity is 'unsure'; the record is also census-flagged (D-5). The owner decided to count it as not valid.",
+          "decided_by": "owner",
+          "decided_on": "2026-10-30",
+          "decided_after": "the harness's as-typed import (40/40) and RESULTS.md; before this addendum",
+          "in_census_53": true,
+          "census_flag_class": "not_a_quantity"
+        }
+      ],
+      "reported": {
+        "n_valid": 39,
+        "n": 40,
+        "validity": 0.975,
+        "wilson95": [
+          0.8711863103652591,
+          0.9955731684973186
+        ],
+        "wilson95_3dp": [
+          0.871,
+          0.996
+        ],
+        "below_threshold": false
+      },
+      "what_if_kept_counted_invalid": null,
+      "harness_import": {
+        "n_graded": 40,
+        "n_valid": 40,
+        "validity": 1.0,
+        "wilson95": [
+          0.9123783988027135,
+          1.0
+        ],
+        "threshold": 0.85,
+        "below_threshold": false,
+        "rule": "validity below threshold -> the set's results carry 'validity below threshold'; the set is not rebuilt",
+        "citable": true,
+        "provenance": {
+          "citable": true,
+          "commit": "ad2adf101d6f822921c7109705add22d5e770445",
+          "describe": "v1.6.21-102-gad2adf1",
+          "dirty": false,
+          "in_image": false,
+          "python": "3.12.13",
+          "recorded_at": "2026-10-31T01:08:06Z",
+          "schema": 1,
+          "segmentation": [
+            {
+              "backend": "punkt",
+              "kind": "sentences",
+              "n_docs": 5,
+              "n_spans": 40,
+              "nltk": "3.9.4",
+              "producer": "ragstack.ingestion.chunkers.sentence_spans",
+              "sample": "canonical-1",
+              "segmenter_version": "punkt-abbrev-v1",
+              "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+              "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+            }
+          ],
+          "source": "git",
+          "untracked": 0,
+          "version": "v1.6.21+ad2adf1",
+          "warnings": [
+            "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+          ],
+          "redacted": [
+            "host",
+            "image",
+            "installed_distribution"
+          ]
+        }
+      },
+      "overlap_with_census": {
+        "sample_in_census_53": 8,
+        "sample_in_census_53_by_stratum": {
+          "M_num": 6,
+          "V": 2
+        },
+        "sample_in_census_53_census_verdict": {
+          "accept": 8
+        },
+        "sample_in_flagged_12": 1,
+        "sample_in_flagged_12_by_class": {
+          "not_a_quantity": 1
+        }
+      }
+    },
+    "A": {
+      "corpus": "ASM-1000",
+      "export_id": "spot-cd61817eb7d5",
+      "seed": "261103|spot|A",
+      "population_accepted": 63,
+      "population_by_stratum": {
+        "M_num": 57,
+        "V": 6
+      },
+      "n_items": 40,
+      "sample_by_stratum": {
+        "M_num": 36,
+        "V": 4
+      },
+      "blind": {
+        "sheet_item_fields": [
+          "answer",
+          "item",
+          "label",
+          "passage",
+          "quantity_asked",
+          "question",
+          "quote"
+        ],
+        "unblinding_fields_present": [],
+        "note": "the passage is the raw chunk text, with no glossary field rendered; the sheet names no arm, stratum, condition or record id; the key is a separate file"
+      },
+      "labels": {
+        "label": {
+          "valid": 40
+        },
+        "denotes_quantity": {
+          "yes": 40
+        },
+        "label_by_denotes_quantity": {
+          "valid|yes": 40
+        },
+        "items_with_a_note": 2
+      },
+      "as_typed": {
+        "n_valid": 40,
+        "n": 40,
+        "validity": 1.0,
+        "wilson95": [
+          0.9123783988027135,
+          1.0
+        ],
+        "wilson95_3dp": [
+          0.912,
+          1.0
+        ],
+        "below_threshold": false
+      },
+      "decisions": [
+        {
+          "item": "s005",
+          "record_alias_sha256_12": "69ff2277b1d4",
+          "typed": {
+            "label": "valid",
+            "denotes_quantity": "yes",
+            "note_present": true
+          },
+          "counted_as": "valid",
+          "reason_code": "OWNER_KEEP_AS_TYPED",
+          "reason": "typed 'valid' with denotes_quantity 'yes', but the owner's own note on the item says the number comes from a bibliographic (journal) citation. The owner decided to count it as typed, valid.",
+          "decided_by": "owner",
+          "decided_on": "2026-10-30",
+          "decided_after": "the harness's as-typed import (40/40), RESULTS.md and the first draft of this addendum"
+        },
+        {
+          "item": "s013",
+          "record_alias_sha256_12": "90baf7d0d273",
+          "typed": {
+            "label": "valid",
+            "denotes_quantity": "yes",
+            "note_present": true
+          },
+          "counted_as": "valid",
+          "reason_code": "OWNER_KEEP_AS_TYPED",
+          "reason": "typed 'valid' with denotes_quantity 'yes', but the owner's own note on the item says the number comes from a bibliographic (journal) citation. The owner decided to count it as typed, valid.",
+          "decided_by": "owner",
+          "decided_on": "2026-10-30",
+          "decided_after": "the harness's as-typed import (40/40), RESULTS.md and the first draft of this addendum"
+        }
+      ],
+      "reported": {
+        "n_valid": 40,
+        "n": 40,
+        "validity": 1.0,
+        "wilson95": [
+          0.9123783988027135,
+          1.0
+        ],
+        "wilson95_3dp": [
+          0.912,
+          1.0
+        ],
+        "below_threshold": false
+      },
+      "what_if_kept_counted_invalid": {
+        "n_valid": 38,
+        "n": 40,
+        "validity": 0.95,
+        "wilson95": [
+          0.8349612263085903,
+          0.9861793326138516
+        ],
+        "wilson95_3dp": [
+          0.835,
+          0.986
+        ],
+        "below_threshold": false,
+        "note": "not an owner decision and not the reported figure: the items the owner kept as typed (OWNER_KEEP_AS_TYPED), counted invalid instead"
+      },
+      "harness_import": {
+        "n_graded": 40,
+        "n_valid": 40,
+        "validity": 1.0,
+        "wilson95": [
+          0.9123783988027135,
+          1.0
+        ],
+        "threshold": 0.85,
+        "below_threshold": false,
+        "rule": "validity below threshold -> the set's results carry 'validity below threshold'; the set is not rebuilt",
+        "citable": true,
+        "provenance": {
+          "citable": true,
+          "commit": "ad2adf101d6f822921c7109705add22d5e770445",
+          "describe": "v1.6.21-102-gad2adf1",
+          "dirty": false,
+          "in_image": false,
+          "python": "3.12.13",
+          "recorded_at": "2026-10-31T00:26:00Z",
+          "schema": 1,
+          "segmentation": [
+            {
+              "backend": "punkt",
+              "kind": "sentences",
+              "n_docs": 5,
+              "n_spans": 40,
+              "nltk": "3.9.4",
+              "producer": "ragstack.ingestion.chunkers.sentence_spans",
+              "sample": "canonical-1",
+              "segmenter_version": "punkt-abbrev-v1",
+              "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+              "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+            }
+          ],
+          "source": "git",
+          "untracked": 0,
+          "version": "v1.6.21+ad2adf1",
+          "warnings": [
+            "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+          ],
+          "redacted": [
+            "host",
+            "image",
+            "installed_distribution"
+          ]
+        }
+      }
+    }
+  },
+  "inputs_sha256": {
+    "A.accepted": "dff0d37db3d1749435627be20707415392b1d7222627660dca08852bc76fba33",
+    "A.import": "eefe23debe1919e53077017ea7fb28946730f3014d40ae149925fe9e100d9939",
+    "A.key": "7553c8241efd8aa4d7fa03cd7f04a6f3c1e7027d968865e46424af6a3200262a",
+    "A.labels": "a2e7b52810235662937bf0afb3e184682d542e1fcafbb7c2a01a234336fca4c4",
+    "A.sheet": "18469eb48a44f98f10d0e491ac089b20a4142eae713a19b68f331edfb0e90f27",
+    "O.accepted": "e67378b50050af975b1d127a8990e7712e61453e771bbc3e60906fd6a4761013",
+    "O.import": "1acbef8bb1000095239b85324388ddaa33b39b9bcb30e8cc4005f660e422fd2e",
+    "O.key": "523b056cfa0533dc76f72a11870e764a094f996e9b62d9b417539fd43577a2db",
+    "O.labels": "3d5ab616bc43ad989c03486df1ea3c5eacee69c319400b6a7b70410a1370384a",
+    "O.sheet": "b78ee4ddee8ac034c1c9fe74554e211bdc14be7a4846fc1f1919b7bafe69ff42",
+    "census.exclusions": "e62902d62951d688d42fc5e346bc524f3916b9d6b736ce4319bb730f63b6c397",
+    "census.notes": "ea3cfa5cc2256522caa548a8fd0f7f1dda3eed499fc534c8fc99de7b1168a3dd",
+    "census.verdicts": "f5183e80497247e854ddb2fed134c718237396119e665f873950145dc8a6b1e1"
+  },
+  "provenance": {
+    "schema": 1,
+    "version": "v1.6.21+b1d0371",
+    "describe": "v1.6.21-105-gb1d0371",
+    "commit": "b1d0371ad956a8a850c5ca930ab78be1e14c0529",
+    "dirty": false,
+    "untracked": 0,
+    "source": "git",
+    "in_image": false,
+    "segmentation": [
+      {
+        "kind": "sentences",
+        "producer": "ragstack.ingestion.chunkers.sentence_spans",
+        "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+        "n_docs": 5,
+        "n_spans": 40,
+        "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25",
+        "sample": "canonical-1",
+        "backend": "punkt",
+        "nltk": "3.9.4",
+        "segmenter_version": "punkt-abbrev-v1"
+      }
+    ],
+    "python": "3.12.13",
+    "recorded_at": "2026-10-31T01:19:03Z",
+    "citable": true,
+    "warnings": [
+      "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
+    ],
+    "redacted": [
+      "host",
+      "image",
+      "installed_distribution"
+    ]
+  },
+  "citable": true,
+  "private_data": "the sheets, key, labels, notes, accepted records and census files stay private; no record text or record id is copied"
+}
