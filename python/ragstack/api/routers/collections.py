@@ -666,6 +666,33 @@ def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
         raise HTTPException(422, refusal)
 
 
+#: Whether this source tree may create a collection recording a document-
+#: structure marker on an ``INGEST_BACKEND=gowe`` deployment. ``False`` until
+#: the repin step R of #828 (§12): the shipped workflows name a tools image
+#: that predates the markers, so ``ingest_shard.py`` there would ingest a
+#: ``text_render`` collection as RAW Markdown under a name that claims the
+#: render, with no error. R flips this (and its pin test) in the commit that
+#: repins the tools image.
+GOWE_STRUCTURE_MARKERS_SUPPORTED = False
+
+
+def _refuse_markers_before_the_repin(params: dict[str, Any]) -> None:
+    """400 when a new collection records any document-structure marker on a
+    GoWe deployment before the step-R tools image (#828 PR 4 review). The
+    in-process backend applies ``text_render`` itself, so it is unaffected."""
+    if GOWE_STRUCTURE_MARKERS_SUPPORTED or ingest_backend_name(settings) != "gowe":
+        return
+    marked = [k for k in STRUCTURE_MARKER_PARAMS if (params or {}).get(k) is not None]
+    if marked:
+        raise HTTPException(
+            400,
+            f"chunk param {marked[0]!r} needs the tools image of #828's repin step R, "
+            f"and this deployment ingests through GoWe workers whose image predates it: "
+            f"they would ingest the collection without the marker. Create it on an "
+            f"in-process deployment, or after the repin.",
+        )
+
+
 class CollectionCreateRequest(BaseModel):
     # Both build-spec fields are OPTIONAL (ADR-0003 decision 3): omitted → the
     # server's default build spec is resolved into concrete values at create
@@ -887,6 +914,7 @@ async def create_collection(
     # takes the server default, and that default is just as unrunnable under a
     # gowe backend as an explicitly requested one.
     _refuse_chunk_this_deployment_cannot_ingest(chunk.method)
+    _refuse_markers_before_the_repin(chunk.params)
 
     # 3. Derive the physical name. With no explicit id this is content-addressed
     # over (model, dim, chunk): the same build spec re-maps to the same store, which

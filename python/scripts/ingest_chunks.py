@@ -310,7 +310,32 @@ def main() -> None:
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
     )
+    refuse_marked_entry(target)
     asyncio.run(run(args, target))
+
+
+def refuse_marked_entry(target: ingest_target.IngestTarget) -> None:
+    """Exit 2 when the entry records any document-structure marker (#828 §7).
+    This tool loads PRE-CHUNKED JSON: it cannot render, cut or prefix, so a
+    marked collection loaded through it would hold chunks its spec does not
+    describe. Read with ``unapplied=()``: any recorded marker refuses."""
+    import sys
+
+    from ragstack.ingestion.chunker_config import structure_from_params
+
+    try:
+        markers = structure_from_params(target.spec.chunk_method, target.spec.chunk_params,
+                                        unapplied=()).applied()
+    except ValueError as e:
+        print(f"error: collection {target.collection_id!r} {e}", file=sys.stderr)
+        raise SystemExit(2) from None
+    if markers:
+        print(f"error: refusing to load pre-chunked JSON into collection "
+              f"{target.collection_id!r}: its registry entry records document-structure "
+              f"markers ({', '.join(f'{k}={v!r}' for k, v in markers.items())}), which "
+              f"this tool cannot apply. Ingest the source documents with ingest_shard.py "
+              f"or ingest_jsonl.py instead (#828).", file=sys.stderr)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":
