@@ -363,6 +363,86 @@ is affected too. A create that omits `chunk` now records the marker, so its
 content address differs from the uncapped, settings-derived default
 collection. It mints a separate store instead of re-mapping to that surface.
 
+## Opt-in: Markdown as plain text (`text_render`)
+
+Issue #828 (design: [`plans/828-document-structure.md`](plans/828-document-structure.md)
+§7, §9.1). By default a `.md` file is stored and embedded as raw Markdown,
+exactly as it was read. A collection can instead record
+`chunk_params.text_render = "markdown-plain/1"`: every `.md` document is then
+rendered to plain text **at ingest**, before chunking, and the rendered text is
+what is chunked, stored and embedded. It works with every method.
+
+The render, from one CommonMark parse (the `[markdown]` extra):
+
+| source | rendered |
+|---|---|
+| `## Heading` | `Heading` on its own line; the heading is a section boundary |
+| `[text](url)` | `text (url)`; an autolink is written once |
+| `![alt](src)` | `alt (src)` |
+| inline HTML | its visible text, plus `href` targets: `<a href="u">x</a>` → `x (u)` |
+| code (inline, fenced, indented) | verbatim, without the backticks or fences |
+| maths (`$…$`, `$$…$$`, `\(…\)`) | verbatim, delimiters included |
+| tables | one row per line, cells joined by ` \| ` |
+| emphasis, list and quote markers, thematic breaks | dropped |
+| front matter | its YAML body |
+
+Top-level blocks are separated by one blank line. Every content word survives:
+link targets, code, table cells and maths included. Other suffixes (`.txt`,
+`.pdf`, `.xml`, `.jsonl`) are not touched.
+
+**It is identity.** The text changes, so every offset, chunk and chunk id
+changes: a marked collection is a different collection from an unmarked one,
+by content address (the marker is in `chunk_params`, so in the chunk
+descriptor, the `spec_hash` and the physical name). Nothing converts in place;
+to compare raw and plain text, create two collections. A collection without
+the key is unchanged, which includes every collection created before #828
+PR 4. The marker applies whatever `STRUCTURE_METADATA` says. The section
+metadata of the rendered text is stamped on the chunks only when structure
+metadata is on.
+
+**Validation and recording.** `POST /v1/collections` refuses an unknown value
+with 400; `null` counts as not sent. The other three structure markers,
+`structure_cuts` (`sections/1`), `embed_heading_path` (`prefix/1`) and
+`structure_infer` (`text-heuristic/1`), are recognised but **refused** (400 at
+create, exit 2 on the bulk tools) until the release that applies them (#828
+PR 7 and PR 8). Accepting them now would chunk a collection without them and,
+after that release, with them. One reader,
+`chunker_config.structure_from_params`, serves the API, `ingest_shard.py`,
+`embed_shard.py` (with `--collection-id`), `ingest_jsonl.py`, the load-time
+check and the batch driver. There is no marker flag on the tools: the registry
+entry is the only source.
+
+**A missing parser is a refusal.** With the marker set and the `[markdown]`
+extra absent, the API answers 503 before any job exists and the bulk tools exit
+2 before reading a record, whatever `STRUCTURE_METADATA` says. Nothing falls
+back to raw text.
+
+**Where it is applied, and recorded.** The GoWe extract step never sees the
+marker: its shard holds the raw text, and the render runs in the ingest step,
+on every path. What ran is recorded:
+
+| where | what |
+|---|---|
+| the shard receipt (`ingest_shard.py`, `embed_shard.py`) | `chunking.text_render` (merged into the semantic `chunking` object when there is one). The `[chunker] structure markers: …` stderr line says the same. |
+| the embedding-file header (`embed_shard.py`) | `chunking.text_render`, beside the resolved `collection_id` |
+| `enrichment.structure.backend` | the parser, when structure metadata is on |
+
+**Release order.** A tools image built before #828 PR 4 ignores the key: on
+`ingest-bulk.cwl` and the API's scatter workflow it ingests a marked
+collection as raw Markdown, with no error; its receipts have no
+`chunking.text_render`. Roll the tools image before creating marked
+collections on a GoWe tenant. On the operator embed workflows
+(`jats-ingest.cwl`, `pdf-ingest.cwl`, `embed-bulk.cwl`), the embed step must
+also pass `collection_id`, which the shipped texts do not yet do (repin step
+R). Three backstops refuse what they cannot prove was built from the entry:
+`load_embeddings.py` refuses, before any write, an embedding file whose
+header's markers differ from the entry's (an old header with no `chunking`
+object, against a marked entry, included); `gowe_batch_ingest.py` refuses to
+submit a marked collection on a workflow whose `embed_shard.py` step does not
+bind `collection_id`; and the API refuses (422) a marked collection when its
+own workflow's embed step is unwired, which never happens with the shipped
+`pdf-ingest-scatter.cwl` (its chunk step is `ingest_shard.py`).
+
 ## Sentence segmentation
 
 `sentence`, `semantic` and `semantic_pooled` all start from
