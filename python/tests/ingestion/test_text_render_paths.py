@@ -92,11 +92,12 @@ def _rows(chunks) -> dict:
     for c in chunks:
         if isinstance(c, dict):
             text, s, e = c["content"], c["start_char"], c["end_char"]
-            vec, meta = c["embedding"], c["metadata"]
+            vec, meta, cid, did = c["embedding"], c["metadata"], c["id"], c["doc_id"]
         else:
             text, s, e, vec, meta = c.content, c.start_char, c.end_char, c.embedding, c.metadata
+            cid, did = c.id, c.doc_id
         out[(text, s, e)] = (list(vec) if vec is not None else None,
-                             {k: meta[k] for k in STAMP_KEYS if k in meta})
+                             {k: meta[k] for k in STAMP_KEYS if k in meta}, did, cid)
     return out
 
 
@@ -166,7 +167,8 @@ def test_a_marked_entry_chunks_and_embeds_identically_on_every_path(
                                        structure_metadata="on"), target))
     d = _rows(store.points.values())
 
-    assert a and a == b == c == d
+    assert a and a == b == c == d  # text, offsets, vectors, stamps, doc ids, chunk ids
+    assert len({v[2] for v in a.values()}) == len(text_files)
     # What was stored is the stripped render of the .md files, and the .txt raw.
     [guide] = TextFileLoader().load(str(text_files[0]))
     rendered, _s = md.markdown_plain(guide)
@@ -255,13 +257,15 @@ def test_the_marker_is_applied_only_where_its_suffix_matches(
 # the extract step never sees the marker
 # --------------------------------------------------------------------------- #
 
-def test_the_gowe_shard_is_identical_with_and_without_the_marker(
+def test_the_extract_step_takes_no_marker_and_writes_the_raw_text(
     tmp_path, text_files, no_pdf_loader, capsys  # noqa: F811
 ) -> None:
     """The extract step has no marker input (#829: never a CWL input for an
-    identity value) and reads no registry, so the shard it writes for a marked
-    collection IS the shard it writes for an unmarked one: raw text, no
-    structure key for Markdown. The render happens at ingest."""
+    identity value) and reads no registry — so the shard it writes cannot
+    depend on a collection's marker: raw text, no structure key for Markdown,
+    deterministic. The render happens at ingest. (What this proves is the
+    absence of any input through which a marker could reach the step, plus
+    determinism; there is no "with the marker" run to compare, by design.)"""
     with pytest.raises(SystemExit):
         pdf_extract.parse_args(["--help"])
     help_text = capsys.readouterr().out
@@ -276,3 +280,152 @@ def test_the_gowe_shard_is_identical_with_and_without_the_marker(
     [guide] = [r for r in records if r["path"].endswith("guide.md")]
     assert guide["text"].startswith("﻿---")
     assert _MARKDOWN.replace("\r\n", "\n").replace("\r", "\n")[1:60] in guide["text"]
+
+
+# --------------------------------------------------------------------------- #
+# an UNMARKED entry: the tools' receipt and header are what they were
+# --------------------------------------------------------------------------- #
+
+def test_an_unmarked_entry_leaves_the_receipt_and_the_header_unchanged(
+    tmp_path, text_files, no_pdf_loader, registry, monkeypatch  # noqa: F811
+) -> None:
+    """Argo S4: through ``ingest_shard.amain`` and ``embed_shard`` (which runs
+    ``run_embed_shard``), an unmarked, non-semantic entry gives a receipt with
+    NO ``chunking`` key, and a header ``chunking`` object with exactly PR 3's
+    keys. MUTATIONS: ``applied() or None`` → ``applied()``; ``applied_chunking``
+    returning ``{}``; markers read regardless of the entry → fail."""
+    monkeypatch.delenv("COLLECTION_MANIFEST_DIR", raising=False)
+    registry(_entry_spec({}))
+    target = it.resolve(CID, registry=REG)
+    shard = _extract(tmp_path, text_files)
+    receipt_b = tmp_path / "b.receipt.json"
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _Embedder())
+    args_b = ingest_shard.parse_args([
+        str(shard), "--vector-backend", "memory", "--text-backend", "memory",
+        "--qdrant-url", DEAD, "--es-url", DEAD, *_SIZE, "--out", str(receipt_b)])
+    assert asyncio.run(ingest_shard.amain(args_b, target)) == 0
+    assert "chunking" not in json.loads(receipt_b.read_text(encoding="utf-8"))
+    emb_c, receipt_c = tmp_path / "c.emb.jsonl", tmp_path / "c.receipt.json"
+    monkeypatch.setattr(embed_shard, "make_embedder_auto", lambda **kw: _Embedder())
+    assert embed_shard.main([str(shard), "--out", str(emb_c), "--receipt", str(receipt_c),
+                             "--collection-id", CID, "--registry", REG, *_SIZE]) == 0
+    assert "chunking" not in json.loads(receipt_c.read_text(encoding="utf-8"))
+    assert set(read_header(emb_c)["chunking"]) == {"collection_id", "method", "chunk_size",
+                                                   "chunk_overlap"}
+    assert any("# Installing" in r["content"] for r in _emb_rows(emb_c))  # raw, unrendered
+
+
+# --------------------------------------------------------------------------- #
+# B1: a glossary file is refused with text_render (path B)
+# --------------------------------------------------------------------------- #
+
+def test_ingest_shard_refuses_a_glossary_file_for_a_text_render_entry(
+    tmp_path, text_files, no_pdf_loader, registry, monkeypatch, capsys  # noqa: F811
+) -> None:
+    """Reproduced first: the shard ingested with exit 0 and
+    ``degraded_batches: 1`` (no glossary), the only trace a log line. Now it
+    exits 2 before anything is embedded. MUTATION: drop the refusal → the
+    run reaches amain → fails."""
+    import glossary_step
+
+    registry(_entry_spec(dict(PLAIN)))
+    shard = _extract(tmp_path, text_files)
+    gl = tmp_path / "glossary.jsonl"
+    assert glossary_step.main([str(shard), "--out", str(gl)]) == 0
+    monkeypatch.setattr(ingest_shard, "amain", lambda *a, **k: pytest.fail("reached amain"))
+    argv = [str(shard), "--collection-id", CID, "--registry", REG, "--qdrant-url", DEAD,
+            "--es-url", DEAD, *_SIZE, "--out", str(tmp_path / "r.json")]
+    argv = [a for a in argv if a not in ("--symbol-glossary", "off")]
+    with pytest.raises(SystemExit) as ex:
+        ingest_shard.main([*argv, "--glossary-file", str(gl)])
+    assert ex.value.code == 2 and "glossary file cannot be used" in capsys.readouterr().err
+    # Without the file the same entry proceeds (to the amain spy).
+    with pytest.raises(pytest.fail.Exception):
+        ingest_shard.main(argv)
+
+
+# --------------------------------------------------------------------------- #
+# a render that fails on one document fails that document only
+# --------------------------------------------------------------------------- #
+
+def _two_pages(tmp_path: Path) -> Path:
+    shard = tmp_path / "two.jsonl"
+    shard.write_text(
+        json.dumps({"text": "# Good\n\nA page that renders.\n", "path": "/d/good.md",
+                    "metadata": {}}) + "\n"
+        + json.dumps({"text": "# Bad\n\nBOOM in this page.\n", "path": "/d/bad.md",
+                      "metadata": {}}) + "\n", encoding="utf-8")
+    return shard
+
+
+@pytest.fixture
+def boom(monkeypatch):
+    real = md.markdown_plain
+
+    def flaky(doc):
+        if "BOOM" in doc.content:
+            raise ValueError("synthetic render failure")
+        return real(doc)
+
+    monkeypatch.setattr(md, "markdown_plain", flaky)
+
+
+def test_a_failed_render_fails_its_row_and_the_batch_goes_on(
+    tmp_path, registry, monkeypatch, boom  # noqa: F811
+) -> None:
+    """Argo S2. Path B: the good page is rendered and indexed; the bad one is
+    a failed receipt row naming the render failure; never ingested raw.
+    MUTATION: let the exception propagate (the old behaviour) → the whole
+    batch fails → fails."""
+    monkeypatch.delenv("COLLECTION_MANIFEST_DIR", raising=False)
+    registry(_entry_spec(dict(PLAIN)))
+    target = it.resolve(CID, registry=REG)
+    emb, receipt = tmp_path / "e.jsonl", tmp_path / "r.json"
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _Embedder())
+    args = ingest_shard.parse_args([
+        str(_two_pages(tmp_path)), "--vector-backend", "memory", "--text-backend", "memory",
+        "--qdrant-url", DEAD, "--es-url", DEAD, *_SIZE, "--embedding-file", str(emb),
+        "--out", str(receipt)])
+    assert asyncio.run(ingest_shard.amain(args, target)) == 0
+    rec = ShardReceipt.load(receipt)
+    rows = {Path(r.source).name: r for r in rec.docs}
+    assert rows["good.md"].error in ("", None) and rows["good.md"].chunk_ids
+    assert rows["bad.md"].error.startswith("text_render_failed: ValueError")
+    assert not rows["bad.md"].chunk_ids
+    texts = [r["content"] for r in _emb_rows(emb)]
+    assert texts == ["Good\n\nA page that renders."]
+
+
+def test_a_failed_render_on_paths_a_c_and_d(tmp_path, registry, monkeypatch, boom) -> None:  # noqa: F811
+    from ragstack.ingestion.structure import TextRenderFailed
+
+    markers = structure_from_params("fixed", PLAIN)
+    shard = _two_pages(tmp_path)
+    # C: iter_embed_source — the good page only, the failure counted.
+    pipe = IngestionPipeline(loader=JsonlLoader(), chunker=_chunker(), embedder=_Embedder(),
+                             vector_store=InMemoryVectorStore(),
+                             text_index=InMemoryTextIndex(), structure_markers=markers)
+
+    async def _iter():
+        return [c async for g in pipe.iter_embed_source(str(shard)) for c in g]
+
+    assert [c.content for c in asyncio.run(_iter())] == ["Good\n\nA page that renders."]
+    assert pipe.text_render_failures() == 1
+    # A: one source whose only document fails → the item fails with the reason.
+    bad = tmp_path / "bad.md"
+    bad.write_text("# Bad\n\nBOOM\n", encoding="utf-8")
+    pipe_a = IngestionPipeline(loader=default_loader_registry(ingest_root=str(tmp_path)),
+                               chunker=_chunker(), embedder=_Embedder(),
+                               vector_store=InMemoryVectorStore(),
+                               text_index=InMemoryTextIndex(), structure_markers=markers)
+    with pytest.raises(TextRenderFailed) as e:
+        asyncio.run(pipe_a.prepare_source(str(bad)))
+    assert e.value.job_error == "text_render_failed: ValueError"
+    # D: ingest_jsonl — the bad page is left out, the good one stored rendered.
+    registry(_entry_spec(dict(PLAIN)))
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+    asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / "d.ckpt"),
+                                 it.resolve(CID, registry=REG)))
+    assert [c.content for c in store.points.values()] == ["Good\n\nA page that renders."]

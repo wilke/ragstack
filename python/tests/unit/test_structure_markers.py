@@ -307,3 +307,38 @@ def test_text_render_without_the_extra_exits_2_whatever_the_setting(
     err = capsys.readouterr().err
     assert "[markdown]" in err and "text_render" in err
     assert out is None or not out.exists()
+
+
+# --------------------------------------------------------------------------- #
+# path D turns the structure step on from the markers, not only the setting
+# --------------------------------------------------------------------------- #
+
+def test_ingest_jsonl_turns_the_structure_step_on_from_a_marker(tmp_path, monkeypatch) -> None:
+    """Fable M6. No marker that needs structure is applicable in this build, so
+    the entry's reading is stubbed with the markers PR 7 will produce; the
+    setting stays off. MUTATION: pass ``None`` (or nothing) to
+    ``structure_step_on`` in ``ingest_jsonl.run`` → nothing is stamped → fails."""
+    import asyncio
+
+    from ragstack.ingestion.structure import STAMP_KEYS
+    from tests.structure_support import paper
+    from tests.unit.test_ingest_jsonl_reingest import _args, _FakeEmbedder, _FakeStore
+
+    content, structure = paper()
+    shard = tmp_path / "s.jsonl"
+    write_shard(shard, [record(content, structure)])
+
+    def run(markers):
+        store = _FakeStore()
+        monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+        monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+        monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+        monkeypatch.setattr(ingest_jsonl, "_structure_markers", lambda args, target: markers)
+        asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / f"{id(markers)}.ckpt",
+                                           structure_metadata="off")))
+        return list(store.points.values())
+
+    off = run(NO_STRUCTURE_MARKERS)
+    on = run(StructureMarkers(structure_cuts="sections/1"))
+    assert off and not any(set(c.metadata) & set(STAMP_KEYS) for c in off)
+    assert on and all("structure_version" in c.metadata for c in on)

@@ -222,13 +222,44 @@ def test_heading_block_text_equals_the_title_exactly(rendered) -> None:
         assert x.start == 0 or text[x.start - 1] == "\n"
 
 
-def test_a_link_in_a_heading_is_part_of_the_title_and_the_block() -> None:
-    text, s = _render("# Install [the tool](https://t.example/x)\n\nBody.\n")
-    assert text == "Install the tool (https://t.example/x)\n\nBody."
+def test_a_link_in_a_heading_renders_as_its_text_only() -> None:
+    """Headings take raw mode's title rule (link text, no target); body links
+    keep theirs. MUTATION: render heading links as ``text (url)`` → fails."""
+    text, s = _render("# Install [the tool](https://t.example/x)\n\n"
+                      "Body [link](https://b.example/y).\n")
+    assert text == "Install the tool\n\nBody link (https://b.example/y)."
     [sec] = s.sections
-    assert sec.title == "Install the tool (https://t.example/x)"
+    assert sec.title == "Install the tool"
     [head, body] = s.blocks
     assert text[head.start:head.end] == sec.title and body.kind == "prose"
+
+
+_LINKED_HEADINGS = (
+    "# [Introduction](#intro)\n\nLead.\n\n"
+    "## [Methods](#methods)\n\nHow.\n\n"
+    "### ![Results](img/r.png)\n\nWhat.\n\n"
+    "## Results and [Discussion](https://d.example/x)\n\nWhy.\n\n"
+    "## `run` the <kbd>tool</kbd> $x$\n\nCode.\n\n"
+    "Usage [guide](#usage)\n-----\n\nSteps.\n\n"
+    "## [Installation](https://i.example/)\n\nInstall.\n"
+)
+
+
+def test_stripped_titles_and_roles_equal_raw_mode_for_headings_with_links() -> None:
+    """Roles parity: a linked heading must classify the same in both modes
+    (the review found ``Methods (#methods)`` → ``other`` in stripped mode)."""
+    raw = md.markdown_structure(_doc(_LINKED_HEADINGS))
+    text, plain = _render(_LINKED_HEADINGS)
+    assert raw is not None
+    classify_roles(raw.sections)
+    classify_roles(plain.sections)
+    as_pairs = [(x.title, x.roles) for x in raw.sections]
+    assert [(x.title, x.roles) for x in plain.sections] == as_pairs
+    assert as_pairs[1] == ("Methods", ["methods"])
+    assert ("Results and Discussion", ["discussion", "results"]) in as_pairs
+    assert [text[b.start:b.end] for b in plain.blocks if b.kind == "heading"] == [
+        x.title for x in plain.sections if x.title is not None]
+    assert "img/r.png" not in text.split("\n\n")[4]  # the heading line carries no target
 
 
 def test_block_kinds_and_captions_of_the_fixture(rendered) -> None:

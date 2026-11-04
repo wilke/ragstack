@@ -37,6 +37,8 @@ from tests.api.test_chunk_cap_status import (  # noqa: F401 — fixtures
     principals,
 )
 from tests.api.test_ingest_gowe_path import (  # noqa: F401 — the `gowe` fixture
+    AUTH,
+    SUBJECT,
     _upload,
     gowe,
 )
@@ -270,3 +272,47 @@ async def test_the_backstop_lets_through_what_it_cannot_refuse(
     r = await _upload(client, "a.pdf")
     assert r.status_code == 202, r.text
     assert gowe["engine"].submissions
+
+
+async def test_the_by_reference_ingest_is_refused_the_same_way_before_submit(
+    client, gowe, monkeypatch  # noqa: F811
+) -> None:
+    """The twin of the upload test, on ``POST /v1/ingest`` with a Workspace
+    reference. MUTATION: drop the gate call from that endpoint → the
+    submission is made → fails."""
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", UNWIRED)
+    _mark(monkeypatch, dict(PLAIN))
+    r = await client.post("/v1/ingest", headers=AUTH, json={
+        "source": f"ws:///{SUBJECT}/home/papers/x.pdf", "collection": "lib1"})
+    assert r.status_code == 422, r.text
+    assert "collection_id" in r.json()["detail"]
+    assert not gowe["engine"].submissions
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", WIRED)
+    r = await client.post("/v1/ingest", headers=AUTH, json={
+        "source": f"ws:///{SUBJECT}/home/papers/x.pdf", "collection": "lib1"})
+    assert r.status_code == 200, r.text
+    assert gowe["engine"].submissions
+
+
+# --------------------------------------------------------------------------- #
+# GoWe deployments refuse markers at create until the repin step R
+# --------------------------------------------------------------------------- #
+
+async def test_a_gowe_deployment_refuses_a_marker_at_create_until_the_repin(
+    client, _admin, monkeypatch, tmp_path
+) -> None:
+    """Until R, the GoWe workers' image predates the markers and would ingest a
+    marked collection unmarked. Flip ``GOWE_STRUCTURE_MARKERS_SUPPORTED`` (and
+    this pin) at R. MUTATION: drop the create-time refusal → 201 → fails."""
+    from ragstack.api.routers import collections as coll
+
+    assert coll.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    r, recorded = await _create(client, monkeypatch, tmp_path, dict(PLAIN), cid="gowe-marked")
+    assert r.status_code == 400, r.text
+    assert "repin" in r.json()["detail"] and recorded is None
+    plain_r, _ = await _create(client, monkeypatch, tmp_path, {}, cid="gowe-plain")
+    assert plain_r.status_code == 201, plain_r.text
+    monkeypatch.setattr(coll, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)  # what R does
+    r, recorded = await _create(client, monkeypatch, tmp_path, dict(PLAIN), cid="gowe-r")
+    assert r.status_code == 201 and recorded == PLAIN

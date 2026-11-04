@@ -212,12 +212,33 @@ def test_the_refusal_comes_before_the_dry_run_plan(driver, capsys) -> None:
     assert "batch(es)" not in capsys.readouterr().out
 
 
+#: A marker that passes the wiring check whatever the workflow's glossary
+#: step does (a hand-edited entry; this build refuses it at create).
+CUTS = {"structure_cuts": "sections/1"}
+
+
 @pytest.mark.parametrize("name", EMBED_WORKFLOWS)
 def test_a_marked_entry_on_a_wired_fixture_text_builds_a_submission(driver, name) -> None:
-    rc, submitted = driver(_wired(_shipped(name)), dict(PLAIN))
+    rc, submitted = driver(_wired(_shipped(name)), dict(CUTS))
     assert rc == "submitted" and len(submitted) == 1
     _cwl, inputs = submitted[0]
     assert inputs["collection_id"] == CID and inputs["shards"]
+
+
+def test_text_render_on_a_wired_glossary_free_workflow_builds_a_submission(driver) -> None:
+    rc, submitted = driver(_wired(_shipped("pdf-ingest.cwl")), dict(PLAIN))
+    assert rc == "submitted" and len(submitted) == 1
+
+
+@pytest.mark.parametrize("name", ["jats-ingest.cwl", "embed-bulk.cwl"])
+def test_text_render_on_a_workflow_with_a_glossary_step_is_refused(driver, capsys,
+                                                                   name) -> None:
+    """#828 PR 4 review B1: the glossary step hashes the RAW shard text; the
+    load would refuse every file after the embeds ran. MUTATION: drop the
+    glossary check → a submission is built → fails."""
+    rc, submitted = driver(_wired(_shipped(name)), dict(PLAIN))
+    assert rc == 2 and submitted == []
+    assert "glossary file" in capsys.readouterr().err
 
 
 def test_an_unmarked_entry_on_an_unwired_text_is_not_refused(driver) -> None:
@@ -227,9 +248,44 @@ def test_an_unmarked_entry_on_an_unwired_text_is_not_refused(driver) -> None:
 
 def test_a_workflow_without_an_embed_shard_step_is_not_refused(driver) -> None:
     """``ingest-bulk.cwl`` chunks with ingest_shard.py, which resolves the entry
-    itself: there is no embed step to wire."""
-    rc, submitted = driver(_shipped("ingest-bulk.cwl"), dict(PLAIN))
+    itself: there is no embed step to wire (it does run a glossary step, so
+    ``text_render`` there is refused for that reason, tested above)."""
+    rc, submitted = driver(_shipped("ingest-bulk.cwl"), dict(CUTS))
     assert rc == "submitted" and len(submitted) == 1
+    rc, submitted = driver(_shipped("ingest-bulk.cwl"), dict(PLAIN))
+    assert rc == 2 and submitted == []
+
+
+@pytest.mark.parametrize(("raw", "needle"), [
+    ('"just a string"', "not an object"),
+    ("[1, 2]", "not an object"),
+    ("{not json", "unreadable chunk_params"),
+])
+def test_malformed_chunk_params_are_refused_not_read_as_unmarked(tmp_path, capsys,
+                                                                 raw, needle) -> None:
+    """Argo N1: fail closed."""
+    import sqlite3
+
+    db = tmp_path / "reg.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE collections (id TEXT, collection TEXT, chunk_method TEXT, "
+                     "chunk_params TEXT)")
+        conn.execute("INSERT INTO collections VALUES (?, ?, ?, ?)", (CID, "s", "fixed", raw))
+    with pytest.raises(SystemExit) as ex:
+        gbi.entry_chunking(str(db), CID)
+    assert ex.value.code == 2 and needle in capsys.readouterr().err
+
+
+def test_a_registry_without_the_columns_is_an_exit_2_message(tmp_path, capsys) -> None:
+    import sqlite3
+
+    db = tmp_path / "reg.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE collections (id TEXT, collection TEXT)")
+        conn.execute("INSERT INTO collections VALUES (?, ?)", (CID, "s"))
+    with pytest.raises(SystemExit) as ex:
+        gbi.entry_chunking(str(db), CID)
+    assert ex.value.code == 2 and "cannot read chunk_method" in capsys.readouterr().err
 
 
 def test_an_unreadable_embed_step_fails_closed(driver, capsys) -> None:
@@ -244,3 +300,77 @@ def test_an_unreadable_embed_step_fails_closed(driver, capsys) -> None:
 def test_any_recorded_marker_counts_even_one_this_checkout_cannot_apply(driver) -> None:
     rc, submitted = driver(_shipped("pdf-ingest.cwl"), {"structure_cuts": "sections/1"})
     assert rc == 2 and submitted == []
+
+
+# --------------------------------------------------------------------------- #
+# B1: a glossary file is refused with text_render (path C's load step)
+# --------------------------------------------------------------------------- #
+
+def _glossary_file(tmp_path: Path) -> str:
+    import glossary_step
+
+    shard = tmp_path / "g-shard.jsonl"
+    shard.write_text(json.dumps({"text": "x", "path": "/d/p.md", "metadata": {}}) + "\n",
+                     encoding="utf-8")
+    out = tmp_path / "glossary.jsonl"
+    assert glossary_step.main([str(shard), "--out", str(out)]) == 0
+    return str(out)
+
+
+def test_load_refuses_a_glossary_file_for_a_text_render_entry(load, tmp_path,  # noqa: F811
+                                                              capsys) -> None:
+    """MUTATION: drop the refusal → the load reaches verification against the
+    raw-text hashes (unverifiable or refused per document) → fails."""
+    gl = _glossary_file(tmp_path)
+    rc, target = load({**_APPLIED, **PLAIN}, "--glossary-file", gl,
+                      spec=_spec(chunk_params=dict(PLAIN)))
+    assert rc == 2 and target is None
+    assert "glossary file cannot be used" in capsys.readouterr().err
+
+
+def test_load_keeps_the_glossary_file_for_an_unmarked_entry(load, tmp_path, capsys) -> None:  # noqa: F811
+    gl = _glossary_file(tmp_path)
+    rc, _target = load(dict(_APPLIED), "--glossary-file", gl, spec=_spec())
+    # The file is verified against the embedding file's documents (it names
+    # another document here, so that verification refuses) — but not by the
+    # text_render refusal.
+    assert "glossary file cannot be used" not in capsys.readouterr().err
+    assert rc in (0, 2)
+
+
+# --------------------------------------------------------------------------- #
+# ingest_chunks.py: pre-chunked JSON cannot honour a marker
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("params", [dict(PLAIN), {"structure_cuts": "sections/1"},
+                                    {"text_render": "junk"}])
+def test_ingest_chunks_refuses_a_marked_entry(registry, capsys, params) -> None:  # noqa: F811
+    import ingest_chunks
+
+    registry(_spec(chunk_params=params))
+    target = it.resolve(CID, registry="scratch828")
+    with pytest.raises(SystemExit) as ex:
+        ingest_chunks.refuse_marked_entry(target)
+    assert ex.value.code == 2
+    assert next(iter(params)) in capsys.readouterr().err
+
+
+def test_ingest_chunks_main_exits_before_reading_for_a_marked_entry(
+    registry, tmp_path, monkeypatch, capsys  # noqa: F811
+) -> None:
+    import ingest_chunks
+
+    registry(_spec(chunk_params=dict(PLAIN)))
+    monkeypatch.setattr(ingest_chunks, "run", lambda *a, **k: pytest.fail("reached run"))
+    monkeypatch.setattr(sys, "argv", ["ingest_chunks.py", str(tmp_path / "absent.json"),
+                                      "--collection-id", CID, "--registry", "scratch828"])
+    with pytest.raises(SystemExit) as ex:
+        ingest_chunks.main()
+    assert ex.value.code == 2 and "pre-chunked" in capsys.readouterr().err
+
+
+def test_ingest_chunks_accepts_an_unmarked_entry(registry) -> None:  # noqa: F811
+    import ingest_chunks
+
+    registry(_spec())
+    ingest_chunks.refuse_marked_entry(it.resolve(CID, registry="scratch828"))
