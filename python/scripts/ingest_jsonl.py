@@ -74,9 +74,12 @@ from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunker_config import (
     CHUNK_SIZE_UNIT_CHOICES,
     CHUNK_SIZE_UNIT_HELP,
+    NO_STRUCTURE_MARKERS,
+    StructureMarkers,
     build_chunker,
     needs_embed_fn,
     semantic_cap_from_params,
+    structure_from_params,
 )
 from ragstack.ingestion.chunkers import (
     BREAKPOINT_CAPS,
@@ -91,12 +94,13 @@ from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.structure import (
+    apply_text_render,
     attach_structure,
     require_structure_backends_or_exit,
     stamp_documents,
     structure_from_record,
-    structure_metadata_enabled,
     structure_provenance,
+    structure_step_on,
 )
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.metadata_schema import validate_chunks
@@ -659,11 +663,20 @@ async def run(
     # run (Markdown raw mode for `.md` records) and every chunk of a structured document gets
     # the section/role/block metadata, through the same stamp_documents the
     # pipeline's two chunk loops call. getattr: hand-built Namespaces (tests).
-    structure_on = structure_metadata_enabled(getattr(args, "structure_metadata", "off"))
+    # The collection's document-structure markers (#828 §7), from the registry
+    # entry through the one reader; none without an entry (--no-index, or a
+    # hand-built test run). text_render is applied in the chunk loop below,
+    # whatever --structure-metadata says (it is identity); a marker that needs
+    # structure turns the structure step on (structure_step_on).
+    markers = _structure_markers(args, target)
+    structure_on = structure_step_on(getattr(args, "structure_metadata", "off"), markers)
     structure_counts: Counter[str] = Counter()
     structure_dropped: Counter[str] = Counter()
     if structure_on:
         print("structure metadata: on", file=sys.stderr)
+    if markers:
+        print("structure markers: " + " ".join(
+            f"{k}={v}" for k, v in markers.applied().items()), file=sys.stderr)
     # Per-document metrics (optional). Append on resume so a resumed run adds to
     # the rows already written rather than truncating them.
     doc_metrics: DocMetricsWriter | None = None
@@ -961,6 +974,16 @@ async def run(
                 # record) run before chunking, off the loop and inside the
                 # semaphore like the chunker, counting into a LOCAL Counter
                 # merged on the loop thread (the pipeline's rule).
+                # #828 §7: the collection's text_render (the stripped
+                # Markdown render of a `.md` record) BEFORE the adapters, which
+                # then skip the rendered document — the pipeline's order.
+                if markers.text_render is not None:
+                    rendered: Counter[str] = Counter()
+                    try:
+                        await asyncio.to_thread(apply_text_render, [doc],
+                                                markers.text_render, rendered)
+                    finally:
+                        structure_counts.update(rendered)
                 if structure_on:
                     attached: Counter[str] = Counter()
                     try:
@@ -1257,6 +1280,24 @@ async def run(
     if structure_on:
         print(f"structure: {json.dumps(structure_provenance(structure_counts), sort_keys=True)}",
               file=sys.stderr)
+
+
+def _structure_markers(args: argparse.Namespace, target: Any) -> StructureMarkers:
+    """The document-structure markers (#828 §7) this run applies: the registry
+    ENTRY's, read by :func:`~ragstack.ingestion.chunker_config.structure_from_params`
+    (the API's, ``ingest_shard.py``'s and ``embed_shard.py``'s reader). There is
+    no marker flag, so nothing can contradict the entry. No entry (``target``
+    is ``None``: ``--no-index`` writes nothing durable, and the in-process
+    tests) → no marker — the documented skip of §8 path D. An unknown value, or
+    a marker this build cannot apply, exits 2."""
+    if target is None:
+        return NO_STRUCTURE_MARKERS
+    try:
+        return structure_from_params(args.chunk_method,
+                                     getattr(target.spec, "chunk_params", None))
+    except ValueError as e:
+        print(f"error: collection {target.collection_id!r} {e}", file=sys.stderr)
+        raise SystemExit(2) from None
 
 
 def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, Any]:
@@ -1556,6 +1597,10 @@ def main() -> None:
         chunk_overlap=args.chunk_overlap,
     )
     _refuse_size_unit_mismatch(args, target)
+    # #828 §7: a marker that needs the parser (text_render) refuses a missing
+    # [markdown] extra whatever --structure-metadata says, before any I/O.
+    require_structure_backends_or_exit(args.structure_metadata,
+                                       _structure_markers(args, target))
     asyncio.run(run(args, target))
 
 

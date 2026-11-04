@@ -38,6 +38,13 @@ sets it today. ``--registry`` without ``--collection-id`` is refused. Either way
 ``chunking`` object: the resolved ``collection_id`` (only when resolved) and the
 method/size/overlap/size unit as applied, which ``load_embeddings.py`` checks
 against the entry before any write.
+
+**Structure markers** (#828 PR 4). A resolved entry's document-structure
+markers (``chunk_params.text_render`` …) are read through
+``chunker_config.structure_from_params``, the reader every path uses, and
+applied (``text_render``: ``.md`` records are rendered to plain text before
+chunking); the header's ``chunking`` object and the receipt record them as
+applied. There is no marker flag; unresolved, there is no marker.
 """
 from __future__ import annotations
 
@@ -53,9 +60,12 @@ from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunker_config import (
     CHUNK_SIZE_UNIT_CHOICES,
     CHUNK_SIZE_UNIT_HELP,
+    NO_STRUCTURE_MARKERS,
+    StructureMarkers,
     build_chunker,
     needs_embed_fn,
     size_unit_from_params,
+    structure_from_params,
 )
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_shard import run_embed_shard
@@ -85,6 +95,22 @@ def _size_unit(args, spec=None) -> str:
         return size_unit_from_params(args.chunk_method, getattr(spec, "chunk_params", None))
     except ValueError as e:
         raise SystemExit(f"collection {e}") from None
+
+
+def _structure_markers(args, spec=None) -> StructureMarkers:
+    """The document-structure markers (#828 §7), **from the resolved registry
+    entry** through :func:`~ragstack.ingestion.chunker_config.structure_from_params`
+    — the reader ``ingest_shard.py``, ``ingest_jsonl.py`` and the API use. There
+    is no marker flag, so nothing on the command line can contradict them.
+    Unresolved (no ``--collection-id``): no marker, as before #828 PR 4. An
+    unknown value, or a marker this build cannot apply, exits 2."""
+    if spec is None:
+        return NO_STRUCTURE_MARKERS
+    try:
+        return structure_from_params(args.chunk_method, getattr(spec, "chunk_params", None))
+    except ValueError as e:
+        print(f"error: collection {getattr(spec, 'id', '')!r} {e}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from None
 
 
 def _build_chunker(args, spec=None):
@@ -118,12 +144,16 @@ def _build_chunker(args, spec=None):
     return chunker
 
 
-def _applied_chunking(args, chunker, target=None) -> dict:
+def _applied_chunking(args, chunker, target=None,
+                      markers: StructureMarkers = NO_STRUCTURE_MARKERS) -> dict:
     """The header's ``chunking`` object (#828 PR 3): the ``collection_id``
     resolved (only when one was), and the method, size, overlap and size unit
     as APPLIED — size, overlap and unit read off the built chunker, so a key a
     method does not apply (``size_unit`` on ``fixed``/``fixed_token``) is absent
-    rather than echoed from a flag the chunker ignored."""
+    rather than echoed from a flag the chunker ignored. From #828 PR 4 also the
+    document-structure markers as applied (``text_render`` …), each key absent
+    when not applied; ``load_embeddings.py`` refuses a file whose markers differ
+    from the entry's."""
     out: dict = {}
     if target is not None:
         out["collection_id"] = target.collection_id
@@ -133,11 +163,13 @@ def _applied_chunking(args, chunker, target=None) -> dict:
     unit = getattr(chunker, "size_unit", None)
     if unit is not None:
         out["size_unit"] = unit
+    out.update(markers.applied())
     return out
 
 
 def _build_pipeline(args, http: httpx.AsyncClient, spec=None) -> IngestionPipeline:
     chunker = _build_chunker(args, spec)  # fail fast on a bad chunk config, before any I/O
+    markers = _structure_markers(args, spec)
     # None -> scale with the fleet: 8 in-flight PER endpoint. A fixed total
     # silently caps a wider fleet at a narrower fleet's throughput.
     concurrency = args.embedding_max_concurrency or 8 * max(len(args.embedding_url), 1)
@@ -173,7 +205,10 @@ def _build_pipeline(args, http: httpx.AsyncClient, spec=None) -> IngestionPipeli
                              # Payload only (not collection identity). getattr:
                              # hand-built Namespaces in tests predate the flag.
                              structure_metadata=structure_metadata_enabled(
-                                 getattr(args, "structure_metadata", "off")))
+                                 getattr(args, "structure_metadata", "off")),
+                             # #828 §7: the resolved entry's markers (none when
+                             # unresolved); text_render is applied at ingest.
+                             structure_markers=markers)
 
 
 def _passthrough_keys(args) -> list[str]:
@@ -222,13 +257,17 @@ async def amain(args, target=None) -> int:
         provenance = provenance_from_args(args)
         receipt = await run_embed_shard(pipeline, args.shard, args.tenant, shard_id,
                                         args.out, group_size=group,
-                                        chunking=_applied_chunking(args, pipeline.chunker,
-                                                                    target),
+                                        chunking=_applied_chunking(
+                                            args, pipeline.chunker, target,
+                                            pipeline.structure_markers),
                                         provenance=provenance)
     # #754, ADR-0011: what the step DID on this shard (None if off or never
     # applied; a degraded run is recorded with applied_batches: 0).
     receipt.enrichment = merge_enrichment(pipeline.glossary_provenance(),
                                           pipeline.structure_provenance())
+    # #828 §7: the markers as applied, as ingest_shard's receipt records them
+    # (None when none, so an unmarked receipt is unchanged).
+    receipt.chunking = pipeline.structure_markers.applied() or None
     receipt.write(args.receipt)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"chunks={receipt.n_chunks} → {args.out}"
@@ -350,6 +389,11 @@ def main(argv=None) -> int:
     # refusal at configuration (exit 2), never a shard embedded unstructured.
     require_structure_backends_or_exit(args.structure_metadata)
     target = _resolve_target(args)
+    # #828 §7: a marker that needs the parser (text_render) refuses a missing
+    # [markdown] extra whatever --structure-metadata says, before any embed.
+    require_structure_backends_or_exit(
+        args.structure_metadata,
+        _structure_markers(args, target.spec if target is not None else None))
     return asyncio.run(amain(args, target))
 
 
