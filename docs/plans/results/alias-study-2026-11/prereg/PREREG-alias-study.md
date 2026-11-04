@@ -1179,7 +1179,7 @@ reached or every stratum is exhausted; within a stratum the first pairs in the o
 `sha256(261101|alias|drift|<batch>|<pair>)` are taken. Agreement is computed on the
 pairs where Opus answers. **Alarm, checked after every judging batch (as amended by R29):** the cumulative agreement between the
 final label and Opus is computed and reported overall and per arm, with **0.97 overall** and **0.95 per
-arm** as reported reference lines: a scope below its line is flagged, and this never pauses labelling.
+arm** as reported reference lines: a scope with at least 100 Opus-answered pairs that is below its line is flagged, and this never pauses labelling.
 Labelling **pauses** only on the **arm gap**: when the largest and the smallest of the three arms'
 agreements differ by **more than 0.05**. The gap is checked only when every arm has at least **100**
 Opus-answered pairs (owner, 2026-11-01; §14 O4).
@@ -1230,7 +1230,7 @@ it is far smaller, because most top-10 lists repeat across retrievers, glossary 
 and judging on demand (§6.2) skips the pairs of every record whose gold is in a cell's top 10. At
 the validation throughput, judge C took about 1.85 s per pair and judge E about 0.74 s per pair (4 in
 flight). The tiebreaker load is expected at about 2–2.5 % of pairs and Opus at 5 %. **Gateway caps for
-the judge** are set before the freeze (§14 O7): Opus as below; Argon has no study cap (R30). **The Opus drift cap**
+the judge** are set before the freeze (§14 O7): Opus as below; Argon has no study cap below the registry size (`argon_share` 1.0, enforced in main mode; R30). **The Opus drift cap**
 (owner, 2026-11-01) is **7 % of the judged (deduplicated) pairs**, and it counts **every Opus call,
 re-issued calls included** (the cumulative calls log plus the planned selection may not exceed it). The budget stop and `PAUSE`
 apply, as in the calibration harness.
@@ -1724,14 +1724,14 @@ entry, not a silent retry.
 
 ## 14. Open decisions for the owner
 
-Only items not settled by D1–D10 and R1–R28.
+Only items not settled by D1–D10 and R1–R30.
 
 | # | decision | proposal in this draft |
 |---|---|---|
 | O1 | **Numeric definition of the C gate** | **Decided (owner, 2026-11-01): rule C.** Evaluated only when ΔG > 0 (H1 is one-sided; at ΔG ≤ 0 the gate is moot). H1 is GATE-NOT-EVALUABLE if ΔC (merged − none, base × default, 300 C) has the same sign as ΔG, \|ΔC\| ≥ ½ \|ΔG\| in points, and ΔC's 95 % paper-cluster bootstrap CI (seeded) excludes 0. A C drop never trips the gate (it feeds Layer 2's C cost rule, made CI-based at margin −1 point by R2 and replaced by R12: point estimate at −1 point, CI bound at −3.6 points). Baseline C found@10 printed beside it with a ceiling note. Written in §3.1, §3.2, §3.4 |
 | O2 | Reading of "H1b at full α" | **Decided (owner, 2026-11-01): Option B.** H1 and H2 start at one-sided 0.025 each (Holm over 2); a confirmed member passes its 0.025 to the other. H1b is tested only if **both** H1 and H2 are confirmed, at α = 0.05 (fixed sequence after the Holm pair); otherwise it is not tested and is reported descriptively. H2's gold-only gate failing = H2 not confirmed. Written in §3.1, §3.2 and §8. **Superseded (owner, 2026-11-02/03, R1):** two families; H1 at 0.05 with H1b after it in fixed sequence (Family G), H2 alone at 0.05 (Family N); no level passes between H1 and H2 |
 | O3 | H2 when the judged test is significant but the gold-only gate fails | **Decided (owner, 2026-11-02/03, with R1):** label *not confirmed (gold-only direction gate)*. With H2 alone in Family N there is no level to pass on. Written in §3.1, §3.2 |
-| O4 | Minimum Opus-answered pairs before a drift alarm can fire | **Decided (owner, 2026-11-01).** 100 per scope (overall and per arm); with it the drift-sample arithmetic: 5 % of each 2,000-pair batch rounded half up, a capped stratum's shortfall reallocated to the others. Written in §6.3 |
+| O4 | Minimum Opus-answered pairs before a drift alarm can fire | **Decided (owner, 2026-11-01).** 100 per scope (overall and per arm); as amended by R29, the 100-pair minimum applies per arm before the arm gap is checked, and per scope before a reference-line flag is shown; with it the drift-sample arithmetic: 5 % of each 2,000-pair batch rounded half up, a capped stratum's shortfall reallocated to the others. Written in §6.3 |
 | O5 | Attribution of a neighbour shared by several study papers | **Decided (owner, 2026-11-01).** Added once; attributed to the first study paper in the seeded order (`261101\|alias\|neighbours`, `…\|order\|<study paper>`); no replacement for the others; each random draw takes per study paper as many papers as were attributed to it, so the arms hold equal unique counts. Written in §5.1 |
 | O6 | How "prefer PMC/JATS" is applied | **Decided (owner, 2026-11-01).** PMC JATS XML for every added paper in both arms where it exists; the random arm's PDF share matched to the neighbour arm's; every added paper scanned for C0 control characters (other than tab, newline, carriage return), a PDF paper excluded when any occurs in > 0.5 % of its chunks; exclusions counted per arm. Written in §5.1 |
 | O7 | Gateway caps for the judge | **Opus decided (owner, 2026-11-01):** ≤ 7 % of judged pairs, re-issued calls counted (§6.5). **Argon decided (owner, 2026-11-04, R30): no study cap.** The pilot measured 213 tiebreaks on 3,574 pairs (6.0 %; 8.1 % in stage A), above the 4 % drafted here; the judge config sets `argon_share` 1.0, which only stops a pathological run. The gateway budget (at least 10 M tokens a day) and the harness's per-run budget stop still apply |

@@ -108,7 +108,7 @@ refuses without ``--notice-acknowledged`` and a preflight of the same plan, whic
 batch and the sha256 of its selection); the harness's budget stop (exit 76, PAUSE) and call cap
 (``limits``) apply; and the study's caps (§14 O7, ``caps``): the cumulative calls of a backend
 (its calls log, one row per HTTP call, re-issues included) plus the planned selection may not
-exceed ``argon_share`` / ``opus_share`` (defaults 0.04 and 0.07; §14 O7, §6.5) of the registry's
+exceed ``argon_share`` / ``opus_share`` (defaults 1.0 (R30) and 0.07; §14 O7, §6.5) of the registry's
 (deduplicated) pairs, nor
 ``argon_max_calls`` / ``opus_max_calls`` when set; inside a run the remaining cap is the
 segment's call cap, so a re-issue can never overrun it (the run pauses at the cap).
@@ -197,7 +197,8 @@ FIXED: dict[str, dict[str, Any]] = {
 DEFAULTS: dict[str, Any] = {
     "batch_size": 2000,
     "drift": {"share": 0.05, "min_pairs": 100, "overall": 0.97, "per_arm": 0.95, "arm_gap": 0.05},
-    "caps": {"argon_share": 0.04, "opus_share": 0.07, "argon_max_calls": None, "opus_max_calls": None},
+    # R30 (owner, 2026-11-04): no study cap below the registry size
+    "caps": {"argon_share": 1.0, "opus_share": 0.07, "argon_max_calls": None, "opus_max_calls": None},
     "unjudged_flag_share": 0.01,
 }
 GW_ROLE = {"argon": "tiebreak", "opus": "drift_ref"}
@@ -275,6 +276,12 @@ def pinned_problems(cfg: Mapping[str, Any]) -> None:
         bad.append(f"retry_cap {cfg['retry_cap']} != {MAX_GW_ATTEMPTS} (§6.3, R4)")
     if sorted(cfg["drift_ref"]["served_models"]) != sorted(OPUS_SERVED_MODELS):
         bad.append(f"drift_ref.served_models {cfg['drift_ref']['served_models']} != {OPUS_SERVED_MODELS}")
+    if ar.config_mode(cfg) == "main":
+        caps = cfg["caps"]
+        if float(caps["argon_share"]) != 1.0:
+            bad.append(f"caps.argon_share {caps['argon_share']} != 1.0 (R30: no Argon cap below the registry size)")
+        if caps.get("argon_max_calls") is not None:
+            bad.append(f"caps.argon_max_calls {caps['argon_max_calls']} must be null (R30: no Argon call cap)")
     lim = cfg.get("limits") or {}
     miss = [k for k in REQUIRED_LIMITS if lim.get(k) is None]
     if miss:

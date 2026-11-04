@@ -460,6 +460,20 @@ def test_an_arm_gap_remedy_restarts_every_arm_s_window() -> None:
     assert r4["scopes"]["neighbour"]["alarm_window"]["after_batch"] == 1 and r4["arm_gap"]["alarm_window"] is None
 
 
+def test_the_latest_remedy_per_scope_wins() -> None:
+    cfg = aj.DEFAULTS["drift"]
+    f1, o1, s1, a1, b1 = arms_inputs({"base": (100, 99), "neighbour": (100, 88), "random": (100, 97)}, batch=1)
+    f7, o7, s7, a7, b7 = arms_inputs({"base": (100, 97), "neighbour": (100, 96), "random": (100, 97)}, batch=7)
+    args = ({**f1, **f7}, {**o1, **o7}, s1 + s7, {**a1, **a7}, cfg)
+    r3 = {"deviation_id": "D-3", "date": "2026-11-05", "action": "x", "scope": "arm_gap", "through_batch": 3,
+          "signed_by": "owner"}
+    r6 = {**r3, "deviation_id": "D-6", "through_batch": 6}
+    for order in ((r3, r6), (r6, r3)):
+        g = aj.drift_stats(*args, order, {**b1, **b7})["arm_gap"]
+        assert g["alarm_window"]["after_batch"] == 6 and g["alarm_window"]["deviation_id"] == "D-6"
+        assert {a: v["answered"] for a, v in g["arms"].items()} == {"base": 100, "neighbour": 100, "random": 100}
+
+
 def test_config_pins_the_judges(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     good = config(w)
@@ -598,8 +612,19 @@ def test_served_model_mismatch_stops_and_stores_nothing(tmp_path: Path) -> None:
     assert not (out / "labels-qwen-C.jsonl").exists() or asc.read_jsonl(out / "labels-qwen-C.jsonl") == []
 
 
+def test_r30_main_refuses_an_argon_cap_and_pilot_keeps_loading(tmp_path: Path) -> None:
+    assert aj.DEFAULTS["caps"]["argon_share"] == 1.0
+    w = fx.World(tmp_path)
+    for caps in ({"argon_share": 0.04}, {"argon_share": 1.0, "argon_max_calls": 500}):
+        with pytest.raises(SystemExit, match="R30"):
+            aj.validate_config(strict_config(w, "main", caps=caps))
+    assert aj.validate_config(strict_config(w, "main", caps={"argon_share": 1.0}))["caps"]["argon_share"] == 1.0
+    assert aj.validate_config(strict_config(w, "main"))["caps"]["argon_max_calls"] is None
+    assert aj.validate_config(strict_config(w, "pilot", caps={"argon_share": 0.12}))["caps"]["argon_share"] == 0.12
+
+
 def test_caps_refuse(tmp_path: Path) -> None:
-    w, cp = world(tmp_path, caps={"argon_share": 0.04, "opus_share": 0.0})
+    w, cp = world(tmp_path, caps={"argon_share": 0.04, "opus_share": 0.0})   # dry run: R30 is pinned in main only
     main(cp, "build-pairs", "--stage", "A")
     with pytest.raises(SystemExit, match="opus cap"):
         main(cp, "preflight", "--batch", "1", "--backend", "opus", http=dry.FakeJudges())
