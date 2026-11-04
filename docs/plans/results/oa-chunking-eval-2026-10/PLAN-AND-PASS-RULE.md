@@ -131,3 +131,9 @@ Ingest facts checked 2026-11-03 at v1.6.22 (dev's checkout):
 - Stratum guard size: report all strata. The minimum stratum size for the guard is chosen
   at the freeze from the noise run (interval width vs stratum size), not from main-run
   results; strata below it are reported, marked "below cut-off".
+- Grader endpoint note (2026-11-04): from about 2026-11-04 23:30 UTC until at most 2026-11-30,
+  the local endpoint that served Llama-4-Scout answers with Qwen3.6-35B-A3B under Scout's
+  model id (owner decision on the inference host). Rule: no grading call goes to that endpoint
+  under the Scout id while the alias is in place; Scout counts as a grader only after the real
+  model is confirmed back (dated notice). Every grading row records the model id the endpoint
+  reported and the call time, so rows from the alias window can be found and excluded.
