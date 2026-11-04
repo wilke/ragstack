@@ -18,7 +18,6 @@ deterministic-id contract above.
 from __future__ import annotations
 
 import bisect
-import dataclasses
 import logging
 import math
 import re
@@ -896,14 +895,13 @@ STRUCTURE_CUTS: tuple[str, ...] = (STRUCTURE_CUTS_SECTIONS,)
 
 
 def doc_cut_segments(doc: Document) -> list[Segment] | None:
-    """The cut segments of ``doc`` (:func:`~ragstack.ingestion.structure.cut_segments`),
-    or ``None`` when it has no usable structure — none, one that raises, or one
-    whose segments do not partition the text (a structure is validated where
-    it is attached, so this is a backstop). A whitespace-only segment is folded
-    into the segment before it (the first one into the one after it): it would
-    otherwise be a chunk of nothing."""
+    """The cut segments of ``doc`` — :func:`~ragstack.ingestion.structure.cut_segments`,
+    the same list the stamp reads — or ``None`` when it has no usable
+    structure: none, one that raises, one whose segments do not partition the
+    text (a structure is validated where it is attached, so this is a
+    backstop), or a text with nothing but whitespace."""
     text = doc.content
-    if doc.structure is None or not text:
+    if doc.structure is None or not text.strip():
         return None
     try:
         segs = cut_segments(doc.structure, text)
@@ -912,20 +910,7 @@ def doc_cut_segments(doc: Document) -> list[Segment] | None:
     if (not segs or segs[0].start != 0 or segs[-1].end != len(text)
             or any(a.end != b.start for a, b in zip(segs, segs[1:], strict=False))):
         return None
-    out: list[Segment] = []
-    pending: int | None = None
-    for seg in segs:
-        if not text[seg.start:seg.end].strip():
-            if out:
-                out[-1] = dataclasses.replace(out[-1], end=seg.end)
-            elif pending is None:
-                pending = seg.start
-            continue
-        if pending is not None:
-            seg = dataclasses.replace(seg, start=pending)
-            pending = None
-        out.append(seg)
-    return out or None
+    return segs
 
 
 def _units_by_segment(
@@ -2830,16 +2815,24 @@ def semantic_chunking_provenance(chunker: object) -> dict | None:
     }
 
 
+#: Version of :func:`sentence_tolerance_provenance`'s record (#828 PR 7). Its
+#: own counter, not :data:`CHUNKING_PROVENANCE_VERSION`: the record is new and
+#: appears only under ``structure_cuts``, so no existing receipt changes.
+SENTENCE_TOLERANCE_PROVENANCE_VERSION = 1
+
+
 def sentence_tolerance_provenance(chunker: object) -> dict | None:
     """What a ``sentence`` chunker applies of the #831 tolerance under
     ``structure_cuts`` (#828 PR 7), for the receipt's ``chunking`` object:
-    ``method``, the target ``chunk_size`` (tokens), ``size_tolerance``,
+    ``v`` (:data:`SENTENCE_TOLERANCE_PROVENANCE_VERSION`), ``method``, the
+    target ``chunk_size`` (tokens), ``size_tolerance``,
     ``min_piece``, the applied ``ceiling`` (already clamped to the window) and
     ``window_budget``. ``None`` for every other chunker and for a sentence
     chunker without the tolerance, so their receipts are unchanged."""
     if not isinstance(chunker, SentenceChunker) or chunker.size_tolerance is None:
         return None
     return {
+        "v": SENTENCE_TOLERANCE_PROVENANCE_VERSION,
         "method": "sentence",
         "chunk_size": chunker.target_tokens,
         "size_tolerance": chunker.size_tolerance,

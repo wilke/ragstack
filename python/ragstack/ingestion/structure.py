@@ -678,30 +678,69 @@ def _heading_only(seg: Segment, blocks: list[Block], block_starts: list[int],
 
 def cut_segments(structure: DocumentStructure, content: str, *,
                  attach_headings: bool = True) -> list[Segment]:
-    """The segments ``structure_cuts`` chunks on (§7.1): :func:`section_segments`
-    plus the heading-attach rule — a segment that holds only a heading (a
-    titled parent whose own text is just its heading, or a titled leaf with no
-    body) is folded into the segment that FOLLOWS it, repeatedly, so a heading
-    never ends up alone in a chunk. A heading-only last segment stays as it
-    is (there is nothing after it to travel with). ``attach_headings=False``
-    is :func:`section_segments` unchanged. The result partitions
+    """The segments ``structure_cuts`` chunks on (§7.1), THE one list the cutter
+    (:func:`~ragstack.ingestion.chunkers.doc_cut_segments`) and the stamp
+    (:class:`StructureIndex` ``attach_headings``) both use:
+
+    * :func:`section_segments`, then
+    * the heading-attach rule: a segment that holds only a heading (a titled
+      parent whose own text is just its heading, or a titled leaf with no body)
+      is folded into the segment that FOLLOWS it — repeatedly, but only inside
+      its own parent: a parent's heading-only lead text into its first child,
+      a heading-only leaf into the next segment under the same parent. A
+      heading-only last child is NOT folded into the next parent's text; it
+      stays its own segment (and can still merge as a whole sibling), as does
+      a heading-only last segment. The rule is at segment level: inside a long
+      segment a packer may still cut right after a heading line;
+    * a whitespace-only segment folded into the segment before it (the first
+      one into the one after it): it would otherwise be a chunk of nothing.
+
+    ``attach_headings=False`` is :func:`section_segments` unchanged (the stamp
+    of every collection without the marker). The result partitions
     ``[0, len(content))``."""
     segs = section_segments(structure)
     if not attach_headings:
         return segs
+    sections = structure.sections
+    parents = _tree(sections)
+    has_children = {p for p in parents if p is not None}
+
+    def within(seg: Segment) -> int:
+        """End of the section a heading-only ``seg`` may travel inside: its own
+        section for a parent's lead text, else its parent (the root: the text)."""
+        anchor = seg.owner if seg.owner in has_children else parents[seg.owner]
+        return len(content) if anchor is None else sections[anchor].end
+
     blocks = structure.blocks
     starts = [b.start for b in blocks]
-    out: list[Segment] = []
+    attached: list[Segment] = []
     pending: int | None = None
     for k, seg in enumerate(segs):
-        if k + 1 < len(segs) and _heading_only(seg, blocks, starts, content):
+        if (k + 1 < len(segs) and segs[k + 1].start < within(seg)
+                and _heading_only(seg, blocks, starts, content)):
             if pending is None:
                 pending = seg.start
             continue
         if pending is not None:
             seg = Segment(pending, seg.end, seg.owner, seg.group)
             pending = None
+        attached.append(seg)
+    out: list[Segment] = []
+    lead: int | None = None
+    for seg in attached:
+        if not content[seg.start:seg.end].strip():
+            if out:
+                last = out[-1]
+                out[-1] = Segment(last.start, seg.end, last.owner, last.group)
+            elif lead is None:
+                lead = seg.start
+            continue
+        if lead is not None:
+            seg = Segment(lead, seg.end, seg.owner, seg.group)
+            lead = None
         out.append(seg)
+    if lead is not None:  # nothing but whitespace: one segment
+        out = [Segment(lead, attached[-1].end, attached[-1].owner, attached[-1].group)]
     return out
 
 
@@ -711,8 +750,9 @@ def embed_text(chunk: Chunk, mode: str | None, *, budget: int | None = None,
     ``embed_heading_path``). Mode ``None``: ``chunk.content``, untouched. Mode
     ``"prefix/1"``: ``" › ".join(section_path) + "\\n" + content``.
 
-    Never invents a path: a chunk with no ``section_path`` (an unstructured
-    document, a degraded stamp, text before the first heading) is embedded
+    Never invents a path: a chunk with no STAMPED ``section_path`` (an
+    unstructured document, a record whose own metadata happens to carry the
+    key, a degraded stamp, text before the first heading) is embedded
     unprefixed and counted ``embed:heading_prefix_missing``. Chunks are sized
     on their content alone, so with a ``budget`` (the window budget the chunk
     was sized under) and a ``token_counter`` the prefix is cut from the LEFT —
@@ -724,7 +764,10 @@ def embed_text(chunk: Chunk, mode: str | None, *, budget: int | None = None,
         return chunk.content
     if mode != "prefix/1":  # pragma: no cover — the reader refuses other values
         raise ValueError(f"unknown embed_heading_path mode {mode!r}")
-    path = chunk.metadata.get("section_path") or []
+    # Only a path the stamp wrote (it always writes structure_version), never
+    # one that arrived in a record's own metadata (_make_chunk copies it).
+    path = (chunk.metadata.get("section_path") or []
+            if chunk.metadata.get("structure_version") else [])
     if not path:
         if counts is not None:
             counts["embed:heading_prefix_missing"] += 1
