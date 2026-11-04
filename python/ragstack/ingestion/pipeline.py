@@ -9,9 +9,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ragstack.ingestion.boilerplate import BoilerplateFilter
+from ragstack.ingestion.chunker_config import NO_STRUCTURE_MARKERS, StructureMarkers
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
 from ragstack.ingestion.structure import (
+    apply_text_render,
     attach_structure,
     stamp_documents,
     structure_provenance,
@@ -93,6 +95,7 @@ class IngestionPipeline:
         glossary_attacher: SymbolGlossaryAttacher | None = None,
         work_identity: WorkIdentityStage | None = None,
         structure_metadata: bool = False,
+        structure_markers: StructureMarkers | None = None,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -133,7 +136,16 @@ class IngestionPipeline:
         # ids and the embedded text are unchanged, so it is not collection
         # identity (Q3). Off (the default): the path is byte-for-byte what it
         # was. ``structure_counts`` feeds the receipt's ``enrichment.structure``.
-        self.structure_metadata = structure_metadata
+        #
+        # ``structure_markers`` (#828 §7) are the collection's document-structure
+        # markers, read from its registry entry by THE one reader
+        # (``chunker_config.structure_from_params``). ``text_render`` is applied
+        # here at ingest (``_render_text``), whatever the setting: it is identity.
+        # A marker that needs structure to chunk or embed
+        # (``markers.needs_structure``) turns the structure step on whatever
+        # ``structure_metadata`` says (§6). None = no marker: today's behaviour.
+        self.structure_markers = structure_markers or NO_STRUCTURE_MARKERS
+        self.structure_metadata = structure_metadata or self.structure_markers.needs_structure
         self.structure_counts: Counter[str] = Counter()
         # The collection this pipeline writes into. The vector store and text
         # index carry it implicitly (they ARE per-collection); the graph store is
@@ -288,6 +300,7 @@ class IngestionPipeline:
                 else readable_tenants(tenant_id),
                 policy=check.policy, source=source, seen=check.seen,
             )
+        await self._render_text(to_chunk)
         await self._attach_structure(to_chunk)
         all_chunks: list[Chunk] = []
         for doc in to_chunk:
@@ -460,6 +473,22 @@ class IngestionPipeline:
         if result.chunks_with_glossary:
             log.info("ingest %r: symbol glossary %s", source, result.summary())
 
+    async def _render_text(self, documents: list[Document]) -> None:
+        """Apply the collection's ``text_render`` marker (#828 §7: the stripped
+        Markdown render for ``.md`` documents) — after load and DOI enrichment,
+        before :meth:`_attach_structure` and chunking, on both chunk loops. It
+        replaces ``content`` (identity), so it runs whatever the structure
+        setting says; no marker → no-op. Off the event loop like the adapters,
+        counting into a LOCAL Counter merged on the loop thread."""
+        render = self.structure_markers.text_render
+        if render is None or not documents:
+            return
+        local: Counter[str] = Counter()
+        try:
+            await asyncio.to_thread(apply_text_render, documents, render, local)
+        finally:
+            self.structure_counts.update(local)
+
     async def _attach_structure(self, documents: list[Document]) -> None:
         """Run the ingest adapters (#828 §2: Markdown raw mode, ``markdown/1``)
         when the structure step is on. Off the event loop, like the stamp: a
@@ -591,6 +620,7 @@ class IngestionPipeline:
         there is no prior data to protect)."""
         documents: list[Document] = self.loader.load(source)
         await self._apply_doi_enrichment(documents)
+        await self._render_text(documents)
         await self._attach_structure(documents)
         step = max(1, group_size)
         for start in range(0, len(documents), step):

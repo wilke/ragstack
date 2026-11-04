@@ -23,6 +23,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable, Collection
+from dataclasses import dataclass
 from typing import Any
 
 from ragstack.ingestion.chunkers import (
@@ -332,6 +333,126 @@ def size_unit_from_params(method: str | None, params: Any) -> str:
             f"got {unit!r}"
         )
     return str(unit)
+
+
+#: The four document-structure markers (#828 §7, §9.5): ``chunk_params`` keys
+#: under the #829 discipline — absent = today's behaviour exactly, present =
+#: applied, an unknown value refused. Each is collection identity (it rides in
+#: ``chunk_params``, so in ``chunk_descriptor()`` -> ``spec_hash`` -> the
+#: physical name). Key -> the values this source tree knows.
+TEXT_RENDER_PARAM = "text_render"
+STRUCTURE_CUTS_PARAM = "structure_cuts"
+EMBED_HEADING_PATH_PARAM = "embed_heading_path"
+STRUCTURE_INFER_PARAM = "structure_infer"
+#: ``text_render``: the Markdown adapter's stripped plain-text render (§9.1).
+TEXT_RENDER_MARKDOWN_PLAIN = "markdown-plain/1"
+STRUCTURE_MARKER_VALUES: dict[str, tuple[str, ...]] = {
+    TEXT_RENDER_PARAM: (TEXT_RENDER_MARKDOWN_PLAIN,),
+    STRUCTURE_CUTS_PARAM: ("sections/1",),
+    EMBED_HEADING_PATH_PARAM: ("prefix/1",),
+    STRUCTURE_INFER_PARAM: ("text-heuristic/1",),
+}
+#: Every marker key, in the order the header and receipt record them.
+STRUCTURE_MARKER_PARAMS: tuple[str, ...] = tuple(STRUCTURE_MARKER_VALUES)
+#: Markers this build PARSES but cannot yet APPLY: ``structure_cuts`` and
+#: ``embed_heading_path`` are #828 PR 7, ``structure_infer`` PR 8. Under the
+#: #829 discipline "present = applied", so a marker that would be silently
+#: ignored is refused instead (400 at create, exit 2 on the bulk tools) — a
+#: collection created now and chunked unmarked would chunk differently once
+#: the behaviour lands: one spec, two chunkings. The PR that implements a
+#: marker removes it from this set, and every path opens at once.
+UNAPPLIED_STRUCTURE_MARKERS: frozenset[str] = frozenset(
+    {STRUCTURE_CUTS_PARAM, EMBED_HEADING_PATH_PARAM, STRUCTURE_INFER_PARAM}
+)
+
+
+@dataclass(frozen=True)
+class StructureMarkers:
+    """A collection's document-structure markers, as THE one reader
+    (:func:`structure_from_params`) resolved them. ``None`` = absent (today's
+    behaviour). Shared by the API, ``ingest_shard``, ``embed_shard`` and
+    ``ingest_jsonl``, the embedding-file header and the receipts."""
+
+    text_render: str | None = None
+    structure_cuts: str | None = None
+    embed_heading_path: str | None = None
+    structure_infer: str | None = None
+
+    @property
+    def needs_structure(self) -> bool:
+        """The chunker or the embed input needs ``section_path`` / section
+        boundaries, so the adapters run and the stamp is written whatever
+        ``STRUCTURE_METADATA`` says (§6: "a marker overrides the setting";
+        otherwise one spec gives two results by deployment setting)."""
+        return self.structure_cuts is not None or self.embed_heading_path is not None
+
+    @property
+    def requires_parser(self) -> bool:
+        """An ingest adapter's parser must be installed: ``text_render`` IS the
+        Markdown adapter's stripped output, and ``needs_structure`` runs the
+        adapters. A missing parser is then a configuration-level refusal."""
+        return self.text_render is not None or self.needs_structure
+
+    def applied(self) -> dict[str, str]:
+        """The markers set, ``{key: value}`` in :data:`STRUCTURE_MARKER_PARAMS`
+        order — what the embedding-file header's and the receipt's ``chunking``
+        object record "as applied" (each key absent when not applied)."""
+        return {k: v for k in STRUCTURE_MARKER_PARAMS
+                if (v := getattr(self, k)) is not None}
+
+    def __bool__(self) -> bool:
+        return bool(self.applied())
+
+
+#: No marker: today's behaviour on every path.
+NO_STRUCTURE_MARKERS = StructureMarkers()
+
+
+def structure_from_params(
+    method: str | None, params: Any, *,
+    unapplied: Collection[str] = UNAPPLIED_STRUCTURE_MARKERS,
+) -> StructureMarkers:
+    """THE one reader of the document-structure markers (#828 §7) out of a
+    collection's ``chunk_params`` — for the API's create validation and
+    in-process ingest, ``ingest_shard``, ``embed_shard`` (through PR 3's
+    resolved entry), ``ingest_jsonl``, ``load_embeddings``' header check and
+    ``gowe_batch_ingest``'s pre-check, so no two of them can read a spec
+    differently.
+
+    * Every method accepts every marker (§7: ``structure_cuts`` on ``fixed``
+      is pointless but allowed); ``method`` is taken for the signature the
+      other readers share and for the PR that conditions on it.
+    * A key that is absent or ``null`` is absent (today's behaviour).
+    * A present value must be one of :data:`STRUCTURE_MARKER_VALUES` for its
+      key, else ``ValueError`` naming the key (the API's 400, the tools' exit 2).
+    * A known marker named in ``unapplied`` (default
+      :data:`UNAPPLIED_STRUCTURE_MARKERS`) is refused with ``ValueError``: this
+      build cannot honour it, and accepting it would chunk the collection
+      unmarked now and marked after the release that implements it. A caller
+      that only COMPARES markers (the load-side header check) passes
+      ``unapplied=()``.
+    """
+    del method  # every method accepts every marker (§7)
+    params = dict(params or {})
+    found: dict[str, str] = {}
+    for key, allowed in STRUCTURE_MARKER_VALUES.items():
+        value = params.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or value not in allowed:
+            raise ValueError(
+                f"chunk param {key!r} must be one of {', '.join(allowed)}; got {value!r}"
+            )
+        if key in unapplied:
+            raise ValueError(
+                f"chunk param {key!r}={value!r} is recognised but not yet applied by "
+                f"this build (#828: structure_cuts and embed_heading_path land in "
+                f"PR 7, structure_infer in PR 8). Refused rather than ignored: a "
+                f"collection chunked without it now would chunk differently once it "
+                f"lands."
+            )
+        found[key] = value
+    return StructureMarkers(**found)
 
 
 def resolve_token_backend(
