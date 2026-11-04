@@ -645,7 +645,20 @@ def test_a_failed_render_is_left_out_under_structure_cuts_on_every_path(
     b = _emb_rows(emb)
     assert [r["content"] for r in b] == good and b[0]["metadata"]["section_path"] == ["Good"]
     # C (and A's chunk loop): the pipeline with the cutting chunker.
-    pipe = IngestionPipeline(loader=JsonlLoader(), chunker=_cut_chunker(), embedder=_Embedder(),
+    chunked: list[str] = []
+
+    def _spied():
+        chunker = _cut_chunker()
+        real = chunker.chunk
+
+        def chunk(doc):
+            chunked.append(Path(doc.source).name)
+            return real(doc)
+
+        chunker.chunk = chunk  # type: ignore[method-assign]
+        return chunker
+
+    pipe = IngestionPipeline(loader=JsonlLoader(), chunker=_spied(), embedder=_Embedder(),
                              vector_store=InMemoryVectorStore(),
                              text_index=InMemoryTextIndex(), structure_markers=markers)
 
@@ -656,12 +669,30 @@ def test_a_failed_render_is_left_out_under_structure_cuts_on_every_path(
     assert pipe.text_render_failures() == 1
     chunks, _ = asyncio.run(pipe.prepare_documents(JsonlLoader().load(str(shard))))
     assert [c.content for c in chunks] == good
+    # The cutter never saw the failed page, on either chunk loop.
+    assert chunked == ["good.md", "good.md"]
     # D
     store = _FakeStore()
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+    real_build = ingest_jsonl.build_chunker
+    chunked.clear()
+
+    def build(*a, **kw):
+        chunker, counter, budget = real_build(*a, **kw)
+        real = chunker.chunk
+
+        def chunk(doc):
+            chunked.append(Path(doc.source).name)
+            return real(doc)
+
+        chunker.chunk = chunk
+        return chunker, counter, budget
+
+    monkeypatch.setattr(ingest_jsonl, "build_chunker", build)
     asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / "d.ckpt",
                                        chunk_method="sentence"), target))
+    assert chunked == ["good.md"]
     assert [c["content"] if isinstance(c, dict) else c.content
             for c in store.points.values()] == good
 
