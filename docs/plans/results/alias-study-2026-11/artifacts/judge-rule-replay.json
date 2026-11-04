@@ -1,0 +1,484 @@
+{
+ "all_pairs": {
+  "agree": 575,
+  "argon_rows_rep1": 587,
+  "pairs": 587,
+  "pairs_without_argon_row": 0,
+  "tiebreak": 12,
+  "unlabelled": 0
+ },
+ "checks": {
+  "composed.all.accuracy": {
+   "prereg": 0.99,
+   "recomputed": 0.9897,
+   "status": "match"
+  },
+  "composed.all.argon_right": {
+   "prereg": 11,
+   "recomputed": 11,
+   "status": "match"
+  },
+  "composed.all.correct": {
+   "prereg": 482,
+   "recomputed": 482,
+   "status": "match"
+  },
+  "composed.all.escalated": {
+   "prereg": 12,
+   "recomputed": 12,
+   "status": "match"
+  },
+  "composed.all.pairs": {
+   "prereg": 487,
+   "recomputed": 487,
+   "status": "match"
+  },
+  "composed.all.unlabelled": {
+   "prereg": 0,
+   "recomputed": 0,
+   "status": "match"
+  },
+  "gate.all.accuracy": {
+   "prereg": 0.992,
+   "recomputed": 0.9918,
+   "status": "match"
+  },
+  "gate.all.escalation_share_pct": {
+   "prereg": 2.5,
+   "recomputed": 2.46,
+   "status": "match"
+  },
+  "gate.excl_q_satisfied.accuracy": {
+   "prereg": 0.992,
+   "recomputed": 0.9923,
+   "status": "match"
+  },
+  "gate.excl_q_satisfied.escalation_share_pct": {
+   "prereg": 2.8,
+   "recomputed": 2.84,
+   "status": "match"
+  },
+  "gate.excl_q_satisfied.pairs": {
+   "prereg": 388,
+   "recomputed": 388,
+   "status": "match"
+  },
+  "gate.excl_q_satisfied_excl_coll_diff.accuracy": {
+   "prereg": 0.991,
+   "recomputed": 0.9906,
+   "status": "match"
+  },
+  "gate.excl_q_satisfied_excl_coll_diff.escalation_share_pct": {
+   "prereg": 3.5,
+   "recomputed": 3.46,
+   "status": "match"
+  },
+  "gate.excl_touching_satisfied.accuracy": {
+   "prereg": 0.99,
+   "recomputed": 0.9895,
+   "status": "match"
+  },
+  "gate.excl_touching_satisfied.escalation_share_pct": {
+   "prereg": 2.8,
+   "recomputed": 2.79,
+   "status": "match"
+  },
+  "gate.excl_touching_satisfied.pairs": {
+   "prereg": 287,
+   "recomputed": 287,
+   "status": "match"
+  },
+  "gate.excl_touching_satisfied_excl_coll_diff.accuracy": {
+   "prereg": 0.988,
+   "recomputed": 0.9877,
+   "status": "match"
+  },
+  "gate.excl_touching_satisfied_excl_coll_diff.escalation_share_pct": {
+   "prereg": 3.3,
+   "recomputed": 3.28,
+   "status": "match"
+  }
+ },
+ "checks_summary": {
+  "match": 18
+ },
+ "citable": true,
+ "classes": {
+  "no_reference": 83,
+  "pairs": 587,
+  "split": 17,
+  "unanimous": 487
+ },
+ "gate_reproduction": {
+  "all": {
+   "replayed": {
+    "correct": 483,
+    "escalated": 12,
+    "pairs": 487
+   },
+   "status": "match",
+   "stored": {
+    "correct": 483,
+    "escalated": 12,
+    "pairs": 487
+   }
+  },
+  "excl_coll_diff": {
+   "replayed": {
+    "correct": 404,
+    "escalated": 12,
+    "pairs": 408
+   },
+   "status": "match",
+   "stored": {
+    "correct": 404,
+    "escalated": 12,
+    "pairs": 408
+   }
+  }
+ },
+ "inputs": {
+  "analysis_gate": {
+   "file": "analysis-gate.json",
+   "sha256": "a58e575d86baaf71d28a6891b76e2576be296c251b7b092fc465b6afdc8ebaa6"
+  },
+  "argon_labels": {
+   "file": "labels-gw-gemini4argon.jsonl",
+   "sha256": "38ac85f1f3125e490f1caba04be47b298df5db88b7fc790306abc19469dc93ea"
+  },
+  "c_labels": {
+   "file": "labels-qwen-C.jsonl",
+   "sha256": "bf28c7d0ef7f6084e1de2b16f079652dc9e51c4146e080ad39921ea6936bd216"
+  },
+  "e_labels": {
+   "file": "labels-qwen-E.jsonl",
+   "sha256": "9d316af43888de035fa7257cb033b9e0f46a7b19f817a69b641de53139c1f905"
+  },
+  "opus_labels": {
+   "file": "labels-opus.jsonl",
+   "sha256": "40d47083436363dcf409886fd728b5e0546f1ac64d9936cd2733e0f2ca5e423d"
+  },
+  "pairs": {
+   "file": "pairs.jsonl",
+   "sha256": "20ed67ba163b25c363a9673a11ddb8a835562c5b62ef6bc5a44bec34cf6feb15"
+  },
+  "records": {
+   "file": "accepted-alias-O.jsonl",
+   "sha256": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f"
+  }
+ },
+ "no_reference": {
+  "escalated": 0,
+  "final_no": 75,
+  "final_yes": 8,
+  "pairs": 83,
+  "unlabelled": 0
+ },
+ "o10": {
+  "pairs_touching_satisfied": 243,
+  "pairs_with_question_paper_in_satisfied": 121,
+  "question_papers_in_satisfied": 6,
+  "satisfied_papers": 300,
+  "unanimous_pairs_removed": {
+   "excl_q_satisfied": 99,
+   "excl_touching_satisfied": 200
+  }
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "3c138ab8ceb494fa65216347cf22ec3ed96f6095",
+  "describe": "v1.6.22-8-g3c138ab",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": "0.1.0",
+  "python": "3.12.13",
+  "recorded_at": "2026-11-04T05:25:19Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "regex",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 42,
+    "nltk": null,
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "regex-abbrev-v1",
+    "sha256": "a4355331b4caf444ecc2acb761ec53b9a961f1e079f2cc15468a4bc95a83e73b",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.22+3c138ab"
+ },
+ "rule": {
+  "c": "majority of the first 5 stored samples (a tie or no valid sample: no label)",
+  "e": "the first 1 stored sample",
+  "final": "C and E labelled and equal; otherwise the Argon rep-1 label; no valid Argon label: unlabelled",
+  "reference": "Opus (3 repetitions), unanimous pairs only"
+ },
+ "schema": "alias-study-judge-rule-replay/1",
+ "scores": {
+  "all": {
+   "accepted_errors": 4,
+   "accepted_false_no": 0,
+   "accepted_false_yes": 4,
+   "accuracy": 0.9897,
+   "argon_labelled": 12,
+   "argon_right": 11,
+   "argon_wrong": 1,
+   "by_stratum": {
+    "coll_diff": {
+     "correct": 79,
+     "escalated": 0,
+     "pairs": 79
+    },
+    "coll_same": {
+     "correct": 131,
+     "escalated": 3,
+     "pairs": 132
+    },
+    "gold": {
+     "correct": 77,
+     "escalated": 1,
+     "pairs": 77
+    },
+    "lex_other": {
+     "correct": 132,
+     "escalated": 5,
+     "pairs": 132
+    },
+    "lex_same": {
+     "correct": 63,
+     "escalated": 3,
+     "pairs": 67
+    }
+   },
+   "correct": 482,
+   "escalated": 12,
+   "escalation_share": 0.0246,
+   "gate_as_validated": {
+    "accuracy": 0.9918,
+    "correct": 483
+   },
+   "pairs": 487,
+   "unlabelled": 0
+  },
+  "excl_coll_diff": {
+   "accepted_errors": 4,
+   "accepted_false_no": 0,
+   "accepted_false_yes": 4,
+   "accuracy": 0.9877,
+   "argon_labelled": 12,
+   "argon_right": 11,
+   "argon_wrong": 1,
+   "by_stratum": {
+    "coll_same": {
+     "correct": 131,
+     "escalated": 3,
+     "pairs": 132
+    },
+    "gold": {
+     "correct": 77,
+     "escalated": 1,
+     "pairs": 77
+    },
+    "lex_other": {
+     "correct": 132,
+     "escalated": 5,
+     "pairs": 132
+    },
+    "lex_same": {
+     "correct": 63,
+     "escalated": 3,
+     "pairs": 67
+    }
+   },
+   "correct": 403,
+   "escalated": 12,
+   "escalation_share": 0.0294,
+   "gate_as_validated": {
+    "accuracy": 0.9902,
+    "correct": 404
+   },
+   "pairs": 408,
+   "unlabelled": 0
+  },
+  "excl_q_satisfied": {
+   "accepted_errors": 3,
+   "accepted_false_no": 0,
+   "accepted_false_yes": 3,
+   "accuracy": 0.9897,
+   "argon_labelled": 11,
+   "argon_right": 10,
+   "argon_wrong": 1,
+   "by_stratum": {
+    "coll_diff": {
+     "correct": 70,
+     "escalated": 0,
+     "pairs": 70
+    },
+    "coll_same": {
+     "correct": 97,
+     "escalated": 3,
+     "pairs": 98
+    },
+    "gold": {
+     "correct": 62,
+     "escalated": 1,
+     "pairs": 62
+    },
+    "lex_other": {
+     "correct": 106,
+     "escalated": 4,
+     "pairs": 106
+    },
+    "lex_same": {
+     "correct": 49,
+     "escalated": 3,
+     "pairs": 52
+    }
+   },
+   "correct": 384,
+   "escalated": 11,
+   "escalation_share": 0.0284,
+   "gate_as_validated": {
+    "accuracy": 0.9923,
+    "correct": 385
+   },
+   "pairs": 388,
+   "unlabelled": 0
+  },
+  "excl_q_satisfied_excl_coll_diff": {
+   "accepted_errors": 3,
+   "accepted_false_no": 0,
+   "accepted_false_yes": 3,
+   "accuracy": 0.9874,
+   "argon_labelled": 11,
+   "argon_right": 10,
+   "argon_wrong": 1,
+   "by_stratum": {
+    "coll_same": {
+     "correct": 97,
+     "escalated": 3,
+     "pairs": 98
+    },
+    "gold": {
+     "correct": 62,
+     "escalated": 1,
+     "pairs": 62
+    },
+    "lex_other": {
+     "correct": 106,
+     "escalated": 4,
+     "pairs": 106
+    },
+    "lex_same": {
+     "correct": 49,
+     "escalated": 3,
+     "pairs": 52
+    }
+   },
+   "correct": 314,
+   "escalated": 11,
+   "escalation_share": 0.0346,
+   "gate_as_validated": {
+    "accuracy": 0.9906,
+    "correct": 315
+   },
+   "pairs": 318,
+   "unlabelled": 0
+  },
+  "excl_touching_satisfied": {
+   "accepted_errors": 3,
+   "accepted_false_no": 0,
+   "accepted_false_yes": 3,
+   "accuracy": 0.9861,
+   "argon_labelled": 8,
+   "argon_right": 7,
+   "argon_wrong": 1,
+   "by_stratum": {
+    "coll_diff": {
+     "correct": 43,
+     "escalated": 0,
+     "pairs": 43
+    },
+    "coll_same": {
+     "correct": 65,
+     "escalated": 2,
+     "pairs": 66
+    },
+    "gold": {
+     "correct": 62,
+     "escalated": 1,
+     "pairs": 62
+    },
+    "lex_other": {
+     "correct": 64,
+     "escalated": 2,
+     "pairs": 64
+    },
+    "lex_same": {
+     "correct": 49,
+     "escalated": 3,
+     "pairs": 52
+    }
+   },
+   "correct": 283,
+   "escalated": 8,
+   "escalation_share": 0.0279,
+   "gate_as_validated": {
+    "accuracy": 0.9895,
+    "correct": 284
+   },
+   "pairs": 287,
+   "unlabelled": 0
+  },
+  "excl_touching_satisfied_excl_coll_diff": {
+   "accepted_errors": 3,
+   "accepted_false_no": 0,
+   "accepted_false_yes": 3,
+   "accuracy": 0.9836,
+   "argon_labelled": 8,
+   "argon_right": 7,
+   "argon_wrong": 1,
+   "by_stratum": {
+    "coll_same": {
+     "correct": 65,
+     "escalated": 2,
+     "pairs": 66
+    },
+    "gold": {
+     "correct": 62,
+     "escalated": 1,
+     "pairs": 62
+    },
+    "lex_other": {
+     "correct": 64,
+     "escalated": 2,
+     "pairs": 64
+    },
+    "lex_same": {
+     "correct": 49,
+     "escalated": 3,
+     "pairs": 52
+    }
+   },
+   "correct": 240,
+   "escalated": 8,
+   "escalation_share": 0.0328,
+   "gate_as_validated": {
+    "accuracy": 0.9877,
+    "correct": 241
+   },
+   "pairs": 244,
+   "unlabelled": 0
+  }
+ },
+ "split": {
+  "escalated": 0,
+  "pairs": 17
+ }
+}
