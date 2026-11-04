@@ -585,11 +585,15 @@ def _chunk_param_kwargs(
         used.update(("size_cap", "cap_split", "breakpoint_cap"))
         used.update(cap)
         out.update(cap)
-    # The document-structure markers (#828 §7) are not chunker kwargs in this
-    # build (structure_cuts is #828 PR 7): validated here by the one reader —
-    # an unknown value, or one this build cannot apply, is the ingest's 400 —
-    # and handed to the pipeline by build_ingestor_for.
-    used.update(structure_from_params(method, params).applied())
+    # The document-structure markers (#828 §7), validated here by the one
+    # reader — an unknown value, or one this build cannot apply, is the
+    # ingest's 400 — and handed to the pipeline by build_ingestor_for.
+    # structure_cuts is also a chunker kwarg (#828 PR 7); only when set, so an
+    # unmarked collection's kwargs are unchanged.
+    markers = structure_from_params(method, params)
+    used.update(markers.applied())
+    if markers.structure_cuts is not None:
+        out["structure_cuts"] = markers.structure_cuts
     ignored = sorted(set(params) - used)
     if ignored:
         log.debug(

@@ -61,7 +61,7 @@ def _admin(monkeypatch):
 
 
 async def _create(client, monkeypatch, tmp_path, params, *, cid: str | None = None,
-                  method: str = "fixed_token"):
+                  method: str = "fixed_token", overlap: int | None = 32):
     """Create a collection; return ``(response, recorded chunk_params | None)``."""
     f = tmp_path / "libs.json"
     monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
@@ -69,7 +69,9 @@ async def _create(client, monkeypatch, tmp_path, params, *, cid: str | None = No
     assert reg.status_code == 201 or "already exists" in reg.text, reg.text
     chunk: dict = {"method": method, "params": params}
     if method not in ("semantic", "semantic_pooled"):
-        chunk |= {"size": 256, "overlap": 32}
+        chunk |= {"size": 256}
+        if overlap is not None:
+            chunk["overlap"] = overlap
     body: dict = {"embedding": "emb-sfr", "chunk": chunk}
     if cid is not None:
         body["id"] = cid
@@ -131,17 +133,76 @@ async def test_an_unknown_marker_value_is_a_400(client, _admin, monkeypatch, tmp
 
 
 @pytest.mark.parametrize("params", [
-    {"structure_cuts": "sections/1"},
-    {"embed_heading_path": "prefix/1"},
     {"structure_infer": "text-heuristic/1"},
 ])
 async def test_a_marker_this_build_cannot_apply_is_a_400(client, _admin, monkeypatch, tmp_path,
                                                          params) -> None:
     """Present = applied (#829): a marker that would be ignored now and applied
-    after #828 PR 7/8 would give one spec two chunkings, so it is refused."""
+    after #828 PR 8 would give one spec two chunkings, so it is refused.
+    (``structure_cuts`` and ``embed_heading_path`` are applied since PR 7.)"""
     r, _ = await _create(client, monkeypatch, tmp_path, params, cid="unapplied")
     assert r.status_code == 400, r.text
     assert "not yet applied" in r.json()["detail"]
+
+
+async def test_structure_cuts_and_embed_heading_path_are_accepted_and_recorded(
+        client, _admin, monkeypatch, tmp_path) -> None:
+    """#828 PR 7 applies both: a create records them as sent."""
+    params = {"structure_cuts": "sections/1", "embed_heading_path": "prefix/1"}
+    r, recorded = await _create(client, monkeypatch, tmp_path, params, cid="cut-prefix")
+    assert r.status_code == 201, r.text
+    assert recorded == params
+
+
+async def test_a_sentence_tolerance_under_cuts_is_recorded_concretely(
+        client, _admin, monkeypatch, tmp_path) -> None:
+    """Owner decision 2026-11-04: both tolerance keys recorded at create."""
+    params = {"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25}
+    r, recorded = await _create(client, monkeypatch, tmp_path, params, cid="sent-tol",
+                                method="sentence", overlap=0)
+    assert r.status_code == 201, r.text
+    assert recorded == {**params, "min_piece": 64}
+
+
+async def test_a_sentence_tolerance_with_overlap_omitted_records_0_and_ingests(
+        client, _admin, monkeypatch, tmp_path) -> None:
+    """Review S1: an omitted overlap used to be recorded as None; every ingest
+    then filled in CHUNK_OVERLAP (64) and the chunker refused it. It is
+    recorded as 0, and the per-collection chunker builds. MUTATION: drop the
+    0 → the recorded overlap is None and the build raises → fails."""
+    from ragstack.api import deps
+
+    params = {"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25}
+    r, recorded = await _create(client, monkeypatch, tmp_path, params, cid="sent-tol-noov",
+                                method="sentence", overlap=None)
+    assert r.status_code == 201, r.text
+    [row] = [d for d in json.loads((tmp_path / "libs.json").read_text())
+             if d["id"] == r.json()["id"]]
+    assert row["chunk_overlap"] == 0
+    monkeypatch.setattr(settings, "chunk_overlap", 64)
+    monkeypatch.setattr(settings, "chunk_max_tokens", 4096)
+    monkeypatch.setattr(settings, "chunk_token_counter", "estimate")
+    entry = _entry("sentence", id="noov", chunk_size=row["chunk_size"],
+                   chunk_overlap=row["chunk_overlap"], chunk_params=row["chunk_params"],
+                   embedding_endpoints=[])
+    chunker = deps._chunker_for(entry)
+    assert chunker.size_tolerance == 0.25 and chunker.chunk_overlap == 0
+
+
+@pytest.mark.parametrize(("params", "overlap", "needle"), [
+    ({"size_unit": "tokens", "size_tolerance": 0.25}, 0, "applies only to"),
+    ({"structure_cuts": "sections/1", "size_tolerance": 0.25}, 0, "size_unit='tokens'"),
+    ({"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25}, 32,
+     "overlap 0"),
+    ({"structure_cuts": "sections/1", "size_unit": "tokens", "min_piece": 999}, 0,
+     "min_piece"),
+])
+async def test_a_sentence_tolerance_it_cannot_honour_is_a_400(
+        client, _admin, monkeypatch, tmp_path, params, overlap, needle) -> None:
+    r, _ = await _create(client, monkeypatch, tmp_path, params, cid="sent-bad",
+                         method="sentence", overlap=overlap)
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]
 
 
 # --------------------------------------------------------------------------- #
@@ -185,7 +246,12 @@ def test_the_per_collection_pipeline_carries_the_entrys_markers(monkeypatch) -> 
     assert marked.structure_metadata is False
     with pytest.raises(ValueError, match="not yet applied"):
         deps.build_ingestor_for(state, _entry("fixed", chunk_params={
-            "structure_cuts": "sections/1"}, embedding_endpoints=[]))
+            "structure_infer": "text-heuristic/1"}, embedding_endpoints=[]))
+    # #828 PR 7: structure_cuts is applied, and it forces the structure step.
+    cut = deps.build_ingestor_for(state, _entry("fixed", chunk_params={
+        "structure_cuts": "sections/1"}, embedding_endpoints=[]))._pipeline
+    assert cut.structure_markers.structure_cuts == "sections/1"
+    assert cut.structure_metadata is True
 
 
 @pytest.mark.skipif(not _HAS_EXTRA, reason="the [markdown] extra is not installed")
@@ -287,6 +353,27 @@ async def test_before_the_repin_any_marked_entry_is_refused_at_dispatch(
     assert not gowe["engine"].submissions
 
 
+@pytest.mark.parametrize("params", [{"structure_cuts": "sections/1"},
+                                    {"embed_heading_path": "prefix/1"}],
+                         ids=["structure_cuts", "embed_heading_path"])
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+async def test_before_the_repin_the_pr7_markers_are_refused_at_dispatch(
+    client, gowe, monkeypatch, endpoint, params  # noqa: F811
+) -> None:
+    """#828 PR 7: the dispatch gate refuses ``structure_cuts`` and
+    ``embed_heading_path`` before R, on both endpoints, even on a wired
+    workflow — and after R the wired workflow is dispatched. MUTATION: gate
+    on ``text_render`` only → submitted → fails."""
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", WIRED)
+    _mark(monkeypatch, dict(params))
+    status, ok = await _ingest(client, endpoint)
+    assert status == 422
+    assert not gowe["engine"].submissions
+    _after_the_repin(monkeypatch)
+    status, ok = await _ingest(client, endpoint)
+    assert status == ok and gowe["engine"].submissions
+
+
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
 async def test_an_unmarked_collection_is_dispatched_before_the_repin(
     client, gowe, monkeypatch, endpoint  # noqa: F811
@@ -379,3 +466,36 @@ async def test_a_gowe_deployment_refuses_a_marker_at_create_until_the_repin(
     monkeypatch.setattr(chunker_config, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)  # what R does
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(PLAIN), cid="gowe-r")
     assert r.status_code == 201 and recorded == PLAIN
+
+
+@pytest.mark.parametrize(("params", "method", "overlap"), [
+    ({"text_render": "markdown-plain/1"}, "fixed_token", 32),
+    ({"structure_cuts": "sections/1"}, "fixed_token", 32),
+    ({"embed_heading_path": "prefix/1"}, "fixed_token", 32),
+    ({"structure_infer": "text-heuristic/1"}, "fixed_token", 32),
+    ({"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25,
+      "min_piece": 64}, "sentence", 0),
+], ids=["text_render", "structure_cuts", "embed_heading_path", "structure_infer",
+        "sentence-tolerance"])
+async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
+    client, _admin, monkeypatch, tmp_path, params, method, overlap
+) -> None:
+    """Every marker key is refused on a GoWe deployment until R — PR 7's two
+    as well as text_render (and the sentence tolerance, which needs
+    structure_cuts). ``structure_infer`` is still refused earlier, as not yet
+    applied (PR 8). MUTATION: refuse ``text_render`` only → fails."""
+    from ragstack.ingestion import chunker_config as cc
+
+    assert cc.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    r, recorded = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7",
+                                method=method, overlap=overlap)
+    assert r.status_code == 400, r.text
+    assert recorded is None
+    want = "not yet applied" if "structure_infer" in params else "repin"
+    assert want in r.json()["detail"]
+    # What R does: the applied markers are then accepted on GoWe.
+    monkeypatch.setattr(cc, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)
+    r, _ = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7-r",
+                         method=method, overlap=overlap)
+    assert (r.status_code == 400) is ("structure_infer" in params), r.text

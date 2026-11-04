@@ -43,6 +43,7 @@ import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -600,36 +601,221 @@ def normalise_label(text: str) -> str | None:
 # The stamp (§6)
 # --------------------------------------------------------------------------- #
 
+@dataclass(frozen=True)
+class Segment:
+    """One offset range owned by exactly one section (§7.1), the unit
+    ``structure_cuts`` chunks on its own.
+
+    ``owner`` is the section whose own text this is (a leaf, or a parent's lead
+    text); after the heading-attach rule it is the owner of the LAST range
+    folded in (the body the heading travels with). ``group`` decides the
+    whole-segment merge of §7.1: two adjacent whole segments may share a chunk
+    only when their groups are equal. A leaf's group is its parent (``-1`` at
+    the top level); a parent's lead text is grouped under the parent itself,
+    so it pairs with the parent's first child — "a parent's lead text with its
+    first child, or two sibling leaves"."""
+
+    start: int
+    end: int
+    owner: int
+    group: int
+
+
+#: Characters a heading line may carry besides its title: ATX ``#`` marks,
+#: setext underlines, and whitespace. A lead text made only of heading blocks
+#: and these is "only its heading" (§7.1).
+_HEADING_MARKUP = frozenset("#=-") | frozenset(" \t\r\n\f\v")
+
+
+def section_segments(structure: DocumentStructure) -> list[Segment]:
+    """The §7.1 segments of a VALID structure, in document order: each leaf
+    section is one, and a parent's own text before its first child (and after
+    its last child, empty under invariant 3) is one owned by the parent. They
+    partition ``[0, len(content))``. The one segment walk: the stamp's
+    ``section_crossing`` and :func:`cut_segments` both start here."""
+    sections = structure.sections
+    parents = _tree(sections)
+    kids: dict[int, list[int]] = {}
+    for i, p in enumerate(parents):
+        if p is not None:
+            kids.setdefault(p, []).append(i)
+    segs: list[Segment] = []
+    for i, s in enumerate(sections):
+        ch = kids.get(i)
+        if not ch:
+            parent = parents[i]
+            segs.append(Segment(s.start, s.end, i, -1 if parent is None else parent))
+            continue
+        if sections[ch[0]].start > s.start:
+            segs.append(Segment(s.start, sections[ch[0]].start, i, i))
+        if sections[ch[-1]].end < s.end:
+            segs.append(Segment(sections[ch[-1]].end, s.end, i, i))
+    segs.sort(key=lambda g: (g.start, g.end))
+    return segs
+
+
+def _heading_only(seg: Segment, blocks: list[Block], block_starts: list[int],
+                  content: str) -> bool:
+    """Does ``seg`` hold nothing but heading blocks (and heading markup)?"""
+    j = max(0, bisect.bisect_right(block_starts, seg.start) - 1)
+    pos = seg.start
+    headings = 0
+    while j < len(blocks) and blocks[j].start < seg.end:
+        b = blocks[j]
+        j += 1
+        if b.end <= seg.start:
+            continue
+        if b.kind != "heading":
+            return False
+        if any(ch not in _HEADING_MARKUP for ch in content[pos:max(pos, b.start)]):
+            return False
+        headings += 1
+        pos = max(pos, min(b.end, seg.end))
+    if not headings:
+        return False
+    return all(ch in _HEADING_MARKUP for ch in content[pos:seg.end])
+
+
+def cut_segments(structure: DocumentStructure, content: str, *,
+                 attach_headings: bool = True) -> list[Segment]:
+    """The segments ``structure_cuts`` chunks on (§7.1), THE one list the cutter
+    (:func:`~ragstack.ingestion.chunkers.doc_cut_segments`) and the stamp
+    (:class:`StructureIndex` ``attach_headings``) both use:
+
+    * :func:`section_segments`, then
+    * the heading-attach rule: a segment that holds only a heading (a titled
+      parent whose own text is just its heading, or a titled leaf with no body)
+      is folded into the segment that FOLLOWS it — repeatedly, but only inside
+      its own parent: a parent's heading-only lead text into its first child,
+      a heading-only leaf into the next segment under the same parent. A
+      heading-only last child is NOT folded into the next parent's text; it
+      stays its own segment (and can still merge as a whole sibling), as does
+      a heading-only last segment. The rule is at segment level: inside a long
+      segment a packer may still cut right after a heading line;
+    * a whitespace-only segment folded into the segment before it (the first
+      one into the one after it): it would otherwise be a chunk of nothing.
+
+    ``attach_headings=False`` is :func:`section_segments` unchanged (the stamp
+    of every collection without the marker). The result partitions
+    ``[0, len(content))``."""
+    segs = section_segments(structure)
+    if not attach_headings:
+        return segs
+    sections = structure.sections
+    parents = _tree(sections)
+    has_children = {p for p in parents if p is not None}
+
+    def within(seg: Segment) -> int:
+        """End of the section a heading-only ``seg`` may travel inside: its own
+        section for a parent's lead text, else its parent (the root: the text)."""
+        anchor = seg.owner if seg.owner in has_children else parents[seg.owner]
+        return len(content) if anchor is None else sections[anchor].end
+
+    blocks = structure.blocks
+    starts = [b.start for b in blocks]
+    attached: list[Segment] = []
+    pending: int | None = None
+    for k, seg in enumerate(segs):
+        if (k + 1 < len(segs) and segs[k + 1].start < within(seg)
+                and _heading_only(seg, blocks, starts, content)):
+            if pending is None:
+                pending = seg.start
+            continue
+        if pending is not None:
+            seg = Segment(pending, seg.end, seg.owner, seg.group)
+            pending = None
+        attached.append(seg)
+    out: list[Segment] = []
+    lead: int | None = None
+    for seg in attached:
+        if not content[seg.start:seg.end].strip():
+            if out:
+                last = out[-1]
+                out[-1] = Segment(last.start, seg.end, last.owner, last.group)
+            elif lead is None:
+                lead = seg.start
+            continue
+        if lead is not None:
+            seg = Segment(lead, seg.end, seg.owner, seg.group)
+            lead = None
+        out.append(seg)
+    if lead is not None:  # nothing but whitespace: one segment
+        out = [Segment(lead, attached[-1].end, attached[-1].owner, attached[-1].group)]
+    return out
+
+
+def embed_text(chunk: Chunk, mode: str | None, *, budget: int | None = None,
+               token_counter: Any = None, counts: Counter[str] | None = None) -> str:
+    """The text handed to the embedder for ``chunk`` (#828 §7
+    ``embed_heading_path``). Mode ``None``: ``chunk.content``, untouched. Mode
+    ``"prefix/1"``: ``" › ".join(section_path) + "\\n" + content``.
+
+    Never invents a path: a chunk with no STAMPED ``section_path`` (an
+    unstructured document, a record whose own metadata happens to carry the
+    key, a degraded stamp, text before the first heading) is embedded
+    unprefixed and counted ``embed:heading_prefix_missing``. Chunks are sized
+    on their content alone, so with a ``budget`` (the window budget the chunk
+    was sized under) and a ``token_counter`` the prefix is cut from the LEFT —
+    outermost titles first — until prefix plus content fits; a chunk whose
+    content alone fills the budget is embedded unprefixed. Either cut is
+    counted ``embed:heading_prefix_truncated``. ``chunk.content`` is never
+    modified."""
+    if mode is None:
+        return chunk.content
+    if mode != "prefix/1":  # pragma: no cover — the reader refuses other values
+        raise ValueError(f"unknown embed_heading_path mode {mode!r}")
+    # Only a path the stamp wrote (it always writes structure_version), never
+    # one that arrived in a record's own metadata (_make_chunk copies it).
+    path = (chunk.metadata.get("section_path") or []
+            if chunk.metadata.get("structure_version") else [])
+    if not path:
+        if counts is not None:
+            counts["embed:heading_prefix_missing"] += 1
+        return chunk.content
+    titles = [str(t) for t in path]
+    if budget is None or token_counter is None:
+        return " › ".join(titles) + "\n" + chunk.content
+    for k in range(len(titles)):
+        text = " › ".join(titles[k:]) + "\n" + chunk.content
+        if token_counter.count(text) <= budget:
+            if k and counts is not None:
+                counts["embed:heading_prefix_truncated"] += 1
+            return text
+    if counts is not None:
+        counts["embed:heading_prefix_truncated"] += 1
+    return chunk.content
+
+
 class StructureIndex:
     """Precomputed lookups over ONE valid structure, so stamping a document's
     chunks is not quadratic. :func:`stamp` is the pure entry point; this class
-    is its implementation, built once per document by :func:`stamp_documents`."""
+    is its implementation, built once per document by :func:`stamp_documents`.
 
-    def __init__(self, structure: DocumentStructure) -> None:
+    ``attach_headings`` (``structure_cuts``, §7.1) reads ``section_crossing``
+    against the CUT segments (:func:`cut_segments`), so a heading folded into
+    the body that follows it is not a crossing and the only crossing chunks
+    are whole-segment merges. Off (the default, every collection without the
+    marker): the stamp is exactly as before. Ownership never changes: it is
+    §6's rule over the section segments either way."""
+
+    def __init__(self, structure: DocumentStructure, *, content: str | None = None,
+                 attach_headings: bool = False) -> None:
         self.structure = structure
         sections = structure.sections
         self._sections = sections
         self._parents = _tree(sections)
-        kids: dict[int, list[int]] = {}
-        for i, p in enumerate(self._parents):
-            if p is not None:
-                kids.setdefault(p, []).append(i)
-        # Segments (§7.1): each leaf is one; a parent's own text before its
-        # first child (and after its last child, empty under invariant 3) is
-        # one owned by the parent. They partition [0, len(content)).
-        segs: list[tuple[int, int, int]] = []
-        for i, s in enumerate(sections):
-            ch = kids.get(i)
-            if not ch:
-                segs.append((s.start, s.end, i))
-                continue
-            if sections[ch[0]].start > s.start:
-                segs.append((s.start, sections[ch[0]].start, i))
-            if sections[ch[-1]].end < s.end:
-                segs.append((sections[ch[-1]].end, s.end, i))
-        segs.sort()
+        segs = [(g.start, g.end, g.owner) for g in section_segments(structure)]
         self._segs = segs
         self._seg_starts = [g[0] for g in segs]
+        if attach_headings:
+            if content is None:
+                raise ValueError("attach_headings needs the document content")
+            cross = [(g.start, g.end, g.owner)
+                     for g in cut_segments(structure, content, attach_headings=True)]
+        else:
+            cross = segs
+        self._cross_segs = cross
+        self._cross_starts = [g[0] for g in cross]
         self._blocks = structure.blocks
         self._block_ends = [b.end for b in structure.blocks]
         self._version = f"{structure.adapter};{STAMP_VERSION}"
@@ -654,6 +840,21 @@ class StructureIndex:
                 out.append(self._segs[j])
             j += 1
         return out
+
+    def _crossing(self, start: int, end: int) -> bool:
+        """Does ``[start, end)`` overlap two or more segments (the cut ones
+        under ``attach_headings``)?"""
+        if end <= start:
+            return False
+        j = max(0, bisect.bisect_right(self._cross_starts, start) - 1)
+        hit = 0
+        while j < len(self._cross_segs) and self._cross_segs[j][0] < end:
+            if self._cross_segs[j][1] > start:
+                hit += 1
+                if hit > 1:
+                    return True
+            j += 1
+        return False
 
     def owner(self, start: int, end: int) -> int | None:
         """The owning section (§6): among the DEEPEST sections overlapping the
@@ -700,7 +901,7 @@ class StructureIndex:
         out["section_roles_version"] = sorted(
             {src for src, roles in contributions if union.intersection(roles)})
 
-        if len(self._overlapping_segments(start, end)) > 1:
+        if self._crossing(start, end):
             out["section_crossing"] = True  # stamped only when true (Q10)
 
         kinds: set[str] = set()
@@ -1061,7 +1262,8 @@ def attach_structure(
 
 
 def stamp_documents(
-    documents: Iterable[Document], chunks: list[Chunk], counts: Counter[str] | None = None
+    documents: Iterable[Document], chunks: list[Chunk], counts: Counter[str] | None = None,
+    *, structure_cuts: bool = False,
 ) -> None:
     """Stamp every chunk of a structured document with :func:`stamp` (§6).
 
@@ -1079,7 +1281,11 @@ def stamp_documents(
 
     ``counts`` accumulates the receipt's ``enrichment.structure`` numbers:
     ``adapter:<name>`` per structured document, ``structure_missing`` per
-    document without one, ``chunks_stamped``, ``degraded:<reason>``."""
+    document without one, ``chunks_stamped``, ``degraded:<reason>``.
+
+    ``structure_cuts`` (the collection's marker, §7.1): ``section_crossing`` is
+    read against the cut segments (:class:`StructureIndex` ``attach_headings``),
+    the ones the chunker cut on. Off: exactly as before."""
     docs = list(documents)
     by_doc: dict[str, list[Chunk]] = {}
     for c in chunks:
@@ -1101,7 +1307,8 @@ def stamp_documents(
             classify_roles(structure.sections,
                            inferred=structure.structure_source == "inferred")
             validate_structure(structure, doc.content, require_roles=True)
-            index = StructureIndex(structure)
+            index = StructureIndex(structure, content=doc.content,
+                                   attach_headings=structure_cuts)
             stamps = []
             for c in mine:
                 if doc.content[c.start_char:c.end_char] != c.content:
@@ -1155,6 +1362,15 @@ def structure_provenance(
               if k.startswith(f"{TEXT_RENDER_FAILED}:")}
     if failed:
         rec[TEXT_RENDER_FAILED] = failed
+    for prefix, key in (("cuts:", "cuts"), ("embed:", "embed")):
+        # #828 PR 7: what structure_cuts / embed_heading_path did (unsegmented
+        # documents, short pieces, whole-segment merges; prefixes missing or
+        # truncated). Only ever counted under a marker, so an unmarked record
+        # is unchanged.
+        found = {k.split(":", 1)[1]: n for k, n in sorted(done.items())
+                 if k.startswith(prefix) and n}
+        if found:
+            rec[key] = found
     backends = sorted(k.split(":", 1)[1] for k, n in done.items()
                       if k.startswith("backend:") and n)
     if backends:
@@ -1185,9 +1401,10 @@ def structure_metadata_enabled(mode: str | None) -> bool:
 __all__ = [
     "Block", "DocumentStructure", "Section",
     "STAMP_KEYS", "STAMP_VERSION", "ROLES_V1", "RULES_VERSION", "DECLARED_VERSION",
-    "IngestAdapter", "StructureBackendUnavailable", "StructureIndex", "StructureInvalid",
-    "RENDER_FAILURE_KEY", "TEXT_RENDERS", "TEXT_RENDER_FAILED", "TextRenderFailed",
-    "apply_text_render", "render_failure_of", "attach_structure", "citations",
+    "IngestAdapter", "Segment", "StructureBackendUnavailable", "StructureIndex",
+    "StructureInvalid", "RENDER_FAILURE_KEY", "TEXT_RENDERS", "TEXT_RENDER_FAILED",
+    "TextRenderFailed", "apply_text_render", "render_failure_of", "attach_structure",
+    "citations", "cut_segments", "embed_text", "section_segments",
     "require_structure_backends", "require_structure_backends_or_exit", "structure_step_on",
     "classify_roles", "classify_title", "content_sha256", "merge_enrichment",
     "normalise_label", "normalise_title", "stamp", "stamp_documents",

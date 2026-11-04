@@ -75,9 +75,8 @@ def test_the_marker_table_is_the_designed_one() -> None:
     }
     assert STRUCTURE_MARKER_PARAMS == ("text_render", "structure_cuts",
                                        "embed_heading_path", "structure_infer")
-    # Only text_render has behaviour in this build (PR 7: cuts + prefix; PR 8: infer).
-    assert UNAPPLIED_STRUCTURE_MARKERS == {"structure_cuts", "embed_heading_path",
-                                           "structure_infer"}
+    # PR 7 applies structure_cuts and embed_heading_path; structure_infer is PR 8.
+    assert UNAPPLIED_STRUCTURE_MARKERS == {"structure_infer"}
 
 
 @pytest.mark.parametrize("params", [None, {}, {"size_unit": "tokens"},
@@ -279,8 +278,8 @@ TOOLS = {"ingest_shard": _run_ingest_shard, "embed_shard": _run_embed_shard,
 @pytest.mark.parametrize("tool", sorted(TOOLS))
 @pytest.mark.parametrize(("params", "needle"), [
     ({"text_render": "markdown-plain/9"}, "text_render"),
-    ({"structure_cuts": "sections/1"}, "not yet applied"),
-    ({"embed_heading_path": "prefix/1"}, "not yet applied"),
+    ({"structure_cuts": "sections/2"}, "structure_cuts"),
+    ({"embed_heading_path": "prefix/2"}, "embed_heading_path"),
     ({"structure_infer": "text-heuristic/1"}, "not yet applied"),
 ])
 def test_an_unknown_or_unapplied_marker_exits_2_before_any_work(
@@ -313,14 +312,18 @@ def test_text_render_without_the_extra_exits_2_whatever_the_setting(
 # path D turns the structure step on from the markers, not only the setting
 # --------------------------------------------------------------------------- #
 
-def test_ingest_jsonl_turns_the_structure_step_on_from_a_marker(tmp_path, monkeypatch) -> None:
-    """Fable M6. No marker that needs structure is applicable in this build, so
-    the entry's reading is stubbed with the markers PR 7 will produce; the
-    setting stays off. MUTATION: pass ``None`` (or nothing) to
-    ``structure_step_on`` in ``ingest_jsonl.run`` → nothing is stamped → fails."""
+def test_ingest_jsonl_turns_the_structure_step_on_from_a_marker(
+    tmp_path, monkeypatch, registry  # noqa: F811
+) -> None:
+    """Fable M6, with the REAL markers since #828 PR 7: the registry entry
+    records ``structure_cuts`` (or nothing) and ``ingest_jsonl.run`` reads it
+    through ``_structure_markers``; the setting stays off. MUTATION: pass
+    ``None`` (or nothing) to ``structure_step_on`` in ``ingest_jsonl.run`` →
+    nothing is stamped → fails."""
     import asyncio
 
     from ragstack.ingestion.structure import STAMP_KEYS
+    from ragstack.ops import ingest_target as it
     from tests.structure_support import paper
     from tests.unit.test_ingest_jsonl_reingest import _args, _FakeEmbedder, _FakeStore
 
@@ -328,17 +331,18 @@ def test_ingest_jsonl_turns_the_structure_step_on_from_a_marker(tmp_path, monkey
     shard = tmp_path / "s.jsonl"
     write_shard(shard, [record(content, structure)])
 
-    def run(markers):
+    def run(params, tag):
+        registry(_spec(chunk_method="fixed", chunk_size=200, chunk_overlap=20,
+                       chunk_params=params))
+        target = it.resolve(CID, registry=REG)
         store = _FakeStore()
         monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
         monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
-        monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-        monkeypatch.setattr(ingest_jsonl, "_structure_markers", lambda args, target: markers)
-        asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / f"{id(markers)}.ckpt",
-                                           structure_metadata="off")))
+        asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / f"{tag}.ckpt",
+                                           structure_metadata="off"), target))
         return list(store.points.values())
 
-    off = run(NO_STRUCTURE_MARKERS)
-    on = run(StructureMarkers(structure_cuts="sections/1"))
+    off = run({}, "off")
+    on = run({"structure_cuts": "sections/1"}, "on")
     assert off and not any(set(c.metadata) & set(STAMP_KEYS) for c in off)
     assert on and all("structure_version" in c.metadata for c in on)

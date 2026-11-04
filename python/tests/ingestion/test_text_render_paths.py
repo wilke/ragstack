@@ -40,6 +40,7 @@ from ragstack.ingestion.loaders import (  # noqa: E402
 from ragstack.ingestion.pipeline import IngestionPipeline  # noqa: E402
 from ragstack.ingestion.receipts import ShardReceipt  # noqa: E402
 from ragstack.ingestion.structure import STAMP_KEYS  # noqa: E402
+from ragstack.models import Document  # noqa: E402
 from ragstack.ops import ingest_target as it  # noqa: E402
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore  # noqa: E402
 from tests.ingestion.test_extract_text_parity import (  # noqa: E402,F401 — fixtures
@@ -601,3 +602,174 @@ def test_a_render_failed_document_never_reaches_the_chunker_on_any_path(
     _run_d(tmp_path, monkeypatch, shard)
     for seen in (seen_a, seen_b, seen_c, seen_d):
         assert seen == ["/d/good.md"], seen
+
+
+# --------------------------------------------------------------------------- #
+# #828 PR 7: the render-failure filter holds under structure_cuts; stripped
+# headings give URL-free heading prefixes
+# --------------------------------------------------------------------------- #
+
+CUT_PLAIN = {**PLAIN, "structure_cuts": "sections/1", "embed_heading_path": "prefix/1"}
+
+
+def _cut_chunker():
+    chunker, _, _ = build_chunker("sentence", chunk_size=200,
+                                  chunk_overlap=20, model="m", token_backend="estimate",
+                                  max_tokens=4096, structure_cuts="sections/1")
+    return chunker
+
+
+def test_a_failed_render_is_left_out_under_structure_cuts_on_every_path(
+    tmp_path, registry, monkeypatch, boom  # noqa: F811
+) -> None:
+    """A render-failed document is filtered out before the (cutting) chunker on
+    paths B, C and D: never chunked raw, never stamped, never prefixed.
+    MUTATION: drop the filter before chunking → the raw bad page is stored → fails."""
+    monkeypatch.delenv("COLLECTION_MANIFEST_DIR", raising=False)
+    registry(_spec(chunk_method="sentence", chunk_size=200, chunk_overlap=20,
+                   chunk_params=dict(CUT_PLAIN)))
+    target = it.resolve(CID, registry=REG)
+    markers = structure_from_params("sentence", CUT_PLAIN)
+    shard = _two_pages(tmp_path)
+    size = ["--chunk-method", "sentence", *_SIZE[2:]]
+    good = ["Good\n\nA page that renders."]
+    # B
+    emb, receipt = tmp_path / "e.jsonl", tmp_path / "r.json"
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _Embedder())
+    args = ingest_shard.parse_args([
+        str(shard), "--vector-backend", "memory", "--text-backend", "memory",
+        "--qdrant-url", DEAD, "--es-url", DEAD, *size, "--embedding-file", str(emb),
+        "--out", str(receipt)])
+    assert asyncio.run(ingest_shard.amain(args, target)) == 0
+    rows = {Path(r.source).name: r for r in ShardReceipt.load(receipt).docs}
+    assert rows["bad.md"].error.startswith("text_render_failed") and not rows["bad.md"].chunk_ids
+    b = _emb_rows(emb)
+    assert [r["content"] for r in b] == good and b[0]["metadata"]["section_path"] == ["Good"]
+    # C (and A's chunk loop): the pipeline with the cutting chunker.
+    chunked: list[str] = []
+
+    def _spied():
+        chunker = _cut_chunker()
+        real = chunker.chunk
+
+        def chunk(doc):
+            chunked.append(Path(doc.source).name)
+            return real(doc)
+
+        chunker.chunk = chunk  # type: ignore[method-assign]
+        return chunker
+
+    pipe = IngestionPipeline(loader=JsonlLoader(), chunker=_spied(), embedder=_Embedder(),
+                             vector_store=InMemoryVectorStore(),
+                             text_index=InMemoryTextIndex(), structure_markers=markers)
+
+    async def _iter():
+        return [c async for g in pipe.iter_embed_source(str(shard)) for c in g]
+
+    assert [c.content for c in asyncio.run(_iter())] == good
+    assert pipe.text_render_failures() == 1
+    chunks, _ = asyncio.run(pipe.prepare_documents(JsonlLoader().load(str(shard))))
+    assert [c.content for c in chunks] == good
+    # The cutter never saw the failed page, on either chunk loop.
+    assert chunked == ["good.md", "good.md"]
+    # D
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+    real_build = ingest_jsonl.build_chunker
+    chunked.clear()
+
+    def build(*a, **kw):
+        chunker, counter, budget = real_build(*a, **kw)
+        real = chunker.chunk
+
+        def chunk(doc):
+            chunked.append(Path(doc.source).name)
+            return real(doc)
+
+        chunker.chunk = chunk
+        return chunker, counter, budget
+
+    monkeypatch.setattr(ingest_jsonl, "build_chunker", build)
+    asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / "d.ckpt",
+                                       chunk_method="sentence"), target))
+    assert chunked == ["good.md"]
+    assert [c["content"] if isinstance(c, dict) else c.content
+            for c in store.points.values()] == good
+
+
+async def test_a_stripped_heading_prefix_carries_no_url(tmp_path) -> None:
+    """#937's fix batch: a stripped heading's title is its link TEXT, so the
+    embed_heading_path prefix never carries a URL, while a body link keeps its
+    target in the stored content."""
+    seen: list[str] = []
+
+    class _Recording(_Embedder):
+        async def embed(self, texts):  # noqa: ANN001
+            seen.extend(texts)
+            return await super().embed(texts)
+
+    src = tmp_path / "page.md"
+    src.write_text("# See [the docs](https://d.example/x)\n\n## Usage\n\nRun [it](https://e.example/y) once.\n",
+                   encoding="utf-8")
+    pipe = IngestionPipeline(loader=default_loader_registry(ingest_root=str(tmp_path)),
+                             chunker=_cut_chunker(), embedder=_Recording(),
+                             vector_store=InMemoryVectorStore(),
+                             text_index=InMemoryTextIndex(),
+                             structure_markers=structure_from_params("sentence", CUT_PLAIN))
+    chunks = await pipe.embed_source(str(src))
+    paths = [c.metadata.get("section_path") for c in chunks]
+    assert ["See the docs", "Usage"] in paths
+    prefixes = [t.split("\n", 1)[0] for t in seen]
+    assert "See the docs › Usage" in prefixes
+    assert not any("https://" in p for p in prefixes)
+    assert any("it (https://e.example/y)" in c.content for c in chunks)
+    assert not any("d.example" in c.content for c in chunks)
+
+
+def test_a_failed_render_empties_and_marks_the_document(boom) -> None:  # noqa: F811
+    """The second of the two deliberately redundant guards, pinned on its own:
+    the render step empties a failed document (and drops its structure) as
+    well as marking it, so even a caller without the filter chunks nothing.
+    MUTATION: mark without emptying → fails here (the outcome tests cannot
+    see it: the callers' filter alone keeps the document out)."""
+    from ragstack.ingestion.structure import apply_text_render, render_failure_of
+
+    doc = Document(id="b", content="# Bad\n\nBOOM here.\n", metadata={}, source="/d/bad.md")
+    apply_text_render([doc], "markdown-plain/1")
+    assert render_failure_of(doc).startswith("text_render_failed")
+    assert doc.content == "" and doc.structure is None
+
+
+def test_an_all_render_failed_batch_under_cuts_leaves_no_cache_entry_and_no_cut_counts(
+    tmp_path, registry, monkeypatch, capsys, boom  # noqa: F811
+) -> None:
+    """Path D, structure_cuts + segmentation cache: a batch whose every document
+    failed its render is a failed batch (exit 1) that never reached the cutter,
+    so it writes no cached spans and no ``cuts`` counts; after the render is
+    fixed, ``--resume`` chunks it with the cuts and caches it then."""
+    registry(_spec(chunk_method="sentence", chunk_size=200, chunk_overlap=20,
+                   chunk_params=dict(CUT_PLAIN)))
+    shard, cache = _bad_only(tmp_path), tmp_path / "seg.jsonl"
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+
+    def run(resume: bool) -> int:
+        try:
+            asyncio.run(ingest_jsonl.run(_args(
+                shard, checkpoint=tmp_path / "d.ckpt", chunk_method="sentence",
+                segmentation_cache=cache, resume=resume), it.resolve(CID, registry=REG)))
+        except SystemExit as e:
+            return int(e.code or 0)
+        return 0
+
+    assert run(False) == 1 and not store.points
+    err = capsys.readouterr().err
+    assert "segmentation cache: 0 hit / 0 miss" in err and '"cuts"' not in err
+    assert not cache.exists() or cache.read_text(encoding="utf-8") == ""
+    monkeypatch.setattr(md, "markdown_plain",
+                        lambda doc: ("# Fixed\n\nThe page renders now.", None))
+    assert run(True) == 0
+    assert [c.content for c in store.points.values()] == ["# Fixed\n\nThe page renders now."]
+    assert "segmentation cache: 0 hit / 1 miss" in capsys.readouterr().err

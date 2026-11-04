@@ -64,9 +64,11 @@ from ragstack.ingestion.chunker_config import (
     StructureMarkers,
     build_chunker,
     needs_embed_fn,
+    semantic_cap_from_params,
     size_unit_from_params,
     structure_from_params,
 )
+from ragstack.ingestion.chunkers import sentence_tolerance_provenance
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_shard import run_embed_shard
 from ragstack.ingestion.loaders import JsonlLoader
@@ -140,8 +142,27 @@ def _build_chunker(args, spec=None):
         base_url=args.embedding_url[0] if args.embedding_url else None,
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
         size_unit=_size_unit(args, spec),
+        # #828 PR 7: section cuts, and on `sentence` the #831 tolerance under
+        # them, from the resolved entry through the readers every path uses.
+        # Unresolved: neither (no marker), as before.
+        **_structure_cut_kwargs(args, spec),
     )
     return chunker
+
+
+def _structure_cut_kwargs(args, spec=None) -> dict:
+    """``structure_cuts`` (and, on ``sentence``, ``size_tolerance`` /
+    ``min_piece``) for :func:`build_chunker`, from the resolved entry; ``{}``
+    for an entry without the marker, so the chunker is built as before."""
+    cuts = _structure_markers(args, spec).structure_cuts
+    if spec is None or cuts is None:
+        return {}
+    try:
+        tol = semantic_cap_from_params(args.chunk_method, getattr(spec, "chunk_params", None),
+                                       recorded_size=getattr(spec, "chunk_size", None))
+    except ValueError as e:
+        raise SystemExit(f"collection {e}") from None
+    return {"structure_cuts": cuts, **tol}
 
 
 def _applied_chunking(args, chunker, target=None,
@@ -163,6 +184,12 @@ def _applied_chunking(args, chunker, target=None,
     unit = getattr(chunker, "size_unit", None)
     if unit is not None:
         out["size_unit"] = unit
+    if getattr(chunker, "size_tolerance", None) is not None and not needs_embed_fn(
+            args.chunk_method):
+        # #828 PR 7: `sentence` under structure_cuts with the #831 tolerance,
+        # as applied (informative; the marker comparison is the load check).
+        out["size_tolerance"] = chunker.size_tolerance
+        out["min_piece"] = chunker.min_piece_tokens
     out.update(markers.applied())
     return out
 
@@ -272,7 +299,8 @@ async def amain(args, target=None) -> int:
                                           pipeline.structure_provenance())
     # #828 §7: the markers as applied, as ingest_shard's receipt records them
     # (None when none, so an unmarked receipt is unchanged).
-    receipt.chunking = pipeline.structure_markers.applied() or None
+    receipt.chunking = {**(sentence_tolerance_provenance(pipeline.chunker) or {}),
+                        **pipeline.structure_markers.applied()} or None
     receipt.write(args.receipt)
     if pipeline.text_render_failures():
         print(f"[{args.shard_id or os.path.basename(args.shard)}] text_render failed on "

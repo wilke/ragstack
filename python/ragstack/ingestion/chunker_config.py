@@ -36,6 +36,7 @@ from ragstack.ingestion.chunkers import (
     MAX_SIZE_TOLERANCE,
     SIZE_CAPS,
     SIZE_UNITS,
+    STRUCTURE_CUTS,
     default_min_piece,
     make_chunker,
 )
@@ -168,9 +169,18 @@ def semantic_cap_from_params(
       refused, like ``cap_split``) and returned only when ``size_tolerance`` is
       recorded — a strict entry returns exactly the three keys above.
 
+    * ``sentence`` (#828 PR 7, owner decision 2026-11-04): under a recorded
+      ``structure_cuts`` the same ``size_tolerance`` / ``min_piece`` keys turn
+      on the #831 tolerance and merge inside the section walls; they need
+      ``size_unit='tokens'`` and a recorded ``chunk_size``. Without
+      ``structure_cuts`` the keys are ignored here, as for every non-semantic
+      method (the create router refuses them).
+
     Raises ``ValueError`` naming the key (the API's 400; the shard tool turns it
     into a SystemExit).
     """
+    if method in STRUCTURE_TOLERANCE_METHODS:
+        return _structure_tolerance_from_params(method, params, recorded_size)
     if not needs_embed_fn(method):
         return {}
     params = params or {}
@@ -214,6 +224,33 @@ def semantic_cap_from_params(
     out: dict[str, Any] = {"size_cap": cap, "cap_split": split, "breakpoint_cap": bp}
     out.update(_size_tolerance_from_params(params, recorded_size))
     return out
+
+
+#: Non-semantic methods that take the #831 tolerance under ``structure_cuts``
+#: (#828 PR 7, owner decision 2026-11-04). ``words`` and ``fixed_token`` keep
+#: hard walls.
+STRUCTURE_TOLERANCE_METHODS: tuple[str, ...] = ("sentence",)
+
+
+def _structure_tolerance_from_params(
+    method: str | None, params: dict | None, recorded_size: int | None
+) -> dict[str, Any]:
+    """The tolerance kwargs of a ``sentence`` entry under ``structure_cuts``,
+    or ``{}`` (no marker, or no tolerance recorded: hard walls / today)."""
+    params = params or {}
+    if params.get(STRUCTURE_CUTS_PARAM) is None:
+        return {}
+    if params.get(SIZE_TOLERANCE_PARAM) is None and params.get(MIN_PIECE_PARAM) is None:
+        return {}
+    if size_unit_from_params(method, params) != "tokens":
+        raise ValueError(
+            f"chunk param {SIZE_TOLERANCE_PARAM!r} on chunk_method={method!r} needs "
+            f"size_unit='tokens': the target and the ceiling are token counts")
+    if recorded_size is None or recorded_size < 1:
+        raise ValueError(
+            f"chunk param {SIZE_TOLERANCE_PARAM!r} makes chunk_size the token target, "
+            f"but the collection records no chunk_size (got {recorded_size!r})")
+    return _size_tolerance_from_params(params, recorded_size)
 
 
 #: Default for ``Settings.ingest_worker_unsupported_methods`` — see
@@ -348,22 +385,20 @@ STRUCTURE_INFER_PARAM = "structure_infer"
 TEXT_RENDER_MARKDOWN_PLAIN = "markdown-plain/1"
 STRUCTURE_MARKER_VALUES: dict[str, tuple[str, ...]] = {
     TEXT_RENDER_PARAM: (TEXT_RENDER_MARKDOWN_PLAIN,),
-    STRUCTURE_CUTS_PARAM: ("sections/1",),
+    STRUCTURE_CUTS_PARAM: STRUCTURE_CUTS,
     EMBED_HEADING_PATH_PARAM: ("prefix/1",),
     STRUCTURE_INFER_PARAM: ("text-heuristic/1",),
 }
 #: Every marker key, in the order the header and receipt record them.
 STRUCTURE_MARKER_PARAMS: tuple[str, ...] = tuple(STRUCTURE_MARKER_VALUES)
-#: Markers this build PARSES but cannot yet APPLY: ``structure_cuts`` and
-#: ``embed_heading_path`` are #828 PR 7, ``structure_infer`` PR 8. Under the
+#: Markers this build PARSES but cannot yet APPLY: ``structure_infer`` is
+#: #828 PR 8 (``structure_cuts`` and ``embed_heading_path`` landed in PR 7). Under the
 #: #829 discipline "present = applied", so a marker that would be silently
 #: ignored is refused instead (400 at create, exit 2 on the bulk tools) — a
 #: collection created now and chunked unmarked would chunk differently once
 #: the behaviour lands: one spec, two chunkings. The PR that implements a
 #: marker removes it from this set, and every path opens at once.
-UNAPPLIED_STRUCTURE_MARKERS: frozenset[str] = frozenset(
-    {STRUCTURE_CUTS_PARAM, EMBED_HEADING_PATH_PARAM, STRUCTURE_INFER_PARAM}
-)
+UNAPPLIED_STRUCTURE_MARKERS: frozenset[str] = frozenset({STRUCTURE_INFER_PARAM})
 
 
 @dataclass(frozen=True)
@@ -457,8 +492,8 @@ def structure_from_params(
         if key in unapplied:
             raise ValueError(
                 f"chunk param {key!r}={value!r} is recognised but not yet applied by "
-                f"this build (#828: structure_cuts and embed_heading_path land in "
-                f"PR 7, structure_infer in PR 8). Refused rather than ignored: a "
+                f"this build (#828: structure_infer lands in PR 8). Refused rather "
+                f"than ignored: a "
                 f"collection chunked without it now would chunk differently once it "
                 f"lands."
             )
@@ -677,6 +712,7 @@ def build_chunker(
     breakpoint_cap: str | None = None,
     size_tolerance: float | None = None,
     min_piece: int | None = None,
+    structure_cuts: str | None = None,
     on_warn: Callable[[str], None] | None = None,
     require_window: bool = False,
 ) -> tuple[object, TokenCounter, int]:
@@ -697,6 +733,8 @@ def build_chunker(
     ``chunk_size`` tokens, refused (``ValueError``) when it exceeds the resolved
     budget returned here. ``size_tolerance`` / ``min_piece`` (#831) come from
     the same reader, and only when the entry records the tolerance.
+    ``structure_cuts`` (#828 §7.1) is the collection's marker, read by
+    :func:`structure_from_params`; ``None`` chunks exactly as before.
     """
     warn = on_warn or (lambda m: print(m, file=sys.stderr))
     token_counter, resolved_max = resolve_chunk_sizing(
@@ -722,5 +760,6 @@ def build_chunker(
         breakpoint_cap=breakpoint_cap,
         size_tolerance=size_tolerance,
         min_piece=min_piece,
+        structure_cuts=structure_cuts,
     )
     return chunker, token_counter, resolved_max
