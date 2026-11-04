@@ -1,6 +1,6 @@
 # Pre-registration, alias study (OA-1000)
 
-**Status: DRAFT — not frozen; owner review pending.** No sha is recorded because nothing is frozen yet.
+**Status: FROZEN `d54f4201a4d1281dd895adeca292162999b55109e518129c87f61af473e0822e` at 2026-11-04T05:39:34Z on the owner's go (commit `e6ecfa6a3175b454601b6c119fc1a4a2351161e9`).** Signed tag `prereg-alias-study-2026-11` (tag object `756eae26`, GitHub: verified) pins the prereg sha256 and the 9 load receipts. The prereg file is never edited again; later changes go to `../DEVIATIONS.md`.
 Current draft: **v3, 2026-11-03**, with the owner's decisions of 2026-11-01 (v1), the changes the owner
 approved on 2026-11-02/03 from an independent methodology review, 2026-11-02 (R1–R11), and the owner's
 decisions of 2026-11-03 (R12–R28) and the pre-freeze corrections P1–P6 folded in. The
