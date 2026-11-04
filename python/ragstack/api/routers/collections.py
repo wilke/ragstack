@@ -92,6 +92,7 @@ from ragstack.ingestion.chunker_config import (
     shard_refusal,
     structure_from_params,
 )
+from ragstack.ingestion import chunker_config
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
 from ragstack.ingestion.chunkers import (
     BREAKPOINT_CAPS,
@@ -666,21 +667,11 @@ def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
         raise HTTPException(422, refusal)
 
 
-#: Whether this source tree may create a collection recording a document-
-#: structure marker on an ``INGEST_BACKEND=gowe`` deployment. ``False`` until
-#: the repin step R of #828 (§12): the shipped workflows name a tools image
-#: that predates the markers, so ``ingest_shard.py`` there would ingest a
-#: ``text_render`` collection as RAW Markdown under a name that claims the
-#: render, with no error. R flips this (and its pin test) in the commit that
-#: repins the tools image.
-GOWE_STRUCTURE_MARKERS_SUPPORTED = False
-
-
 def _refuse_markers_before_the_repin(params: dict[str, Any]) -> None:
     """400 when a new collection records any document-structure marker on a
     GoWe deployment before the step-R tools image (#828 PR 4 review). The
     in-process backend applies ``text_render`` itself, so it is unaffected."""
-    if GOWE_STRUCTURE_MARKERS_SUPPORTED or ingest_backend_name(settings) != "gowe":
+    if chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED or ingest_backend_name(settings) != "gowe":
         return
     marked = [k for k in STRUCTURE_MARKER_PARAMS if (params or {}).get(k) is not None]
     if marked:

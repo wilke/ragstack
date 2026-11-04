@@ -64,6 +64,7 @@ from ragstack.ingestion.chunk_cap import (
     effective_chunk_cap,
     is_cap_refusal,
 )
+from ragstack.ingestion import chunker_config
 from ragstack.ingestion.chunker_config import (
     ModelWindowUnavailable,
     parse_unsupported_methods,
@@ -111,6 +112,7 @@ from ragstack.tool_image import (
     declared_workflow_inputs,
     embed_shard_step_wiring,
     names_stamped_image,
+    uses_glossary_file,
 )
 from ragstack.workspace import (
     WorkspaceAuthError,
@@ -731,7 +733,14 @@ def _refuse_marked_on_unwired_workflow(entry: CollectionEntry, workflow_cwl: str
     ``gowe_batch_ingest.py`` uses; a step it cannot read counts as unwired
     (fail closed). The markers are read with ``unapplied=()``: any recorded
     marker needs a resolving embed step. Before any write or version
-    reservation, like every gate here."""
+    reservation, like every gate here.
+
+    Two more refusals come first (#828 PR 4 review): any recorded marker while
+    ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`` is ``False`` (until the
+    repin step R — create refuses the same, but an entry can arrive by another
+    route), and ``text_render`` on a workflow that builds and applies a
+    glossary file (``tool_image.uses_glossary_file``), which every shipped
+    ingest workflow does."""
     try:
         markers = structure_from_params(
             entry.chunk_method, entry.chunk_params, unapplied=()).applied()
@@ -739,6 +748,29 @@ def _refuse_marked_on_unwired_workflow(entry: CollectionEntry, workflow_cwl: str
         raise HTTPException(status_code=400, detail=f"collection {entry.id!r}: {e}") from None
     if not markers:
         return
+    listed = ", ".join(f"{k}={v!r}" for k, v in markers.items())
+    if not chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED:
+        # The same rule collection create applies, here for an entry that did
+        # not come through create (seed_from_json, a collections file, a
+        # registry shared with an in-process deployment) — #828 PR 4 review.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"collection {entry.id!r} records document-structure markers ({listed}), "
+                f"which need the tools image of #828's repin step R; this deployment's "
+                f"GoWe workers predate it and would ingest the collection without them."
+            ),
+        )
+    if "text_render" in markers and uses_glossary_file(workflow_cwl):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"collection {entry.id!r} records text_render, and this deployment's "
+                f"ingest workflow builds and applies a glossary file, which is built "
+                f"over the RAW text: every batch would be refused at ingest_shard "
+                f"(#828). Use a workflow without the glossary file for this collection."
+            ),
+        )
     unwired = sorted(step for step, wired in embed_shard_step_wiring(workflow_cwl).items()
                      if wired is not True)
     if unwired:

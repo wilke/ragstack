@@ -285,11 +285,11 @@ def refuse_marked_on_unwired_workflow(cwl_path: str, collection_id: str,
 
 
 def _uses_glossary_file(cwl_path: str) -> bool:
-    """Whether the workflow text runs the glossary step or passes
-    ``--glossary-file`` to a tool (outside full-line comments)."""
-    text = Path(cwl_path).read_text(encoding="utf-8")
-    return any(("glossary_step.py" in line or "--glossary-file" in line)
-               for line in text.splitlines() if not line.lstrip().startswith("#"))
+    """:func:`ragstack.tool_image.uses_glossary_file` over the file the driver
+    is about to submit (the reading the API's dispatch gate shares)."""
+    from ragstack.tool_image import uses_glossary_file
+
+    return uses_glossary_file(Path(cwl_path).read_text(encoding="utf-8"))
 
 
 def resolve_store_name(registry_db: str, collection_id: str) -> str:
