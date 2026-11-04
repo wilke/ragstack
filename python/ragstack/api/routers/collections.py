@@ -654,8 +654,13 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
             assert chunk.size is not None
             params = _with_tolerance_defaults(params, chunk.size, size_cap=False)
             _announce_ceiling_clamp(params, chunk.size)
-        else:
-            params = {k: v for k, v in params.items() if k not in SIZE_TOLERANCE_PARAMS}
+            # The tolerance needs overlap 0 (validated above: a non-zero one is
+            # a 400). An OMITTED overlap is recorded as 0, the only value it can
+            # take: left None, every ingest would fill in the server's
+            # CHUNK_OVERLAP (64 by default) and the chunker would refuse it.
+            return chunk.model_copy(update={
+                "params": params, "overlap": 0 if chunk.overlap is None else chunk.overlap})
+        params = {k: v for k, v in params.items() if k not in SIZE_TOLERANCE_PARAMS}
         return chunk.model_copy(update={"params": params})
     if chunk.method in SEMANTIC_METHODS:
         # A NEW semantic collection: its size is a token cap (an omitted size is

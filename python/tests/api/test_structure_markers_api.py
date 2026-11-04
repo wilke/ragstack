@@ -61,7 +61,7 @@ def _admin(monkeypatch):
 
 
 async def _create(client, monkeypatch, tmp_path, params, *, cid: str | None = None,
-                  method: str = "fixed_token", overlap: int = 32):
+                  method: str = "fixed_token", overlap: int | None = 32):
     """Create a collection; return ``(response, recorded chunk_params | None)``."""
     f = tmp_path / "libs.json"
     monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
@@ -69,7 +69,9 @@ async def _create(client, monkeypatch, tmp_path, params, *, cid: str | None = No
     assert reg.status_code == 201 or "already exists" in reg.text, reg.text
     chunk: dict = {"method": method, "params": params}
     if method not in ("semantic", "semantic_pooled"):
-        chunk |= {"size": 256, "overlap": overlap}
+        chunk |= {"size": 256}
+        if overlap is not None:
+            chunk["overlap"] = overlap
     body: dict = {"embedding": "emb-sfr", "chunk": chunk}
     if cid is not None:
         body["id"] = cid
@@ -160,6 +162,31 @@ async def test_a_sentence_tolerance_under_cuts_is_recorded_concretely(
                                 method="sentence", overlap=0)
     assert r.status_code == 201, r.text
     assert recorded == {**params, "min_piece": 64}
+
+
+async def test_a_sentence_tolerance_with_overlap_omitted_records_0_and_ingests(
+        client, _admin, monkeypatch, tmp_path) -> None:
+    """Review S1: an omitted overlap used to be recorded as None; every ingest
+    then filled in CHUNK_OVERLAP (64) and the chunker refused it. It is
+    recorded as 0, and the per-collection chunker builds. MUTATION: drop the
+    0 → the recorded overlap is None and the build raises → fails."""
+    from ragstack.api import deps
+
+    params = {"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25}
+    r, recorded = await _create(client, monkeypatch, tmp_path, params, cid="sent-tol-noov",
+                                method="sentence", overlap=None)
+    assert r.status_code == 201, r.text
+    [row] = [d for d in json.loads((tmp_path / "libs.json").read_text())
+             if d["id"] == r.json()["id"]]
+    assert row["chunk_overlap"] == 0
+    monkeypatch.setattr(settings, "chunk_overlap", 64)
+    monkeypatch.setattr(settings, "chunk_max_tokens", 4096)
+    monkeypatch.setattr(settings, "chunk_token_counter", "estimate")
+    entry = _entry("sentence", id="noov", chunk_size=row["chunk_size"],
+                   chunk_overlap=row["chunk_overlap"], chunk_params=row["chunk_params"],
+                   embedding_endpoints=[])
+    chunker = deps._chunker_for(entry)
+    assert chunker.size_tolerance == 0.25 and chunker.chunk_overlap == 0
 
 
 @pytest.mark.parametrize(("params", "overlap", "needle"), [
