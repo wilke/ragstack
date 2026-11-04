@@ -90,7 +90,8 @@ async def _embed(pipeline: IngestionPipeline, shard_path: str, tenant: str, shar
 
     if writer.count == 0:
         out.unlink(missing_ok=True)
-        failed = pipeline.text_render_failures()
+        # getattr: duck-typed test pipelines predate the counter.
+        failed = getattr(pipeline, "text_render_failures", lambda: 0)()
         # #828 PR 4 review 2: name the render failure when it is why nothing
         # survived, rather than the generic "empty".
         why = (f" ({TEXT_RENDER_FAILED}: the collection's text_render failed on "
