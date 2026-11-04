@@ -77,6 +77,7 @@ from ragstack.authz import AuthzUnavailable, resolve_access
 from ragstack.collection_store import CollectionRecord, CollectionStore, CreateOutcome
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
+from ragstack.ingestion import chunker_config
 from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunker_config import (
     BREAKPOINT_CAP_PARAM,
@@ -92,7 +93,6 @@ from ragstack.ingestion.chunker_config import (
     shard_refusal,
     structure_from_params,
 )
-from ragstack.ingestion import chunker_config
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
 from ragstack.ingestion.chunkers import (
     BREAKPOINT_CAPS,

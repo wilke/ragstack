@@ -58,13 +58,13 @@ from ragstack.api.security import (
 )
 from ragstack.collection_store import CollectionRecord, CollectionStore
 from ragstack.config import settings
+from ragstack.ingestion import chunker_config
 from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunk_cap import (
     CHUNK_CAP_EXCEEDED,
     effective_chunk_cap,
     is_cap_refusal,
 )
-from ragstack.ingestion import chunker_config
 from ragstack.ingestion.chunker_config import (
     ModelWindowUnavailable,
     parse_unsupported_methods,
