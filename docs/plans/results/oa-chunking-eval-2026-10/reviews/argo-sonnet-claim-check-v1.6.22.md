@@ -1,0 +1,24 @@
+| Claim | Verdict | Evidence |
+|---|---|---|
+| C1 | TRUE | `cwl/jats-ingest.cwl:85` and `:359` both have `symbols: [fixed, fixed_token, sentence, words]`. `cwl/ingest-bulk.cwl:92` and `:350` both have `symbols: [fixed, fixed_token, sentence, words, semantic, semantic_pooled]`. |
+| C2 | TRUE | `ingest_shard.py:263` has `loader=JsonlLoader()`. The comment at `:398` says "builds a BARE JsonlLoader() — no passthrough allow-list at all — so a JATS shard … loses pmcid/pmid/journal/…". `loaders.py:460` counts each such key in `dropped.not_allowed`. The enriched fields (doi, title, authors, year, doc_type) still survive. `index_metadata` supplies these, and `loaders.py:468` returns `{**extra, **meta}`. |
+| C3 | PARTLY | See the note after the table. |
+| C4 | TRUE | `ingest-bulk.cwl:123` has `default: 0` and `:380` passes `--max-chunks`. `ingest_shard.py:364` only passes `max_chunks=max(0, args.max_chunks)`, and `shard.py:259` applies the gate only `if max_chunks > 0`. The script reads no registry cap. The CWL doc at `:127` says "the registry entry's explicit max_chunks override still applies", but nothing in `ingest_shard.py` reads it. The API derives it per job, per the `--max-chunks` help at `:454`. |
+| C5 | TRUE | `ingest-bulk.cwl:267` has `glossary_llm: {type: string, default: "off"}`. The comment at `:145` says "rules-only — no network". The default `--symbol-glossary` is `rules` (`ingest_shard.py:477`), which makes no LLM call. Semantic methods still call the embedding endpoint, but that isn't an LLM call. |
+| C6 | PARTLY (the admin-only part is wrong) | Creation is not admin-only. Non-admins can create unless `ALLOW_USER_COLLECTION_CREATE=false` (`collections.py:754`). Only the `embedding` and `chunk` overrides are admin-only: `:765` returns 403 "build-spec overrides ('embedding', 'chunk') are admin-only". The quota of 5 is correct: the docstring at `:739-744` says `MAX_COLLECTIONS_PER_OWNER` (default 5), and admins are exempt. |
+| C7 | TRUE | `collections.py:596-610`: for a new semantic collection, `_with_tolerance_defaults` does `out.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)` (`:545`), so `size_cap='tokens'` is recorded. `:449` says sentence and words "count chars unless a collection records `size_unit='tokens'`". `ingest_shard.py:134-141` says `_size_unit` comes "from the registry entry — never a CLI flag", and the semantic cap is read the same way (`:163`). |
+| C8 | TRUE | `jats-ingest.cwl:77-81` and `ingest-bulk.cwl:88`: `tenant` defaults to `"public"` and feeds the point ids. `qdrant.py:737` has `uuid.uuid5(NAMESPACE_URL, f"{tenant_id}:{chunk_id}")`. `ingest_shard.py:447` has `--tenant` default `public`. |
+| C9 | TRUE, with conditions | `chunkers.py:2450-2455` refuses fixed_token only if `chunk_size > max_tokens`, with the message "exceeds max_tokens=… Use chunk_size <= {max_tokens}". `max_tokens` is the model window minus `DEFAULT_TOKEN_RESERVE = 16` (`tokenization.py:41`, `:293`). SFR is served at 4096 (`HANDOFF-2026-09-06.md:363`), so the budget is 4080 and 1024 passes. This holds only if the window is detected from `/v1/models` or set via `CHUNK_MAX_TOKENS`. The bulk tools otherwise fall back to 4096 (`chunker_config.py:383`). |
+
+**C3 detail.**
+- The `path` is not `clean/xx/yy/PMC123.xml`. `jats.py:725` writes `"path": pmcid`, so it is `PMC123`. Table and figure units get `PMC123#table-2` (`:732`), and `jats.py:32` says each path is unique.
+- `JsonlLoader` hashes the path into the doc id. `loaders.py:489` sets `key = rec_path` for a relative path, and `:500` sets `id=deterministic_doc_id(key)`.
+- Qdrant stores `doc_id` on every payload (`qdrant.py:325`), and ES maps `doc_id` as a keyword (`elasticsearch.py:155`). Qdrant has no `source` or `path` field in its payload.
+- So the PMCID is not stored in readable form. It is recoverable only by re-hashing `PMC123`, or by reading the `Document.source` the pipeline has in memory. Joining back to the article therefore works through the hash, not through a stored PMCID.
+
+**Other things the claims miss**
+- The `jats-ingest.cwl` workflow cannot run semantic or semantic_pooled at all. Its enum has only four methods, so a chunking eval that includes semantic must go through `ingest-bulk.cwl`.
+- Bulk ingest through `ingest-bulk.cwl` drops pmcid, pmid and journal. You can't filter or group by PMCID in the store, and `PMC123#table-2` doc ids can't be mapped back to a PMCID without rehashing. If the eval needs article-level joins, keep a `doc_id → pmcid` map computed from the extract shard.
+- `ingest_shard.py:398-403` prints the dropped-metadata summary to the log, so you can confirm the drop from the run output.
+- The `max_chunks` CWL doc says the registry override "still applies", but the tool doesn't read it. The cap comes from whoever submits the job.
+- The 4096 window for SFR comes from a handoff note, not from code. Confirm `max_model_len` on the actual endpoint before relying on 1024 or larger sizes.

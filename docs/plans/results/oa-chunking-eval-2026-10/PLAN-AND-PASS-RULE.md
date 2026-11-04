@@ -73,3 +73,44 @@ Working placeholders for planning only: M_ni 1.0, M_mid 2.0, M_high 4.0.
   and totals after each batch, stop on "pause".
 - Checkpointed ledger; stop after >20 failures or 5 in a row.
 - GPUs 6 and 7 reserved (6 = reranker). Thinking off on both Qwen servers.
+
+## Addendum A, 2026-11-03 (APPROVED by the owner 2026-11-03; from the Opus plan review and the v1.6.22 ingest review)
+Fixes (approved):
+1. Non-inferiority margin: M_ni = max(2.0, paired CI half-width at N). With M_ni 1.0 and a
+   half-width of 1.4-2.4 points at N=2000, a cheap arm would have to be better to pass.
+2. Metric: a quote cut by a chunk boundary must not count as a miss. Primary hit@k becomes
+   "the union of the top-k retrieved chunks covers >= 90% of the gold quote's characters";
+   strict single-chunk containment is reported as secondary. Context tokens per query stay
+   reported, so large chunks pay for their size.
+3. Noise run uses TWO arms (baseline 512/64 and fixed 512/0) on ~300 questions, plus a
+   split-half of the baseline. The discordance rate needs a second arm.
+4. Stratum guard: computed on the pooled strata actually reported (journal family, length
+   band), not their cross product; an arm fails the guard if any reported stratum's point
+   estimate is below -2.0 AND its CI upper bound is below 0. Holm correction across the
+   challenger arms. Tie-break between passing arms: cheaper ingest, then fewer context tokens.
+5. Skip bias: passages with no passing question are reported by stratum; results are given
+   with and without the strata that lose more than 10% of passages.
+6. N = 2000 is a planning assumption until the noise run; the state sheet that said
+   "decided" was wrong.
+
+Ingest facts checked 2026-11-03 at v1.6.22 (dev's checkout):
+- Only cwl/ingest-bulk.cwl accepts all six methods; jats-ingest.cwl lacks semantic and
+  semantic_pooled. Plan: extract once with jats_extract.py, feed the same JSONL to all arms.
+- jats_extract.py on 5 articles (tools v1.6.20 image): 40 records (5 article, 4 table,
+  31 figure), 0 failures. Tables and figures are separate records, identical in all arms.
+- ingest_shard.py uses a bare JsonlLoader: pmcid/pmid/journal/licence are dropped from chunk
+  payloads; doc_id = hash of path (PMC123 / PMC123#table-2). The harness keeps its own
+  doc_id -> pmcid map from the extract shard.
+- No LLM calls (glossary_llm default off); no chunk cap (max_chunks 0; the CWL comment that
+  a registry override applies is not implemented in ingest_shard.py).
+- SFR max_model_len 4096 on all three SFR endpoints, so 1024-token chunks fit.
+- Collections: chunk spec at create is admin-only; owner quota 5 (admins exempt). Sentence
+  needs chunk_params size_unit tokens; semantic arms get size_cap tokens automatically.
+- tenant defaults to "public" and is part of every point id: choose it before the first ingest.
+
+## Owner decisions, 2026-11-03
+- Arms: all six.
+- Tenant: dev. Collection names: oa-eval-* (created with a dev admin service account).
+- Corpus per arm: the eval sample plus about 20,000 background OA articles, identical in every arm.
+- Addendum A approved. Freeze after the noise run (margins, N, seed recorded then).
+- Harness: go (worktree, this branch). Branch is pushed for the record; eval text stays private.
