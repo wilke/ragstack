@@ -61,6 +61,17 @@ def config_fingerprint(**parts: object) -> str:
                       sort_keys=True, default=str)
 
 
+def structure_cache_key(doc: Document) -> str:
+    """The part of a ``structure_cuts`` document's cache key its structure
+    contributes (#828 PR 7): the sha256 of the structure's canonical JSON, or
+    ``"none"``. The same content with a different structure (a JSONL
+    ``structure`` key) is cut differently, so it must not share cached spans."""
+    if doc.structure is None:
+        return "structure:none"
+    payload = json.dumps(doc.structure.model_dump(mode="json"), sort_keys=True)
+    return "structure:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class SegmentationCache:
     """Content-addressed store of per-document chunk spans (JSONL, append-only).
 
@@ -98,23 +109,28 @@ class SegmentationCache:
         except FileNotFoundError:
             pass
 
-    def _key(self, content: str) -> str:
+    def _key(self, content: str, extra: str = "") -> str:
         h = hashlib.sha1()
         h.update(self._fp.encode("utf-8"))
         h.update(b"\x00")
         h.update(content.encode("utf-8", "replace"))
+        if extra:
+            h.update(b"\x00")
+            h.update(extra.encode("utf-8"))
         return h.hexdigest()
 
     def get_or_compute(
-        self, doc: Document, chunk_fn: Callable[[Document], list[Chunk]]
+        self, doc: Document, chunk_fn: Callable[[Document], list[Chunk]], extra: str = "",
     ) -> list[Chunk]:
         """Return the doc's chunks from cache, or compute + record them.
 
         On a hit the chunks are rebuilt from the cached spans (deterministic ids),
         so the blocks are identical to the first segmentation regardless of any
         embedding-backend jitter since. On a miss ``chunk_fn`` runs and its spans
-        are persisted."""
-        key = self._key(doc.content)
+        are persisted. ``extra`` joins the key when the spans depend on more
+        than the content (``structure_cuts``: :func:`structure_cache_key`);
+        ``""`` leaves every key as it was."""
+        key = self._key(doc.content, extra)
         with self._lock:
             spans = self._spans.get(key)
             if spans is not None:

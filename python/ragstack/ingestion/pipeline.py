@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -10,13 +11,14 @@ from typing import Any
 
 from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunker_config import NO_STRUCTURE_MARKERS, StructureMarkers
-from ragstack.ingestion.chunkers import link_neighbors_by_document
+from ragstack.ingestion.chunkers import link_neighbors_by_document, take_cut_stats
 from ragstack.ingestion.doi_metadata import DoiEnricher
 from ragstack.ingestion.structure import (
     TEXT_RENDER_FAILED,
     TextRenderFailed,
     apply_text_render,
     attach_structure,
+    embed_text,
     render_failure_of,
     stamp_documents,
     structure_provenance,
@@ -319,6 +321,7 @@ class IngestionPipeline:
             # SemanticChunker blocks on a (bridged) embed round-trip, which would
             # otherwise stall the event loop. to_thread keeps the loop responsive.
             all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
+            self._take_cut_stats(doc)
         produced = len(all_chunks)
         await self._stamp_structure(to_chunk, all_chunks)
         kept = self._filter_boilerplate(all_chunks, source)
@@ -538,8 +541,21 @@ class IngestionPipeline:
             # (Counter.__sub__), and a thread inserting a key mid-iteration
             # raises "dictionary changed size during iteration".
             local: Counter[str] = Counter()
-            await asyncio.to_thread(stamp_documents, documents, chunks, local)
+            if self.structure_markers.structure_cuts is None:
+                await asyncio.to_thread(stamp_documents, documents, chunks, local)
+            else:  # #828 PR 7: section_crossing read against the cut segments
+                await asyncio.to_thread(functools.partial(
+                    stamp_documents, documents, chunks, local, structure_cuts=True))
             self.structure_counts.update(local)
+
+    def _take_cut_stats(self, doc: Document) -> None:
+        """Move what ``structure_cuts`` did to ``doc`` (#828 PR 7: unsegmented,
+        short pieces, whole-segment merges) from the chunker into
+        :attr:`structure_counts`, on the loop thread. Nothing for a chunker
+        without the marker."""
+        got = take_cut_stats(self.chunker, doc.id)
+        if got:
+            self.structure_counts.update(got)
 
     def structure_provenance(self, since: Counter[str] | None = None) -> dict[str, Any] | None:
         """The ``enrichment.structure`` step record (#828 §6) for what the step
@@ -605,7 +621,16 @@ class IngestionPipeline:
             return [], 0  # no embed call for nothing (#768)
         for chunk in all_chunks:
             chunk.metadata["tenant_id"] = tenant_id
-        texts = [c.content for c in all_chunks]
+        # #828 §7 embed_heading_path: the embed INPUT gains the section path;
+        # stored content, offsets and ids are untouched. No marker: the content.
+        mode = self.structure_markers.embed_heading_path
+        if mode is None:
+            texts = [c.content for c in all_chunks]
+        else:
+            budget = getattr(self.chunker, "max_tokens", None)
+            counter = getattr(self.chunker, "token_counter", None)
+            texts = [embed_text(c, mode, budget=budget, token_counter=counter,
+                                counts=self.structure_counts) for c in all_chunks]
         embed_isolated = getattr(self.embedder, "embed_isolated", None)
         if embed_isolated is not None:
             vectors, quarantined = await embed_isolated(texts)
@@ -648,6 +673,7 @@ class IngestionPipeline:
             all_chunks: list[Chunk] = []
             for doc in group:
                 all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
+                self._take_cut_stats(doc)
             if not all_chunks:
                 continue
             await self._stamp_structure(group, all_chunks)

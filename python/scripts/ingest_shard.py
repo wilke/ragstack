@@ -58,7 +58,10 @@ from ragstack.ingestion.chunker_config import (
     structure_from_params,
     text_render_glossary_refusal,
 )
-from ragstack.ingestion.chunkers import semantic_chunking_provenance
+from ragstack.ingestion.chunkers import (
+    semantic_chunking_provenance,
+    sentence_tolerance_provenance,
+)
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.glossary_file import (
@@ -211,6 +214,7 @@ def _build_chunker(args, spec=None, embed_fn=None):
     ``requires an embed_fn`` refusal rather than being silently demoted.
     """
     cap = _semantic_cap(spec, args.chunk_method)
+    cuts = _structure_markers(spec, args.chunk_method).structure_cuts
     chunker, _counter, _max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -231,7 +235,15 @@ def _build_chunker(args, spec=None, embed_fn=None):
         # the path every current collection uses.
         **(_semantic_params(spec) if needs_embed_fn(args.chunk_method) else {}),
         **cap,
+        # #828 PR 7: the entry's section cuts (None: chunked as before).
+        **({"structure_cuts": cuts} if cuts is not None else {}),
     )
+    tolerant = sentence_tolerance_provenance(chunker)
+    if tolerant is not None:
+        print(f"[chunker] sentence: chunk_size={tolerant['chunk_size']} "
+              f"size_tolerance={tolerant['size_tolerance']} "
+              f"min_piece={tolerant['min_piece']} ceiling={tolerant['ceiling']} "
+              f"window_budget={tolerant['window_budget']}", file=sys.stderr)
     applied = semantic_chunking_provenance(chunker)
     if applied is not None:
         # One line per shard: what this worker actually applied — the same record
@@ -470,7 +482,8 @@ def applied_chunking(pipeline) -> dict | None:
     (``None`` for another method) merged with the structure markers as
     applied; ``None`` when neither has anything to say, so an unmarked,
     non-semantic receipt is byte-identical to today's."""
-    out = dict(semantic_chunking_provenance(pipeline.chunker) or {})
+    out = dict(semantic_chunking_provenance(pipeline.chunker)
+               or sentence_tolerance_provenance(pipeline.chunker) or {})
     markers = getattr(pipeline, "structure_markers", None)
     out.update(markers.applied() if markers is not None else {})
     return out or None

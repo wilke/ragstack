@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import statistics
@@ -75,6 +76,7 @@ from ragstack.ingestion.chunker_config import (
     CHUNK_SIZE_UNIT_CHOICES,
     CHUNK_SIZE_UNIT_HELP,
     NO_STRUCTURE_MARKERS,
+    STRUCTURE_TOLERANCE_METHODS,
     StructureMarkers,
     build_chunker,
     needs_embed_fn,
@@ -87,16 +89,22 @@ from ragstack.ingestion.chunkers import (
     DEFAULT_CAP_SPLIT,
     SIZE_CAPS,
     link_neighbors_by_document,
+    take_cut_stats,
 )
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.retry import is_transient_error, retry_delay
-from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
+from ragstack.ingestion.segmentation_cache import (
+    SegmentationCache,
+    config_fingerprint,
+    structure_cache_key,
+)
 from ragstack.ingestion.structure import (
     TextRenderFailed,
     apply_text_render,
     attach_structure,
+    embed_text,
     render_failure_of,
     require_structure_backends_or_exit,
     stamp_documents,
@@ -366,7 +374,11 @@ def _build_breakpoint_embedder(args: argparse.Namespace, http: httpx.AsyncClient
     )
 
 
-async def _embed_drop_bad(embedder: Any, chunks: list[Chunk]) -> list[Chunk]:
+async def _embed_drop_bad(
+    embedder: Any, chunks: list[Chunk], *, heading_path: str | None = None,
+    budget: int | None = None, token_counter: Any = None,
+    counts: Counter[str] | None = None,
+) -> list[Chunk]:
     """Embed each chunk's content, returning the chunks that embedded (with
     ``.embedding`` set).
 
@@ -377,10 +389,16 @@ async def _embed_drop_bad(embedder: Any, chunks: list[Chunk]) -> list[Chunk]:
     ingest. Infra failures (5xx / network) still raise and leave the batch for
     ``--resume``. Both the single-endpoint ``BatchingEmbedder`` and the multi-
     endpoint ``PooledEmbedder`` expose ``embed_isolated``, so the pooled fan-out
-    quarantines bad inputs too (5xx / network still propagate for ``--resume``)."""
+    quarantines bad inputs too (5xx / network still propagate for ``--resume``).
+
+    ``heading_path`` (#828 §7 ``embed_heading_path``): the embed INPUT is the
+    chunk's section path plus its content (:func:`~ragstack.ingestion.structure.embed_text`,
+    the pipeline's helper); ``content`` itself is never touched. ``None``: the
+    content, as before."""
     if not chunks:
         return []  # catalog-only batch (e.g. a #65 resume-skipped doc): nothing to embed
-    texts = [c.content for c in chunks]
+    texts = [embed_text(c, heading_path, budget=budget, token_counter=token_counter,
+                        counts=counts) for c in chunks]
     if hasattr(embedder, "embed_isolated"):
         vecs, quarantined = await embedder.embed_isolated(texts)
         kept: list[Chunk] = []
@@ -589,6 +607,12 @@ async def run(
     # Semantic size cap: from the registry entry when there is one (refusing a
     # contradicting flag), else from --semantic-size-cap / --semantic-cap-split.
     cap_kwargs = _semantic_cap_kwargs(args, target)
+    # The collection's document-structure markers (#828 §7), from the registry
+    # entry through the one reader; none without an entry. structure_cuts is a
+    # chunker kwarg (PR 7); the rest are applied in the loop below.
+    markers = _structure_markers(args, target)
+    cuts_kwargs = ({"structure_cuts": markers.structure_cuts}
+                   if markers.structure_cuts is not None else {})
     chunker, token_counter, max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -610,6 +634,7 @@ async def run(
             args.semantic_max_sentences if args.semantic_max_sentences > 0 else None
         ),
         **cap_kwargs,
+        **cuts_kwargs,
     )
     # Optional segmentation cache: store each doc's chunk spans keyed by
     # content+config, so a re-ingest rebuilds identical blocks from the cache
@@ -638,6 +663,9 @@ async def run(
             ),
             # Only when a cap is set, so every uncapped fingerprint is unchanged.
             **cap_kwargs,
+            # #828 PR 7: section cuts change spans without changing content.
+            # Only when set, so every unmarked fingerprint is unchanged.
+            **cuts_kwargs,
         )
         seg_cache = SegmentationCache(args.segmentation_cache, fp)
         print(f"segmentation cache {args.segmentation_cache} "
@@ -670,7 +698,6 @@ async def run(
     # hand-built test run). text_render is applied in the chunk loop below,
     # whatever --structure-metadata says (it is identity); a marker that needs
     # structure turns the structure step on (structure_step_on).
-    markers = _structure_markers(args, target)
     structure_on = structure_step_on(getattr(args, "structure_metadata", "off"), markers)
     structure_counts: Counter[str] = Counter()
     structure_dropped: Counter[str] = Counter()
@@ -798,7 +825,9 @@ async def run(
             (kept, surviving-by-doc). Idempotent — upsert-first, deterministic
             uuid5 ids, no delete-before-upsert — so --batch-retries can re-run it
             after a transient failure without duplicating or losing data."""
-            kept = await _embed_drop_bad(embedder, chunks)
+            kept = await _embed_drop_bad(
+                embedder, chunks, heading_path=markers.embed_heading_path,
+                budget=max_tokens, token_counter=token_counter, counts=structure_counts)
             # Stamp prev/next/chunk_index per document on the SURVIVING chunks so
             # neighbor links never dangle to a quarantined chunk and a mixed-doc
             # batch never cross-links one doc's tail to the next doc's head.
@@ -1012,11 +1041,18 @@ async def run(
                     finally:
                         structure_counts.update(attached)
                 if seg_cache is not None:
+                    # Under structure_cuts the spans depend on the document's
+                    # structure too, which can differ for the same content (a
+                    # JSONL `structure` key): it joins the cache key. "" for an
+                    # unmarked run, whose keys are unchanged.
                     chunks = await asyncio.to_thread(
-                        seg_cache.get_or_compute, doc, chunker.chunk
+                        seg_cache.get_or_compute, doc, chunker.chunk,
+                        *([structure_cache_key(doc)] if cuts_kwargs else []),
                     )
                 else:
                     chunks = await asyncio.to_thread(chunker.chunk, doc)
+                # What structure_cuts did to this document (none unmarked).
+                structure_counts.update(take_cut_stats(chunker, doc.id))
                 # #828: stamp BEFORE the boilerplate filter (the pipeline's
                 # order) and AFTER the segmentation cache, so a cached
                 # segmentation stays a pure function of the chunker config.
@@ -1025,7 +1061,11 @@ async def run(
                 # merged on the loop thread (the pipeline's rule).
                 if structure_on and chunks:
                     local: Counter[str] = Counter()
-                    await asyncio.to_thread(stamp_documents, [doc], chunks, local)
+                    if not cuts_kwargs:
+                        await asyncio.to_thread(stamp_documents, [doc], chunks, local)
+                    else:  # #828 PR 7: section_crossing against the cut segments
+                        await asyncio.to_thread(functools.partial(
+                            stamp_documents, [doc], chunks, local, structure_cuts=True))
                     structure_counts.update(local)
             # Chunk-level boilerplate flag/drop, per document — which is also the
             # granularity BoilerplateFilter's all-boilerplate guard needs. Counted
@@ -1365,7 +1405,17 @@ def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, Any
                   "--semantic-min-piece apply only to the semantic chunk methods",
                   file=sys.stderr)
             raise SystemExit(2)
-        return {}
+        if target is None or args.chunk_method not in STRUCTURE_TOLERANCE_METHODS:
+            return {}
+        # #828 PR 7: a `sentence` entry under structure_cuts may record the
+        # #831 tolerance; it comes from the entry only (there is no flag).
+        try:
+            return semantic_cap_from_params(
+                args.chunk_method, getattr(target.spec, "chunk_params", None),
+                recorded_size=getattr(target.spec, "chunk_size", None))
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            raise SystemExit(2) from None
     try:
         if target is None:
             return semantic_cap_from_params(
