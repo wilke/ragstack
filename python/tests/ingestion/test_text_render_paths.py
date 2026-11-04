@@ -601,3 +601,95 @@ def test_a_render_failed_document_never_reaches_the_chunker_on_any_path(
     _run_d(tmp_path, monkeypatch, shard)
     for seen in (seen_a, seen_b, seen_c, seen_d):
         assert seen == ["/d/good.md"], seen
+
+
+# --------------------------------------------------------------------------- #
+# #828 PR 7: the render-failure filter holds under structure_cuts; stripped
+# headings give URL-free heading prefixes
+# --------------------------------------------------------------------------- #
+
+CUT_PLAIN = {**PLAIN, "structure_cuts": "sections/1", "embed_heading_path": "prefix/1"}
+
+
+def _cut_chunker():
+    chunker, _, _ = build_chunker("sentence", chunk_size=200,
+                                  chunk_overlap=20, model="m", token_backend="estimate",
+                                  max_tokens=4096, structure_cuts="sections/1")
+    return chunker
+
+
+def test_a_failed_render_is_left_out_under_structure_cuts_on_every_path(
+    tmp_path, registry, monkeypatch, boom  # noqa: F811
+) -> None:
+    """A render-failed document is filtered out before the (cutting) chunker on
+    paths B, C and D: never chunked raw, never stamped, never prefixed.
+    MUTATION: drop the filter before chunking → the raw bad page is stored → fails."""
+    monkeypatch.delenv("COLLECTION_MANIFEST_DIR", raising=False)
+    registry(_spec(chunk_method="sentence", chunk_size=200, chunk_overlap=20,
+                   chunk_params=dict(CUT_PLAIN)))
+    target = it.resolve(CID, registry=REG)
+    markers = structure_from_params("sentence", CUT_PLAIN)
+    shard = _two_pages(tmp_path)
+    size = ["--chunk-method", "sentence", *_SIZE[2:]]
+    good = ["Good\n\nA page that renders."]
+    # B
+    emb, receipt = tmp_path / "e.jsonl", tmp_path / "r.json"
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _Embedder())
+    args = ingest_shard.parse_args([
+        str(shard), "--vector-backend", "memory", "--text-backend", "memory",
+        "--qdrant-url", DEAD, "--es-url", DEAD, *size, "--embedding-file", str(emb),
+        "--out", str(receipt)])
+    assert asyncio.run(ingest_shard.amain(args, target)) == 0
+    rows = {Path(r.source).name: r for r in ShardReceipt.load(receipt).docs}
+    assert rows["bad.md"].error.startswith("text_render_failed") and not rows["bad.md"].chunk_ids
+    b = _emb_rows(emb)
+    assert [r["content"] for r in b] == good and b[0]["metadata"]["section_path"] == ["Good"]
+    # C (and A's chunk loop): the pipeline with the cutting chunker.
+    pipe = IngestionPipeline(loader=JsonlLoader(), chunker=_cut_chunker(), embedder=_Embedder(),
+                             vector_store=InMemoryVectorStore(),
+                             text_index=InMemoryTextIndex(), structure_markers=markers)
+
+    async def _iter():
+        return [c async for g in pipe.iter_embed_source(str(shard)) for c in g]
+
+    assert [c.content for c in asyncio.run(_iter())] == good
+    assert pipe.text_render_failures() == 1
+    chunks, _ = asyncio.run(pipe.prepare_documents(JsonlLoader().load(str(shard))))
+    assert [c.content for c in chunks] == good
+    # D
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+    asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / "d.ckpt",
+                                       chunk_method="sentence"), target))
+    assert [c["content"] if isinstance(c, dict) else c.content
+            for c in store.points.values()] == good
+
+
+async def test_a_stripped_heading_prefix_carries_no_url(tmp_path) -> None:
+    """#937's fix batch: a stripped heading's title is its link TEXT, so the
+    embed_heading_path prefix never carries a URL, while a body link keeps its
+    target in the stored content."""
+    seen: list[str] = []
+
+    class _Recording(_Embedder):
+        async def embed(self, texts):  # noqa: ANN001
+            seen.extend(texts)
+            return await super().embed(texts)
+
+    src = tmp_path / "page.md"
+    src.write_text("# See [the docs](https://d.example/x)\n\n## Usage\n\nRun [it](https://e.example/y) once.\n",
+                   encoding="utf-8")
+    pipe = IngestionPipeline(loader=default_loader_registry(ingest_root=str(tmp_path)),
+                             chunker=_cut_chunker(), embedder=_Recording(),
+                             vector_store=InMemoryVectorStore(),
+                             text_index=InMemoryTextIndex(),
+                             structure_markers=structure_from_params("sentence", CUT_PLAIN))
+    chunks = await pipe.embed_source(str(src))
+    paths = [c.metadata.get("section_path") for c in chunks]
+    assert ["See the docs", "Usage"] in paths
+    prefixes = [t.split("\n", 1)[0] for t in seen]
+    assert "See the docs › Usage" in prefixes
+    assert not any("https://" in p for p in prefixes)
+    assert any("it (https://e.example/y)" in c.content for c in chunks)
+    assert not any("d.example" in c.content for c in chunks)

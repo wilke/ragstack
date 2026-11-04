@@ -418,3 +418,24 @@ async def test_a_gowe_deployment_refuses_a_marker_at_create_until_the_repin(
     monkeypatch.setattr(chunker_config, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)  # what R does
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(PLAIN), cid="gowe-r")
     assert r.status_code == 201 and recorded == PLAIN
+
+
+@pytest.mark.parametrize(("params", "method", "overlap"), [
+    ({"structure_cuts": "sections/1"}, "fixed_token", 32),
+    ({"embed_heading_path": "prefix/1"}, "fixed_token", 32),
+    ({"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25,
+      "min_piece": 64}, "sentence", 0),
+], ids=["structure_cuts", "embed_heading_path", "sentence-tolerance"])
+async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
+    client, _admin, monkeypatch, tmp_path, params, method, overlap
+) -> None:
+    """#828 PR 7's markers (and the sentence tolerance, which needs
+    structure_cuts) are refused on a GoWe deployment until R, like text_render."""
+    from ragstack.api.routers import collections as coll
+
+    assert coll.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    r, recorded = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7",
+                                method=method, overlap=overlap)
+    assert r.status_code == 400, r.text
+    assert "repin" in r.json()["detail"] and recorded is None
