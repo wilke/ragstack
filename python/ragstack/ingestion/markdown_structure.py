@@ -640,6 +640,17 @@ def _render_inline(children: Sequence[Token] | None, *, one_line: bool) -> str:
     return text.replace("\n", " ") if one_line else text
 
 
+def _heading_title(children: Sequence[Token] | None) -> str | None:
+    """A top-level heading's rendered text in stripped mode — raw mode's title
+    rule (:func:`_plain`): link text without its target, an image's alt text,
+    code and maths content without delimiters, inline HTML dropped; line breaks
+    become spaces. So a one-line heading has the SAME title in both modes and
+    classifies to the same roles (``## [Methods](#methods)`` is ``Methods``,
+    not ``Methods (#methods)``, #828 PR 4 review). The heading block covers
+    exactly this text. Body text keeps its targets (:func:`_render_inline`)."""
+    return _plain(children).replace("\n", " ").strip() or None
+
+
 def _render_blocks(tokens: Sequence[Token]) -> list[str]:
     """The stripped units of a run of block tokens, in order: one per
     paragraph, nested heading, code block, maths block, HTML block, front
@@ -714,9 +725,11 @@ def markdown_plain(doc: Document) -> tuple[str, DocumentStructure | None]:
     born in the stripped text, never searched for). Rules:
 
     * **headings** — the title on its own line, ``#`` and underline dropped;
-      the title is the heading's whole rendered text on one line (links as
-      ``text (url)``), and its ``heading`` block covers exactly that text, so
-      ``content[block] == title``. Top-level headings open sections (tree
+      the title is raw mode's title rule over the whole heading, on one line
+      (:func:`_heading_title`: link text without the target, image alt,
+      code/maths content without delimiters, no inline HTML), and its
+      ``heading`` block covers exactly that text, so ``content[block] ==
+      title`` and a one-line heading has the raw-mode title. Top-level headings open sections (tree
       depth = ``level``, the raw rank in ``Section.rank``), as in raw mode; a
       heading inside a quote or list is a line of that block. An empty heading
       opens an untitled section with no heading block and emits nothing; such
@@ -769,7 +782,7 @@ def markdown_plain(doc: Document) -> tuple[str, DocumentStructure | None]:
         t = tokens[lo]
         assert t.map is not None
         if t.type == "heading_open":
-            title = _render_inline(tokens[lo + 1].children, one_line=True).strip() or None
+            title = _heading_title(tokens[lo + 1].children)
             if title is None:
                 # Emits nothing; its section starts where the next text will
                 # (after the separator the next block emits), so it is never
