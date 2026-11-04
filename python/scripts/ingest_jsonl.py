@@ -94,6 +94,7 @@ from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.structure import (
+    TextRenderFailed,
     apply_text_render,
     attach_structure,
     render_failure_of,
@@ -673,6 +674,8 @@ async def run(
     structure_on = structure_step_on(getattr(args, "structure_metadata", "off"), markers)
     structure_counts: Counter[str] = Counter()
     structure_dropped: Counter[str] = Counter()
+    # doc id -> why the collection's text_render failed on it (#828 PR 4 review 2).
+    render_failed: dict[str, str] = {}
     if structure_on:
         print("structure metadata: on", file=sys.stderr)
     if markers:
@@ -842,6 +845,14 @@ async def run(
                         return
                     seq, start_ln, end_line, chunks, cat_rows, doc_info = item
                     try:
+                        if doc_info and all(d in render_failed for d in doc_info):
+                            # #828 PR 4 review 2: every document of this batch
+                            # failed its render — a FAILED batch, so the
+                            # checkpoint stalls here, --resume retries it and
+                            # the run exits 1. (A batch with any survivor
+                            # completes; its failed documents are counted.)
+                            raise TextRenderFailed(
+                                render_failed[next(iter(doc_info))])
                         # --batch-retries: a TRANSIENT embed/store error (endpoint
                         # disconnect, timeout, 5xx) on a flapping endpoint can
                         # self-heal in place. _store_batch is idempotent, so re-run
@@ -874,7 +885,8 @@ async def run(
                                     doc_chunks = surviving.get(d_id, [])
                                     err = (
                                         None if doc_chunks
-                                        else "all chunks unembeddable (quarantined)"
+                                        else render_failed.get(d_id)
+                                        or "all chunks unembeddable (quarantined)"
                                     )
                                     doc_metrics.emit(
                                         d_id, src, doc_chunks, skipped=False, error=err
@@ -987,8 +999,11 @@ async def run(
                         structure_counts.update(rendered)
                     if render_failure_of(doc):
                         # Left out, never ingested raw (logged and counted by
-                        # apply_text_render; reported in the final line).
+                        # apply_text_render; reported in the final line). This
+                        # return and the emptied content are deliberately
+                        # redundant: neither alone may let the raw text through.
                         stats["text_render_failed"] = stats.get("text_render_failed", 0) + 1
+                        render_failed[doc.id] = render_failure_of(doc)
                         return []
                 if structure_on:
                     attached: Counter[str] = Counter()
@@ -1164,7 +1179,12 @@ async def run(
                     await _fold(inflight.popleft())
             # Flush a trailing batch — including a catalog-only one (buf empty but
             # done-range resume rows buffered) so those rows still fold in lockstep.
-            if buf or buf_catalog:
+            # ... and a trailing batch of documents that ALL failed their
+            # text_render (no chunks), so the worker fails it and the
+            # checkpoint stalls instead of moving past them (#828 PR 4 review 2).
+            all_render_failed = bool(buf_doc_info) and all(
+                d in render_failed for d in buf_doc_info)
+            if buf or buf_catalog or all_render_failed:
                 await queue.put(
                     (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
                 )
@@ -1217,6 +1237,10 @@ async def run(
     if failed:
         # Don't report success when batches errored: the checkpoint stalled at the
         # first gap, so the run is partial. Exit non-zero so the operator notices.
+        # (A batch whose every document failed its text_render is one of them.)
+        if stats.get("text_render_failed"):
+            print(f"text_render failed on {stats['text_render_failed']} document(s)",
+                  file=sys.stderr)
         print(f"FAILED: {len(failed)} batch(es) errored (seq {sorted(failed)}); "
               f"checkpoint stalled at the first gap — re-run with --resume to retry.",
               file=sys.stderr)

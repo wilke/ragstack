@@ -80,7 +80,7 @@ from ragstack.ingestion.receipts import (
     DocRow,
     ShardReceipt,
 )
-from ragstack.ingestion.structure import render_failure_of
+from ragstack.ingestion.structure import TEXT_RENDER_FAILED, render_failure_of
 from ragstack.ingestion.work_identity import POLICY_OFF, refusal_of
 
 log = logging.getLogger(__name__)
@@ -254,6 +254,17 @@ async def run_shard(
         if not row.chunk_ids:
             row.error = refusals.get(row.doc_id) or NO_CHUNKS_ERROR
     if not kept:
+        render_failed = sum(1 for d in docs if render_failure_of(d))
+        if render_failed:
+            # #828 PR 4 review 2: nothing survived and the collection's
+            # text_render failed on documents of this batch — a systematic
+            # render bug must FAIL the task (exit 1; the driver and the API see
+            # it), not complete quietly. Each row keeps its own reason, the
+            # embedding file is discarded, and nothing was written, so an
+            # engine retry is harmless.
+            return failed_batch(
+                f"{TEXT_RENDER_FAILED}: nothing to ingest in this batch; the collection's "
+                f"text_render failed on {render_failed} of its {len(docs)} document(s)")
         log.warning("shard %s: no embeddable chunks in the batch (produced %d, "
                     "quarantined %d); every row reports its own error",
                     shard_id, produced, quarantined)
