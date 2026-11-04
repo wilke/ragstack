@@ -895,6 +895,9 @@ def apply_text_render(
             raise
         except Exception as e:  # noqa: BLE001 - one document fails, never the batch
             reason = f"{TEXT_RENDER_FAILED}: {type(e).__name__}: {e}"
+            # Emptying AND marking are deliberately redundant: every chunk loop
+            # filters on the mark, and an empty text chunks to nothing even if
+            # a loop forgot to — neither alone may let the raw text through.
             doc.content = ""
             doc.structure = None
             doc.metadata[RENDER_FAILURE_KEY] = reason

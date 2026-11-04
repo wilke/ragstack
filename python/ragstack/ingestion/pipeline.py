@@ -310,6 +310,7 @@ class IngestionPipeline:
                 policy=check.policy, source=source, seen=check.seen,
             )
         await self._render_text(to_chunk)
+        # Deliberately redundant with the emptied content (apply_text_render).
         to_chunk = [d for d in to_chunk if not render_failure_of(d)]
         await self._attach_structure(to_chunk)
         all_chunks: list[Chunk] = []
@@ -638,6 +639,7 @@ class IngestionPipeline:
         documents: list[Document] = self.loader.load(source)
         await self._apply_doi_enrichment(documents)
         await self._render_text(documents)
+        # Deliberately redundant with the emptied content (apply_text_render).
         documents = [d for d in documents if not render_failure_of(d)]
         await self._attach_structure(documents)
         step = max(1, group_size)
