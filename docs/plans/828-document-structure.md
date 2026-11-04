@@ -21,7 +21,11 @@ PR 2 ([#843](https://github.com/wilke/ragstack/pull/843)): §9.1's alt-text capt
 overlap the figure and are Figure-only; the dollarmath, preamble, setext, empty-heading and NUL
 rules; the shared, warmed parser (§8, §9.1); the receipt's `backend` shape and the
 configuration-level refusal (§6); and the `[markdown]` extra missing from both image defs (§12
-PR 2 and R). No
+PR 2 and R). Corrected after implementing PR 7 ([#938](https://github.com/wilke/ragstack/pull/938)):
+under `structure_cuts` a heading folded into the body that follows it is NOT a
+`section_crossing`, which is stamped exactly on whole-segment merges (§6, §7.1, Q10); the
+heading attach stays inside its parent; and whitespace-only segments fold into a neighbour, in
+the one segment helper the cutter and the stamp share (§7.1). No
 code. Written for the owner's review before the first PR of the series in §12. It folds in the owner's direction from the #828
 thread (document level, not format level; `Document.structure`; adapters; stamping by offset
 overlap; inferred structure for PDF and extracted text; captions; placement as an evaluation
@@ -446,7 +450,7 @@ keys. Absent is a state (`chunk_metadata.json`
 | `section_level` | integer | the owning section's `level` (tree depth, Q11; the raw rank is not stamped). |
 | `section_roles` | list of strings (`roles/1`) | the sorted union of the own `roles` of the owning section and every ancestor (§5, Q4), so a chunk in a subsection of *Methods* carries `methods`. `unknown` is dropped from the union whenever any other tag is in it, so `["unknown"]` means nothing on the path could be classified; `other` is kept (a titled section on the path matched no rule). Never empty for a structured document, because `classify_roles` runs on every structure before the stamp and the validator then asserts `roles is not None` on every section (without that, the stamp would have to map `None` to `unknown`, and an unclassified structure would pass silently as "nothing could be said"). |
 | `section_roles_version` | list of strings | the sorted distinct `role_source` values of the sections that contributed a tag to `section_roles`. The first list-valued `*_version` field (`symbol_glossary_version` is a string), so a filter on it means "some contributing producer". |
-| `section_crossing` | boolean, **stamped only when `true`** | the chunk overlaps two or more *segments* (§7.1: a leaf section, or a parent's lead text before its first child), i.e. its text belongs to more than one segment; the owner of such a chunk is still the one section the rule above picks — the deepest overlapping one, so a parent's lead text joined to its first child is owned by the child (the `is_boilerplate` precedent: `false` is never written, so unstamped chunks stay "unknown"). Expected on the first chunk of most titled parents, because a heading-only parent segment travels with the following segment (§7.1); not a defect signal. Decided, Q10. |
+| `section_crossing` | boolean, **stamped only when `true`** | the chunk overlaps two or more *segments* (§7.1: a leaf section, or a parent's lead text before its first child), i.e. its text belongs to more than one segment; the owner of such a chunk is still the one section the rule above picks — the deepest overlapping one, so a parent's lead text joined to its first child is owned by the child (the `is_boilerplate` precedent: `false` is never written, so unstamped chunks stay "unknown"). Without `structure_cuts` it is read against the section segments, so it is expected on the first chunk of most titled parents (a heading-only parent segment and its first child); under `structure_cuts` it is read against the CUT segments (§7.1), where that heading is part of its child's segment, so it fires exactly on whole-segment merges (corrected after PR 7). Not a defect signal either way. Decided, Q10. |
 | `block_types` | list of strings | the sorted distinct `kind`s of the blocks overlapping the chunk. |
 | `caption_labels` | list of strings | `label` of every `figure_caption` / `table_caption` block whose `start` lies inside the chunk (the label is at the start of a caption, so the chunk that holds the start holds the label). |
 | `refers_to` | list of strings | labels cited in the chunk's own `content`, normalised to the same form as `label` (`Fig. 3`, `FIG 3`, `Figure 3A`, `Figs. 2 and 3` → `Figure 3`, `Figure 2`, `Figure 3`). Computed from `content`, not from structure, but stamped only for structured documents so it is versioned with them. |
@@ -771,13 +775,18 @@ have:
   parent's `section_title` is an open item for PR 7 to raise, with a stamp version bump, if its
   evaluation shows it matters. The merge never joins a fragment of one segment with a
   fragment of another. Without #831's `size_tolerance` the merge target is `chunk_size` itself.
-- **Headings travel with their body.** A `heading` block is never a segment's whole content when
-  the next block fits with it; the segmenter attaches a heading to the segment that follows it.
-  A consequence worth stating once: when a titled parent's own text is only its heading, that
-  segment joins the first child's, so **the first chunk of most titled parents carries
-  `section_crossing: true`**. Its prevalence in a structured collection is therefore expected —
-  roughly one per titled non-leaf section — and §10 and §11 must read it as the heading-with-body
-  case, not as a defect of the cutter.
+- **Headings travel with their body.** A segment that holds only a heading is attached to the
+  segment that follows it, inside the same parent: a titled parent whose own text is just its
+  heading joins its first child; a titled leaf with no body joins the next sibling. A heading-only
+  LAST child is not attached to the next parent's text; it stays its own segment and can merge
+  as a whole sibling. The rule works on segments: inside a long segment a packer may still cut
+  just after a heading line. *Corrected after PR 7:* the first draft said this makes "the first
+  chunk of most titled parents carry `section_crossing: true`". Under `structure_cuts` the stamp
+  reads the CUT segments — the same list the cutter uses, from one helper (which also folds a
+  whitespace-only segment into its neighbour) — so the heading-with-body chunk is one segment and
+  is not stamped, and `section_crossing` marks exactly the whole-segment merges above. Collections
+  without the marker keep the section-segment reading, where that prevalence still holds; §10
+  and §11 must read the field by the collection's marker.
 - **`fixed_token` with overlap.** Overlap does not reach back across a segment boundary. The first
   window of a segment starts at the segment start.
 
@@ -1333,7 +1342,9 @@ consequence for this note. Where a decision changed the recommendation, the chan
    recommended. *Consequence:* §10 reports the agreement between `section_roles` and `section`
    descriptively, to revisit with numbers.
 10. **Add `section_crossing`, stamped only when true?** *Decision: yes*, as recommended.
-    *Consequence:* the §6 field, expected on the first chunk of most titled parents (§7.1).
+    *Consequence:* the §6 field. Without `structure_cuts` it is expected on the first chunk of
+    most titled parents; under `structure_cuts` it marks exactly the whole-segment merges
+    (§7.1, corrected after PR 7).
 11. **`level` as tree depth or raw heading rank?** *Decision: tree depth*, as recommended. The
     owner asked whether raw rank should match it in theory: only for well-formed Markdown. It
     breaks on skipped levels (`#` then `###`), on documents that start at `##`, and on formats
