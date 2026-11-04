@@ -363,6 +363,144 @@ is affected too. A create that omits `chunk` now records the marker, so its
 content address differs from the uncapped, settings-derived default
 collection. It mints a separate store instead of re-mapping to that surface.
 
+## Opt-in: Markdown as plain text (`text_render`)
+
+Issue #828 (design: [`plans/828-document-structure.md`](plans/828-document-structure.md)
+§7, §9.1). By default a `.md` file is stored and embedded as raw Markdown,
+exactly as it was read. A collection can instead record
+`chunk_params.text_render = "markdown-plain/1"`: every `.md` document is then
+rendered to plain text **at ingest**, before chunking, and the rendered text is
+what is chunked, stored and embedded. It works with every method.
+
+The render, from one CommonMark parse (the `[markdown]` extra):
+
+| source | rendered |
+|---|---|
+| `## Heading` | `Heading` on its own line; the heading is a section boundary. A heading takes raw mode's title: link text without its target, an image's alt text, code and maths content without delimiters, no inline HTML, so `## [Methods](#methods)` is `Methods` and gets the same section roles as in a raw collection |
+| `[text](url)` | `text (url)`; an autolink is written once |
+| `![alt](src)` | `alt (src)` |
+| inline HTML | its visible text, plus `href` targets: `<a href="u">x</a>` → `x (u)` |
+| code (inline, fenced, indented) | verbatim, without the backticks or fences |
+| maths (`$…$`, `$$…$$`, `\(…\)`) | verbatim, delimiters included |
+| tables | one row per line, cells joined by ` \| ` |
+| emphasis, list and quote markers, thematic breaks | dropped |
+| front matter | its YAML body |
+
+Top-level blocks are separated by one blank line. Every content word of the
+body survives: link targets, code, table cells and maths included. Other
+suffixes (`.txt`, `.pdf`, `.xml`, `.jsonl`) are not touched.
+
+What the render loses, by design or by the parser:
+
+- **Targets inside headings** (above): the heading keeps its text only.
+- **Excess table cells.** A row with more cells than the header row loses the
+  extra cells: GFM tables (markdown-it) drop them before the render sees them.
+  `| 1 | 2 | extra |` under a two-column header renders as `1 | 2`.
+- **HTML attributes other than `href`, and `<img>`'s `alt`/`src`.** `title=`
+  (`<abbr title="…">`), `class`, `data-*` and the like are dropped with the
+  markup.
+- **An escaped pipe in a cell** renders as `|`, indistinguishable from the
+  ` | ` cell separator (the words survive; the cell boundary does not).
+- **Maths delimiters in headings** follow the heading rule (`# Energy $E$` is
+  `Energy E`); in body text they are kept.
+
+**It is identity.** The text changes, so every offset, chunk and chunk id
+changes: a marked collection is a different collection from an unmarked one,
+by content address (the marker is in `chunk_params`, so in the chunk
+descriptor, the `spec_hash` and the physical name). Nothing converts in place;
+to compare raw and plain text, create two collections. A collection without
+the key is unchanged, which includes every collection created before #828
+PR 4. The marker applies whatever `STRUCTURE_METADATA` says. The section
+metadata of the rendered text is stamped on the chunks only when structure
+metadata is on.
+
+**Validation and recording.** `POST /v1/collections` refuses an unknown value
+with 400; `null` counts as not sent. The other three structure markers,
+`structure_cuts` (`sections/1`), `embed_heading_path` (`prefix/1`) and
+`structure_infer` (`text-heuristic/1`), are recognised but **refused** (400 at
+create, exit 2 on the bulk tools) until the release that applies them (#828
+PR 7 and PR 8). Accepting them now would chunk a collection without them and,
+after that release, with them. One reader,
+`chunker_config.structure_from_params`, serves the API, `ingest_shard.py`,
+`embed_shard.py` (with `--collection-id`), `ingest_jsonl.py`, the load-time
+check and the batch driver. There is no marker flag on the tools: the registry
+entry is the only source.
+
+**A missing parser is a refusal.** With the marker set and the `[markdown]`
+extra absent, the API answers 503 before any job exists and the bulk tools exit
+2 before reading a record, whatever `STRUCTURE_METADATA` says. Nothing falls
+back to raw text.
+
+**A document that fails to render is left out, never ingested raw.** Its
+receipt row (`ingest_shard.py`) carries `text_render_failed: <error class>: …`;
+the other documents of the batch go on. An in-process ingest of a source whose
+only document fails ends with that error. `embed_shard.py` and
+`ingest_jsonl.py` print the count; with structure metadata on,
+`enrichment.structure.text_render_failed` counts them by error class.
+When nothing survives because renders failed, no path reports success:
+
+- an `ingest_shard.py` batch fails (exit 1, `text_render_failed: …` as the
+  receipt error; each row keeps its own reason);
+- an `embed_shard.py` shard fails with an error naming `text_render_failed`;
+- in `ingest_jsonl.py`, a batch whose every document failed is a failed
+  batch: the checkpoint stops there, `--resume` retries it, and the run exits
+  1. Its documents' metrics rows say `text_render_failed`. A batch with any
+  surviving document completes, and its failed documents are counted, not
+  retried.
+
+`ingest_jsonl.py --max-doc-chars` measures the record's RAW text, before the
+render.
+
+**Not with a glossary file (yet).** A glossary file (`glossary_step.py`, #847)
+is built from, and checked against, the raw record text, while a marked
+collection stores the rendered text. The combination is refused before
+anything is written: `ingest_shard.py --glossary-file` and
+`load_embeddings.py --glossary-file` exit 2 for a `text_render` collection, and
+`gowe_batch_ingest.py` refuses to submit one on a workflow that runs the
+glossary step (`jats-ingest.cwl`, `embed-bulk.cwl`, `ingest-bulk.cwl`). The
+per-chunk rules glossary (`--symbol-glossary rules`) is unaffected: it is
+computed from the rendered text. Building glossary files over the rendered text
+is a separate issue. `ingest_chunks.py`, which loads pre-chunked JSON, refuses
+any entry that records a marker.
+
+**Not on GoWe deployments until the repin.** On `INGEST_BACKEND=gowe`,
+`POST /v1/collections` refuses (400) a collection that records any marker
+until the repin step R, because the shipped workflows' tools image predates
+the markers and would ingest it unmarked. An entry that arrived another way
+(seeded, a collections file, a registry shared with an in-process deployment)
+is refused when an ingest is dispatched (422, before anything is uploaded or a
+version reserved). The dispatch also refuses `text_render` on a workflow that
+builds a glossary file. R lifts the first refusal. Note that the API's
+scatter workflow (`pdf-ingest-scatter.cwl`) runs the glossary step and passes
+`--glossary-file` to `ingest_shard.py`; until glossary files follow the
+render, a `text_render` collection cannot be ingested through it even after R.
+
+**Where it is applied, and recorded.** The GoWe extract step never sees the
+marker: its shard holds the raw text, and the render runs in the ingest step,
+on every path. What ran is recorded:
+
+| where | what |
+|---|---|
+| the shard receipt (`ingest_shard.py`, `embed_shard.py`) | `chunking.text_render` (merged into the semantic `chunking` object when there is one). The `[chunker] structure markers: …` stderr line says the same. |
+| the embedding-file header (`embed_shard.py`) | `chunking.text_render`, beside the resolved `collection_id` |
+| `enrichment.structure.backend` | the parser, when structure metadata is on |
+
+**Release order.** A tools image built before #828 PR 4 ignores the key: on
+`ingest-bulk.cwl` and the API's scatter workflow it ingests a marked
+collection as raw Markdown, with no error; its receipts have no
+`chunking.text_render`. Roll the tools image before creating marked
+collections on a GoWe tenant. On the operator embed workflows
+(`jats-ingest.cwl`, `pdf-ingest.cwl`, `embed-bulk.cwl`), the embed step must
+also pass `collection_id`, which the shipped texts do not yet do (repin step
+R). Three backstops refuse what they cannot prove was built from the entry:
+`load_embeddings.py` refuses, before any write, an embedding file whose
+header's markers differ from the entry's (an old header with no `chunking`
+object, against a marked entry, included); `gowe_batch_ingest.py` refuses to
+submit a marked collection on a workflow whose `embed_shard.py` step does not
+bind `collection_id`; and the API refuses (422) a marked collection when its
+own workflow's embed step is unwired, which never happens with the shipped
+`pdf-ingest-scatter.cwl` (its chunk step is `ingest_shard.py`).
+
 ## Sentence segmentation
 
 `sentence`, `semantic` and `semantic_pooled` all start from

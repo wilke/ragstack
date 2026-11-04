@@ -192,11 +192,104 @@ def embed_step_wiring(cwl_path: str) -> dict[str, bool | None]:
     about to be submitted — whether the step's ``in:`` binds ``collection_id``,
     so the embed tool resolves the registry entry rather than embedding
     unresolved (#828 §7). ``None`` for a step whose tool is not inline and so
-    cannot be read. Read here, not acted on: the refusal for a marked
-    collection on an unwired text is #828 PR 4."""
+    cannot be read. Acted on by :func:`refuse_marked_on_unwired_workflow`."""
     from ragstack.tool_image import embed_shard_step_wiring
 
     return embed_shard_step_wiring(Path(cwl_path).read_text(encoding="utf-8"))
+
+
+def entry_chunking(registry_db: str, collection_id: str) -> tuple[str | None, dict]:
+    """``(chunk_method, chunk_params)`` of the registry entry, read the same
+    read-only way as :func:`resolve_store_name` — the driver needs no other
+    access to the registry to know whether the collection carries a
+    document-structure marker (#828 §7)."""
+    import sqlite3
+
+    def refuse(why: str) -> SystemExit:
+        print(f"error: collection {collection_id!r} in {registry_db}: {why}",
+              file=sys.stderr, flush=True)
+        return SystemExit(2)
+
+    try:
+        with sqlite3.connect(f"file:{registry_db}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT chunk_method, chunk_params FROM collections WHERE id = ?",
+                (collection_id,),
+            ).fetchone()
+    except sqlite3.Error as e:
+        # A registry without these columns (or unreadable) cannot say whether
+        # the collection is marked: refuse rather than read it as unmarked.
+        raise refuse(f"cannot read chunk_method/chunk_params ({type(e).__name__}: {e}); "
+                     "refusing rather than treating the entry as unmarked") from None
+    if not row:
+        raise SystemExit(f"collection {collection_id!r} not in registry {registry_db}"
+                         " — register it via POST /v1/collections first (#263)")
+    try:
+        params = json.loads(row[1] or "{}")
+    except json.JSONDecodeError as e:
+        raise refuse(f"unreadable chunk_params: {e}") from None
+    if not isinstance(params, dict):
+        # Fail closed: a non-object cannot be read as "no marker".
+        raise refuse(f"chunk_params is a {type(params).__name__}, not an object")
+    return row[0], params
+
+
+def refuse_marked_on_unwired_workflow(cwl_path: str, collection_id: str,
+                                      method: str | None, params: dict) -> None:
+    """#828 §7 backstop 2 — early, so a refusal costs a command, not a
+    scattered GPU run. For a collection whose ``chunk_params`` carry a
+    document-structure marker, exit 2 BEFORE ANY SUBMISSION unless every
+    ``embed_shard.py`` step of the workflow text binds ``collection_id`` (so
+    the embed tool resolves the entry and applies its markers). A step the
+    wiring reader cannot read (``None``) counts as unwired: fail closed. A
+    workflow with no ``embed_shard.py`` step (``ingest-bulk.cwl`` runs
+    ``ingest_shard.py``, which resolves the entry itself) is not refused, nor
+    is an unmarked collection. The markers are read by the one reader, with
+    ``unapplied=()``: this asks whether ANY marker is recorded, not whether
+    this checkout can apply it."""
+    from ragstack.ingestion.chunker_config import structure_from_params
+
+    try:
+        markers = structure_from_params(method, params, unapplied=()).applied()
+    except ValueError as e:
+        print(f"error: collection {collection_id!r} {e}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from None
+    if not markers:
+        return
+    wiring = embed_step_wiring(cwl_path)
+    unwired = sorted(step for step, wired in wiring.items() if wired is not True)
+    if unwired:
+        print(
+            f"error: refusing to submit {cwl_path}: collection {collection_id!r} records "
+            f"document-structure markers ({', '.join(f'{k}={v!r}' for k, v in markers.items())}), "
+            f"but the workflow's embed_shard.py step(s) {', '.join(unwired)} do not bind "
+            "collection_id, so the embed tool would not resolve the entry and would "
+            "embed without the markers (load_embeddings.py would then refuse every "
+            "file). Submit the workflow text of the deployed, stamped server release, "
+            "whose embed steps are wired (#828 §7, repin step R).",
+            file=sys.stderr, flush=True)
+        raise SystemExit(2)
+    if markers.get("text_render") is not None and _uses_glossary_file(cwl_path):
+        # #828 PR 4 review: the workflow's glossary step builds its file over
+        # the RAW shard text, and the collection stores the rendered text — the
+        # load (or ingest) step would refuse every file after the embeds ran.
+        from ragstack.ingestion.chunker_config import (
+            StructureMarkers,
+            text_render_glossary_refusal,
+        )
+
+        why = text_render_glossary_refusal(StructureMarkers(text_render=markers["text_render"]))
+        print(f"error: refusing to submit {cwl_path}: it builds and applies a glossary "
+              f"file, and {why}", file=sys.stderr, flush=True)
+        raise SystemExit(2)
+
+
+def _uses_glossary_file(cwl_path: str) -> bool:
+    """:func:`ragstack.tool_image.uses_glossary_file` over the file the driver
+    is about to submit (the reading the API's dispatch gate shares)."""
+    from ragstack.tool_image import uses_glossary_file
+
+    return uses_glossary_file(Path(cwl_path).read_text(encoding="utf-8"))
 
 
 def resolve_store_name(registry_db: str, collection_id: str) -> str:
@@ -497,6 +590,10 @@ def main(argv=None) -> int:
     args.es_url = template["es_url"]
     store = resolve_store_name(template["registry_db"]["location"],
                                template["collection_id"])
+    # #828 §7: before any batch is planned or submitted (dry run included).
+    method, params = entry_chunking(template["registry_db"]["location"],
+                                    template["collection_id"])
+    refuse_marked_on_unwired_workflow(args.cwl, template["collection_id"], method, params)
 
     batches = make_batches(args.plan, args.batch_size)
     if args.limit_batches:

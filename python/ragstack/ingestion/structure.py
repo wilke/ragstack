@@ -24,6 +24,10 @@ Four pieces:
   ``scripts/ingest_jsonl.py``'s own loop), between chunking and the boilerplate
   filter.
 
+Plus :func:`apply_text_render` (#828 PR 4): the ``text_render`` marker's
+content-changing step (the stripped Markdown render), which every chunk loop
+runs just before :func:`attach_structure` when the collection records it.
+
 Offsets are Unicode code points into ``Document.content`` — the coordinate
 system of ``Chunk.start_char``/``end_char`` (§4.1 item 2). Nothing here ever
 searches the text for a title: ownership is offset overlap (§2, §14 "repeated
@@ -40,7 +44,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -53,6 +57,9 @@ from ragstack.models import (
     DocumentStructure,
     Section,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ragstack.ingestion.chunker_config import StructureMarkers
 
 log = logging.getLogger(__name__)
 
@@ -742,15 +749,24 @@ class StructureBackendUnavailable(RuntimeError):
     :attr:`client_detail`, the bulk tools exit 2 at configuration. ``extra``
     names the optional-dependency extra that carries the parser."""
 
-    def __init__(self, adapter: str, extra: str, detail: str) -> None:
+    def __init__(self, adapter: str, extra: str, detail: str, *, why: str | None = None) -> None:
         self.adapter = adapter
         self.extra = extra
-        self.client_detail = (
-            f"document-structure metadata is on (STRUCTURE_METADATA / "
-            f"--structure-metadata) but the {adapter} adapter's parser is not "
-            f"installed here: install the [{extra}] extra (pip install "
-            f"'ragstack[{extra}]'), or turn structure metadata off"
-        )
+        if why is None:
+            self.client_detail = (
+                f"document-structure metadata is on (STRUCTURE_METADATA / "
+                f"--structure-metadata) but the {adapter} adapter's parser is not "
+                f"installed here: install the [{extra}] extra (pip install "
+                f"'ragstack[{extra}]'), or turn structure metadata off"
+            )
+        else:
+            # A collection marker asked for the parser (#828 §7): there is no
+            # "turn it off" — the marker is the collection's identity.
+            self.client_detail = (
+                f"{why}, which needs the {adapter} adapter's parser, and it is not "
+                f"installed here: install the [{extra}] extra (pip install "
+                f"'ragstack[{extra}]')"
+            )
         super().__init__(f"{self.client_detail} ({detail})")
 
 
@@ -808,29 +824,189 @@ AdapterLike = IngestAdapter | Callable[[Document], DocumentStructure | None]
 INGEST_ADAPTERS: dict[str, AdapterLike] = {".md": _markdown_adapter()}
 
 
-def require_structure_backends(adapters: Mapping[str, AdapterLike] | None = None) -> None:
+#: ``text_render`` value -> {suffix: render} (#828 §7). A render returns
+#: ``(content, structure | None)`` from ONE parse and raises
+#: :class:`StructureBackendUnavailable` when its parser is missing. Only the
+#: values :func:`~ragstack.ingestion.chunker_config.structure_from_params`
+#: accepts reach here.
+TextRender = Callable[[Document], "tuple[str, DocumentStructure | None]"]
+
+
+def _markdown_plain_render(doc: Document) -> tuple[str, DocumentStructure | None]:
+    from ragstack.ingestion import markdown_structure as md
+
+    try:
+        md.require()
+    except md.MarkdownBackendMissing as e:
+        raise StructureBackendUnavailable(
+            md.ADAPTER, md.EXTRA, str(e),
+            why=f"text_render={md.TEXT_RENDER!r} is set on this collection") from None
+    return md.markdown_plain(doc)
+
+
+TEXT_RENDERS: dict[str, dict[str, TextRender]] = {
+    "markdown-plain/1": {".md": _markdown_plain_render},
+}
+
+
+def apply_text_render(
+    documents: Iterable[Document], render: str | None, counts: Counter[str] | None = None,
+) -> int:
+    """Replace the ``content`` of every document whose suffix ``render``
+    covers with the rendered text, and its ``structure`` with the structure
+    born in that text (#828 §7 ``text_render``, applied at ingest from the
+    record's suffix, on every path — the extract step never sees it). Returns
+    how many documents were rendered. ``render=None``: nothing, ever.
+
+    Runs where :func:`attach_structure` runs — after load and DOI enrichment,
+    before chunking — and BEFORE it, so ``attach_structure`` then skips a
+    rendered document (it already has its structure). The render is identity
+    (content, offsets and chunk ids change), so it is applied whatever
+    ``STRUCTURE_METADATA`` says; the structure it produces is only stamped when
+    the structure step is on.
+
+    A structure that arrived with the document is dropped: it was bound to the
+    text being replaced. A rendered structure that fails validation is dropped
+    and counted under ``structure_invalid:<reason>`` — the CONTENT is still the
+    render (metadata may degrade; identity may not).
+
+    **A render that fails on one document fails THAT document only** (#828 PR 4
+    review): it is never ingested as raw text (that would mix two renders in
+    one collection) — its ``content`` is emptied, its structure dropped, and
+    :func:`render_failure_of` names the reason, which every chunk loop reads to
+    leave it out (and ``run_shard`` writes on its receipt row); counted under
+    ``text_render_failed:<exception class>`` and logged at ERROR. The other
+    documents continue. A missing parser is not such a failure: it propagates
+    as :class:`StructureBackendUnavailable` (the configuration refusal). Each
+    structure kept counts ``backend:<parser>`` (the audit of §6)."""
+    if render is None:
+        return 0
+    table = TEXT_RENDERS.get(render)
+    if table is None:
+        raise ValueError(f"unknown text_render {render!r}")
+    done = 0
+    for doc in documents:
+        fn = table.get(Path(doc.source).suffix.lower())
+        if fn is None:
+            continue
+        try:
+            text, built = fn(doc)
+        except StructureBackendUnavailable:
+            raise
+        except Exception as e:  # noqa: BLE001 - one document fails, never the batch
+            reason = f"{TEXT_RENDER_FAILED}: {type(e).__name__}: {e}"
+            # Emptying AND marking are deliberately redundant: every chunk loop
+            # filters on the mark, and an empty text chunks to nothing even if
+            # a loop forgot to — neither alone may let the raw text through.
+            doc.content = ""
+            doc.structure = None
+            doc.metadata[RENDER_FAILURE_KEY] = reason
+            if counts is not None:
+                counts[f"{TEXT_RENDER_FAILED}:{type(e).__name__}"] += 1
+            log.error("text_render %s failed for %r; the document is left out: %s",
+                      render, doc.source or doc.id, e)
+            continue
+        doc.content = text
+        doc.structure = None
+        if built is not None:
+            try:
+                validate_structure(built, text)
+            except StructureInvalid as e:
+                if counts is not None:
+                    counts[f"structure_invalid:{e.reason}"] += 1
+                log.warning("structure from the %s render dropped for %r: %s",
+                            render, doc.source, e)
+                built = None
+        doc.structure = built
+        done += 1
+        if built is not None and counts is not None:
+            counts[f"backend:{_RENDER_BACKENDS[render]()}"] += 1
+    return done
+
+
+#: The label a document's render failure starts with (receipt rows, counts).
+TEXT_RENDER_FAILED = "text_render_failed"
+#: Where :func:`apply_text_render` marks a document it could not render. Never
+#: reaches a chunk: a marked document is chunked by no loop.
+RENDER_FAILURE_KEY = "_text_render_failure"
+
+
+def render_failure_of(doc: Document) -> str:
+    """Why the collection's ``text_render`` could not render ``doc``, or ``""``."""
+    return str(doc.metadata.get(RENDER_FAILURE_KEY) or "")
+
+
+class TextRenderFailed(RuntimeError):
+    """Every document of a source failed its render (one source = one job
+    item): the item fails with the reason as its error, before any embed or
+    store write. ``job_error`` follows the ``DuplicateWork`` convention."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        # Caller-safe: the label and the exception class, not its message.
+        self.job_error = ": ".join(reason.split(": ")[:2])
+
+
+def _markdown_backend() -> str:
+    from ragstack.ingestion import markdown_structure as md
+
+    return md.backend()
+
+
+#: ``text_render`` value -> the parser it runs, for ``enrichment.structure.backend``.
+_RENDER_BACKENDS: dict[str, Callable[[], str]] = {"markdown-plain/1": _markdown_backend}
+
+
+def require_structure_backends(adapters: Mapping[str, AdapterLike] | None = None,
+                               markers: StructureMarkers | None = None) -> None:
     """Raise :class:`StructureBackendUnavailable` unless every registered ingest
     adapter's parser is installed. Called at CONFIGURATION, wherever the
     structure step is turned on — the API before it accepts a local ingest, the
     bulk tools before they read a record — so a missing extra refuses the run
     whatever the batch holds, instead of silently ingesting its Markdown
-    unstructured (§6: "a refusal, never a fallback")."""
+    unstructured (§6: "a refusal, never a fallback").
+
+    ``markers`` (a ``chunker_config.StructureMarkers``, when a collection's
+    marker is what asks for the parser — #828 §7) only changes the message:
+    a marker cannot be "turned off", it is the collection's identity."""
     table = INGEST_ADAPTERS if adapters is None else adapters
-    for adapter in table.values():
-        require = getattr(adapter, "require", None)
-        if require is not None:
-            require()
+    try:
+        for adapter in table.values():
+            require = getattr(adapter, "require", None)
+            if require is not None:
+                require()
+    except StructureBackendUnavailable as e:
+        applied = markers.applied() if markers is not None else {}
+        if not applied:
+            raise
+        why = "this collection's chunk_params set " + ", ".join(
+            f"{k}={v!r}" for k, v in applied.items())
+        raise StructureBackendUnavailable(e.adapter, e.extra, str(e), why=why) from None
 
 
-def require_structure_backends_or_exit(mode: str | None) -> None:
+def structure_step_on(mode: str | None, markers: StructureMarkers | None = None) -> bool:
+    """Do the adapters and the stamp run? ``STRUCTURE_METADATA`` /
+    ``--structure-metadata`` on, or a marker that needs structure to chunk or
+    embed at all (``markers.needs_structure``, §6: "a marker overrides the
+    setting"). The one reading every path uses."""
+    return structure_metadata_enabled(mode) or bool(
+        markers is not None and markers.needs_structure)
+
+
+def require_structure_backends_or_exit(
+    mode: str | None, markers: StructureMarkers | None = None
+) -> None:
     """The bulk tools' configuration check (``ingest_shard.py``,
     ``embed_shard.py``, ``ingest_jsonl.py``): with ``--structure-metadata on``
-    and a parser missing, print the reason and exit 2 before any record is
-    read, any store is touched or any vector is computed. Off: nothing."""
-    if not structure_metadata_enabled(mode):
+    — or a collection marker that needs the parser (``text_render``, or one
+    that forces structure; ``markers.requires_parser``) — and a parser
+    missing, print the reason and exit 2 before any record is read, any store
+    is touched or any vector is computed. Otherwise nothing."""
+    needed = markers is not None and markers.requires_parser
+    if not structure_metadata_enabled(mode) and not needed:
         return
     try:
-        require_structure_backends()
+        require_structure_backends(markers=markers if needed else None)
     except StructureBackendUnavailable as e:
         print(f"error: {e.client_detail}", file=sys.stderr)
         raise SystemExit(2) from None
@@ -975,6 +1151,10 @@ def structure_provenance(
                if k.startswith("structure_invalid:")}
     if invalid:
         rec["structure_invalid"] = invalid
+    failed = {k.split(":", 1)[1]: n for k, n in sorted(done.items())
+              if k.startswith(f"{TEXT_RENDER_FAILED}:")}
+    if failed:
+        rec[TEXT_RENDER_FAILED] = failed
     backends = sorted(k.split(":", 1)[1] for k, n in done.items()
                       if k.startswith("backend:") and n)
     if backends:
@@ -1006,8 +1186,9 @@ __all__ = [
     "Block", "DocumentStructure", "Section",
     "STAMP_KEYS", "STAMP_VERSION", "ROLES_V1", "RULES_VERSION", "DECLARED_VERSION",
     "IngestAdapter", "StructureBackendUnavailable", "StructureIndex", "StructureInvalid",
-    "attach_structure", "citations", "require_structure_backends",
-    "require_structure_backends_or_exit",
+    "RENDER_FAILURE_KEY", "TEXT_RENDERS", "TEXT_RENDER_FAILED", "TextRenderFailed",
+    "apply_text_render", "render_failure_of", "attach_structure", "citations",
+    "require_structure_backends", "require_structure_backends_or_exit", "structure_step_on",
     "classify_roles", "classify_title", "content_sha256", "merge_enrichment",
     "normalise_label", "normalise_title", "stamp", "stamp_documents",
     "structure_from_record", "structure_metadata_enabled", "structure_provenance",

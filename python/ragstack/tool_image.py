@@ -493,6 +493,16 @@ def embed_shard_step_wiring(cwl: str) -> dict[str, bool | None]:
     return out
 
 
+def uses_glossary_file(cwl: str) -> bool:
+    """Whether a workflow text runs the glossary step (``glossary_step.py``)
+    or passes ``--glossary-file`` to a tool, outside full-line comments. A
+    ``text_render`` collection cannot go through such a workflow yet: the
+    glossary file is built over the RAW text (#828 PR 4 review). Shared by
+    ``gowe_batch_ingest.py`` and the API's GoWe dispatch gate."""
+    return any(("glossary_step.py" in line or "--glossary-file" in line)
+               for line in cwl.splitlines() if not line.lstrip().startswith("#"))
+
+
 def names_stamped_image(cwl: str) -> bool:
     """Whether ``cwl`` names a STAMPED tools image
     (``ragstack-tools-<version>-b<N>.sif``) — the ADR-0010 declaration that the

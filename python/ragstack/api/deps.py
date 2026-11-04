@@ -49,6 +49,7 @@ from ragstack.ingestion.chunker_config import (
     needs_embed_fn,
     parse_unsupported_methods,
     semantic_cap_from_params,
+    structure_from_params,
 )
 from ragstack.ingestion.chunkers import CHUNK_METHODS, SIZE_UNITS
 from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
@@ -584,6 +585,11 @@ def _chunk_param_kwargs(
         used.update(("size_cap", "cap_split", "breakpoint_cap"))
         used.update(cap)
         out.update(cap)
+    # The document-structure markers (#828 §7) are not chunker kwargs in this
+    # build (structure_cuts is #828 PR 7): validated here by the one reader —
+    # an unknown value, or one this build cannot apply, is the ingest's 400 —
+    # and handed to the pipeline by build_ingestor_for.
+    used.update(structure_from_params(method, params).applied())
     ignored = sorted(set(params) - used)
     if ignored:
         log.debug(
@@ -812,6 +818,11 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
         glossary_attacher=_build_glossary_attacher(),
         # #828: STRUCTURE_METADATA (payload only; "on" exactly, else off).
         structure_metadata=structure_metadata_enabled(settings.structure_metadata),
+        # #828 §7: the target collection's own document-structure markers, read
+        # by the one reader from its build spec (text_render is applied at
+        # ingest; a ValueError here is the ingest router's 400).
+        structure_markers=structure_from_params(
+            entry.chunk_method or settings.unrecorded_chunk_method(), entry.chunk_params),
     )
     return ShardedIngestor(
         pipeline,

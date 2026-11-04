@@ -58,6 +58,7 @@ from ragstack.api.security import (
 )
 from ragstack.collection_store import CollectionRecord, CollectionStore
 from ragstack.config import settings
+from ragstack.ingestion import chunker_config
 from ragstack.ingestion.backends import ingest_backend_name
 from ragstack.ingestion.chunk_cap import (
     CHUNK_CAP_EXCEEDED,
@@ -68,6 +69,7 @@ from ragstack.ingestion.chunker_config import (
     ModelWindowUnavailable,
     parse_unsupported_methods,
     shard_refusal,
+    structure_from_params,
 )
 from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.glossary_file import GLOSSARY_FILE_MISMATCH, is_glossary_refusal
@@ -106,7 +108,12 @@ from ragstack.ingestion.work_identity import (
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 from ragstack.store_routing import es_url_for, qdrant_url_for
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
-from ragstack.tool_image import declared_workflow_inputs, names_stamped_image
+from ragstack.tool_image import (
+    declared_workflow_inputs,
+    embed_shard_step_wiring,
+    names_stamped_image,
+    uses_glossary_file,
+)
 from ragstack.workspace import (
     WorkspaceAuthError,
     WorkspaceClient,
@@ -502,10 +509,14 @@ def _refuse_missing_structure_backend(ingestor: Any) -> None:
     path does not parse here: its tools image refuses at configuration."""
     pipeline = getattr(ingestor, "_pipeline", None)
     # No `_pipeline` (a duck-typed test ingestor) means no structure step to run.
-    if not getattr(pipeline, "structure_metadata", False):
+    # A collection marker that needs the parser (text_render, #828 §7) asks for
+    # it whatever STRUCTURE_METADATA says.
+    markers = getattr(pipeline, "structure_markers", None)
+    needed = markers is not None and markers.requires_parser
+    if not getattr(pipeline, "structure_metadata", False) and not needed:
         return
     try:
-        require_structure_backends()
+        require_structure_backends(markers=markers if needed else None)
     except StructureBackendUnavailable as e:
         log.warning("ingest refused: %s", e)
         raise HTTPException(status_code=503, detail=e.client_detail) from None
@@ -704,6 +715,76 @@ def _gowe_caller(principal: Principal) -> tuple[str, str]:
             ),
         )
     return caller
+
+
+def _refuse_marked_on_unwired_workflow(entry: CollectionEntry, workflow_cwl: str) -> None:
+    """422 when the target collection records a document-structure marker
+    (#828 §7) and the registered workflow's chunk step is ``embed_shard.py``
+    without ``collection_id`` bound — that tool would then embed unresolved,
+    without the markers (backstop 3 of §7, beside
+    :func:`_refuse_unrunnable_chunk_method`).
+
+    **Dormant today**: the API's workflow (``pdf-ingest-scatter.cwl``) chunks
+    with ``ingest_shard.py``, which resolves the entry itself, so its text has
+    no ``embed_shard.py`` step and nothing is refused. It keeps a future
+    ``GOWE_WORKFLOW_CWL`` swap to an embed_shard workflow from re-opening the
+    hole. Read from the registered TEXT (a second reading of it beside
+    ``declared_workflow_inputs``) by the same wiring reader
+    ``gowe_batch_ingest.py`` uses; a step it cannot read counts as unwired
+    (fail closed). The markers are read with ``unapplied=()``: any recorded
+    marker needs a resolving embed step. Before any write or version
+    reservation, like every gate here.
+
+    Two more refusals come first (#828 PR 4 review): any recorded marker while
+    ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`` is ``False`` (until the
+    repin step R — create refuses the same, but an entry can arrive by another
+    route), and ``text_render`` on a workflow that builds and applies a
+    glossary file (``tool_image.uses_glossary_file``), which every shipped
+    ingest workflow does."""
+    try:
+        markers = structure_from_params(
+            entry.chunk_method, entry.chunk_params, unapplied=()).applied()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"collection {entry.id!r}: {e}") from None
+    if not markers:
+        return
+    listed = ", ".join(f"{k}={v!r}" for k, v in markers.items())
+    if not chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED:
+        # The same rule collection create applies, here for an entry that did
+        # not come through create (seed_from_json, a collections file, a
+        # registry shared with an in-process deployment) — #828 PR 4 review.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"collection {entry.id!r} records document-structure markers ({listed}), "
+                f"which need the tools image of #828's repin step R; this deployment's "
+                f"GoWe workers predate it and would ingest the collection without them."
+            ),
+        )
+    if "text_render" in markers and uses_glossary_file(workflow_cwl):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"collection {entry.id!r} records text_render, and this deployment's "
+                f"ingest workflow builds and applies a glossary file, which is built "
+                f"over the RAW text: every batch would be refused at ingest_shard "
+                f"(#828). Use a workflow without the glossary file for this collection."
+            ),
+        )
+    unwired = sorted(step for step, wired in embed_shard_step_wiring(workflow_cwl).items()
+                     if wired is not True)
+    if unwired:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"collection {entry.id!r} records document-structure markers "
+                f"({', '.join(f'{k}={v!r}' for k, v in markers.items())}), but this "
+                f"deployment's ingest workflow embeds with embed_shard.py in step(s) "
+                f"{', '.join(unwired)} without binding collection_id, so the markers "
+                f"would not be applied (#828). Deploy a workflow whose embed step "
+                f"resolves the collection."
+            ),
+        )
 
 
 def _refuse_unrunnable_chunk_method(entry: CollectionEntry) -> None:
@@ -1382,6 +1463,8 @@ async def ingest(
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
+        # #828 §7: before the version is reserved and before any write.
+        _refuse_marked_on_unwired_workflow(entry, backend.workflow_cwl)
         workspace = get_workspace(http_request)
         # Every refusal precedes the job: a version-reservation failure (json
         # registry → 503) must not leave an `accepted` job nobody will run.
@@ -1845,6 +1928,8 @@ async def ingest_upload(
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
+        # #828 §7: before the version is reserved and before any write.
+        _refuse_marked_on_unwired_workflow(entry, backend.workflow_cwl)
         workspace = get_workspace(http_request)
         # Reserve the version BEFORE writing sources: a registry that cannot
         # (json → 503) must not leave files uploaded with no version to run

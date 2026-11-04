@@ -22,6 +22,7 @@ from pathlib import Path
 from ragstack.ingestion.embedding_file import EmbeddingFileWriter
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED, FAILED, ShardReceipt
+from ragstack.ingestion.structure import TEXT_RENDER_FAILED
 
 
 async def run_embed_shard(
@@ -89,8 +90,14 @@ async def _embed(pipeline: IngestionPipeline, shard_path: str, tenant: str, shar
 
     if writer.count == 0:
         out.unlink(missing_ok=True)
+        # getattr: duck-typed test pipelines predate the counter.
+        failed = getattr(pipeline, "text_render_failures", lambda: 0)()
+        # #828 PR 4 review 2: name the render failure when it is why nothing
+        # survived, rather than the generic "empty".
+        why = (f" ({TEXT_RENDER_FAILED}: the collection's text_render failed on "
+               f"{failed} document(s))" if failed else "")
         return ShardReceipt(shard_id, tenant, FAILED,
-                            error="empty: no embeddable chunks for source")
+                            error=f"empty: no embeddable chunks for source{why}")
     return ShardReceipt(shard_id, tenant, COMPLETED, n_docs=len(doc_ids),
                         n_chunks=writer.count, chunk_ids=chunk_ids,
                         embedding_file=str(out))

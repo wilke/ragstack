@@ -49,10 +49,14 @@ from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE, is_cap_refusal
 from ragstack.ingestion.chunker_config import (
+    NO_STRUCTURE_MARKERS,
+    StructureMarkers,
     build_chunker,
     needs_embed_fn,
     semantic_cap_from_params,
     size_unit_from_params,
+    structure_from_params,
+    text_render_glossary_refusal,
 )
 from ragstack.ingestion.chunkers import semantic_chunking_provenance
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
@@ -179,6 +183,25 @@ def _semantic_cap(spec, method: str) -> dict:
         raise SystemExit(f"collection {e}") from None
 
 
+def _structure_markers(spec, method: str) -> StructureMarkers:
+    """The document-structure markers (#828 §7: ``text_render``, and the three
+    a later PR applies), **from the registry entry** — never a CLI flag, for
+    the reason of :func:`_semantic_params`; there is no marker flag to
+    contradict it. Read through
+    :func:`~ragstack.ingestion.chunker_config.structure_from_params`, the one
+    reader every path uses. No spec (``--vector-backend memory``) → no marker.
+    An unknown value, or a marker this build cannot apply, fails the shard at
+    configuration naming the key (exit 2, the refusal code of
+    :func:`ragstack.ops.ingest_target.resolve_or_exit`)."""
+    if spec is None:
+        return NO_STRUCTURE_MARKERS
+    try:
+        return structure_from_params(method, getattr(spec, "chunk_params", None))
+    except ValueError as e:
+        print(f"error: collection {getattr(spec, 'id', '')!r} {e}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from None
+
+
 def _build_chunker(args, spec=None, embed_fn=None):
     """Chunker via the shared factory (fixed_token token-window included).
 
@@ -236,7 +259,14 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None,
             f"both in-memory); got vector={args.vector_backend} text={args.text_backend}"
         )
     # fail fast on a bad chunk config, before any I/O
-    chunker = _build_chunker(args, getattr(target, "spec", None), embed_fn=embed_fn)
+    spec = getattr(target, "spec", None)
+    chunker = _build_chunker(args, spec, embed_fn=embed_fn)
+    markers = _structure_markers(spec, args.chunk_method)
+    if markers:
+        # What this worker applies (#828 §7) — the same keys the receipt's
+        # `chunking` object carries. An image before #828 PR 4 prints no line.
+        print("[chunker] structure markers: " + " ".join(
+            f"{k}={v}" for k, v in markers.applied().items()), file=sys.stderr)
     embedder = _build_embedder(args, http)
     if args.vector_backend == "memory":
         vstore = InMemoryVectorStore()
@@ -285,7 +315,11 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None,
                              # Payload only (not collection identity). getattr:
                              # hand-built Namespaces in tests predate the flag.
                              structure_metadata=structure_metadata_enabled(
-                                 getattr(args, "structure_metadata", "off")))
+                                 getattr(args, "structure_metadata", "off")),
+                             # #828 §7: the collection's markers, from the entry
+                             # (text_render is applied at ingest from the
+                             # record's suffix; the extract step never sees it).
+                             structure_markers=markers)
 
 
 def _glossary_attacher(args):
@@ -386,7 +420,9 @@ async def amain(args, target=None) -> int:
                                           pipeline.structure_provenance())
     # What the semantic chunker applied (size cap, split, breakpoint bound, the
     # resolved budgets); None for any other method, so their receipts are unchanged.
-    receipt.chunking = semantic_chunking_provenance(pipeline.chunker)
+    # Plus the document-structure markers as applied (#828 §7), each key absent
+    # when not applied — the release-order tell for an old image.
+    receipt.chunking = applied_chunking(pipeline)
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"failed={receipt.n_docs_failed} chunks={receipt.n_chunks} → {args.out}"
@@ -427,6 +463,17 @@ async def amain(args, target=None) -> int:
         print(receipt.error, file=sys.stderr, flush=True)
         return GLOSSARY_REFUSED_EXIT_CODE
     return 0 if receipt.status == COMPLETED else 1
+
+
+def applied_chunking(pipeline) -> dict | None:
+    """The receipt's ``chunking`` object: the semantic chunker's provenance
+    (``None`` for another method) merged with the structure markers as
+    applied; ``None`` when neither has anything to say, so an unmarked,
+    non-semantic receipt is byte-identical to today's."""
+    out = dict(semantic_chunking_provenance(pipeline.chunker) or {})
+    markers = getattr(pipeline, "structure_markers", None)
+    out.update(markers.applied() if markers is not None else {})
+    return out or None
 
 
 def parse_args(argv=None):
@@ -563,6 +610,18 @@ def main(argv=None) -> int:
         if args.vector_backend == "qdrant"
         else None
     )
+    # #828 §7: a marker that needs the parser (text_render) refuses a missing
+    # [markdown] extra here too, whatever --structure-metadata says — before
+    # anything is embedded or written. A bad marker value exits here as well.
+    markers = _structure_markers(getattr(target, "spec", None), args.chunk_method)
+    require_structure_backends_or_exit(args.structure_metadata, markers)
+    # #828 PR 4 review: a glossary file is built over the RAW text; a
+    # text_render collection stores the rendered text, so every batch would
+    # silently lose its glossary. Refused before anything is embedded.
+    refusal = text_render_glossary_refusal(markers) if args.glossary is not None else None
+    if refusal is not None:
+        print(f"error: --glossary-file: {refusal}", file=sys.stderr, flush=True)
+        raise SystemExit(2)
     return asyncio.run(amain(args, target))
 
 

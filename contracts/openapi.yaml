@@ -5222,8 +5222,16 @@ components:
                 size/4, rounded down) merges smaller pieces into a neighbour
                 across the weaker topic boundary. Sending either records both
                 as concrete values; sending neither keeps the strict cap. Both
-                are refused (400) on other methods or out of range. Unrecognised
-                keys are accepted and stored as-is.
+                are refused (400) on other methods or out of range. Document
+                structure (#828), on any method: `text_render` ("markdown-plain/1")
+                renders every `.md` document to plain text at ingest (headings
+                on their own line, links as `text (url)`, code, tables and maths
+                kept), which changes the stored text, offsets and chunk ids, so
+                the collection's identity; `structure_cuts`, `embed_heading_path`
+                and `structure_infer` are recognised and refused (400) until a
+                release applies them. An unknown value of any of the four is
+                refused (400); `null` counts as not sent. Unrecognised keys are
+                accepted and stored as-is.
               type: object
               default: {}
           additionalProperties: false
