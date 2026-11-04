@@ -418,11 +418,17 @@ def test_concurrent_first_use_of_a_fresh_plain_parser_gives_identical_renders(
                 except Exception as e:  # noqa: BLE001
                     results[i] = f"{type(e).__name__}: {e}"
 
-            threads = [threading.Thread(target=run, args=(i,)) for i in range(8)]
+            # Daemon threads joined with a deadline: an unwarmed parser can
+            # also SPIN on a half-built rule chain, and a hang must fail this
+            # test, not stall the suite.
+            threads = [threading.Thread(target=run, args=(i,), daemon=True) for i in range(8)]
             for t in threads:
                 t.start()
             for t in threads:
-                t.join()
+                t.join(timeout=10)
+            if any(t.is_alive() for t in threads):
+                wrong += 1
+                break
             wrong += sum(r != expected for r in results)
     finally:
         sys.setswitchinterval(old_interval)
