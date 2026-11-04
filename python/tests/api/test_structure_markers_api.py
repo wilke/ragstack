@@ -131,14 +131,13 @@ async def test_an_unknown_marker_value_is_a_400(client, _admin, monkeypatch, tmp
 
 
 @pytest.mark.parametrize("params", [
-    {"structure_cuts": "sections/1"},
-    {"embed_heading_path": "prefix/1"},
     {"structure_infer": "text-heuristic/1"},
 ])
 async def test_a_marker_this_build_cannot_apply_is_a_400(client, _admin, monkeypatch, tmp_path,
                                                          params) -> None:
     """Present = applied (#829): a marker that would be ignored now and applied
-    after #828 PR 7/8 would give one spec two chunkings, so it is refused."""
+    after #828 PR 8 would give one spec two chunkings, so it is refused.
+    (``structure_cuts`` and ``embed_heading_path`` are applied since PR 7.)"""
     r, _ = await _create(client, monkeypatch, tmp_path, params, cid="unapplied")
     assert r.status_code == 400, r.text
     assert "not yet applied" in r.json()["detail"]
@@ -185,7 +184,12 @@ def test_the_per_collection_pipeline_carries_the_entrys_markers(monkeypatch) -> 
     assert marked.structure_metadata is False
     with pytest.raises(ValueError, match="not yet applied"):
         deps.build_ingestor_for(state, _entry("fixed", chunk_params={
-            "structure_cuts": "sections/1"}, embedding_endpoints=[]))
+            "structure_infer": "text-heuristic/1"}, embedding_endpoints=[]))
+    # #828 PR 7: structure_cuts is applied, and it forces the structure step.
+    cut = deps.build_ingestor_for(state, _entry("fixed", chunk_params={
+        "structure_cuts": "sections/1"}, embedding_endpoints=[]))._pipeline
+    assert cut.structure_markers.structure_cuts == "sections/1"
+    assert cut.structure_metadata is True
 
 
 @pytest.mark.skipif(not _HAS_EXTRA, reason="the [markdown] extra is not installed")

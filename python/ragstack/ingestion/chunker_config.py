@@ -391,16 +391,14 @@ STRUCTURE_MARKER_VALUES: dict[str, tuple[str, ...]] = {
 }
 #: Every marker key, in the order the header and receipt record them.
 STRUCTURE_MARKER_PARAMS: tuple[str, ...] = tuple(STRUCTURE_MARKER_VALUES)
-#: Markers this build PARSES but cannot yet APPLY: ``structure_cuts`` and
-#: ``embed_heading_path`` are #828 PR 7, ``structure_infer`` PR 8. Under the
+#: Markers this build PARSES but cannot yet APPLY: ``structure_infer`` is
+#: #828 PR 8 (``structure_cuts`` and ``embed_heading_path`` landed in PR 7). Under the
 #: #829 discipline "present = applied", so a marker that would be silently
 #: ignored is refused instead (400 at create, exit 2 on the bulk tools) — a
 #: collection created now and chunked unmarked would chunk differently once
 #: the behaviour lands: one spec, two chunkings. The PR that implements a
 #: marker removes it from this set, and every path opens at once.
-UNAPPLIED_STRUCTURE_MARKERS: frozenset[str] = frozenset(
-    {STRUCTURE_CUTS_PARAM, EMBED_HEADING_PATH_PARAM, STRUCTURE_INFER_PARAM}
-)
+UNAPPLIED_STRUCTURE_MARKERS: frozenset[str] = frozenset({STRUCTURE_INFER_PARAM})
 
 
 @dataclass(frozen=True)
@@ -494,8 +492,8 @@ def structure_from_params(
         if key in unapplied:
             raise ValueError(
                 f"chunk param {key!r}={value!r} is recognised but not yet applied by "
-                f"this build (#828: structure_cuts and embed_heading_path land in "
-                f"PR 7, structure_infer in PR 8). Refused rather than ignored: a "
+                f"this build (#828: structure_infer lands in PR 8). Refused rather "
+                f"than ignored: a "
                 f"collection chunked without it now would chunk differently once it "
                 f"lands."
             )

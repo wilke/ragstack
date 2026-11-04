@@ -75,9 +75,8 @@ def test_the_marker_table_is_the_designed_one() -> None:
     }
     assert STRUCTURE_MARKER_PARAMS == ("text_render", "structure_cuts",
                                        "embed_heading_path", "structure_infer")
-    # Only text_render has behaviour in this build (PR 7: cuts + prefix; PR 8: infer).
-    assert UNAPPLIED_STRUCTURE_MARKERS == {"structure_cuts", "embed_heading_path",
-                                           "structure_infer"}
+    # PR 7 applies structure_cuts and embed_heading_path; structure_infer is PR 8.
+    assert UNAPPLIED_STRUCTURE_MARKERS == {"structure_infer"}
 
 
 @pytest.mark.parametrize("params", [None, {}, {"size_unit": "tokens"},
@@ -279,8 +278,8 @@ TOOLS = {"ingest_shard": _run_ingest_shard, "embed_shard": _run_embed_shard,
 @pytest.mark.parametrize("tool", sorted(TOOLS))
 @pytest.mark.parametrize(("params", "needle"), [
     ({"text_render": "markdown-plain/9"}, "text_render"),
-    ({"structure_cuts": "sections/1"}, "not yet applied"),
-    ({"embed_heading_path": "prefix/1"}, "not yet applied"),
+    ({"structure_cuts": "sections/2"}, "structure_cuts"),
+    ({"embed_heading_path": "prefix/2"}, "embed_heading_path"),
     ({"structure_infer": "text-heuristic/1"}, "not yet applied"),
 ])
 def test_an_unknown_or_unapplied_marker_exits_2_before_any_work(

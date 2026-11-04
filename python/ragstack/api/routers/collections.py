@@ -87,7 +87,9 @@ from ragstack.ingestion.chunker_config import (
     SIZE_CAP_PARAM,
     SIZE_TOLERANCE_PARAM,
     SIZE_TOLERANCE_PARAMS,
+    STRUCTURE_CUTS_PARAM,
     STRUCTURE_MARKER_PARAMS,
+    STRUCTURE_TOLERANCE_METHODS,
     parse_unsupported_methods,
     semantic_cap_from_params,
     shard_refusal,
@@ -391,8 +393,15 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
     params = chunk.params or {}
+    if method in STRUCTURE_TOLERANCE_METHODS and params.get(STRUCTURE_CUTS_PARAM) is not None \
+            and any(params.get(k) is not None for k in SIZE_TOLERANCE_PARAMS):
+        _validate_sentence_tolerance(chunk)
     if method not in SEMANTIC_METHODS:
+        tolerant = (method in STRUCTURE_TOLERANCE_METHODS
+                    and params.get(STRUCTURE_CUTS_PARAM) is not None)
         for key in (*SEMANTIC_CAP_PARAMS, *SIZE_TOLERANCE_PARAMS):
+            if tolerant and key in SIZE_TOLERANCE_PARAMS:
+                continue  # #828 PR 7: validated above
             if key in params:
                 raise HTTPException(
                     400,
@@ -499,6 +508,28 @@ def _default_semantic_size(*, announce: bool = False) -> int:
     return size
 
 
+def _validate_sentence_tolerance(chunk: ChunkConfig) -> None:
+    """400 for a ``sentence`` + ``structure_cuts`` config whose #831 tolerance
+    cannot be honoured (#828 PR 7, owner decision 2026-11-04): it needs an
+    explicit token ``chunk.size`` (the target, recorded with both keys),
+    ``size_unit='tokens'`` and no overlap. Checked by the reader every ingest
+    path uses, on the params as :func:`_normalise_chunk` records them."""
+    params = chunk.params or {}
+    if chunk.size is None or chunk.size < 1:
+        raise HTTPException(
+            400, "size_tolerance/min_piece on chunk_method='sentence' need an explicit "
+                 "chunk.size in tokens (the target the tolerance is about)")
+    if chunk.overlap:
+        raise HTTPException(
+            400, f"size_tolerance on chunk_method='sentence' needs chunk overlap 0; got "
+                 f"{chunk.overlap} (merged pieces cannot also overlap)")
+    try:
+        semantic_cap_from_params(chunk.method, _with_tolerance_defaults(
+            params, chunk.size, size_cap=False), recorded_size=chunk.size)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+
+
 def _validate_semantic_cap(chunk: ChunkConfig) -> None:
     """400 for a semantic chunk config whose size cap cannot be honoured.
 
@@ -544,7 +575,7 @@ def _validate_semantic_cap(chunk: ChunkConfig) -> None:
             )
 
 
-def _with_tolerance_defaults(params: dict, size: int) -> dict:
+def _with_tolerance_defaults(params: dict, size: int, *, size_cap: bool = True) -> dict:
     """``params`` as a NEW semantic collection records them: the size-cap marker
     set and — when the request opts in to the size tolerance (#831) by sending
     ``size_tolerance`` and/or ``min_piece`` — both recorded as concrete values
@@ -553,7 +584,8 @@ def _with_tolerance_defaults(params: dict, size: int) -> dict:
     like an absent one. Neither sent: the strict cap, no tolerance key at all."""
     out = {k: v for k, v in params.items()
            if not (k in SIZE_TOLERANCE_PARAMS and v is None)}
-    out.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)
+    if size_cap:  # False: `sentence` under structure_cuts (#828 PR 7) has no cap marker
+        out.setdefault(SIZE_CAP_PARAM, SIZE_CAP_TOKENS)
     if any(k in out for k in SIZE_TOLERANCE_PARAMS):
         out.setdefault(SIZE_TOLERANCE_PARAM, DEFAULT_SIZE_TOLERANCE)
         out.setdefault(MIN_PIECE_PARAM, default_min_piece(size))
@@ -611,6 +643,19 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
         params = dict(params)
     if params.get("size_unit") == DEFAULT_SIZE_UNIT:
         del params["size_unit"]
+        return chunk.model_copy(update={"params": params})
+    if (chunk.method in STRUCTURE_TOLERANCE_METHODS
+            and params.get(STRUCTURE_CUTS_PARAM) is not None
+            and any(k in params for k in SIZE_TOLERANCE_PARAMS)):
+        # #828 PR 7: both tolerance keys recorded concretely (validated above:
+        # chunk.size is explicit), so a later default change cannot re-chunk.
+        # Keys sent only as null are dropped, hashing like absent ones.
+        if any(params.get(k) is not None for k in SIZE_TOLERANCE_PARAMS):
+            assert chunk.size is not None
+            params = _with_tolerance_defaults(params, chunk.size, size_cap=False)
+            _announce_ceiling_clamp(params, chunk.size)
+        else:
+            params = {k: v for k, v in params.items() if k not in SIZE_TOLERANCE_PARAMS}
         return chunk.model_copy(update={"params": params})
     if chunk.method in SEMANTIC_METHODS:
         # A NEW semantic collection: its size is a token cap (an omitted size is
