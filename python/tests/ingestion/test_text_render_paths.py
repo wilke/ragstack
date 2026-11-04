@@ -739,3 +739,37 @@ def test_a_failed_render_empties_and_marks_the_document(boom) -> None:  # noqa: 
     apply_text_render([doc], "markdown-plain/1")
     assert render_failure_of(doc).startswith("text_render_failed")
     assert doc.content == "" and doc.structure is None
+
+
+def test_an_all_render_failed_batch_under_cuts_leaves_no_cache_entry_and_no_cut_counts(
+    tmp_path, registry, monkeypatch, capsys, boom  # noqa: F811
+) -> None:
+    """Path D, structure_cuts + segmentation cache: a batch whose every document
+    failed its render is a failed batch (exit 1) that never reached the cutter,
+    so it writes no cached spans and no ``cuts`` counts; after the render is
+    fixed, ``--resume`` chunks it with the cuts and caches it then."""
+    registry(_spec(chunk_method="sentence", chunk_size=200, chunk_overlap=20,
+                   chunk_params=dict(CUT_PLAIN)))
+    shard, cache = _bad_only(tmp_path), tmp_path / "seg.jsonl"
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+
+    def run(resume: bool) -> int:
+        try:
+            asyncio.run(ingest_jsonl.run(_args(
+                shard, checkpoint=tmp_path / "d.ckpt", chunk_method="sentence",
+                segmentation_cache=cache, resume=resume), it.resolve(CID, registry=REG)))
+        except SystemExit as e:
+            return int(e.code or 0)
+        return 0
+
+    assert run(False) == 1 and not store.points
+    err = capsys.readouterr().err
+    assert "segmentation cache: 0 hit / 0 miss" in err and '"cuts"' not in err
+    assert not cache.exists() or cache.read_text(encoding="utf-8") == ""
+    monkeypatch.setattr(md, "markdown_plain",
+                        lambda doc: ("# Fixed\n\nThe page renders now.", None))
+    assert run(True) == 0
+    assert [c.content for c in store.points.values()] == ["# Fixed\n\nThe page renders now."]
+    assert "segmentation cache: 0 hit / 1 miss" in capsys.readouterr().err

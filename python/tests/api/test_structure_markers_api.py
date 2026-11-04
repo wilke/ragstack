@@ -326,6 +326,27 @@ async def test_before_the_repin_any_marked_entry_is_refused_at_dispatch(
     assert not gowe["engine"].submissions
 
 
+@pytest.mark.parametrize("params", [{"structure_cuts": "sections/1"},
+                                    {"embed_heading_path": "prefix/1"}],
+                         ids=["structure_cuts", "embed_heading_path"])
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+async def test_before_the_repin_the_pr7_markers_are_refused_at_dispatch(
+    client, gowe, monkeypatch, endpoint, params  # noqa: F811
+) -> None:
+    """#828 PR 7: the dispatch gate refuses ``structure_cuts`` and
+    ``embed_heading_path`` before R, on both endpoints, even on a wired
+    workflow — and after R the wired workflow is dispatched. MUTATION: gate
+    on ``text_render`` only → submitted → fails."""
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", WIRED)
+    _mark(monkeypatch, dict(params))
+    status, ok = await _ingest(client, endpoint)
+    assert status == 422
+    assert not gowe["engine"].submissions
+    _after_the_repin(monkeypatch)
+    status, ok = await _ingest(client, endpoint)
+    assert status == ok and gowe["engine"].submissions
+
+
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
 async def test_an_unmarked_collection_is_dispatched_before_the_repin(
     client, gowe, monkeypatch, endpoint  # noqa: F811
@@ -436,9 +457,9 @@ async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
     as well as text_render (and the sentence tolerance, which needs
     structure_cuts). ``structure_infer`` is still refused earlier, as not yet
     applied (PR 8). MUTATION: refuse ``text_render`` only → fails."""
-    from ragstack.api.routers import collections as coll
+    from ragstack.ingestion import chunker_config as cc
 
-    assert coll.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
+    assert cc.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
     monkeypatch.setattr(settings, "ingest_backend", "gowe")
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7",
                                 method=method, overlap=overlap)
@@ -447,7 +468,7 @@ async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
     want = "not yet applied" if "structure_infer" in params else "repin"
     assert want in r.json()["detail"]
     # What R does: the applied markers are then accepted on GoWe.
-    monkeypatch.setattr(coll, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)
+    monkeypatch.setattr(cc, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)
     r, _ = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7-r",
                          method=method, overlap=overlap)
     assert (r.status_code == 400) is ("structure_infer" in params), r.text
