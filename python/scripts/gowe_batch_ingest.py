@@ -205,20 +205,33 @@ def entry_chunking(registry_db: str, collection_id: str) -> tuple[str | None, di
     document-structure marker (#828 §7)."""
     import sqlite3
 
-    with sqlite3.connect(f"file:{registry_db}?mode=ro", uri=True) as conn:
-        row = conn.execute(
-            "SELECT chunk_method, chunk_params FROM collections WHERE id = ?",
-            (collection_id,),
-        ).fetchone()
+    def refuse(why: str) -> SystemExit:
+        print(f"error: collection {collection_id!r} in {registry_db}: {why}",
+              file=sys.stderr, flush=True)
+        return SystemExit(2)
+
+    try:
+        with sqlite3.connect(f"file:{registry_db}?mode=ro", uri=True) as conn:
+            row = conn.execute(
+                "SELECT chunk_method, chunk_params FROM collections WHERE id = ?",
+                (collection_id,),
+            ).fetchone()
+    except sqlite3.Error as e:
+        # A registry without these columns (or unreadable) cannot say whether
+        # the collection is marked: refuse rather than read it as unmarked.
+        raise refuse(f"cannot read chunk_method/chunk_params ({type(e).__name__}: {e}); "
+                     "refusing rather than treating the entry as unmarked") from None
     if not row:
         raise SystemExit(f"collection {collection_id!r} not in registry {registry_db}"
                          " — register it via POST /v1/collections first (#263)")
     try:
         params = json.loads(row[1] or "{}")
     except json.JSONDecodeError as e:
-        raise SystemExit(f"collection {collection_id!r}: unreadable chunk_params "
-                         f"in {registry_db}: {e}") from None
-    return row[0], params if isinstance(params, dict) else {}
+        raise refuse(f"unreadable chunk_params: {e}") from None
+    if not isinstance(params, dict):
+        # Fail closed: a non-object cannot be read as "no marker".
+        raise refuse(f"chunk_params is a {type(params).__name__}, not an object")
+    return row[0], params
 
 
 def refuse_marked_on_unwired_workflow(cwl_path: str, collection_id: str,
@@ -256,6 +269,27 @@ def refuse_marked_on_unwired_workflow(cwl_path: str, collection_id: str,
             "whose embed steps are wired (#828 §7, repin step R).",
             file=sys.stderr, flush=True)
         raise SystemExit(2)
+    if markers.get("text_render") is not None and _uses_glossary_file(cwl_path):
+        # #828 PR 4 review: the workflow's glossary step builds its file over
+        # the RAW shard text, and the collection stores the rendered text — the
+        # load (or ingest) step would refuse every file after the embeds ran.
+        from ragstack.ingestion.chunker_config import (
+            StructureMarkers,
+            text_render_glossary_refusal,
+        )
+
+        why = text_render_glossary_refusal(StructureMarkers(text_render=markers["text_render"]))
+        print(f"error: refusing to submit {cwl_path}: it builds and applies a glossary "
+              f"file, and {why}", file=sys.stderr, flush=True)
+        raise SystemExit(2)
+
+
+def _uses_glossary_file(cwl_path: str) -> bool:
+    """Whether the workflow text runs the glossary step or passes
+    ``--glossary-file`` to a tool (outside full-line comments)."""
+    text = Path(cwl_path).read_text(encoding="utf-8")
+    return any(("glossary_step.py" in line or "--glossary-file" in line)
+               for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
 def resolve_store_name(registry_db: str, collection_id: str) -> str:

@@ -455,6 +455,29 @@ def structure_from_params(
     return StructureMarkers(**found)
 
 
+def text_render_glossary_refusal(markers: StructureMarkers) -> str | None:
+    """Why a glossary FILE cannot be used with this collection, or ``None``.
+
+    A glossary file (``scripts/glossary_step.py``, #847) is built from, and
+    checked against, the RAW record text (``text_sha256``); a ``text_render``
+    collection chunks and stores the RENDERED text. Every check would then
+    disagree — ``ingest_shard --glossary-file`` degraded each batch to no
+    glossary with only a log line, and ``load_embeddings --glossary-file``
+    could not verify a document — so the combination is refused, on every
+    path, before anything is written (#828 PR 4 review). Supporting it means
+    building the file over the rendered text: a separate issue."""
+    if markers.text_render is None:
+        return None
+    return (
+        f"this collection's chunk_params set text_render={markers.text_render!r}, and a "
+        f"glossary file cannot be used with it yet: the file is built from and checked "
+        f"against the RAW text, while the collection stores the rendered text, so every "
+        f"document's glossary would silently degrade. Ingest without --glossary-file (the "
+        f"rules glossary is then computed from the rendered text), or use an unmarked "
+        f"collection (#828)."
+    )
+
+
 def resolve_token_backend(
     method: str, token_backend: str, model: str | None,
     warn: Callable[[str], None],

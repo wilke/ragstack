@@ -95,6 +95,10 @@ import os
 import sys
 
 from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap
+from ragstack.ingestion.chunker_config import (
+    structure_from_params,
+    text_render_glossary_refusal,
+)
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.embedding_file import EmbeddingFileError, read_header
 from ragstack.ingestion.glossary_file import (
@@ -714,6 +718,18 @@ def main(argv=None, *, settings=None) -> int:
             # forked by a mismatched file.
             print("header chunking check skipped: --vector-backend memory resolves "
                   "no registry entry (#828)", file=sys.stderr, flush=True)
+    if args.glossary_file and target is not None:
+        # #828 PR 4 review: the file is built over the RAW text and a
+        # text_render collection's chunks are the rendered text — refuse the
+        # combination before anything is read or written.
+        try:
+            markers = structure_from_params(target.spec.chunk_method,
+                                            target.spec.chunk_params, unapplied=())
+        except ValueError as e:
+            _refuse(f"collection {target.collection_id!r} {e}")
+        refusal = text_render_glossary_refusal(markers)
+        if refusal is not None:
+            _refuse(f"--glossary-file: {refusal}")
     if args.glossary_file:
         # #847 G1: every document verified against the file before amain
         # builds (ensure_collection) or writes any store.

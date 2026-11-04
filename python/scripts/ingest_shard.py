@@ -56,6 +56,7 @@ from ragstack.ingestion.chunker_config import (
     semantic_cap_from_params,
     size_unit_from_params,
     structure_from_params,
+    text_render_glossary_refusal,
 )
 from ragstack.ingestion.chunkers import semantic_chunking_provenance
 from ragstack.ingestion.doi_metadata import add_doi_enrichment_args, enricher_from_args
@@ -612,9 +613,15 @@ def main(argv=None) -> int:
     # #828 §7: a marker that needs the parser (text_render) refuses a missing
     # [markdown] extra here too, whatever --structure-metadata says — before
     # anything is embedded or written. A bad marker value exits here as well.
-    require_structure_backends_or_exit(
-        args.structure_metadata,
-        _structure_markers(getattr(target, "spec", None), args.chunk_method))
+    markers = _structure_markers(getattr(target, "spec", None), args.chunk_method)
+    require_structure_backends_or_exit(args.structure_metadata, markers)
+    # #828 PR 4 review: a glossary file is built over the RAW text; a
+    # text_render collection stores the rendered text, so every batch would
+    # silently lose its glossary. Refused before anything is embedded.
+    refusal = text_render_glossary_refusal(markers) if args.glossary is not None else None
+    if refusal is not None:
+        print(f"error: --glossary-file: {refusal}", file=sys.stderr, flush=True)
+        raise SystemExit(2)
     return asyncio.run(amain(args, target))
 
 
