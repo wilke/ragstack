@@ -86,9 +86,11 @@ from ragstack.ingestion.chunker_config import (
     SIZE_CAP_PARAM,
     SIZE_TOLERANCE_PARAM,
     SIZE_TOLERANCE_PARAMS,
+    STRUCTURE_MARKER_PARAMS,
     parse_unsupported_methods,
     semantic_cap_from_params,
     shard_refusal,
+    structure_from_params,
 )
 from ragstack.ingestion.chunker_config import SEMANTIC_METHODS as _SEMANTIC_METHODS
 from ragstack.ingestion.chunkers import (
@@ -379,6 +381,14 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
         size_unit_from_params(method, chunk.params)
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
+    # The document-structure markers (#828 §7): THE one reader every ingest path
+    # uses, so a value accepted here is one ingest applies. 400 for an unknown
+    # value and for a marker this build cannot apply yet (refused, never
+    # recorded and ignored). Any method accepts them.
+    try:
+        structure_from_params(method, chunk.params)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
     params = chunk.params or {}
     if method not in SEMANTIC_METHODS:
         for key in (*SEMANTIC_CAP_PARAMS, *SIZE_TOLERANCE_PARAMS):
@@ -590,6 +600,14 @@ def _normalise_chunk(chunk: ChunkConfig) -> ChunkConfig:
     ``size_unit`` on a method that has no such choice.
     """
     params = dict(chunk.params or {})
+    # A document-structure marker sent as null is absent (#828 §7): drop it so
+    # it content-addresses exactly like a request that never named it.
+    nulled = [k for k in STRUCTURE_MARKER_PARAMS if k in params and params[k] is None]
+    for key in nulled:
+        del params[key]
+    if nulled:
+        chunk = chunk.model_copy(update={"params": params})
+        params = dict(params)
     if params.get("size_unit") == DEFAULT_SIZE_UNIT:
         del params["size_unit"]
         return chunk.model_copy(update={"params": params})
