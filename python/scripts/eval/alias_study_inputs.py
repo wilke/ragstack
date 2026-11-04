@@ -41,6 +41,7 @@ counts) is asserted; a mismatch stops the build.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import math
@@ -49,7 +50,7 @@ import sys
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
@@ -96,8 +97,16 @@ LAYOUT: dict[str, str] = {
 }
 EMB_DIRS = {"base": "ops/emb/base", "neighbour": "ops/emb/neighbour"}
 OUT_DIR = "main/analysis-inputs"
+#: the committed cut points, repo-relative: the statistics re-run resolves it against its checkout
+PUBLIC_CUTS_REL = "docs/plans/results/alias-study-2026-11/artifacts/tercile-cuts.json"
+#: the sources the public cut file names (what the cuts depend on)
+PUBLIC_SOURCES = ("records", "counts", "neighbour_selection", "chunks_neighbour", "base_export",
+                  "emb_base_SHA256SUMS", "emb_neighbour_SHA256SUMS")
 #: never read, whatever the allow-list says: outcomes, labels, statistics, spot checks
 DENIED: tuple[str, ...] = ("main/judge", "main/analysis-", "main/runs", "spot", "pilot/judge", "pilot/report")
+#: never read anywhere, by file name (fnmatch): the judge's, the statistics' and the spot checks' outputs
+DENIED_NAMES: tuple[str, ...] = ("final.jsonl", "labels-*.jsonl", "judge-summary.json", "hits.jsonl",
+                                 "*.owner-labels.jsonl", "stage-a-commit*.json", "results-stage-*.json")
 
 DEFINITIONS: dict[str, str] = {
     "study_papers": "the 300 satisfied papers of the frozen record set (asc.split_records; prereg §4.1)",
@@ -109,15 +118,17 @@ DEFINITIONS: dict[str, str] = {
                       "to the v1 manifest's); §7 R6 citation-count tercile",
     "text_similarity": "mean cosine similarity of the stored SFR-Embedding-Mistral vectors (ops/emb, the served "
                        "embedder) over every pair (i, j), i a chunk of the study paper in the base export, j a chunk of "
-                       "one of its attributed neighbour papers in the v4 neighbour chunk file; equals "
+                       "one of its attributed neighbour papers in the v4 neighbour chunk file (a PDF-sourced neighbour's "
+                       "reference-list chunks included, as they are in the collection); equals "
                        "(sum_i u_i) . (sum_j u_j) / (n_i n_j) with u the unit vectors; null for a study paper with no "
                        "attributed neighbour; §7 R6 text-similarity tercile",
     "xml_only": "true when every attributed neighbour paper and every paper of both random draws taken for the "
                 "study paper is JATS-sourced (its chunk-file key is its PMC id; a PDF-sourced paper is keyed by its "
                 "OpenAlex work id); vacuously true for a study paper with no added paper; §7 R6 XML-only stratum",
     "added_chunks": "per arm, the chunks of the papers added for the study paper (neighbour: its attributed "
-                    "neighbours; random1 / random2: the draw's takes for it), counted in the v4 arm chunk files; 0 "
-                    "for a study paper with no added paper; equal to per-study-chunks-v4.json wherever that lists "
+                    "neighbours; random1 / random2: the draw's takes for it), counted in the v4 arm chunk files; "
+                    "absent for a study paper with no added paper (the prereg's 298-paper population, §7 R23; the "
+                    "statistics count it in papers_left_out); equal to per-study-chunks-v4.json wherever that lists "
                     "the paper; §7 R6 / R23 chunk-volume covariate",
     "neighbour_attribution": "added neighbour paper (its chunk-file key, = the judge pairs' c_paper) -> the study "
                              "paper it is attributed to in neighbour-selection-v4.json `attributed` (§5.1, O5); §7 "
@@ -141,38 +152,70 @@ class GuardError(SystemExit):
 
 
 def denied(rel: str) -> str | None:
-    """The :data:`DENIED` prefix ``rel`` (study-dir relative, posix) falls under, else None."""
+    """The :data:`DENIED` prefix or :data:`DENIED_NAMES` pattern ``rel`` (study-dir relative,
+    posix) falls under, else None."""
     for d in DENIED:
         if d.endswith("-"):
             if rel.startswith(d):
                 return d
         elif rel == d or rel.startswith(d + "/"):
             return d
-    return None
+    return denied_name(rel)
+
+
+def denied_name(path: str) -> str | None:
+    name = PurePosixPath(path).name
+    return next((pat for pat in DENIED_NAMES if fnmatch.fnmatchcase(name, pat)), None)
 
 
 class Guard:
-    """Every read goes through :meth:`check`: the resolved path must be an allow-listed input
-    and never under :data:`DENIED` (symlinks resolved first, so a link into ``main/judge``
-    is refused)."""
+    """Every read goes through :meth:`check`. A study-dir input must be allow-listed **as
+    given** (no symlink resolution), contain no symlink in itself or in any parent below the
+    study root, resolve under the root, and fall under no :data:`DENIED` prefix; no input
+    anywhere may carry a :data:`DENIED_NAMES` name. The base export lies outside the root and is
+    pinned by its sha256 (:data:`BASE_EXPORT_SHA256`) instead."""
 
-    def __init__(self, study_dir: Path, base_export: Path, allowed: Iterable[Path]) -> None:
-        self.root = study_dir.resolve()
-        self.base_export = base_export.resolve()
-        self.allowed = {p.resolve() for p in allowed} | {self.base_export}
+    def __init__(self, study_dir: Path, base_export: Path, allowed: Iterable[Path] = ()) -> None:
+        self.root_given = Path(os.path.abspath(study_dir))
+        self.root = self.root_given.resolve()
+        self.base_export = Path(os.path.abspath(base_export))
+        self.allowed: set[Path] = {self.base_export}
         self.read: dict[str, str] = {}
+        for p in allowed:
+            self.allow(p)
+
+    def allow(self, p: str | Path) -> None:
+        self.allowed.add(Path(os.path.abspath(p)))
 
     def check(self, p: str | Path) -> Path:
-        q = Path(p).resolve()
+        a = Path(os.path.abspath(p))
+        if (pat := denied_name(a.as_posix())) is not None:
+            raise GuardError(f"guard: refusing an outcome file name ({pat})")
         try:
-            rel = q.relative_to(self.root).as_posix()
+            rel = a.relative_to(self.root_given).as_posix()
         except ValueError:
             rel = None
         if rel is not None and (d := denied(rel)) is not None:
-            raise GuardError(f"guard: refusing to read under {d}/ ({rel})")
-        if q not in self.allowed:
-            raise GuardError(f"guard: {rel or q} is not an allow-listed input")
-        return q
+            raise GuardError(f"guard: refusing to read under {d} ({rel})")
+        if a not in self.allowed:
+            raise GuardError(f"guard: {rel or a} is not an allow-listed input")
+        if a == self.base_export:
+            if a.is_symlink():
+                raise GuardError("guard: the base export is a symlink")
+            return a
+        if rel is None:
+            raise GuardError("guard: an input outside the study root")
+        q = a
+        while q != self.root_given:
+            if q.is_symlink():
+                raise GuardError(f"guard: refusing a symlink ({q.relative_to(self.root_given).as_posix()})")
+            q = q.parent
+        r = a.resolve()
+        if r != self.root and self.root not in r.parents:
+            raise GuardError(f"guard: {rel} resolves outside the study root")
+        if (d := denied(r.relative_to(self.root).as_posix())) is not None:
+            raise GuardError(f"guard: {rel} resolves under {d}")
+        return a
 
     def sha(self, p: str | Path, label: str) -> str:
         q = self.check(p)
@@ -186,16 +229,30 @@ class Guard:
     def json(self, p: str | Path) -> Any:
         return json.loads(self.check(p).read_text(encoding="utf-8"))
 
+    def emb_files(self, study_dir: Path) -> dict[str, list[tuple[Path, str]]]:
+        """Each embedding directory's ``SHA256SUMS`` read through the guard, and the plain
+        ``*.emb.jsonl`` names it lists allow-listed: ``arm -> [(path, listed sha256)]``."""
+        out: dict[str, list[tuple[Path, str]]] = {}
+        for arm, d in EMB_DIRS.items():
+            sums = study_dir / d / "SHA256SUMS"
+            self.sha(sums, f"emb_{arm}_SHA256SUMS")
+            files = []
+            for name, sha in read_sums(self.check(sums)):
+                if not name.endswith(".emb.jsonl"):
+                    continue
+                if "/" in name or name.startswith("."):
+                    raise GuardError("guard: a SHA256SUMS entry names a path, not a file")
+                f = study_dir / d / name
+                self.allow(f)
+                files.append((f, sha))
+            out[arm] = files
+        return out
+
 
 def allowed_inputs(study_dir: Path) -> list[Path]:
-    """The allow-list: :data:`LAYOUT` plus the ``*.emb.jsonl`` files the embedding directories'
-    ``SHA256SUMS`` list."""
-    out = [study_dir / rel for rel in LAYOUT.values()]
-    for d in EMB_DIRS.values():
-        sums = study_dir / d / "SHA256SUMS"
-        if sums.is_file():
-            out += [study_dir / d / name for name, _ in read_sums(sums) if name.endswith(".emb.jsonl")]
-    return out
+    """The fixed allow-list, :data:`LAYOUT`; the embedding files are added by
+    :meth:`Guard.emb_files` from their directories' ``SHA256SUMS``, read through the guard."""
+    return [study_dir / rel for rel in LAYOUT.values()]
 
 
 def read_sums(path: Path) -> list[tuple[str, str]]:
@@ -349,6 +406,42 @@ def _ratio(xs: Sequence[float]) -> float | None:
     return round(float(a.mean() / a.std(ddof=1)), 4) if a.size > 1 and a.std(ddof=1) > 0 else None
 
 
+def tercile_label(v: float, cuts: Sequence[float]) -> str:
+    return "T1" if v <= float(cuts[0]) else ("T2" if v <= float(cuts[1]) else "T3")
+
+
+def type7_cuts(values: Sequence[float]) -> list[float]:
+    """The linear-interpolation quantiles (Hyndman-Fan type 7, numpy's default) at 1/3, 2/3."""
+    return [float(x) for x in np.quantile(np.asarray(values, float), [1 / 3, 2 / 3])]
+
+
+def open_choice_checks(cit: Sequence[float], sim: Sequence[float], cuts: Mapping[str, Sequence[float]],
+                       citer: Sequence[float]) -> dict[str, Any]:
+    """D-1's measurable open choices, counts only: papers whose tercile changes (a) under the
+    type-7 quantile instead of type 1, per variable; (b) under the citer-list citation count
+    (``per_study.<paper>.citer_list.cited_by_count``) instead of the work record's, each with its
+    own type-1 cuts. ``cit`` and ``citer`` are in the same paper order."""
+    out: dict[str, Any] = {}
+    for var, vals in (("citation_count", cit), ("text_similarity", sim)):
+        c7 = type7_cuts(vals)
+        out[f"type7_{var}"] = {"cuts": c7, "papers_changing_tercile": sum(
+            tercile_label(v, cuts[var]) != tercile_label(v, c7) for v in vals),
+            "tercile_sizes": tercile_sizes(vals, c7)}
+    cc = tercile_cuts(citer)
+    out["citer_list_citation_count"] = {
+        "papers_differing": sum(a != b for a, b in zip(cit, citer, strict=True)), "cuts": cc,
+        "papers_changing_tercile": sum(tercile_label(a, cuts["citation_count"]) != tercile_label(b, cc)
+                                       for a, b in zip(cit, citer, strict=True))}
+    return out
+
+
+def _paper(row: Mapping[str, Any]) -> str:
+    """A draft row's paper; a row without one is a hard failure."""
+    if not row.get("paper"):
+        raise SystemExit("a draft row has no paper")
+    return str(row["paper"])
+
+
 def _expect(name: str, got: int) -> None:
     want = EXPECT[name]
     if got != want:
@@ -375,8 +468,8 @@ def build(study_dir: Path, base_export: Path, workers: int = 8, verify_record_se
         g.sha(P[k], k)
     main_ids = {str(r["record_id"]) for r in g.jsonl(P["main_drafts"])}
     calib_ids = {str(p["record_id"]) for p in g.jsonl(P["calib_pairs"])}
-    pilots = {str(r["paper"]) for k in ("pilot1_drafts", "pilot2_drafts") for r in g.jsonl(P[k]) if r.get("paper")}
-    vpapers = {str(r["paper"]) for r in g.jsonl(P["validation_drafts"]) if r.get("paper")}
+    pilots = {_paper(r) for k in ("pilot1_drafts", "pilot2_drafts") for r in g.jsonl(P[k])}
+    vpapers = {_paper(r) for r in g.jsonl(P["validation_drafts"])}
     sets = sensitivity_sets(records, main_ids, calib_ids, pilots, vpapers)
     _expect("calibration_overlap_records", len(sets["without_calibration_overlap"]))
     _expect("pilot_papers", len(sets["without_pilot_papers"]))
@@ -478,22 +571,16 @@ def build(study_dir: Path, base_export: Path, workers: int = 8, verify_record_se
     if g.sha(base_export, "base_export") != BASE_EXPORT_SHA256:
         raise SystemExit("base export sha256 != the prereg's (§4.1)")
     base_cp = _chunk_papers(_iter_jsonl(g.check(base_export)))
-    study_chunks = Counter(p for p in base_cp.values() if p in set(study))
-    if set(study_chunks) != set(study):
+    study_set = set(study)
+    study_chunks = Counter(p for p in base_cp.values() if p in study_set)
+    if set(study_chunks) != study_set:
         raise SystemExit("a study paper has no chunk in the base export")
     emb_files: dict[str, list[Path]] = {}
-    for arm, d in EMB_DIRS.items():
-        sums_p = P[f"emb_{arm}_sums"]
-        g.sha(sums_p, f"emb_{arm}_SHA256SUMS")
-        files = []
-        for name, want in read_sums(g.check(sums_p)):
-            if not name.endswith(".emb.jsonl"):
-                continue
-            f = study_dir / d / name
-            if g.sha(f, f"emb_{arm}/{name}") != want:
-                raise SystemExit(f"{d}/{name}: sha256 != its SHA256SUMS")
-            files.append(f)
-        emb_files[arm] = files
+    for arm, listed in g.emb_files(study_dir).items():
+        for f, want in listed:
+            if g.sha(f, f"emb_{arm}/{f.name}") != want:
+                raise SystemExit(f"{EMB_DIRS[arm]}/{f.name}: sha256 != its SHA256SUMS")
+        emb_files[arm] = [g.check(f) for f, _ in listed]
     s_sum, s_cnt, s_ids = embedding_sums(emb_files["base"], set(study), workers)
     if s_ids != base_cp:
         raise SystemExit("the base embeddings' chunk ids / papers are not the base export's")
@@ -518,16 +605,21 @@ def build(study_dir: Path, base_export: Path, workers: int = 8, verify_record_se
         w = sel["study_works"][s]
         sources = set().union(*src_by_study[s].values())
         cov[s] = {"topic": w["topic"], "citation_count": int(w["cited_by_count"]), "text_similarity": sim[s],
-                  "xml_only": sources <= {"jats"}, "added_chunks": added[s],
-                  "attributed_neighbours": len(nb_of[s]), "study_paper_chunks": int(s_cnt[s])}
+                  "xml_only": sources <= {"jats"}, "attributed_neighbours": len(nb_of[s]),
+                  "study_paper_chunks": int(s_cnt[s])}
+        # §7 (R23): x over the study papers with added papers (the prereg's 298); a paper with none
+        # carries no added_chunks, and the statistics leave it out (papers_left_out)
+        if nb_of[s]:
+            cov[s]["added_chunks"] = added[s]
         if not w.get("topic") or w.get("cited_by_count") is None:
             raise SystemExit("a study work lacks its topic or citation count")
 
     cit = [c["citation_count"] for c in cov.values()]
     simv = [c["text_similarity"] for c in cov.values() if c["text_similarity"] is not None]
     cuts = {"citation_count": tercile_cuts(cit), "text_similarity": tercile_cuts(simv)}
-    xs = np.asarray([cov[s]["added_chunks"]["neighbour"] - 0.5 * (cov[s]["added_chunks"]["random1"]
-                     + cov[s]["added_chunks"]["random2"]) for s in study], float)
+    xs = np.asarray([c["added_chunks"]["neighbour"] - 0.5 * (c["added_chunks"]["random1"]
+                     + c["added_chunks"]["random2"]) for c in cov.values() if "added_chunks" in c], float)
+    citer = {s: int(sel["per_study"][s]["citer_list"]["cited_by_count"]) for s in study}
     summary = {
         "study_papers": len(study), "topics": len({c["topic"] for c in cov.values()}),
         "papers_with_text_similarity": len(simv), "papers_without_text_similarity": len(study) - len(simv),
@@ -538,10 +630,10 @@ def build(study_dir: Path, base_export: Path, workers: int = 8, verify_record_se
         "sources": {a: dict(sorted(c.items())) for a, c in src.items()},
         "tercile_sizes": {"citation_count": tercile_sizes(cit, cuts["citation_count"]),
                           "text_similarity": tercile_sizes(simv, cuts["text_similarity"])},
+        "papers_with_added_chunks": int(xs.size),
         "volume_covariate_x": {"papers": int(xs.size), "mean": round(float(xs.mean()), 4),
-                               "sd": round(float(xs.std(ddof=1)), 4),
-                               "mean_over_sd_papers_with_added": _ratio([x for s, x in zip(study, xs, strict=True)
-                                                                         if cov[s]["attributed_neighbours"]])},
+                               "sd": round(float(xs.std(ddof=1)), 4), "mean_over_sd": _ratio(list(xs))},
+        "open_choice_checks": open_choice_checks(cit, simv, cuts, [citer[s] for s in study]),
         "sensitivity_sets": {k: len(v) for k, v in sets.items()},
         "validation_papers_balanced_records": sum(str(r["paper"]) in vset for r in bal),
     }
@@ -602,8 +694,9 @@ def outputs(res: Mapping[str, Any], prov: Mapping[str, Any]) -> dict[str, bytes]
         "counts": {"study_papers": res["summary"]["study_papers"],
                    "papers_with_value": {"citation_count": res["summary"]["study_papers"],
                                          "text_similarity": res["summary"]["papers_with_text_similarity"]},
-                   "tercile_sizes": res["summary"]["tercile_sizes"]},
-        "sources_sha256": {k: v for k, v in src.items() if not k.startswith("emb_") or k.endswith("SHA256SUMS")}})
+                   "tercile_sizes": res["summary"]["tercile_sizes"],
+                   "open_choice_checks": res["summary"]["open_choice_checks"]},
+        "sources_sha256": {k: v for k, v in src.items() if k in PUBLIC_SOURCES}})
     files = {"paper-covariates.json": _dump(cov), "neighbour-attribution.json": _dump(attr),
              "tercile-cuts.json": _dump(cuts_pub)}
     for name, ids in res["sets"].items():
@@ -623,7 +716,7 @@ def write_all(res: Mapping[str, Any], study_dir: Path, public_cuts: Path | None,
     os.chmod(out, 0o700)
     shas = {name: _write(out / name, data) for name, data in files.items()}
     keys = {"paper_covariates": str(out / "paper-covariates.json"),
-            "tercile_cuts": str(public_cuts.resolve()) if public_cuts else str(out / "tercile-cuts.json"),
+            "tercile_cuts": PUBLIC_CUTS_REL,
             "neighbour_attribution": str(out / "neighbour-attribution.json"),
             "sensitivity_sets": {k: str(out / (k.replace("_", "-") + ".txt")) for k in res["sets"]}}
     shas["stats-config-keys.json"] = _write(out / "stats-config-keys.json", _dump(keys))

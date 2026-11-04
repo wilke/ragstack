@@ -39,9 +39,17 @@ def test_denied_prefixes() -> None:
         assert ai.denied(rel) is None, rel
 
 
+def test_denied_names_anywhere() -> None:
+    for rel in ("corpus/manifests/final.jsonl", "calib/labels-qwen.jsonl", "out/x/judge-summary.json",
+                "ops/hits.jsonl", "a/b.owner-labels.jsonl", "docs/stage-a-commit.public.json", "x/results-stage-A.json"):
+        assert ai.denied(rel) is not None, rel
+    assert ai.denied("calib/pairs.jsonl") is None
+
+
 def test_guard_refuses_denied_even_when_listed(tmp_path: Path) -> None:
     d = tmp_path / "study"
-    bad = [d / "main/judge/final.jsonl", d / "main/analysis-A/results.json", d / "spot/records/labels.jsonl"]
+    bad = [d / "main/judge/final.jsonl", d / "main/analysis-A/results.json", d / "spot/records/labels.jsonl",
+           d / "main/judge/renamed.jsonl"]
     ok = d / "corpus/manifests/counts-v4.json"
     for p in [*bad, ok]:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -52,15 +60,48 @@ def test_guard_refuses_denied_even_when_listed(tmp_path: Path) -> None:
     for p in bad:
         with pytest.raises(ai.GuardError, match="refusing"):
             g.check(p)
-    assert g.check(ok) == ok.resolve()
+    assert g.check(ok) == ok
     with pytest.raises(ai.GuardError, match="not an allow-listed"):
         g.check(d / "corpus/manifests/other.json")
-    # a listed name that is a link into main/judge is refused once resolved
-    link = d / "calib/pairs.jsonl"
-    link.parent.mkdir(parents=True)
-    link.symlink_to(d / "main/judge/final.jsonl")
-    with pytest.raises(ai.GuardError, match="refusing"):
-        ai.Guard(d, base, [link]).check(link)
+
+
+def test_guard_refuses_a_renamed_outcome_file_in_an_allowed_directory(tmp_path: Path) -> None:
+    d = tmp_path / "study"
+    p = d / "corpus/manifests/judge-summary.json"
+    p.parent.mkdir(parents=True)
+    p.write_text("{}")
+    base = tmp_path / "base.jsonl"
+    base.write_text("")
+    with pytest.raises(ai.GuardError, match="outcome file name"):
+        ai.Guard(d, base, [p]).check(p)
+
+
+def test_guard_refuses_symlinks(tmp_path: Path) -> None:
+    d = tmp_path / "study"
+    (d / "main/judge").mkdir(parents=True)
+    (d / "main/judge/x.jsonl").write_text("{}")
+    outside = tmp_path / "elsewhere.jsonl"
+    outside.write_text("{}")
+    base = tmp_path / "base.jsonl"
+    base.write_text("")
+    # a listed name that is a link: into main/judge, and to a file outside the root
+    for target in (d / "main/judge/x.jsonl", outside):
+        link = d / "calib/pairs.jsonl"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(target)
+        with pytest.raises(ai.GuardError, match="symlink"):
+            ai.Guard(d, base, [link]).check(link)
+    # a linked parent directory
+    real = tmp_path / "realdir"
+    real.mkdir()
+    (real / "counts-v4.json").write_text("{}")
+    (d / "corpus").mkdir()
+    (d / "corpus/manifests").symlink_to(real)
+    p = d / "corpus/manifests/counts-v4.json"
+    with pytest.raises(ai.GuardError, match="symlink"):
+        ai.Guard(d, base, [p]).check(p)
 
 
 def test_tercile_cuts_inverse_cdf() -> None:
@@ -155,7 +196,8 @@ def study(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     for i in range(1, 5):
         attributed[S(i)] = [[f"WN{i + 1}", "ref"]]
         nworks[f"WN{i + 1}"] = {"pmcid": f"PMCN{i + 1}"}
-    sel = {"study_works": study_works, "attributed": attributed, "works": nworks}
+    per_study = {S(i): {"citer_list": {"cited_by_count": [3, 0, 12, 7, 9, 40][i]}} for i in range(6)}
+    sel = {"study_works": study_works, "attributed": attributed, "works": nworks, "per_study": per_study}
     nkeys = {"WN0": "PMCN0", "WN1": "WN1", **{f"WN{i + 1}": f"PMCN{i + 1}" for i in range(1, 5)}}
     n_chunks = {"PMCN0": 3, "WN1": 2, "PMCN2": 4, "PMCN3": 1, "PMCN4": 2, "PMCN5": 5}
     draws: dict[str, Any] = {}
@@ -247,7 +289,8 @@ def test_build_values(study: dict[str, Any]) -> None:
     assert cov[S(0)]["topic"] == "T0" and cov[S(5)]["citation_count"] == 40
     # S0 has a PDF neighbour, S1 a PDF take in draw 1, S5 nothing added (vacuously XML-only)
     assert [cov[S(i)]["xml_only"] for i in range(6)] == [False, False, True, True, True, True]
-    assert cov[S(5)]["added_chunks"] == {"neighbour": 0, "random1": 0, "random2": 0}
+    assert "added_chunks" not in cov[S(5)]                 # §7 R23: the 298-paper population
+    assert res["summary"]["papers_with_added_chunks"] == 5
     assert cov[S(5)]["text_similarity"] is None
     assert cov[S(0)]["added_chunks"]["neighbour"] == 5
     for i in range(5):
@@ -264,23 +307,65 @@ def test_build_values(study: dict[str, Any]) -> None:
     assert res["summary"]["papers_with_text_similarity"] == 5
 
 
-def test_build_reads_no_outcome_file(study: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
-    opened: list[str] = []
+@pytest.mark.parametrize("workers", [1, 2])
+def test_build_reads_no_outcome_file(study: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                     workers: int) -> None:
+    """Every file the build opens, in this process and (``workers=2``) in the pool's forked
+    workers, which inherit the spy and append to a shared log, is an allow-listed input."""
+    import multiprocessing as mp
+    if workers > 1 and mp.get_start_method() != "fork":
+        pytest.skip("the pool's workers inherit the spy only under fork")
+    log = tmp_path / "opened.log"
     real = builtins.open
 
     def spy(file: Any, *a: Any, **k: Any) -> Any:
-        if isinstance(file, (str, os.PathLike)):
-            opened.append(str(Path(file).resolve()))
+        if isinstance(file, (str, os.PathLike)) and str(file) != str(log):
+            with real(log, "a", encoding="utf-8") as fh:
+                fh.write(f"{os.getpid()}\t{os.path.abspath(file)}\n")
         return real(file, *a, **k)
     monkeypatch.setattr(builtins, "open", spy)
     monkeypatch.setattr(io, "open", spy)
-    _build(study)
-    root = study["dir"].resolve()
-    rels = [Path(p).relative_to(root).as_posix() for p in opened if p.startswith(str(root) + os.sep)]
-    assert rels, "the spy saw no read"
-    assert not [r for r in rels if ai.denied(r)], "an outcome file was opened"
-    allowed = {p.resolve() for p in ai.allowed_inputs(study["dir"])}
-    assert {Path(p) for p in opened if p.startswith(str(root) + os.sep)} <= allowed
+    ai.build(study["dir"], study["base"], workers=workers, verify_record_set=False)
+    monkeypatch.undo()
+    rows = [x.split("\t", 1) for x in log.read_text(encoding="utf-8").splitlines()]
+    root = str(study["dir"]) + os.sep
+    under = [p for _, p in rows if p.startswith(root)]
+    assert under, "the spy saw no read"
+    assert not [p for p in under if ai.denied(p[len(root):])], "an outcome file was opened"
+    allowed = {str(p) for p in ai.allowed_inputs(study["dir"])}
+    allowed |= {str(p) for e in ai.EMB_DIRS.values() for p in (study["dir"] / e).glob("*.emb.jsonl")}
+    assert set(under) <= allowed
+    emb = {p for _, p in rows if p.endswith(".emb.jsonl")}
+    assert emb, "the embedding files were not read"
+    if workers > 1:
+        assert {pid for pid, p in rows if p.endswith(".emb.jsonl")} - {str(os.getpid())}, \
+            "the pool path was not exercised"
+
+
+def test_a_decoy_outcome_file_in_an_allowed_directory_is_refused(study: dict[str, Any],
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """A layout entry pointed at a renamed judge-label file beside the calibration pairs (same
+    shape, same directory): only the name deny list stands between it and the build."""
+    d = study["dir"]
+    pairs = (d / ai.LAYOUT["calib_pairs"]).read_text(encoding="utf-8")
+    (d / "calib/labels-qwen.jsonl").write_text(pairs, encoding="utf-8")
+    monkeypatch.setitem(ai.LAYOUT, "calib_pairs", "calib/labels-qwen.jsonl")
+    with pytest.raises(ai.GuardError, match="outcome file name"):
+        _build(study)
+
+
+def test_open_choice_checks() -> None:
+    cit = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+    cuts = {"citation_count": ai.tercile_cuts(cit), "text_similarity": ai.tercile_cuts(cit)}
+    out = ai.open_choice_checks(cit, cit, cuts, cit)
+    assert out["type7_citation_count"]["cuts"] == pytest.approx([2 + 2 / 3, 5 + 1 / 3])
+    assert out["type7_citation_count"]["papers_changing_tercile"] == 0
+    assert out["citer_list_citation_count"] == {"papers_differing": 0, "cuts": [2.0, 5.0], "papers_changing_tercile": 0}
+    citer = [0, 1, 2, 3, 4, 5, 6, 7, 80]
+    assert ai.open_choice_checks(cit, cit, cuts, citer)["citer_list_citation_count"]["papers_differing"] == 1
+    ties = [0, 0, 0, 0, 1, 2]                      # type 1: [0, 0]; type 7: [0, 0.333..]
+    c = {"citation_count": ai.tercile_cuts(ties), "text_similarity": ai.tercile_cuts(ties)}
+    assert ai.open_choice_checks(ties, ties, c, ties)["type7_citation_count"]["papers_changing_tercile"] == 0
 
 
 def test_count_mismatch_stops(study: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -318,6 +403,7 @@ def test_write_all_and_the_statistics_read_it(study: dict[str, Any], tmp_path: P
     assert not asc.public_problems(cuts, res["forbidden"])
     # the statistics' readers
     keys = json.loads((out / "stats-config-keys.json").read_text())
+    assert keys["tercile_cuts"] == ai.PUBLIC_CUTS_REL
     cfg = {"sensitivity_sets": keys["sensitivity_sets"]}
     recs = asc.load_records(study["dir"] / ai.LAYOUT["records"])
     bal, _ = asc.split_records(recs)
