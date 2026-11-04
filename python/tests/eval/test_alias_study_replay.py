@@ -43,6 +43,17 @@ def test_compose_tie_and_invalid_escalate() -> None:
     assert rp.compose([1, 1, 1, 1, 0], [0], None) == (None, "unlabelled")
 
 
+def test_compose_no_label_on_either_side_is_never_agreement() -> None:
+    # C has no majority and E's first sample is invalid: None == None must not count as agreement
+    assert rp.compose([None] * 5, [None], 1) == (1, "tiebreak")
+    assert rp.compose([None] * 5, [None], None) == (None, "unlabelled")
+    assert rp.compose([1, 1, 0, 0, None], [None], 0) == (0, "tiebreak")  # C tie, E invalid
+    # C no label, E valid; C valid, E no label
+    assert rp.compose([None] * 5, [1], 0) == (0, "tiebreak")
+    assert rp.compose([1, 1, 1, 0, 0], [None], 0) == (0, "tiebreak")
+    assert rp.compose([1, 1, 1, 0, 0], [None], None) == (None, "unlabelled")
+
+
 def test_compose_majority_over_valid_only() -> None:
     assert rp.compose([1, None, None, 1, 0], [1], None) == (1, "agree")
 

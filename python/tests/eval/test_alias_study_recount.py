@@ -201,6 +201,78 @@ def test_extension_coverage_covered() -> None:
     assert out["exclusion_covers_extension"] is True and out["satisfied_outside_exclusion"] == 0
 
 
+def test_refusal_reason_precedence() -> None:
+    # a text matching both reasons is a CLI safeguard fallback (the prefix is checked first)
+    both = "safety_stop_fallback: answered by claude-opus-5 (the safeguards flagged this message)"
+    assert rc.refusal_reason(both) == "cli_safeguard_fallback"
+    assert rc.refusal_reason("API Error: safeguards flagged it") == "safeguard_api_error"
+    assert rc.refusal_reason("a safety_stop_fallback: mid-text is not a prefix") == "other"
+    assert rc.refusal_reason("") == "other"
+
+
+def test_verdict_source_takes_the_last_verify_row_of_a_record() -> None:
+    r = rec(pid(0), "g0", "G", "A0", "codex")
+    fb = "safety_stop_fallback: answered by claude-opus-5 (safety_stops 2)"
+    api = "API Error: Opus 5's safeguards flagged this message."
+    rows = [{"record_id": r["record_id"], "verifier": "codex", "refusal_text": fb},
+            {"record_id": r["record_id"], "verifier": "codex", "refusal_text": api}]
+    out = rc.verdict_sources([r], rows)
+    assert out["codex_reason"] == {"safeguard_api_error": 1}
+    assert out["cli_safeguard_fallback_answered_by"] == {}
+    # and in the other order the earlier API error is superseded by the later fallback
+    out = rc.verdict_sources([r], rows[::-1])
+    assert out["codex_reason"] == {"cli_safeguard_fallback": 1}
+    assert out["cli_safeguard_fallback_answered_by"] == {"claude-opus-5": 1}
+    # a later non-Codex row supersedes an earlier Codex one
+    late = rows[:1] + [{"record_id": r["record_id"], "verifier": "claude", "refusal_text": None}]
+    assert rc.verdict_sources([r], late)["codex_reason"] == {"no_codex_verify_row": 1}
+
+
+def test_activation_order_keeps_only_reachable_papers() -> None:
+    """Reachable: at least goal G distinct alias keys and goal C jobs."""
+    header = {"kind": "header", "seed": "syn|u", "design": {"goal": {"G": 2, "C": 1}}}
+
+    def jobs(p: str, g_aliases: list[str], n_c: int) -> list[dict[str, Any]]:
+        out = [{"kind": "job", "paper": p, "stratum": "G", "rank": i, "job_id": f"G-{p}-{i}", "alias": a,
+                "alias_kind": "abbreviation"} for i, a in enumerate(g_aliases)]
+        return out + [{"kind": "job", "paper": p, "stratum": "C", "rank": i, "job_id": f"C-{p}-{i}", "alias": "Z",
+                       "alias_kind": "abbreviation"} for i in range(n_c)]
+
+    pool = [header] + jobs("p1", ["X1", "Y1"], 1) + jobs("p2", ["X1", "X1"], 1) + jobs("p3", ["X1", "Y1"], 0) \
+        + jobs("p4", ["X1", "Y1", "W1"], 2) + [{"kind": "other", "paper": "p9"}]
+    order, info = rc.activation_order(pool)
+    assert sorted(order) == ["p1", "p4"]
+    assert info == {"papers": 4, "reachable": 2}
+    assert order == random.Random("syn|u|waves").sample(["p1", "p4"], 2)
+
+
+def test_extension_coverage_slices_the_activation_order() -> None:
+    # the order is longer than what the run activated: positions n_before..n_after only
+    order = ["a", "b", "c", "d", "e", "f"]
+    out = rc.extension_coverage(order, 2, 4, {"a", "c", "e", "f"}, {"a", "c", "e", "f"}, {"a", "b", "c"})
+    assert out["activated_before_extension"] == 2
+    assert out["activated_before_extension_outside_exclusion"] == 0
+    assert out["activated_by_extension"] == 2  # c, d (not e, f)
+    assert out["activated_by_extension_in_exclusion"] == 1  # c
+    assert out["activated_by_extension_outside_exclusion"] == 1  # d
+    assert out["satisfied_activated_by_extension"] == 1  # c
+    assert out["satisfied_activated_by_extension_outside_exclusion"] == 0
+    assert out["satisfied_outside_activation"] == 2  # e, f
+    assert out["exclusion_covers_extension"] is False
+
+
+def test_waves_at_extension_boundary_is_strict() -> None:
+    """A wave stamped exactly at the reseal's time is not counted as before it. (The code's
+    behaviour, pinned; the prereg does not say which side a same-instant wave belongs to.)"""
+    hist = [{"wave": 1, "accepted": 6, "papers_active": 4, "papers_satisfied": 1, "t": "T1"},
+            {"wave": 2, "accepted": 5, "papers_active": 6, "papers_satisfied": 2, "t": "T4"},
+            {"wave": 3, "accepted": 9, "papers_active": 9, "papers_satisfied": 5, "t": "T5"}]
+    state = {"waves": {"n_active": 9, "wave": 3, "stop": "target_met", "history": hist},
+             "reseals": [{"t": "T4", "diff": {"waves.target_papers": {"old": 200, "new": 300}}}]}
+    w = rc.waves_at_extension(state)
+    assert (w["activated_at_extension"], w["satisfied_at_extension"], w["accepted_at_extension"]) == (4, 1, 6)
+
+
 def test_compare_prefix_and_mismatch() -> None:
     out = rc.compare({"x": "ab" * 32, "y": 3, "z": None}, {"x": "abababab", "y": 4, "z": 1, "w": 2})
     assert out["x"]["status"] == "match" and out["y"]["status"] == "MISMATCH"
