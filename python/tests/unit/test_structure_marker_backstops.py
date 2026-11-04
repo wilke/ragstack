@@ -334,8 +334,9 @@ def test_load_keeps_the_glossary_file_for_an_unmarked_entry(load, tmp_path, caps
     # The file is verified against the embedding file's documents (it names
     # another document here, so that verification refuses) — but not by the
     # text_render refusal.
-    assert "glossary file cannot be used" not in capsys.readouterr().err
-    assert rc in (0, 2)
+    err = capsys.readouterr().err
+    assert "glossary file cannot be used" not in err
+    assert rc == 2 and "refusing: glossary file" in err  # the #847 verification, not ours
 
 
 # --------------------------------------------------------------------------- #

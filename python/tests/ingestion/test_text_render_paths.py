@@ -429,3 +429,175 @@ def test_a_failed_render_on_paths_a_c_and_d(tmp_path, registry, monkeypatch, boo
     asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / "d.ckpt"),
                                  it.resolve(CID, registry=REG)))
     assert [c.content for c in store.points.values()] == ["Good\n\nA page that renders."]
+
+
+# --------------------------------------------------------------------------- #
+# when EVERY document fails to render, no path reports success
+# --------------------------------------------------------------------------- #
+
+def _bad_only(tmp_path: Path) -> Path:
+    shard = tmp_path / "bad-only.jsonl"
+    shard.write_text(json.dumps({"text": "# Bad\n\nBOOM in this page.\n", "path": "/d/bad.md",
+                                 "metadata": {}}) + "\n", encoding="utf-8")
+    return shard
+
+
+def test_path_b_all_failed_renders_fail_the_task(tmp_path, registry, monkeypatch,  # noqa: F811
+                                                 boom) -> None:
+    """Review 2: it used to be ``processed_empty`` — a COMPLETED task whose
+    only trace was the rows. MUTATION: keep processed_empty → exit 0 → fails."""
+    monkeypatch.delenv("COLLECTION_MANIFEST_DIR", raising=False)
+    registry(_entry_spec(dict(PLAIN)))
+    receipt = tmp_path / "r.json"
+    monkeypatch.setattr(ingest_shard, "_build_embedder", lambda args, http: _Embedder())
+    args = ingest_shard.parse_args([
+        str(_bad_only(tmp_path)), "--vector-backend", "memory", "--text-backend", "memory",
+        "--qdrant-url", DEAD, "--es-url", DEAD, *_SIZE, "--out", str(receipt)])
+    assert asyncio.run(ingest_shard.amain(args, it.resolve(CID, registry=REG))) == 1
+    rec = ShardReceipt.load(receipt)
+    assert rec.status == "failed" and rec.error.startswith("text_render_failed")
+    [row] = rec.docs
+    assert row.error.startswith("text_render_failed: ValueError")  # its own reason kept
+
+
+def test_path_c_all_failed_renders_name_the_reason(tmp_path, registry, monkeypatch,  # noqa: F811
+                                                   boom) -> None:
+    registry(_entry_spec(dict(PLAIN)))
+    out, receipt = tmp_path / "c.emb.jsonl", tmp_path / "c.json"
+    monkeypatch.setattr(embed_shard, "make_embedder_auto", lambda **kw: _Embedder())
+    assert embed_shard.main([str(_bad_only(tmp_path)), "--out", str(out), "--receipt",
+                             str(receipt), "--collection-id", CID, "--registry", REG,
+                             *_SIZE]) == 1
+    rec = ShardReceipt.load(receipt)
+    assert rec.status == "failed" and "text_render_failed" in rec.error
+
+
+def _run_d(tmp_path, monkeypatch, shard, *, resume=False):
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+    metrics = tmp_path / "doc-metrics.jsonl"
+    args = _args(shard, checkpoint=tmp_path / "d.ckpt", doc_metrics_out=metrics, resume=resume)
+    code = 0
+    try:
+        asyncio.run(ingest_jsonl.run(args, it.resolve(CID, registry=REG)))
+    except SystemExit as e:
+        code = e.code
+    rows = [json.loads(x) for x in metrics.read_text(encoding="utf-8").splitlines()] \
+        if metrics.exists() else []
+    return code, store, rows
+
+
+def test_path_d_all_failed_renders_exit_1_label_the_rows_and_resume_retries(
+    tmp_path, registry, monkeypatch, boom  # noqa: F811
+) -> None:
+    """Review 2. MUTATIONS: no failed batch for an all-render-failed batch →
+    exit 0 and the checkpoint moves past the document → fails; the metrics
+    row says 'quarantined' → fails."""
+    registry(_entry_spec(dict(PLAIN)))
+    shard = _bad_only(tmp_path)
+    code, store, rows = _run_d(tmp_path, monkeypatch, shard)
+    assert code == 1 and not store.points
+    assert rows and all(str(r.get("error", "")).find("text_render_failed") >= 0 for r in rows)
+    assert not any("quarantined" in str(r.get("error", "")) for r in rows)
+    # The render bug is fixed: --resume retries the document (the checkpoint
+    # did not move past it).
+    monkeypatch.setattr(md, "markdown_plain", lambda doc: ("Bad fixed", None))
+    code, store, _rows = _run_d(tmp_path, monkeypatch, shard, resume=True)
+    assert code == 0 and [c.content for c in store.points.values()] == ["Bad fixed"]
+
+
+def test_path_d_a_partial_failure_keeps_going_with_a_labelled_row(
+    tmp_path, registry, monkeypatch, boom  # noqa: F811
+) -> None:
+    registry(_entry_spec(dict(PLAIN)))
+    code, store, rows = _run_d(tmp_path, monkeypatch, _two_pages(tmp_path))
+    assert code == 0
+    assert [c.content for c in store.points.values()] == ["Good\n\nA page that renders."]
+    errors = sorted(str(r.get("error")) for r in rows)
+    assert errors[0] == "None" and errors[1].startswith("text_render_failed: ValueError")
+
+
+# --------------------------------------------------------------------------- #
+# a render-failed document never reaches the chunker (the filters, pinned
+# independently of the emptied content)
+# --------------------------------------------------------------------------- #
+
+class _SpyChunker:
+    """Records the source of every document handed to ``chunk``."""
+
+    def __init__(self, inner, seen: list[str]) -> None:
+        self._inner, self.seen = inner, seen
+        self.chunk_size, self.chunk_overlap = inner.chunk_size, inner.chunk_overlap
+
+    def chunk(self, doc):  # noqa: ANN001
+        self.seen.append(doc.source)
+        return self._inner.chunk(doc)
+
+
+@pytest.fixture
+def boom_keeps_text(monkeypatch, boom):
+    """``boom``, with the emptying of a failed document's content undone, so
+    only the chunk loops' filters stand between it and the chunker."""
+    from ragstack.ingestion import structure as structure_mod
+
+    real = structure_mod.apply_text_render
+
+    def keep_text(documents, render, counts=None):
+        docs = list(documents)
+        raw = {id(d): d.content for d in docs}
+        out = real(docs, render, counts)
+        for d in docs:
+            if structure_mod.render_failure_of(d):
+                d.content = raw[id(d)]
+        return out
+
+    monkeypatch.setattr(structure_mod, "apply_text_render", keep_text)
+    import ragstack.ingestion.pipeline as pipeline_mod
+
+    monkeypatch.setattr(pipeline_mod, "apply_text_render", keep_text)
+    monkeypatch.setattr(ingest_jsonl, "apply_text_render", keep_text)
+
+
+def test_a_render_failed_document_never_reaches_the_chunker_on_any_path(
+    tmp_path, registry, monkeypatch, boom_keeps_text  # noqa: F811
+) -> None:
+    """Review 2. MUTATION: drop the filter at any of the three chunk loops
+    (pipeline.prepare_documents — paths A/B —, iter_embed_source — C —,
+    ingest_jsonl's loop — D) → the bad page reaches chunk() → fails."""
+    from ragstack.ingestion.shard import run_shard
+
+    markers = structure_from_params("fixed", PLAIN)
+    shard = _two_pages(tmp_path)
+
+    def pipe(seen):
+        return IngestionPipeline(loader=JsonlLoader(), chunker=_SpyChunker(_chunker(), seen),
+                                 embedder=_Embedder(), vector_store=InMemoryVectorStore(),
+                                 text_index=InMemoryTextIndex(), structure_markers=markers)
+
+    # A (prepare_source) and B (run_shard → embed_documents → prepare_documents).
+    seen_a: list[str] = []
+    asyncio.run(pipe(seen_a).prepare_source(str(shard)))
+    seen_b: list[str] = []
+    asyncio.run(run_shard(pipe(seen_b), str(shard), "public", "s"))
+    # C (iter_embed_source).
+    seen_c: list[str] = []
+    p_c = pipe(seen_c)
+
+    async def _iter():
+        return [c async for g in p_c.iter_embed_source(str(shard)) for c in g]
+
+    asyncio.run(_iter())
+    # D (ingest_jsonl's own loop), with its chunker replaced by the spy.
+    seen_d: list[str] = []
+    real_build = ingest_jsonl.build_chunker
+
+    def spy_build(*a, **kw):
+        chunker, counter, budget = real_build(*a, **kw)
+        return _SpyChunker(chunker, seen_d), counter, budget
+
+    monkeypatch.setattr(ingest_jsonl, "build_chunker", spy_build)
+    registry(_entry_spec(dict(PLAIN)))
+    _run_d(tmp_path, monkeypatch, shard)
+    for seen in (seen_a, seen_b, seen_c, seen_d):
+        assert seen == ["/d/good.md"], seen
