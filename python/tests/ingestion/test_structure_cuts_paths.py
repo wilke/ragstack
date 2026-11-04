@@ -300,6 +300,14 @@ def test_a_cut_run_never_reuses_an_uncut_runs_cached_spans(
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
     hits = []
+    fingerprints = []
+    real_fp = ingest_jsonl.config_fingerprint
+
+    def fp_spy(**parts):
+        fingerprints.append(parts)
+        return real_fp(**parts)
+
+    monkeypatch.setattr(ingest_jsonl, "config_fingerprint", fp_spy)
     for i, params in enumerate(({}, CUTS, CUTS)):
         registry(_spec(chunk_size=200, chunk_overlap=0, chunk_params=dict(params)))
         target = it.resolve(CID, registry=REG)
@@ -311,6 +319,10 @@ def test_a_cut_run_never_reuses_an_uncut_runs_cached_spans(
                 if x.startswith("segmentation cache:")][-1]
         hits.append(int(line.split()[2]))
     assert hits == [0, 0, 2]  # the second cut run hits its own entries
+    # The marker is in the fingerprint itself (not only in the per-document key),
+    # and an unmarked run's fingerprint is as before (no such key).
+    assert "structure_cuts" not in fingerprints[0]
+    assert fingerprints[1]["structure_cuts"] == "sections/1"
 
 
 def test_the_structure_joins_a_cut_documents_cache_key(tmp_path) -> None:

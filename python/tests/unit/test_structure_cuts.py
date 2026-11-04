@@ -701,3 +701,18 @@ def test_structure_cuts_on_fixed_is_accepted_and_changes_nothing():
         [(c.start_char, c.end_char) for c in plain.chunk(doc)]
     with pytest.raises(ValueError, match="structure_cuts"):
         make_chunker("fixed", chunk_size=100, chunk_overlap=10, structure_cuts="sections/2")
+
+
+@pytest.mark.parametrize("name", ["sentence/chars", "fixed_token/0", "semantic/strict"])
+def test_stamp_documents_reads_the_cut_segments_under_the_marker(tiling, name):
+    """Through stamp_documents (what every loop calls): no chunk of a strict
+    cut run is a section_crossing, though the heading-attached chunks cross
+    the old section segments — and without the marker they still do."""
+    doc = _heading_doc()
+    chunks = _cut_chunker(name).chunk(doc)
+    stamp_documents([doc], chunks, structure_cuts=True)
+    assert not [c for c in chunks if c.metadata.get("section_crossing")]
+    for c in chunks:
+        c.metadata.clear()
+    stamp_documents([doc], chunks)
+    assert [c for c in chunks if c.metadata.get("section_crossing")]
