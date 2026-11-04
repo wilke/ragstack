@@ -1026,6 +1026,11 @@ async def run(
                                                 markers.text_render, rendered)
                     finally:
                         structure_counts.update(rendered)
+                    # Deliberately redundant with apply_text_render emptying the content
+                    # (an empty document chunks to nothing): either guard alone keeps a
+                    # render-failed document out of the chunker, so deleting one is not
+                    # caught by a test of the outcome; #828 PR 7's tests pin each guard
+                    # on its own. Keep both.
                     if render_failure_of(doc):
                         # Left out, never ingested raw (logged and counted by
                         # apply_text_render; reported in the final line). This

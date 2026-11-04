@@ -421,16 +421,21 @@ async def test_a_gowe_deployment_refuses_a_marker_at_create_until_the_repin(
 
 
 @pytest.mark.parametrize(("params", "method", "overlap"), [
+    ({"text_render": "markdown-plain/1"}, "fixed_token", 32),
     ({"structure_cuts": "sections/1"}, "fixed_token", 32),
     ({"embed_heading_path": "prefix/1"}, "fixed_token", 32),
+    ({"structure_infer": "text-heuristic/1"}, "fixed_token", 32),
     ({"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25,
       "min_piece": 64}, "sentence", 0),
-], ids=["structure_cuts", "embed_heading_path", "sentence-tolerance"])
+], ids=["text_render", "structure_cuts", "embed_heading_path", "structure_infer",
+        "sentence-tolerance"])
 async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
     client, _admin, monkeypatch, tmp_path, params, method, overlap
 ) -> None:
-    """#828 PR 7's markers (and the sentence tolerance, which needs
-    structure_cuts) are refused on a GoWe deployment until R, like text_render."""
+    """Every marker key is refused on a GoWe deployment until R — PR 7's two
+    as well as text_render (and the sentence tolerance, which needs
+    structure_cuts). ``structure_infer`` is still refused earlier, as not yet
+    applied (PR 8). MUTATION: refuse ``text_render`` only → fails."""
     from ragstack.api.routers import collections as coll
 
     assert coll.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
@@ -438,4 +443,11 @@ async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7",
                                 method=method, overlap=overlap)
     assert r.status_code == 400, r.text
-    assert "repin" in r.json()["detail"] and recorded is None
+    assert recorded is None
+    want = "not yet applied" if "structure_infer" in params else "repin"
+    assert want in r.json()["detail"]
+    # What R does: the applied markers are then accepted on GoWe.
+    monkeypatch.setattr(coll, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)
+    r, _ = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7-r",
+                         method=method, overlap=overlap)
+    assert (r.status_code == 400) is ("structure_infer" in params), r.text

@@ -40,6 +40,7 @@ from ragstack.ingestion.loaders import (  # noqa: E402
 from ragstack.ingestion.pipeline import IngestionPipeline  # noqa: E402
 from ragstack.ingestion.receipts import ShardReceipt  # noqa: E402
 from ragstack.ingestion.structure import STAMP_KEYS  # noqa: E402
+from ragstack.models import Document  # noqa: E402
 from ragstack.ops import ingest_target as it  # noqa: E402
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore  # noqa: E402
 from tests.ingestion.test_extract_text_parity import (  # noqa: E402,F401 — fixtures
@@ -724,3 +725,17 @@ async def test_a_stripped_heading_prefix_carries_no_url(tmp_path) -> None:
     assert not any("https://" in p for p in prefixes)
     assert any("it (https://e.example/y)" in c.content for c in chunks)
     assert not any("d.example" in c.content for c in chunks)
+
+
+def test_a_failed_render_empties_and_marks_the_document(boom) -> None:  # noqa: F811
+    """The second of the two deliberately redundant guards, pinned on its own:
+    the render step empties a failed document (and drops its structure) as
+    well as marking it, so even a caller without the filter chunks nothing.
+    MUTATION: mark without emptying → fails here (the outcome tests cannot
+    see it: the callers' filter alone keeps the document out)."""
+    from ragstack.ingestion.structure import apply_text_render, render_failure_of
+
+    doc = Document(id="b", content="# Bad\n\nBOOM here.\n", metadata={}, source="/d/bad.md")
+    apply_text_render([doc], "markdown-plain/1")
+    assert render_failure_of(doc).startswith("text_render_failed")
+    assert doc.content == "" and doc.structure is None

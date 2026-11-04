@@ -714,8 +714,12 @@ def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
 
 def _refuse_markers_before_the_repin(params: dict[str, Any]) -> None:
     """400 when a new collection records any document-structure marker on a
-    GoWe deployment before the step-R tools image (#828 PR 4 review). The
-    in-process backend applies ``text_render`` itself, so it is unaffected."""
+    GoWe deployment before the step-R tools image (#828 PR 4 review). EVERY
+    marker key (:data:`STRUCTURE_MARKER_PARAMS`): ``text_render``, and since
+    #828 PR 7 ``structure_cuts`` and ``embed_heading_path`` — the workers'
+    image would ingest any of them unmarked. The ``sentence`` tolerance keys
+    are accepted only under ``structure_cuts``, so they are refused with it.
+    The in-process backend applies the markers itself, so it is unaffected."""
     if chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED or ingest_backend_name(settings) != "gowe":
         return
     marked = [k for k in STRUCTURE_MARKER_PARAMS if (params or {}).get(k) is not None]
