@@ -978,16 +978,25 @@ def check_header_chunking(header: dict[str, Any], target: IngestTarget, *,
       closes the hole where a ``--chunk-size-unit tokens`` embed run loaded into
       a ``chars`` entry.
 
-    A header with no ``chunking`` object (an image older than #828 PR 3) has
-    nothing to contradict and loads exactly as before. Raises
-    :class:`TargetError`.
+    * (#828 PR 4) a document-structure marker (``text_render``,
+      ``structure_cuts``, ``embed_heading_path``, ``structure_infer``) the entry
+      records and the header does not show as applied, or the reverse, or the
+      two with different values — read on the entry side by
+      :func:`~ragstack.ingestion.chunker_config.structure_from_params`, the
+      reader every ingest path uses.
+
+    A header with no ``chunking`` object (an image older than #828 PR 3) loads
+    exactly as before into an UNMARKED entry, and is refused by a marked one:
+    nothing in it shows the markers were applied (the old-image backstop of
+    §7). Raises :class:`TargetError`.
     """
     from ragstack.ingestion.chunker_config import size_unit_from_params
 
     chunking = header.get("chunking")
-    if chunking is None:
-        return
     where = f"{path}: " if path else ""
+    if chunking is None:
+        _check_header_markers(None, target, where)
+        return
     if not isinstance(chunking, dict):
         raise TargetError(
             f"{where}embedding-file header 'chunking' must be an object; got "
@@ -1027,6 +1036,55 @@ def check_header_chunking(header: dict[str, Any], target: IngestTarget, *,
             "under the entry's unit, or load into a collection that records "
             f"size_unit={applied_unit!r}."
         )
+    _check_header_markers(chunking, target, where)
+
+
+def _check_header_markers(chunking: Any, target: IngestTarget, where: str) -> None:
+    """The marker half of :func:`check_header_chunking` (#828 §7 backstop 1).
+
+    Every marker the entry records must appear in the header's ``chunking``
+    object with the same value, and the header must show no marker the entry
+    does not record. The entry is read with ``unapplied=()``: this compares,
+    it applies nothing, so a marker this build could not apply is still named
+    in the mismatch rather than reported as unsupported."""
+    from ragstack.ingestion.chunker_config import (
+        STRUCTURE_MARKER_PARAMS,
+        structure_from_params,
+    )
+
+    try:
+        entry = structure_from_params(target.spec.chunk_method, target.spec.chunk_params,
+                                      unapplied=()).applied()
+    except ValueError as e:
+        raise TargetError(f"collection {target.collection_id!r} {e}") from None
+    if not isinstance(chunking, dict):
+        if entry:
+            raise TargetError(
+                f"{where}refusing to load into collection {target.collection_id!r}: its "
+                f"registry entry records document-structure markers "
+                f"({_markers_text(entry)}), but the embedding file's header has no "
+                "'chunking' object, so nothing shows they were applied — an embed "
+                "image older than #828 PR 3/4, or an embed step that did not resolve "
+                "the entry (an unwired workflow text). Re-embed through an embed "
+                "step that resolves this collection (--collection-id)."
+            )
+        return
+    applied = {k: chunking[k] for k in STRUCTURE_MARKER_PARAMS if chunking.get(k) is not None}
+    if applied != entry:
+        raise TargetError(
+            f"{where}refusing to load into collection {target.collection_id!r}: the "
+            f"embedding file was built with document-structure markers "
+            f"{_markers_text(applied) or 'none'}, but the registry entry records "
+            f"{_markers_text(entry) or 'none'}. The markers are part of the "
+            "collection's identity (#828 §7, ADR-0002): content, chunks or vectors "
+            "differ under them. Re-embed through an embed step that resolves this "
+            "collection (--collection-id), or load into the collection the file "
+            "was built for."
+        )
+
+
+def _markers_text(markers: dict[str, Any]) -> str:
+    return ", ".join(f"{k}={v!r}" for k, v in markers.items())
 
 
 def _checked(target: IngestTarget, args: Any) -> IngestTarget:

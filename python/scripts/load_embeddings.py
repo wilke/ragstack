@@ -598,9 +598,11 @@ def _refuse(message: str) -> None:
 def _refuse_header_mismatch(args, target) -> None:
     """Exit 2 if any embedding file's header ``chunking`` object contradicts the
     registry entry (#828 PR 3): a different ``collection_id``, or an applied
-    method/size/overlap/size unit the entry contradicts. Every file is checked
+    method/size/overlap/size unit the entry contradicts, or (#828 PR 4)
+    document-structure markers other than the entry's. Every file is checked
     before any write. A header with no ``chunking`` object (an older embed
-    image) has nothing to contradict and loads as before. ``--replay`` reads
+    image) loads as before into an unmarked entry and is refused by a marked
+    one. ``--replay`` reads
     archive versions, not embedding files, so there is nothing to check."""
     for f in args.embeddings:
         try:
