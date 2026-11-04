@@ -61,7 +61,7 @@ def _admin(monkeypatch):
 
 
 async def _create(client, monkeypatch, tmp_path, params, *, cid: str | None = None,
-                  method: str = "fixed_token"):
+                  method: str = "fixed_token", overlap: int = 32):
     """Create a collection; return ``(response, recorded chunk_params | None)``."""
     f = tmp_path / "libs.json"
     monkeypatch.setattr("ragstack.config.settings.collections_file", str(f))
@@ -69,7 +69,7 @@ async def _create(client, monkeypatch, tmp_path, params, *, cid: str | None = No
     assert reg.status_code == 201 or "already exists" in reg.text, reg.text
     chunk: dict = {"method": method, "params": params}
     if method not in ("semantic", "semantic_pooled"):
-        chunk |= {"size": 256, "overlap": 32}
+        chunk |= {"size": 256, "overlap": overlap}
     body: dict = {"embedding": "emb-sfr", "chunk": chunk}
     if cid is not None:
         body["id"] = cid
@@ -141,6 +141,41 @@ async def test_a_marker_this_build_cannot_apply_is_a_400(client, _admin, monkeyp
     r, _ = await _create(client, monkeypatch, tmp_path, params, cid="unapplied")
     assert r.status_code == 400, r.text
     assert "not yet applied" in r.json()["detail"]
+
+
+async def test_structure_cuts_and_embed_heading_path_are_accepted_and_recorded(
+        client, _admin, monkeypatch, tmp_path) -> None:
+    """#828 PR 7 applies both: a create records them as sent."""
+    params = {"structure_cuts": "sections/1", "embed_heading_path": "prefix/1"}
+    r, recorded = await _create(client, monkeypatch, tmp_path, params, cid="cut-prefix")
+    assert r.status_code == 201, r.text
+    assert recorded == params
+
+
+async def test_a_sentence_tolerance_under_cuts_is_recorded_concretely(
+        client, _admin, monkeypatch, tmp_path) -> None:
+    """Owner decision 2026-11-04: both tolerance keys recorded at create."""
+    params = {"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25}
+    r, recorded = await _create(client, monkeypatch, tmp_path, params, cid="sent-tol",
+                                method="sentence", overlap=0)
+    assert r.status_code == 201, r.text
+    assert recorded == {**params, "min_piece": 64}
+
+
+@pytest.mark.parametrize(("params", "overlap", "needle"), [
+    ({"size_unit": "tokens", "size_tolerance": 0.25}, 0, "applies only to"),
+    ({"structure_cuts": "sections/1", "size_tolerance": 0.25}, 0, "size_unit='tokens'"),
+    ({"structure_cuts": "sections/1", "size_unit": "tokens", "size_tolerance": 0.25}, 32,
+     "overlap 0"),
+    ({"structure_cuts": "sections/1", "size_unit": "tokens", "min_piece": 999}, 0,
+     "min_piece"),
+])
+async def test_a_sentence_tolerance_it_cannot_honour_is_a_400(
+        client, _admin, monkeypatch, tmp_path, params, overlap, needle) -> None:
+    r, _ = await _create(client, monkeypatch, tmp_path, params, cid="sent-bad",
+                         method="sentence", overlap=overlap)
+    assert r.status_code == 400, r.text
+    assert needle in r.json()["detail"]
 
 
 # --------------------------------------------------------------------------- #
