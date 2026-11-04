@@ -1,0 +1,109 @@
+{
+ "citation_count": [
+  10.0,
+  33.0
+ ],
+ "counts": {
+  "open_choice_checks": {
+   "citer_list_citation_count": {
+    "cuts": [
+     10.0,
+     33.0
+    ],
+    "papers_changing_tercile": 0,
+    "papers_differing": 11
+   },
+   "type7_citation_count": {
+    "cuts": [
+     10.0,
+     33.0
+    ],
+    "papers_changing_tercile": 0,
+    "tercile_sizes": {
+     "T1": 101,
+     "T2": 100,
+     "T3": 99
+    }
+   },
+   "type7_text_similarity": {
+    "cuts": [
+     0.7096242648883415,
+     0.7362499457255943
+    ],
+    "papers_changing_tercile": 0,
+    "tercile_sizes": {
+     "T1": 100,
+     "T2": 99,
+     "T3": 99
+    }
+   }
+  },
+  "papers_with_value": {
+   "citation_count": 300,
+   "text_similarity": 298
+  },
+  "study_papers": 300,
+  "tercile_sizes": {
+   "citation_count": {
+    "T1": 101,
+    "T2": 100,
+    "T3": 99
+   },
+   "text_similarity": {
+    "T1": 100,
+    "T2": 99,
+    "T3": 99
+   }
+  }
+ },
+ "definitions": {
+  "citation_count": "the study work's OpenAlex cited_by_count as the v4 neighbour-selection manifest records it (study_works.<paper>.cited_by_count, from the corpus builder's OpenAlex work lookup, identical to the v1 manifest's); §7 R6 citation-count tercile",
+  "tercile_cuts": "per variable, over the study papers with a value: c1 = v_(ceil(n/3)), c2 = v_(ceil(2n/3)) of the ascending values (the inverse empirical CDF, Hyndman-Fan type 1), read by the statistics as T1: v <= c1; T2: c1 < v <= c2; T3: v > c2 (§7 R6). The prereg fixes the variables and that cuts are committed, not the quantile convention; type 1 is the builder's choice (DEVIATIONS D-1)",
+  "text_similarity": "mean cosine similarity of the stored SFR-Embedding-Mistral vectors (ops/emb, the served embedder) over every pair (i, j), i a chunk of the study paper in the base export, j a chunk of one of its attributed neighbour papers in the v4 neighbour chunk file (a PDF-sourced neighbour's reference-list chunks included, as they are in the collection); equals (sum_i u_i) . (sum_j u_j) / (n_i n_j) with u the unit vectors; null for a study paper with no attributed neighbour; §7 R6 text-similarity tercile"
+ },
+ "deviation": "DEVIATIONS.md D-1 (2026-11-04): built after the stage-A analysis had run; owner-approved",
+ "provenance": {
+  "citable": true,
+  "commit": "a83d52015bd83f44a2fb8af528977756b5443c67",
+  "describe": "v1.6.22-60-ga83d520",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-04T22:53:34Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.22+a83d520"
+ },
+ "rule": "T1: v <= c1; T2: c1 < v <= c2; T3: v > c2 (alias_study_stats.TERCILE_RULE)",
+ "schema": "alias-study-analysis-inputs/1",
+ "sources_sha256": {
+  "base_export": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+  "chunks_neighbour": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+  "counts": "fd15b1bfd0fb82859abd587643bf42734d89fac10d826648e4a03e2fb08ac270",
+  "emb_base_SHA256SUMS": "ea580ba857f0ea61e78e02d89c2b91ad990478416714c6228584b614e91d408b",
+  "emb_neighbour_SHA256SUMS": "39bb7da4bc8d38a19ff418dee47ceff1475a7fdecf67e7b0bf5bc54159ab130d",
+  "neighbour_selection": "2da5dc13cbb01533fbafdd8eb73b90657fffc09bd6a02c931cdff9d08ccec15a",
+  "records": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f"
+ },
+ "text_similarity": [
+  0.7096242648883415,
+  0.7362499457255943
+ ]
+}
