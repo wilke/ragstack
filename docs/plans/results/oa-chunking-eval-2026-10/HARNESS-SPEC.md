@@ -13,7 +13,9 @@ comes from a JSON config file passed with `--config` (example with placeholders 
 - `include_pmcids`: file with one PMCID per line = the bacteria/virus definition (built elsewhere).
 - `corpus_root`: root with `clean/xx/yy/PMC….xml` (path = sha1(pmcid)[:2]/[2:4]).
 - `sample`: {n_eval_articles, n_background, seed, strata: {journal_family_map, length_bands, year_bands}}.
-- `passages`: {chars: 1200, per_article: 1, section_targets: [...]}.
+- `passages`: {chars: 1200, per_article: 1, section_targets: [...], fallback_body: false}. With
+  `fallback_body` true, an article whose target regions give no passage is retried over all of its
+  text (type `body`, row flag `fallback: true`); added 2026-11-04 (owner) for unheaded letters.
 - `writer`: {url, model, n, temperature, top_p, max_tokens, extra_body (e.g. chat_template_kwargs), max_in_flight: 4}.
 - `check_writer` (optional second-family set): same shape, plus `fraction`.
 - `api`: {base_url, api_key_file, top_k: 10, endpoint: "/v1/retrieve", request_extra, max_503_waits: 5,

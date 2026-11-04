@@ -20,6 +20,12 @@ by a seeded draw over the target types present in the article, then the region a
 inside it, so section types spread across the sample (the type is reported as the
 ``section_type`` stratum). Articles with no usable region are listed in
 ``passages.skipped.jsonl`` with the reason.
+
+Fallback (config ``passages.fallback_body``, default off): when the target regions give no
+passage (``no_target_region`` or ``no_fitting_passage``), the cut is retried over every
+region of the text, headed or not, with type ``body``; such rows carry ``fallback: true``.
+Short letters and dispatches without section headings (and without an abstract) would
+otherwise be lost. Articles that fail the fallback too keep their original skip reason.
 """
 from __future__ import annotations
 
@@ -89,6 +95,21 @@ def regions(text: str, targets: list[str], has_abstract: bool = True) -> list[di
     return out
 
 
+def body_regions(text: str) -> list[dict[str, Any]]:
+    """Every region of the text, headed or not, typed ``body`` (the fallback)."""
+    heads = list(_HEADING.finditer(text))
+    first = heads[0].start() if heads else len(text)
+    out: list[dict[str, Any]] = []
+    if first > 0:
+        out.append({"start": 0, "end": first, "type": "body", "title": ""})
+    for i, h in enumerate(heads):
+        start = h.end()
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+        if end > start:
+            out.append({"start": start, "end": end, "type": "body", "title": h.group(2)})
+    return out
+
+
 def _spans(text: str) -> list[tuple[int, int]]:
     from ragstack.ingestion.chunkers import sentence_spans
     return sentence_spans(text)
@@ -132,8 +153,20 @@ def pick_passages(rec: dict[str, Any], pcfg: dict[str, Any], seed: Any) -> tuple
     meta = rec.get("metadata") or {}
     targets = list(pcfg["section_targets"])
     regs = regions(text, targets, has_abstract=bool(meta.get("abstract", True)))
-    if not regs:
-        return [], "no_target_region"
+    out = _pick_in(text, pmcid, regs, pcfg, seed) if regs else []
+    why = None if out else ("no_fitting_passage" if regs else "no_target_region")
+    if out or not pcfg.get("fallback_body"):
+        for p in out:
+            p["fallback"] = False
+        return out, why
+    fb = _pick_in(text, pmcid, body_regions(text), pcfg, seed)
+    for p in fb:
+        p["fallback"] = True
+    return (fb, None) if fb else ([], why)
+
+
+def _pick_in(text: str, pmcid: str, regs: list[dict[str, Any]], pcfg: dict[str, Any],
+             seed: Any) -> list[dict[str, Any]]:
     types = sorted({r["type"] for r in regs}, key=lambda t: seeded_rank(seed, "type", pmcid, t))
     out: list[dict[str, Any]] = []
     used: list[tuple[int, int]] = []
@@ -158,7 +191,7 @@ def pick_passages(rec: dict[str, Any], pcfg: dict[str, Any], seed: Any) -> tuple
         out.append({"passage_id": f"{pmcid}#p{want}", "pmcid": pmcid, "record_path": pmcid,
                     "start": s, "end": e, "sha256": sha256_text(passage), "text": passage,
                     "section_type": r["type"], "section_title": r["title"]})
-    return out, (None if out else "no_fitting_passage")
+    return out
 
 
 def run(cfg: dict[str, Any]) -> int:

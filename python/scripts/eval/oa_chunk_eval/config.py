@@ -33,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
         "section_targets": ["results", "discussion", "methods", "introduction", "abstract"],
         "min_frac": 0.75,
         "max_frac": 1.25,
+        "fallback_body": False,
     },
     "writer": {
         "n": 10,

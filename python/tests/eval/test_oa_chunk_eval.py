@@ -1447,3 +1447,39 @@ def test_tokenizer_label_is_explicit_or_basename(monkeypatch):
     assert name == "tok" and not est
     _, name, _ = score.make_tokenizer("/home/someone/models/tok", "my-label")
     assert name == "my-label"
+
+
+def _letter_text() -> str:
+    s = ("In March a cluster of infections was reported in a rural district. "
+         "Samples from twelve patients were sequenced at the reference laboratory. "
+         "All isolates carried the same resistance gene on a conjugative plasmid. ")
+    return s * 6
+
+
+def test_passages_fallback_body_for_unheaded_letter():
+    rec = {"text": _letter_text(), "path": "PMC7", "metadata": {"content_type": "article", "abstract": False}}
+    cfg = {"chars": 300, "per_article": 1, "section_targets": ["results", "abstract"],
+           "min_frac": 0.75, "max_frac": 1.25}
+    ps, why = passages.pick_passages(rec, cfg, seed=1)
+    assert ps == [] and why == "no_target_region"
+    ps, why = passages.pick_passages(rec, {**cfg, "fallback_body": True}, seed=1)
+    assert why is None and len(ps) == 1
+    p = ps[0]
+    assert p["fallback"] is True and p["section_type"] == "body"
+    assert rec["text"][p["start"]:p["end"]] == p["text"] and 225 <= len(p["text"]) <= 375
+
+
+def test_passages_fallback_not_used_when_targets_give_a_passage():
+    text = _article_text()
+    rec = {"text": text, "path": "PMC5", "metadata": {"content_type": "article"}}
+    cfg = {"chars": 300, "per_article": 1, "section_targets": ["results"], "min_frac": 0.75, "max_frac": 1.25}
+    plain, _ = passages.pick_passages(rec, cfg, seed=1)
+    fb, _ = passages.pick_passages(rec, {**cfg, "fallback_body": True}, seed=1)
+    assert plain == fb and all(p["fallback"] is False for p in fb)
+
+
+def test_passages_fallback_keeps_reason_when_it_fails_too():
+    rec = {"text": "## Methods\n\nToo short.", "path": "PMC8", "metadata": {}}
+    ps, why = passages.pick_passages(rec, {"chars": 1200, "per_article": 1, "section_targets": ["results"],
+                                           "min_frac": 0.75, "max_frac": 1.25, "fallback_body": True}, seed=1)
+    assert ps == [] and why == "no_target_region"
