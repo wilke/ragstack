@@ -4,8 +4,7 @@ declared sensitivity-set lists (§7; §4.3 items 4-6; §14 O10). A deviation: th
 built before the stage-A analysis ran (``DEVIATIONS.md`` D-1).
 
     PYTHONPATH=python python python/scripts/eval/alias_study_inputs.py \\
-        --study-dir /rag/tmp/alias-study-2026-11 \\
-        --base-export /rag/tmp/glossbench-round2-2026-11/exports/chunks-oa.jsonl \\
+        --study-dir <study dir> --base-export <the OA-1000 chunk export> \\
         --public-cuts docs/plans/results/alias-study-2026-11/artifacts/tercile-cuts.json
 
 Everything is built mechanically from **pre-outcome sources only**: the frozen record set, the
