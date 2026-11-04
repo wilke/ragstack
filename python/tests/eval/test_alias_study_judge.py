@@ -353,16 +353,44 @@ def drift_inputs(n: int, agree: int, arm: str = "base", filtered: int = 0
     return fin, op, list(fin), arm_of
 
 
+def arms_inputs(per_arm: dict[str, tuple[int, int]], batch: int = 1
+                ) -> tuple[dict[str, Any], dict[str, Any], list[str], dict[str, str], dict[str, int]]:
+    """Drift inputs over several arms: ``{arm: (answered, agree)}``, all pairs in ``batch``."""
+    fin: dict[str, Any] = {}
+    op: dict[str, Any] = {}
+    arm_of: dict[str, str] = {}
+    for arm, (n, agree) in per_arm.items():
+        f, o, _, a = drift_inputs(n, agree, arm)
+        fin.update({f"{batch}-{k}": v for k, v in f.items()})
+        op.update({f"{batch}-{k}": v for k, v in o.items()})
+        arm_of.update({f"{batch}-{k}": v for k, v in a.items()})
+    return fin, op, list(fin), arm_of, dict.fromkeys(fin, batch)
+
+
+def drift_of(per_arm: dict[str, tuple[int, int]], cfg: Any = None, remedies: Any = ()) -> dict[str, Any]:
+    fin, op, sampled, arm_of, batch_of = arms_inputs(per_arm)
+    return aj.drift_stats(fin, op, sampled, arm_of, cfg or aj.DEFAULTS["drift"], remedies, batch_of)
+
+
 def test_drift_alarm_thresholds_and_minimum() -> None:
+    """R29: the 0.97 / 0.95 lines are reported references (``below_reference``), never the alarm."""
     cfg = aj.DEFAULTS["drift"]
     ok = aj.drift_stats(*drift_inputs(100, 97), cfg)
-    assert not ok["alarm"]
+    assert not ok["alarm"] and not ok["scopes"]["overall"]["below_reference"]
     fire = aj.drift_stats(*drift_inputs(100, 96), cfg)
-    assert fire["alarm"] and fire["scopes"]["overall"]["fires"]
+    assert not fire["alarm"] and fire["scopes"]["overall"]["below_reference"] and fire["alarm_reasons"] == []
+    assert "fires" not in fire["scopes"]["overall"]
     small = aj.drift_stats(*drift_inputs(99, 90), cfg)
     assert not small["alarm"] and not small["scopes"]["overall"]["evaluable"]
+    assert not small["scopes"]["overall"]["below_reference"]
     filt = aj.drift_stats(*drift_inputs(99, 90, filtered=30), cfg)
     assert not filt["alarm"] and filt["scopes"]["overall"]["filtered"] == 30
+    # overall 0.94 on 300 pairs, equal arms (0.94 each, 100 each): below both lines, no gap, no alarm
+    low = drift_of({"base": (100, 94), "neighbour": (100, 94), "random": (100, 94)})
+    assert not low["alarm"] and low["alarm_reasons"] == []
+    assert all(low["scopes"][s]["below_reference"] for s in aj.DRIFT_SCOPES)
+    assert low["scopes"]["overall"]["threshold"] == 0.97 and low["scopes"]["base"]["threshold"] == 0.95
+    assert low["arm_gap"]["evaluable"] and low["arm_gap"]["value"] == 0 and not low["arm_gap"]["fires"]
     assert fire["scopes"]["base"]["false_yes"]["k"] == 4 and fire["scopes"]["base"]["false_yes"]["n"] == 4
     # §3.4: among the 100 final *answers* labels Opus answered, 4 are Opus-*not*
     fya = fire["scopes"]["base"]["false_yes_among_answers"]
@@ -374,7 +402,76 @@ def test_drift_alarm_per_arm() -> None:
     fa, oa, sa, aa = drift_inputs(400, 400, "base")
     fb, ob, sb, ab = drift_inputs(100, 94, "neighbour")
     r = aj.drift_stats({**fa, **fb}, {**oa, **ob}, sa + sb, {**aa, **ab}, cfg)                    # overall 494/500 = 0.988 >= 0.97
-    assert r["alarm"] and r["scopes"]["neighbour"]["fires"] and not r["scopes"]["overall"]["fires"]
+    assert r["scopes"]["neighbour"]["below_reference"] and not r["scopes"]["overall"]["below_reference"]
+    # the random arm has no pair: the gap is not evaluable, so a 0.06 gap cannot pause
+    assert not r["alarm"] and not r["arm_gap"]["evaluable"] and r["arm_gap"]["value"] is None
+
+
+def test_drift_arm_gap_alarm() -> None:
+    """R29: the alarm is the arm gap, max - min of the arm agreements > 0.05, each arm >= 100.
+    (Mutation-checked: with the gap comparison removed this test fails.)"""
+    r = drift_of({"base": (100, 99), "neighbour": (100, 93), "random": (100, 97)})
+    g = r["arm_gap"]
+    assert r["alarm"] and g["evaluable"] and g["fires"] and g["threshold"] == 0.05
+    assert abs(g["value"] - 0.06) < 1e-12
+    assert {a: v["agreement"] for a, v in g["arms"].items()} == {"base": 0.99, "neighbour": 0.93, "random": 0.97}
+    assert r["alarm_reasons"] == ["arm gap: 0.0600 > 0.05 (base 0.9900, neighbour 0.9300, random 0.9700)"]
+    assert r["scopes"]["neighbour"]["below_reference"] and not r["scopes"]["base"]["below_reference"]
+    # a gap of exactly 0.05 does not fire (0.98 - 0.93 is 0.05000000000000004 in floats)
+    eq = drift_of({"base": (100, 98), "neighbour": (100, 93), "random": (100, 95)})
+    assert eq["arm_gap"]["evaluable"] and not eq["arm_gap"]["fires"] and not eq["alarm"]
+    assert eq["arm_gap"]["value"] == 0.05
+    # an arm with 99 answered pairs: not evaluable, no alarm, however large the gap
+    few = drift_of({"base": (100, 100), "neighbour": (99, 80), "random": (100, 97)})
+    assert not few["arm_gap"]["evaluable"] and not few["arm_gap"]["fires"] and not few["alarm"]
+    assert few["arm_gap"]["arms"]["neighbour"]["answered"] == 99
+    # the gap is read in each arm's alarm window only (Opus-filtered pairs do not count)
+    fin, op, sampled, arm_of, batch_of = arms_inputs({"base": (100, 99), "neighbour": (100, 93), "random": (100, 97)})
+    fin2, op2, s2, a2 = drift_inputs(0, 0, "neighbour", filtered=5)
+    r2 = aj.drift_stats({**fin, **fin2}, {**op, **op2}, sampled + s2, {**arm_of, **a2}, aj.DEFAULTS["drift"],
+                        (), {**batch_of, **dict.fromkeys(s2, 1)})
+    assert r2["arm_gap"]["arms"]["neighbour"]["answered"] == 100 and r2["alarm"]
+    # a looser configured gap (a dry run may) does not fire on 0.06
+    assert not drift_of({"base": (100, 99), "neighbour": (100, 93), "random": (100, 97)},
+                        {**aj.DEFAULTS["drift"], "arm_gap": 0.07})["alarm"]
+
+
+def test_an_arm_gap_remedy_restarts_every_arm_s_window() -> None:
+    cfg = aj.DEFAULTS["drift"]
+    f1, o1, s1, a1, b1 = arms_inputs({"base": (100, 99), "neighbour": (100, 88), "random": (100, 97)}, batch=1)
+    f2, o2, s2, a2, b2 = arms_inputs({"base": (100, 97), "neighbour": (100, 96), "random": (100, 97)}, batch=2)
+    args = ({**f1, **f2}, {**o1, **o2}, s1 + s2, {**a1, **a2}, cfg)
+    assert aj.drift_stats(*args, (), {**b1, **b2})["alarm"]          # cumulative gap 0.98 - 0.92 = 0.06
+    rem = {"deviation_id": "D-9", "date": "2026-11-05", "action": "x", "scope": "arm_gap", "through_batch": 1,
+           "signed_by": "owner"}
+    r = aj.drift_stats(*args, (rem,), {**b1, **b2})
+    g = r["arm_gap"]
+    assert g["alarm_window"] == {"after_batch": 1, "deviation_id": "D-9"}
+    assert {a: v["answered"] for a, v in g["arms"].items()} == {"base": 100, "neighbour": 100, "random": 100}
+    assert g["arms"]["neighbour"]["agreement"] == 0.96 and not g["fires"] and not r["alarm"]
+    assert r["scopes"]["neighbour"]["agreement"] == 184 / 200                # the cumulative figure is still reported
+    assert r["scopes"]["neighbour"]["alarm_window"] is None                 # an arm_gap remedy is not a scope remedy
+    # a remedy after batch 2 leaves no pair in the window: not evaluable
+    r3 = aj.drift_stats(*args, ({**rem, "through_batch": 2},), {**b1, **b2})
+    assert not r3["arm_gap"]["evaluable"] and not r3["alarm"]
+    # an old-scope remedy restarts only that scope's reported window, never the gap's
+    old = {**rem, "scope": "neighbour"}
+    r4 = aj.drift_stats(*args, (old,), {**b1, **b2})
+    assert r4["scopes"]["neighbour"]["alarm_window"]["after_batch"] == 1 and r4["arm_gap"]["alarm_window"] is None
+
+
+def test_the_latest_remedy_per_scope_wins() -> None:
+    cfg = aj.DEFAULTS["drift"]
+    f1, o1, s1, a1, b1 = arms_inputs({"base": (100, 99), "neighbour": (100, 88), "random": (100, 97)}, batch=1)
+    f7, o7, s7, a7, b7 = arms_inputs({"base": (100, 97), "neighbour": (100, 96), "random": (100, 97)}, batch=7)
+    args = ({**f1, **f7}, {**o1, **o7}, s1 + s7, {**a1, **a7}, cfg)
+    r3 = {"deviation_id": "D-3", "date": "2026-11-05", "action": "x", "scope": "arm_gap", "through_batch": 3,
+          "signed_by": "owner"}
+    r6 = {**r3, "deviation_id": "D-6", "through_batch": 6}
+    for order in ((r3, r6), (r6, r3)):
+        g = aj.drift_stats(*args, order, {**b1, **b7})["arm_gap"]
+        assert g["alarm_window"]["after_batch"] == 6 and g["alarm_window"]["deviation_id"] == "D-6"
+        assert {a: v["answered"] for a, v in g["arms"].items()} == {"base": 100, "neighbour": 100, "random": 100}
 
 
 def test_config_pins_the_judges(tmp_path: Path) -> None:
@@ -436,7 +533,8 @@ def test_prereg_fixed_numbers_are_pinned_outside_a_dry_run(tmp_path: Path) -> No
         aj.validate_config(strict_config(w, mode))
         for over, msg in (({"batch_size": 40}, "batch_size"), ({"drift": {"share": 0.1}}, "drift.share"),
                           ({"drift": {"overall": 0.96}}, "drift.overall"), ({"drift": {"per_arm": 0.9}}, "per_arm"),
-                          ({"drift": {"min_pairs": 50}}, "min_pairs"), ({"retry_cap": 3}, "retry_cap"),
+                          ({"drift": {"min_pairs": 50}}, "min_pairs"), ({"drift": {"arm_gap": 0.06}}, "drift.arm_gap"),
+                          ({"retry_cap": 3}, "retry_cap"),
                           ({"limits": {}}, "limits must state"), ({"glossary": str(w.glossary)}, "glossary must"),
                           ({"drift_ref": {**config(w)["drift_ref"], "served_models": ["other"]}}, "served_models")):
             with pytest.raises(SystemExit, match=f"HARD STOP.*{msg}"):
@@ -514,8 +612,19 @@ def test_served_model_mismatch_stops_and_stores_nothing(tmp_path: Path) -> None:
     assert not (out / "labels-qwen-C.jsonl").exists() or asc.read_jsonl(out / "labels-qwen-C.jsonl") == []
 
 
+def test_r30_main_refuses_an_argon_cap_and_pilot_keeps_loading(tmp_path: Path) -> None:
+    assert aj.DEFAULTS["caps"]["argon_share"] == 1.0
+    w = fx.World(tmp_path)
+    for caps in ({"argon_share": 0.04}, {"argon_share": 1.0, "argon_max_calls": 500}):
+        with pytest.raises(SystemExit, match="R30"):
+            aj.validate_config(strict_config(w, "main", caps=caps))
+    assert aj.validate_config(strict_config(w, "main", caps={"argon_share": 1.0}))["caps"]["argon_share"] == 1.0
+    assert aj.validate_config(strict_config(w, "main"))["caps"]["argon_max_calls"] is None
+    assert aj.validate_config(strict_config(w, "pilot", caps={"argon_share": 0.12}))["caps"]["argon_share"] == 0.12
+
+
 def test_caps_refuse(tmp_path: Path) -> None:
-    w, cp = world(tmp_path, caps={"argon_share": 0.04, "opus_share": 0.0})
+    w, cp = world(tmp_path, caps={"argon_share": 0.04, "opus_share": 0.0})   # dry run: R30 is pinned in main only
     main(cp, "build-pairs", "--stage", "A")
     with pytest.raises(SystemExit, match="opus cap"):
         main(cp, "preflight", "--batch", "1", "--backend", "opus", http=dry.FakeJudges())
@@ -696,9 +805,34 @@ class Disagree(dry.FakeJudges):
                                                            "finish_reason": "stop"} for i in range(n)]})
 
 
-def test_drift_alarm_pauses_labelling(tmp_path: Path) -> None:
+class ArmDisagree(Disagree):
+    """R29: Opus says the opposite of the other judges on neighbour-arm passages only, so the
+    arms' agreements differ (base and random 1.0, neighbour 0.0) and the arm-gap alarm fires."""
+
+    async def post(self, url: str, json: dict[str, Any]) -> Any:  # noqa: A002
+        if json["model"] == "Claude Opus 5.5" and "[neighbour] " not in json["messages"][-1]["content"]:
+            return await dry.FakeJudges.post(self, url, json)
+        return await super().post(url, json)
+
+
+def test_equal_disagreement_in_every_arm_does_not_pause(tmp_path: Path) -> None:
+    """R29: Opus disagreeing everywhere is below every reference line but leaves no arm gap."""
     w, cp = world(tmp_path, batch_size=100000, drift={"min_pairs": 3, "share": 0.2})
     fake = Disagree()
+    main(cp, "build-pairs", "--stage", "A")
+    for be in aj.BACKENDS:
+        assert label(cp, 1, be, fake) == 0
+    assert main(cp, "finalize", "--batch", "1") == 0
+    out = out_of(w)
+    assert not (out / "PAUSE").exists() and not (out / "drift-alarm.json").exists()
+    summ = json.loads((out / "judge-summary.json").read_text())
+    assert all(summ["drift"]["scopes"][s]["below_reference"] for s in aj.DRIFT_SCOPES)
+    assert summ["drift"]["arm_gap"]["evaluable"] and not summ["drift"]["alarm"]
+
+
+def test_drift_alarm_pauses_labelling(tmp_path: Path) -> None:
+    w, cp = world(tmp_path, batch_size=100000, drift={"min_pairs": 3, "share": 0.2})
+    fake = ArmDisagree()
     main(cp, "build-pairs", "--stage", "A")
     for be in aj.BACKENDS:
         assert label(cp, 1, be, fake) == 0
@@ -880,23 +1014,31 @@ def test_bm25_pairs_wait_for_stage_b(tmp_path: Path) -> None:
 
 def test_a_drift_alarm_is_cleared_only_by_a_signed_remedy(tmp_path: Path) -> None:
     w, cp = world(tmp_path, batch_size=100000, drift={"min_pairs": 3, "share": 0.2})
-    fake = Disagree()
+    fake = ArmDisagree()
     main(cp, "build-pairs", "--stage", "A")
     for be in aj.BACKENDS:
         assert label(cp, 1, be, fake) == 0
     assert main(cp, "finalize", "--batch", "1") == aj.EXIT_HARD_STOP
     out = out_of(w)
     fired = asc.read_jsonl(out / "drift-alarms.jsonl")[0]["scopes"]
-    assert "overall" in fired
+    assert fired == ["arm_gap"]
     rd = out / "drift-remedies"
     rd.mkdir()
     (rd / "bad.json").write_text(json.dumps({"deviation_id": "D-1", "date": "2026-11-04", "action": "x",
-                                             "scope": "overall", "through_batch": 1}))
+                                             "scope": "arm_gap", "through_batch": 1}))
     with pytest.raises(SystemExit, match="signed_by"):
         aj.load_remedies(out)
     (rd / "bad.json").write_text(json.dumps({"deviation_id": "D-1", "date": "2026-11-04", "action": "x",
-                                             "scope": "overall", "through_batch": 2, "signed_by": "owner"}))
-    with pytest.raises(SystemExit, match="no overall alarm at batch 2"):
+                                             "scope": "arm_gap", "through_batch": 2, "signed_by": "owner"}))
+    with pytest.raises(SystemExit, match="no arm_gap alarm at batch 2"):
+        aj.load_remedies(out)
+    (rd / "bad.json").write_text(json.dumps({"deviation_id": "D-1", "date": "2026-11-04", "action": "x",
+                                             "scope": "overall", "through_batch": 1, "signed_by": "owner"}))
+    with pytest.raises(SystemExit, match="no overall alarm at batch 1"):     # R29: no per-scope alarm is logged
+        aj.load_remedies(out)
+    (rd / "bad.json").write_text(json.dumps({"deviation_id": "D-1", "date": "2026-11-04", "action": "x",
+                                             "scope": "gap", "through_batch": 1, "signed_by": "owner"}))
+    with pytest.raises(SystemExit, match="scope one of"):
         aj.load_remedies(out)
     (rd / "bad.json").unlink()
     for sc in fired:
@@ -906,8 +1048,9 @@ def test_a_drift_alarm_is_cleared_only_by_a_signed_remedy(tmp_path: Path) -> Non
     pl = aj.Pipeline(aj.load_config(cp), provenance=PROV)
     summ = pl.summary()
     assert not summ["drift"]["alarm"] and len(summ["drift"]["remedies"]) == len(fired)
-    assert summ["drift"]["scopes"]["overall"]["alarm_window"]["after_batch"] == 1
-    assert summ["drift"]["scopes"]["overall"]["agreement"] < 0.5          # the cumulative figure is still reported
+    assert summ["drift"]["arm_gap"]["alarm_window"]["after_batch"] == 1
+    assert not summ["drift"]["arm_gap"]["evaluable"]                    # no batch after 1 yet
+    assert summ["drift"]["scopes"]["neighbour"]["agreement"] < 0.5        # the cumulative figure is still reported
     with pytest.raises(SystemExit, match="PAUSE"):                      # never auto-cleared: the owner removes PAUSE
         main(cp, "commit-stage-a")
     (out / "PAUSE").unlink()
@@ -1055,7 +1198,7 @@ def test_commit_needs_all_19_retrieval_legs_bm25_included(tmp_path: Path) -> Non
 
 def test_commit_refuses_on_a_drift_alarm_without_a_remedy(tmp_path: Path) -> None:
     w, cp = world(tmp_path, batch_size=100000, drift={"min_pairs": 3, "share": 0.2})
-    fake = Disagree()
+    fake = ArmDisagree()
     main(cp, "build-pairs", "--stage", "A")
     for be in aj.BACKENDS:
         assert label(cp, 1, be, fake) == 0

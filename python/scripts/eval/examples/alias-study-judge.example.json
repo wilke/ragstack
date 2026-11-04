@@ -15,10 +15,11 @@
   "share": 0.05,
   "min_pairs": 100,
   "overall": 0.97,
-  "per_arm": 0.95
+  "per_arm": 0.95,
+  "arm_gap": 0.05
  },
  "caps": {
-  "argon_share": 0.04,
+  "argon_share": 1.0,
   "opus_share": 0.06,
   "argon_max_calls": null,
   "opus_max_calls": null

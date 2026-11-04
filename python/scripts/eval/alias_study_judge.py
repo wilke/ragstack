@@ -62,21 +62,26 @@ errors per pair across resumes, after which the pair has no verdict (``no_verdic
 ``http_errors``). Every call is written to ``dispatch-gw-<tag>.jsonl`` before it is sent, so the
 caps count a call a kill leaves in flight.
 
-**Finalize and the drift alarm.** ``finalize`` needs C and E on every pair of the batch, the
-tiebreaker on every escalated pair and Opus on every sampled pair; it writes the batch's final
-labels (``final.jsonl``) and checks the cumulative agreement between the final label (unjudged
-= no) and Opus on the Opus-answered pairs: below **0.97 overall** or **0.95 in any arm**, each
-scope with at least **100** Opus-answered pairs, writes ``PAUSE`` and ``drift-alarm.json`` and
-exits 1, and logs the alarm in ``drift-alarms.jsonl``. Nothing is labelled while ``PAUSE``
-exists; the owner decides the remedy (a deviation) and may file it as
-``drift-remedies/<id>.json`` (``deviation_id``, ``date``, ``action``, ``scope``,
-``through_batch``, ``signed_by``; :func:`load_remedies`): that scope's alarm then reads only
-the batches after ``through_batch``. A remedy never removes PAUSE; it is recorded in the summary
-and in the stage-A commit.
+**Finalize and the drift alarm (§6.3 as amended by R29).** ``finalize`` needs C and E on every
+pair of the batch, the tiebreaker on every escalated pair and Opus on every sampled pair; it
+writes the batch's final labels (``final.jsonl``) and computes the cumulative agreement between
+the final label (unjudged = no) and Opus on the Opus-answered pairs, overall and per arm. The
+**0.97 overall** and **0.95 per arm** lines are *reported references only*: a scope with at
+least **100** Opus-answered pairs below its line is flagged ``below_reference`` and never pauses
+anything. The alarm is the **arm gap**: when every arm has at least **100** Opus-answered pairs
+in its alarm window and the largest arm agreement exceeds the smallest by more than **0.05**
+(``arm_gap``, compared exactly on the counts), ``finalize`` writes ``PAUSE`` and
+``drift-alarm.json``, exits 1, and logs the alarm (scope ``arm_gap``) in ``drift-alarms.jsonl``.
+Nothing is labelled while ``PAUSE`` exists; the owner decides the remedy (a deviation) and may
+file it as ``drift-remedies/<id>.json`` (``deviation_id``, ``date``, ``action``, ``scope``,
+``through_batch``, ``signed_by``; :func:`load_remedies`): a remedy with scope ``arm_gap``
+restarts the window of all three arms after ``through_batch``; a remedy with an older scope
+(overall or an arm, answering an alarm logged before R29) restarts only that scope's reported
+window. A remedy never removes PAUSE; it is recorded in the summary and in the stage-A commit.
 A batch can be labelled only after every earlier batch is finalized.
 
 **Stage A's commit (§5.7).** ``commit-stage-a`` (every stage-A batch finalized, no PAUSE, no
-drift alarm, the 19 retrieval-stage-A legs complete) writes ``stage-a/`` (frozen copies of the stage-A
+arm-gap drift alarm, the 19 retrieval-stage-A legs complete) writes ``stage-a/`` (frozen copies of the stage-A
 leg summaries, the judge summary and the pairs manifest, and ``hits.jsonl``: hit and gold-only
 hit per record and judging-stage-A leg), ``stage-a-commit.json`` (private: every stage-A file
 with its byte length and sha256; the stage-A rows files and leg summaries, which stage B never
@@ -103,14 +108,14 @@ refuses without ``--notice-acknowledged`` and a preflight of the same plan, whic
 batch and the sha256 of its selection); the harness's budget stop (exit 76, PAUSE) and call cap
 (``limits``) apply; and the study's caps (§14 O7, ``caps``): the cumulative calls of a backend
 (its calls log, one row per HTTP call, re-issues included) plus the planned selection may not
-exceed ``argon_share`` / ``opus_share`` (defaults 0.04 and 0.07; §14 O7, §6.5) of the registry's
+exceed ``argon_share`` / ``opus_share`` (defaults 1.0 (R30) and 0.07; §14 O7, §6.5) of the registry's
 (deduplicated) pairs, nor
 ``argon_max_calls`` / ``opus_max_calls`` when set; inside a run the remaining cap is the
 segment's call cap, so a re-issue can never overrun it (the run pauses at the cap).
 
 **Modes.** As the runner (``dry_run``, ``pilot``, main; a ``STUDY-MODE`` marker in the out dir;
 the main run pins the frozen prereg, §9.2). Main and pilot also pin the prereg's numbers (batch
-2,000, drift share .05, thresholds .97 / .95, 100 pairs, the retry cap 2), the drift
+2,000, drift share .05, reference lines .97 / .95, arm gap .05, 100 pairs, the retry cap 2), the drift
 reference's served id (:data:`OPUS_SERVED_MODELS`), a stated budget (``limits``) and one
 glossary file per corpus arm; an arm whose prompts would all read "(none listed)" is a hard
 stop at ``build-pairs``. The pilot's labels live in the pilot's own out dir
@@ -149,7 +154,7 @@ EXIT_OK, EXIT_HARD_STOP, EXIT_PAUSED, EXIT_BUDGET = jd.EXIT_OK, jd.EXIT_HARD_STO
 PAIRS_SCHEMA = "alias-study-pairs/1"
 FINAL_SCHEMA = "alias-study-final/1"
 COMMIT_SCHEMA = "alias-study-stage-a-commit/1"
-COMMIT_PUBLIC_SCHEMA = "alias-study-stage-a-commit-public/1"
+COMMIT_PUBLIC_SCHEMA = "alias-study-stage-a-commit-public/2"  # /2: R29 (below_reference, drift_arm_gap)
 HITS_SCHEMA = "alias-study-stage-a-hits/1"
 BACKENDS = ("C", "E", "argon", "opus")
 NEEDS = ("found10", "rr10")
@@ -161,7 +166,7 @@ ANSWERED = ("ok", "empty", "empty0", "truncated")
 MAX_HTTP_ERRORS = 3
 #: prereg-fixed numbers (§6.3, §6.5): a main or pilot config that differs is a hard stop
 PINNED_BATCH_SIZE = 2000
-PINNED_DRIFT = {"share": 0.05, "overall": 0.97, "per_arm": 0.95, "min_pairs": 100}
+PINNED_DRIFT = {"share": 0.05, "overall": 0.97, "per_arm": 0.95, "min_pairs": 100, "arm_gap": 0.05}
 #: the served model id(s) accepted for the drift reference: every answered Opus reply of the
 #: judge calibration and of its validation carried this id (calibration: 1,232 label rows, 1,495
 #: answered calls; validation: 1,505 label rows, 2,294 answered calls; read 2026-11-03)
@@ -171,6 +176,10 @@ OPUS_SERVED_SOURCE = ("the served 'model' field of every answered Opus reply in 
 #: main / pilot: the gateway budget is stated, never the calibration harness's defaults
 REQUIRED_LIMITS = ("input_token_cap", "output_token_cap", "call_cap")
 DRIFT_SCOPES = ("overall", *asc.ARM_GROUPS)
+#: the alarm's scope since R29 (§6.3): the gap between the arms' agreements
+ARM_GAP_SCOPE = "arm_gap"
+#: scopes a drift remedy may name: the R29 arm-gap alarm, and the pre-R29 per-scope alarms
+REMEDY_SCOPES = (*DRIFT_SCOPES, ARM_GAP_SCOPE)
 REMEDY_FIELDS = ("deviation_id", "date", "action", "scope", "through_batch", "signed_by")
 REPO = _HERE.parents[2]
 
@@ -187,8 +196,9 @@ FIXED: dict[str, dict[str, Any]] = {
 }
 DEFAULTS: dict[str, Any] = {
     "batch_size": 2000,
-    "drift": {"share": 0.05, "min_pairs": 100, "overall": 0.97, "per_arm": 0.95},
-    "caps": {"argon_share": 0.04, "opus_share": 0.07, "argon_max_calls": None, "opus_max_calls": None},
+    "drift": {"share": 0.05, "min_pairs": 100, "overall": 0.97, "per_arm": 0.95, "arm_gap": 0.05},
+    # R30 (owner, 2026-11-04): no study cap below the registry size
+    "caps": {"argon_share": 1.0, "opus_share": 0.07, "argon_max_calls": None, "opus_max_calls": None},
     "unjudged_flag_share": 0.01,
 }
 GW_ROLE = {"argon": "tiebreak", "opus": "drift_ref"}
@@ -266,6 +276,12 @@ def pinned_problems(cfg: Mapping[str, Any]) -> None:
         bad.append(f"retry_cap {cfg['retry_cap']} != {MAX_GW_ATTEMPTS} (§6.3, R4)")
     if sorted(cfg["drift_ref"]["served_models"]) != sorted(OPUS_SERVED_MODELS):
         bad.append(f"drift_ref.served_models {cfg['drift_ref']['served_models']} != {OPUS_SERVED_MODELS}")
+    if ar.config_mode(cfg) == "main":
+        caps = cfg["caps"]
+        if float(caps["argon_share"]) != 1.0:
+            bad.append(f"caps.argon_share {caps['argon_share']} != 1.0 (R30: no Argon cap below the registry size)")
+        if caps.get("argon_max_calls") is not None:
+            bad.append(f"caps.argon_max_calls {caps['argon_max_calls']} must be null (R30: no Argon call cap)")
     lim = cfg.get("limits") or {}
     miss = [k for k in REQUIRED_LIMITS if lim.get(k) is None]
     if miss:
@@ -558,10 +574,15 @@ def drift_stats(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mappi
                 sampled: Sequence[str], arm_of_pair: Mapping[str, str], dcfg: Mapping[str, Any],
                 remedies: Sequence[Mapping[str, Any]] = (), batch_of: Mapping[str, int] | None = None
                 ) -> dict[str, Any]:
-    """Cumulative agreement and the alarm (§6.3), per arm false yes (§6.3, D2). An owner's
-    remedy for a scope (:func:`load_remedies`) restarts that scope's alarm window after its
-    ``through_batch``: the alarm then reads only later batches (again with at least
-    ``min_pairs`` Opus-answered pairs), while the cumulative figures are still reported."""
+    """Cumulative agreement, the reference lines and the arm-gap alarm (§6.3 as amended by
+    R29), per arm false yes (§6.3, D2). Each scope (overall, each arm) is flagged
+    ``below_reference`` when its window has at least ``min_pairs`` Opus-answered pairs and its
+    agreement is below its line (``overall`` / ``per_arm``); that is reported and never sets the
+    alarm. The alarm fires only on the arm gap: every arm with at least ``min_pairs``
+    Opus-answered pairs in its alarm window and max - min of the arm agreements > ``arm_gap``
+    (exact, on the counts). An owner's remedy (:func:`load_remedies`) restarts a window after its
+    ``through_batch``: scope ``arm_gap`` the alarm window of all three arms, an older scope that
+    scope's reported window; the cumulative figures are still reported."""
     scopes = _drift_tally(final, opus, sampled, arm_of_pair)
     last: dict[str, Mapping[str, Any]] = {}
     for r in remedies:
@@ -586,9 +607,9 @@ def drift_stats(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mappi
             agr_alarm = w["agree"] / n_alarm if n_alarm else None
             window = {"after_batch": t, "deviation_id": rem["deviation_id"], "answered": int(n_alarm),
                       "agree": int(w["agree"]), "agreement": agr_alarm}
-        fires = n_alarm >= int(dcfg["min_pairs"]) and agr_alarm is not None and agr_alarm < thr
+        below = n_alarm >= int(dcfg["min_pairs"]) and agr_alarm is not None and agr_alarm < thr
         out["scopes"][s] = {**{k: int(sc[k]) for k in keys}, "agreement": agr, "threshold": thr,
-                            "evaluable": n_alarm >= int(dcfg["min_pairs"]), "fires": fires,
+                            "evaluable": n_alarm >= int(dcfg["min_pairs"]), "below_reference": below,
                             "alarm_window": window,
                             "filtered_share": (sc["filtered"] / sc["sampled"]) if sc["sampled"] else None,
                             "false_yes": {"k": int(sc["final_yes_on_opus_no"]), "n": int(sc["opus_no"]),
@@ -601,18 +622,52 @@ def drift_stats(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mappi
                                 "k": int(sc["opus_no_on_final_yes"]), "n": int(sc["final_yes"]),
                                 "rate": (sc["opus_no_on_final_yes"] / sc["final_yes"]) if sc["final_yes"] else None,
                                 "wilson95": jd.wilson(sc["opus_no_on_final_yes"], sc["final_yes"])}}
-        if fires:
-            out["alarm"] = True
-            out["alarm_reasons"].append(f"{s}: agreement {agr_alarm:.4f} < {thr} on {n_alarm} Opus-answered pairs")
+    out["arm_gap"] = _arm_gap(final, opus, sampled, arm_of_pair, dcfg, last.get(ARM_GAP_SCOPE), batch_of)
+    if out["arm_gap"]["fires"]:
+        g = out["arm_gap"]
+        out["alarm"] = True
+        arms = ", ".join(f"{a} {g['arms'][a]['agreement']:.4f}" for a in asc.ARM_GROUPS)
+        out["alarm_reasons"].append(f"arm gap: {g['value']:.4f} > {g['threshold']} ({arms})")
     return out
+
+
+def _arm_gap(final: Mapping[str, Mapping[str, Any]], opus: Mapping[str, Mapping[str, Any]],
+             sampled: Sequence[str], arm_of_pair: Mapping[str, str], dcfg: Mapping[str, Any],
+             remedy: Mapping[str, Any] | None, batch_of: Mapping[str, int] | None) -> dict[str, Any]:
+    """§6.3 as amended by R29: the alarm. Evaluable when every arm of :data:`asc.ARM_GROUPS` has
+    at least ``min_pairs`` Opus-answered pairs in its window (after the last ``arm_gap`` remedy's
+    ``through_batch``, else cumulative); fires when max - min of the arm agreements exceeds
+    ``arm_gap``. The comparison is exact (fractions of the counts), so a gap of exactly the
+    threshold never fires."""
+    thr = float(dcfg["arm_gap"])
+    window = None
+    pids = list(sampled)
+    if remedy is not None:
+        t = int(remedy["through_batch"])
+        pids = [p for p in sampled if int((batch_of or {}).get(p, 0)) > t]
+        window = {"after_batch": t, "deviation_id": remedy["deviation_id"]}
+    tally = _drift_tally(final, opus, pids, arm_of_pair)
+    arms = {a: {"answered": int(tally[a]["answered"]), "agree": int(tally[a]["agree"]),
+                "agreement": (tally[a]["agree"] / tally[a]["answered"]) if tally[a]["answered"] else None}
+            for a in asc.ARM_GROUPS}
+    evaluable = all(v["answered"] >= int(dcfg["min_pairs"]) for v in arms.values())
+    value = fires = None
+    if all(v["answered"] for v in arms.values()):
+        fr = [Fraction(v["agree"], v["answered"]) for v in arms.values()]
+        gap = max(fr) - min(fr)
+        value = float(gap)
+        fires = evaluable and gap > Fraction(str(thr))
+    return {"value": value, "threshold": thr, "min_pairs": int(dcfg["min_pairs"]), "evaluable": evaluable,
+            "fires": bool(fires), "arms": arms, "alarm_window": window}
 
 
 def load_remedies(out: Path) -> list[dict[str, Any]]:
     """The owner's drift remedies, ``<out_dir>/drift-remedies/*.json`` (§6.3: the owner decides
     the remedy, recorded as a deviation). Each names ``deviation_id``, ``date`` (YYYY-MM-DD),
-    ``action``, ``scope`` (overall / base / neighbour / random), ``through_batch`` and
-    ``signed_by``, and must answer an alarm the log ``drift-alarms.jsonl`` holds for that scope
-    at that batch. A remedy never removes PAUSE: the owner does. Raises SystemExit on a bad file."""
+    ``action``, ``scope`` (``arm_gap``, the alarm since R29; or overall / base / neighbour /
+    random, alarms logged before R29, which now restart only the reported window),
+    ``through_batch`` and ``signed_by``, and must answer an alarm the log ``drift-alarms.jsonl``
+    holds for that scope at that batch. A remedy never removes PAUSE: the owner does. Raises SystemExit on a bad file."""
     d = out / "drift-remedies"
     if not d.is_dir():
         return []
@@ -624,8 +679,8 @@ def load_remedies(out: Path) -> list[dict[str, Any]]:
         miss = [k for k in REMEDY_FIELDS if r.get(k) in (None, "")]
         if miss:
             raise SystemExit(f"drift remedy {p.name}: missing {miss}")
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(r["date"])) or r["scope"] not in DRIFT_SCOPES:
-            raise SystemExit(f"drift remedy {p.name}: date YYYY-MM-DD and scope one of {list(DRIFT_SCOPES)}")
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(r["date"])) or r["scope"] not in REMEDY_SCOPES:
+            raise SystemExit(f"drift remedy {p.name}: date YYYY-MM-DD and scope one of {list(REMEDY_SCOPES)}")
         if (int(r["through_batch"]), r["scope"]) not in fired:
             raise SystemExit(f"drift remedy {p.name}: no {r['scope']} alarm at batch {r['through_batch']} in "
                              "drift-alarms.jsonl")
@@ -1369,7 +1424,7 @@ class Pipeline:
             jd.g.write_json_atomic(self.out / "drift-alarm.json", {"batch": batch_no, **summ["drift"],
                                                                      "t": jd.g.now_iso()})
             jd.p4.append_fsync(self.out / "drift-alarms.jsonl", {
-                "batch": batch_no, "scopes": [sc for sc, v in summ["drift"]["scopes"].items() if v["fires"]],
+                "batch": batch_no, "scopes": [ARM_GAP_SCOPE],
                 "reasons": summ["drift"]["alarm_reasons"], "t": jd.g.now_iso()})
             (self.out / "PAUSE").write_text(f"drift alarm after batch {batch_no}: "
                                             f"{'; '.join(summ['drift']['alarm_reasons'])}. The owner decides the "
@@ -1569,8 +1624,10 @@ class Pipeline:
                                      for r in summ["drift"]["remedies"]],
                   "files": {f["name"]: {"sha256": f["sha256"], "bytes": f["bytes"], "mode": f["mode"]} for f in files},
                   "drift": {s: {k: v for k, v in sc.items() if k in ("sampled", "answered", "agree", "filtered",
-                                                                     "agreement", "fires")}
+                                                                     "agreement", "below_reference")}
                             for s, sc in summ["drift"]["scopes"].items()},
+                  "drift_arm_gap": {k: summ["drift"]["arm_gap"][k] for k in ("value", "threshold", "evaluable",
+                                                                             "fires")},
                   "provenance": {k: self.prov.get(k) for k in ("commit", "dirty", "untracked") if k in self.prov}}
         chunks = self.chunks()
         forbidden = [r["record_id"] for r in recs] + [r["paper"] for r in recs] + list(chunks) + \
