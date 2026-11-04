@@ -176,3 +176,4 @@ def hide_markdown_extra(monkeypatch) -> None:
                  "mdit_py_plugins.dollarmath"):
         monkeypatch.setitem(sys.modules, name, None)
     monkeypatch.setattr(markdown_structure, "_parser_cache", None)
+    monkeypatch.setattr(markdown_structure, "_plain_parser_cache", None)
