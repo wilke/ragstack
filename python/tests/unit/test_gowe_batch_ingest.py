@@ -92,8 +92,12 @@ def _registry(tmp_path: Path, cid="oa-dev", store="phys_store") -> Path:
 
     db = tmp_path / "reg.db"
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE collections (id TEXT PRIMARY KEY, collection TEXT)")
-        conn.execute("INSERT INTO collections VALUES (?, ?)", (cid, store))
+        # The columns the driver reads (#828 PR 4 reads chunk_method and
+        # chunk_params for the marker pre-check), as the real registry has them.
+        conn.execute("CREATE TABLE collections (id TEXT PRIMARY KEY, collection TEXT, "
+                     "chunk_method TEXT, chunk_params TEXT NOT NULL DEFAULT '{}')")
+        conn.execute("INSERT INTO collections (id, collection, chunk_method) VALUES (?, ?, ?)",
+                     (cid, store, "fixed_token"))
     return db
 
 

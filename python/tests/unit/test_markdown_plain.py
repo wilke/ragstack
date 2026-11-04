@@ -341,3 +341,59 @@ def test_the_suffix_decides_case_insensitively(tmp_path: Path) -> None:
     doc = Document(id="d", content="# A\n\nb\n", source=str(tmp_path / "PAGE.MD"))
     assert apply_text_render([doc], RENDER) == 1 and doc.content == "A\n\nb"
     assert re.fullmatch(r"A\n\nb", doc.content)
+
+
+def test_concurrent_first_use_of_a_fresh_plain_parser_gives_identical_renders(
+    monkeypatch,
+) -> None:
+    """The stripped render has its own parser (``text_join`` disabled), built,
+    warmed and published under the same lock as raw mode's, for the same
+    reason (§9.1: a concurrent FIRST parse could see a half-compiled rule
+    chain and return a silently wrong token stream). MUTATION: publish the
+    plain parser before warming it → wrong renders under this test's slowed
+    compile and tiny switch interval."""
+    import sys
+    import threading
+    import time
+
+    from markdown_it import ruler as ruler_mod
+
+    text = ("# Title\n\nBody *x* `y` [l](u) \\(m\\).\n\n## Sub\n\n- a\n- b\n\n```\n# c\n```\n\n"
+            "> q\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n$$\nm\n$$\n")
+    doc = _doc(text)
+    md.reset_parser()
+    expected = md.markdown_plain(doc)
+    real_compile = ruler_mod.Ruler.__compile__
+
+    def slow_compile(self):  # noqa: ANN001
+        self.__cache__ = {}
+        time.sleep(0.002)
+        real_compile(self)
+
+    monkeypatch.setattr(ruler_mod.Ruler, "__compile__", slow_compile)
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    wrong = 0
+    try:
+        for _ in range(30):
+            md.reset_parser()
+            results: list[object] = [None] * 8
+            barrier = threading.Barrier(8)
+
+            def run(i: int, barrier=barrier, results=results) -> None:  # noqa: ANN001
+                barrier.wait()
+                try:
+                    results[i] = md.markdown_plain(doc)
+                except Exception as e:  # noqa: BLE001
+                    results[i] = f"{type(e).__name__}: {e}"
+
+            threads = [threading.Thread(target=run, args=(i,)) for i in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            wrong += sum(r != expected for r in results)
+    finally:
+        sys.setswitchinterval(old_interval)
+        md.reset_parser()
+    assert wrong == 0
