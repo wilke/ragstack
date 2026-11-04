@@ -26,7 +26,7 @@ minimum-attainable-p level, H1b with a missing record, the Opus cap, the admin k
 the exact sign-flip p: §5.5, §6.3, §7, §8, §9.2) and the corpus-build decisions of the same day
 (neighbour walk-down, article types, random-draw matching, the recorded build facts: §5.1, §7), and
 the owner's decisions of 2026-11-02: the test of each Layer-1 member (§7) and the caps-lever agreement
-`a = 0.7` (§8, §14 O11). The items still open are in §14. Nothing in this text binds a run until it is
+`a = 0.7` (§8, §14 O11). The decisions of §14 are all settled as of 2026-11-04 (§15 item 1). Nothing in this text binds a run until it is
 frozen by the procedure in this directory's `README.md`. At freeze the text is frozen **as written**, and
 its sha256 goes into the README, a private `PREREG.sha256` and the message of a signed annotated tag
 pushed to the public repository (README, *Freeze procedure* step 4; R10), never into this file. After freeze this
@@ -163,10 +163,17 @@ bibliographic metadata and paper full text only. **The v4 build** (#915, at `617
 `counts-v4.json`, sha256 `fd15b1bf…`, and `power-v4.json`, sha256 `5ea9d25c…`) was read as counts and
 entered in §5.1 and §8. Its repetition screen excluded **9** papers across the three arms, **7** of them
 JATS papers in which one table chunk repeats across records (§5.1, R18); these 9 hits were seen before
-the freeze (§13.7). The v4 build, too, read bibliographic metadata and paper full text only. **The pre-freeze pilot (§5.6) will retrieve and judge the 191 held-out records before the
-freeze**; its counts are entered here before the freeze, and from then on this paragraph's statement
-that no retrieval has been run holds for the **900 balanced records** only. All of this is disclosed so
-that a reader can weigh it (§13.7).
+the freeze (§13.7). The v4 build, too, read bibliographic metadata and paper full text only. **The
+blind pre-freeze pilot (§5.6) ran on the 191 held-out records** from 2026-11-03T23:26Z to
+2026-11-04T00:38Z (the report's `run_dates_utc`; the report was written at 02:12Z). All 29 legs
+completed, and 3,574 deduplicated pairs were judged (213 tiebroken, 0 unjudged). No found@10,
+found@10-gold or RR@10 of any leg was computed or seen (R28). What was seen: the unsigned discordance
+shares (glossary G 6/83, glossary C 0/108, growth 6/191), the judge shares and gateway counts, the drift
+agreement 0.946 (157/166), the tiebreak share 6.0 %, and the owner's 12-pair diagnostic and 40-record
+check (§13.4). Its consequences are R29, R30 and the decisions on O7, O8, O10 and O12 (§14). The public
+copy of its report is committed as `artifacts/pilot-report.json`. So this paragraph's statement that no
+retrieval has been run holds for the **900 balanced records** only. All of this is disclosed so that a
+reader can weigh it (§13.7).
 
 ## 1. Question
 
@@ -527,7 +534,8 @@ added, redrafted or dropped for any reason after the freeze.
 to the accepted-record file, grouping by paper. A paper is satisfied when its accepted G records cover 2
 distinct alias keys and it has ≥ 1 accepted C. 300 papers qualify, and every one holds exactly 2 G (on 2
 distinct keys) and 1 C, so no selection within a paper is needed. The count was made by a scratch script
-calling those committed functions at `323d470`. A committed recount script is a pre-freeze item (§15).
+calling those committed functions at `323d470`. The committed recount (`alias_study_recount.py`,
+`artifacts/record-recount.json`) reproduces every count of this table (§15 item 2).
 
 **Code commits of the build.** The pool was built at `9350aac`. The waves ran in five segments, at
 `9350aac`, `1026576`, `617fd8a`, `233cdfb` and `323d470`, each change sealed in the run log (§4.3). The
@@ -592,8 +600,8 @@ leg is quoted as *retrieved in the pilot*.
    2.8 % escalated (excluding coll_diff: 0.991 / 3.5 % and 0.988 / 3.3 %). No study record was retrieved or judged. A
    sensitivity without the 8 papers is printed beside H1, H1b and H2 (§7), and the committed recount
    (§15) reproduces these counts.
-7. **Layer-3 record validity is open.** No owner spot check of the records has been recorded. §13.4 fixes
-   one with round 3's rule (D9).
+7. **Layer-3 record validity.** The owner's record spot check of §13.4 (round 3's rule, D9) was done on
+   2026-11-04: 37 of 40 valid (0.925, at or above 0.85; `artifacts/spot-records-counts.json`).
 
 ## 5. Design: factors and cells
 
@@ -1083,6 +1091,9 @@ main run's labels (§6.2).
 **Disclosure.** The pilot's counts and the date it ran are entered in *What had been seen before writing*
 before the freeze, and the freeze commit's text includes them.
 
+**Done** (2026-11-04): all 29 legs, blind to outcomes; the public copy of the report is
+`artifacts/pilot-report.json`; its consequences are R29 and R30.
+
 ### 5.7 After the freeze: two stages (R9)
 
 Each stage has a **retrieval** part and a **judging** part, and since R25 they differ: the stage a leg
@@ -1211,7 +1222,7 @@ study result.
 | **out-of-sample validation**, plan frozen first (`e2713e1`), run at `390777d` | **0.992** [0.979, 0.997] on 487 Opus-unanimous pairs; 2.5 % escalated; PASS against ≥ 0.98 and ≤ 5 %; 377 papers excluded, every paper of the 734-record build among them, but not every paper added by the extension to 300 (§4.3 item 6) | JUDGE-VALIDATION-PLAN.md; JUDGE-CALIBRATION.md *Validation* (#898) |
 | **tiebreaker selection**, plan frozen first (`10a986c`) | `Gemini 4 Argon` **0.996** agreement with Opus on the 487 (κ 0.988; 0 of 83 filtered pairs unlabelled); `GPT-5.6 Sol` 0.990; Argon selected on agreement | TIEBREAKER-PLAN.md; JUDGE-CALIBRATION.md *Tiebreaker* (#899, `5e6a722`) |
 | residual errors of the gate | 4 on 475 accepted pairs, all false yes: 3 on same-paper non-gold chunks (lex_same) and 1 in coll_same; 3 of the 4 on C records | JUDGE-CALIBRATION.md *Validation* |
-| the composed rule (C + E, then Argon), replayed on the validation labels | 482 of 487 (0.990); 12 sent to Argon, 11 of them right; 0 unlabelled | **scratch replay for v0, post-selection, not citable**; the committed replay is a pre-freeze item (§15) |
+| the composed rule (C + E, then Argon), replayed on the validation labels | 482 of 487 (0.990); 12 sent to Argon, 11 of them right; 0 unlabelled | post-selection; the committed replay (`alias_study_replay.py`, `artifacts/judge-rule-replay.json`) reproduces it exactly (§15 item 9) |
 
 **What the calibration does not show.** Validation scored the C + E rule with **Opus** labelling the
 escalated pairs. The composed rule with Argon was chosen after both results were seen, and its replay is
@@ -1220,7 +1231,9 @@ evidence of judgement. Every pair in both sets came from **base OA-1000**. Pairs
 papers are new ground: they have their own definitions blocks and possibly denser collisions. The
 stratified drift reference and the owner's judged-pair spot check (§13.5) are what cover them. The
 calibration and validation pairs are BM25-constructed candidates. They are not the retriever outputs
-judged here.
+judged here. **The validation figure is not fully out of sample** with respect to the study papers
+(§4.3 item 6; owner, 2026-11-04, §14 O10): the sensitivity without the 8 papers is printed beside H1, H1b
+and H2 (§7).
 
 ### 6.5 Volume (planning only)
 
@@ -1246,9 +1259,22 @@ Mathematical and Statistical Psychology 61(1):29–48, doi:10.1348/000711006X126
 is printed beside κ because κ is depressed when one class dominates even at high raw agreement (Zec,
 Soriani, Comoretto and Baldi 2017, *High Agreement and High Prevalence: The Paradox of Cohen's Kappa*,
 The Open Nursing Journal 11:211–218, doi:10.2174/1874434601711010211), and *not* dominates these pairs.
-**The validation-set figures are computed by a separate PR from the committed validation data** (the
-calibration follow-up); they are **to be inserted from the calibration follow-up** here before the freeze
-(§15). The same metrics are computed by the committed analysis for the drift reference (per arm) and for
+**The validation-set figures** (JUDGE-CALIBRATION.md, review follow-ups (#910, exploratory); code at
+`8f4043b`, clean; the 487 Opus-unanimous validation pairs, Opus *answers* on 109, prevalence 0.224; a
+missing label counts as *not*; Wilson 95 % intervals):
+
+| judge | TP / FP / FN / TN | precision | recall | specificity | F1 | κ | AC1 |
+|---|---|---|---|---|---|---|---|
+| C + E, escalation → Opus | 109 / 4 / 0 / 374 | 0.965 [0.913, 0.986] | 1.000 [0.966, 1] | 0.989 | 0.982 | 0.977 | 0.987 |
+| **C + E, escalation → Argon (the study's rule)** | 109 / 5 / 0 / 373 | 0.956 [0.901, 0.981] | 1.000 [0.966, 1] | 0.987 | 0.978 | 0.971 | 0.984 |
+| C alone | 107 / 10 / 2 / 368 | 0.915 [0.850, 0.953] | 0.982 [0.936, 0.995] | 0.974 | 0.947 | 0.931 | 0.962 |
+| E alone | 106 / 5 / 3 / 373 | 0.955 [0.899, 0.981] | 0.972 [0.922, 0.991] | 0.987 | 0.964 | 0.953 | 0.975 |
+| Argon alone | 109 / 2 / 0 / 376 | 0.982 [0.937, 0.995] | 1.000 [0.966, 1] | 0.995 | 0.991 | 0.988 | 0.994 |
+
+Every error of the study's rule is a false yes. Its false-yes rate on non-gold pairs is 5 / 378 = 1.32 %
+[0.57, 3.06]. Without the 243 pairs that touch a study paper (§4.3 item 6) it has precision 0.955 and
+recall 1.000 on 287 pairs, and a false-yes rate of 4 / 203 = 1.97 % [0.77, 4.96]. These figures were not
+in a frozen plan and are labelled exploratory. The same metrics are computed by the committed analysis for the drift reference (per arm) and for
 the owner spot check (per label stratum and weighted, §13.5).
 
 **The false-yes bound on H2** is the rule of §3.4.
@@ -1264,6 +1290,15 @@ original prompt. **Consequence:** the study keeps `alias-judge/2`. If any paraph
 below the validation criterion (0.98) or its escalation share above 5 %, this is recorded here before the
 freeze and stated in §13.3 as a measured prompt sensitivity; replacing the prompt is a deviation before
 freeze with its own frozen plan, as TIEBREAKER-PLAN.md was.
+
+**Result of the paraphrase check** (JUDGE-CALIBRATION.md, review follow-ups (#910, exploratory)). It ran
+outside a frozen plan, on a 200-pair stratified subset of the Opus-unanimous validation pairs (100
+*answers*, 100 *not*; seed `20261102|judge-followups|paraphrase`), not on all of them: three paraphrases
+(`alias-judge/2-p1..p3`) and a fresh re-run of /2 as the run-to-run noise floor, local Qwen calls only.
+The largest change against /2 in precision or recall, for the composed rule or either primary, was
+**1 point** (one pair), equal to the re-run's own change. No paraphrase took accuracy below 0.98 or the
+escalation share above 5 % (at most 6 of 200 escalated, against 7 for /2). The owner accepted it as the
+check of R4 (owner, 2026-11-04); the study keeps `alias-judge/2`.
 
 **Correlated primaries (known limitation).** Judges C and E are both Qwen models. Errors they share give
 the same label twice, so the pair is never escalated, and **correlated errors do not reach the
@@ -1396,7 +1431,7 @@ in the hypothesised direction.
 **Every member is tested at one-sided α = 0.05 (R1)**, so every power below is at 0.05. The v1 tables at
 the Holm worst case (0.025) and the conditional tables are withdrawn with the Holm pair.
 
-**Normal approximation** (this draft; the committed calculation is a pre-freeze item, §15). Each record
+**Normal approximation** (the committed calculation is `artifacts/power-v4.json`, §15 item 8). Each record
 gets d ∈ {−1, 0, +1}: non-zero with probability q, in the hypothesised direction with probability p. Then
 
   μ = q (2p − 1),  σ² = q − μ²,  power = Φ( √n · μ / σ − z ),
@@ -1427,7 +1462,9 @@ the **300 C records** at q 5 % the same formula, read two-sided, gives **3.57 po
 accepted-record file (sha `09fc5ca4…`, balanced-set id sha `2be86f8c…`) and the v4 neighbour counts
 (the private `neighbour-counts-v4.json`, sha256 `ed71fcb9…`: 2,423 attributed, mean 8.08 per study paper,
 min 0, max 10; dose 0.865), 2,000 simulated studies per cell, between-paper SD of p .15, seed
-`261101|alias|power`. Its output is the private `power-v4.json` (sha256 `5ea9d25c…`). (The v2 draft's run on the v2 counts, 2,424 neighbours, gave the
+`261101|alias|power`. Its output is the private `power-v4.json` (sha256 `5ea9d25c…`), committed as
+`artifacts/power-v4.json`: a public copy of the private run at `617d28d` (clean, `citable true`), with
+the host removed. `h2_caps_lever_fires` is false, so the caps are not raised. (The v2 draft's run on the v2 counts, 2,424 neighbours, gave the
 same table to two decimals except one cell, .58 for .57.) H2 is at the realised dose, with **ρ = 1** (the draws' discordance fully shared, the
 conservative three-valued case) and, in brackets, ρ = 0.5; *confirm* means the judged test rejects **and**
 the gold-only gate passes, at agreement a between the gold-only and judged changes.
@@ -1467,7 +1504,7 @@ the served path, and a 1 / 9 split in the adverse direction under mention attach
 here is as low, or the split as adverse, H1 ends *not confirmed* with this floor printed beside it. It is
 not a null unless the power at the stated scenario is ≥ .80.
 
-**The committed calculation (pre-freeze, §15)** runs on the realised layout and, for H2, on the realised
+**The committed calculation** (`artifacts/power-v4.json`, §15 item 8) runs on the realised layout and, for H2, on the realised
 neighbour and random counts per study paper. It repeats the tables above by the normal approximation and
 by simulation of each member's test of §7 (2,000 simulations; H1's sign-flip with 2,000 flips, H2's
 sign-flip and H1b's randomization test exactly; a between-paper SD of p of .15, seed `261101|alias|power`, §5.5),
@@ -1567,9 +1604,7 @@ the repetition screen of R18); an alias adapter for the runner (the records sche
 repeats; the 9 collections of R26); the pair builder and the deduplication for judged pairs; the
 composed-rule labeller (C + E, then Argon), with the arm-stratified drift sampler and both alarms, the
 Opus single retry (§6.3) and the on-demand pair selection by stage (§6.2, §5.7); the statistics for H1,
-H1b (fixed sequence within Family G) and H2 (two-draw average, gold-only gate), with tests — the
-merged `alias_study_stats.py` still implements v1's Option-B Holm procedure (`layer1_procedure`) and a
-Holm drop-gated sensitivity (`holm_drop_gated`), both replaced by the two families of §3.1 — and the fixed
+H1b (fixed sequence within Family G) and H2 (two-draw average, gold-only gate), with tests (v1's Option-B Holm procedure and its drop-gated sensitivity were removed in #913) and the fixed
 sensitivities of §7 (the bootstrap-t of R22, topic clustering, the chunk-volume covariate with its
 Freedman–Lane test of R23, XML-only stratum, terciles, origin counts, the *fragile* rule of R14); the false-yes bound of
 §3.4 with U = max(U_r, U_p) (R13) and the judge metrics of §6.6; the Layer-2 script (CIs, the decision
@@ -1627,7 +1662,8 @@ entry, not a silent retry.
    **Both primary judges are Qwen models** (§6.6): errors they share are never escalated, so correlated
    errors do not reach the tiebreaker. The drift reference (Opus, 5 %) and the owner spot check, which
    oversamples *answers* labels (§13.5), mitigate this; they do not remove it. The prompt-paraphrase check
-   (§6.6) is reported here.
+   (§6.6; exploratory, owner-accepted) moved precision or recall by at most 1 point, the size of the
+   re-run noise, so no measured prompt sensitivity is stated.
 4. **Record validity (owner spot check, D9).** The owner labels **40** records drawn from the 900 balanced
    records, valid / invalid: the first 40 in ascending order of sha256 of
    `261101|alias|spot|records|<record id>`, not stratified by kind (P3). The sheet reveals no kind (G / C),
@@ -1690,8 +1726,8 @@ entry, not a silent retry.
    stage-A commit sha (P4).
 
    **Single rater.** The spot check has one rater, the owner, who also designed the study. That is a
-   limitation: no inter-rater agreement for the reference exists. Adding a second, independent rater on
-   the same 100 pairs is left open (§14 O12).
+   limitation: no inter-rater agreement for the reference exists. The owner decided on a single rater for
+   this study; further raters are planned for a second wave (owner, 2026-11-04, §14 O12).
 6. **Neighbour definition.** References and citers come from OpenAlex, whose coverage is incomplete, and
    open-access availability filters them. The caps take the most cited references and the most recent
    citers, so the added set is a sample of the neighbourhood, not the neighbourhood itself.
@@ -1705,8 +1741,8 @@ entry, not a silent retry.
    made by the PR #911 reviewer, not a committed artifact. The v4 build's 9 repetition-screen hits (7 of
    them JATS papers with one repeated table chunk, §5.1) were seen before the freeze, and so was the
    scratch count of 4 OA-1000 papers below 0.90; the rule was kept per paper, as written. None of this
-   read retrieval, judge or outcome data. The pilot (§5.6) is run on held-out records before the freeze,
-   and what it may change is fixed in advance. Each is bounded by being fixed here before any retrieval
+   read retrieval, judge or outcome data. The pilot (§5.6) ran on held-out records before the freeze,
+   blind to outcomes, and what it could change was fixed in advance. Each is bounded by being fixed here before any retrieval
    on a balanced-set record.
 8. **No study-wide error control across the two families** (§3.1, R1). Family G and Family N are each
    controlled at 0.05; the chance of at least one false confirmation across both, with every null true,
@@ -1735,39 +1771,39 @@ Only items not settled by D1–D10 and R1–R30.
 | O5 | Attribution of a neighbour shared by several study papers | **Decided (owner, 2026-11-01).** Added once; attributed to the first study paper in the seeded order (`261101\|alias\|neighbours`, `…\|order\|<study paper>`); no replacement for the others; each random draw takes per study paper as many papers as were attributed to it, so the arms hold equal unique counts. Written in §5.1 |
 | O6 | How "prefer PMC/JATS" is applied | **Decided (owner, 2026-11-01).** PMC JATS XML for every added paper in both arms where it exists; the random arm's PDF share matched to the neighbour arm's; every added paper scanned for C0 control characters (other than tab, newline, carriage return), a PDF paper excluded when any occurs in > 0.5 % of its chunks; exclusions counted per arm. Written in §5.1 |
 | O7 | Gateway caps for the judge | **Opus decided (owner, 2026-11-01):** ≤ 7 % of judged pairs, re-issued calls counted (§6.5). **Argon decided (owner, 2026-11-04, R30): no study cap.** The pilot measured 213 tiebreaks on 3,574 pairs (6.0 %; 8.1 % in stage A), above the 4 % drafted here; the judge config sets `argon_share` 1.0, which only stops a pathological run. The gateway budget (at least 10 M tokens a day) and the harness's per-run budget stop still apply |
-| O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | not now: it is **not on the gateway allow-list**. Adding it later would be a deviation with its own frozen selection plan, as TIEBREAKER-PLAN.md was |
+| O8 | **Whether to add GPT-6.1 Sol later** as a second tiebreaker or drift reference | **Decided (owner, 2026-11-04): not for the main run.** GPT-6.1 Sol is now reachable through the gateway; it is a candidate in the second judge validation (a refinement round, not a gate) |
 | O9 | Seeds | **Decided (owner, 2026-11-01).** One recorded seed string per draw, seed base `261101\|alias`: neighbours `…\|neighbours`, random draws `…\|random\|1` and `…\|random\|2`, noise repeats `…\|noise`, bootstrap `…\|boot`, and the derived strings of §5.5. Written in §5.5. **Amended (owner, 2026-11-01):** numeric seeds are the first 8 bytes of sha256(seed string), big-endian unsigned; power seed `…\|power`; random draws `…\|random-1-v2` and `…\|random-2-v2` |
-| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | keep the 900 as frozen, print the sensitivity without the 8 papers, and state in §6.4's reading that the validation figure is not fully out of sample. Alternatives: drop the 8 papers from Layer 1 before the freeze (292 papers, 876 records; H1 power at the two scenarios, normal approximation at α = 0.05, .987 → .986 and .930 → .925; at the v1 level 0.025 .97 → .97 and .88 → .87), or re-score the validation without the 6 question papers' 121 pairs (scratch re-score: 0.992, 2.8 % escalated, still PASS; §4.3 item 6) |
+| O10 | **The validation overlap of §4.3 item 6** (8 satisfied papers with validation records; the validation figure not fully out of sample) | **Decided (owner, 2026-11-04): keep the 900 as frozen**, print the sensitivity without the 8 papers beside H1, H1b and H2 (§7), and state in §6.4's reading that the validation figure is not fully out of sample. Dropping the 8 papers (292 papers, 876 records) and re-scoring the validation without the 121 pairs (scratch: 0.992, still PASS; §4.3 item 6) were declined |
 | O11 | **Agreement level `a` the caps lever reads** (§8): the power to confirm H2 is computed at several assumed agreement levels (`a` = 1.0, 0.8, 0.7, 0.6 in `alias_study_power`) | **Decided (owner, 2026-11-02): `a = 0.7`**; `a = 0.6` is reported as a sensitivity. Written in §8 |
-| O12 | **A second rater for the judged-pair spot check** (§13.5, R5, R15) | open. As drafted the owner is the single rater, stated as a limitation. A second, independent rater would label the same 100 pairs blind to the owner's labels and to the judge's; their agreement (κ, AC1, §6.6) would then be printed beside the spot-check figures. Who, and whether, is left open |
+| O12 | **A second rater for the judged-pair spot check** (§13.5, R5, R15) | **Decided (owner, 2026-11-04): a single rater, the owner, for this study**, stated as a limitation (§13.5). Further raters are planned for a second wave |
 | O13 | **The test form of the H2 chunk-volume covariate sensitivity** (§7), which by R14 can make H2 *fragile* (R19) | **Decided (owner, 2026-11-03, R23):** a Freedman–Lane sign-flip with the studentized intercept (restricted model S = γx, restricted residuals flipped, refit; 10,000 flips, seed `261101\|alias\|perm`; Monte Carlo p), reusing the primary's unadjusted gold-only gate. Written in §7 |
 
 ## 15. What must exist before freeze
 
 | # | item | state |
 |---|---|---|
-| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R28 decided 2026-11-03 and folded in v3, with the pre-freeze corrections P1–P6, O13 with R23; R29 (drift alarm report-only, arm-gap pause) and R30 (no Argon cap, deciding O7 for Argon) decided 2026-11-04 after the blind pilot; O8, O10 and O12 open |
-| 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | recomputed for this draft by a scratch script over committed functions (§4.1); committed recount open |
-| 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | checked for this draft by scratch count: it does **not** cover them (§4.3 item 6); the counts go into the committed recount of item 2, and the owner decides whether the overlap changes anything beyond the declared sensitivity (§14 O10) |
-| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | open; the v2 and v3 private manifests exist (v3: the six bands and carry-over re-draw of R16), and v2's neighbour counts fed the scratch power run of §8 only; the **v4** build (R17 nearest-band fill, R18 repetition screen; #915, at `617d28d`) exists and its counts are entered in §5.1, with its private manifests' sha256s; #915 is merged with a merge commit (`a623981`), so `617d28d` is reachable from `main` |
-| 5 | **The 9 bench collections of R26 loaded** (§5.3, §9.3) under a reviewed live-ops plan: each corpus embedded once at the same chunker, embedder and tools image, base chunk ids and content verified identical across the arms, each collection loaded once with its glossary file (an empty-row file for *none*), each with its registry entry and load receipt | open |
-| 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | open |
-| 7 | The `ragstack.glossary_file/v1` files (merged, placebo) that `load-embeddings` renders, with render-parity tests against the prereg's mention rule and caps (§5.3); the **reach count** of §9.1 read offline against the 480-of-600 gate | open |
-| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | open; scratch runs on the v2 neighbour counts exist and are not citable (§8); the script's lever reads α = 0.05 (`LEVER_ALPHA`, on `main` since `e3b9695`); a run on the v4 counts exists as the private `power-v4.json` (`617d28d`, clean, `citable true`; §8), and committing it as the artifact is open. The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
-| 9 | The committed replay of the composed judge rule on the validation labels (§6.4), replacing the scratch replay | open |
-| 10 | The code of §10 *Must be written*, merged after an independent review | open |
+| 1 | Owner decisions folded into this text | D1–D10 folded in v1; O1, O2, O4, O5, O6 and O9 decided 2026-11-01, O7 decided for Opus; the #904-review resolutions and the corpus-build decisions of 2026-11-01 folded in (§5.1, §5.5, §6.3, §7, §8, §9.2); the test per member (§7) and O11 (`a = 0.7`, §8) decided 2026-11-02; R1–R11 from the independent methodology review decided 2026-11-02/03 and folded in v2, with O2 superseded and O3 decided; R12–R28 decided 2026-11-03 and folded in v3, with the pre-freeze corrections P1–P6, O13 with R23; R29 (drift alarm report-only, arm-gap pause) and R30 (no Argon cap, deciding O7 for Argon) decided 2026-11-04 after the blind pilot; O8, O10 and O12 decided 2026-11-04 (§14). Decisions folded through R30 and O7/O8/O10/O12 (O13 with R23) |
+| 2 | **Record-set sha** and the balanced set recounted by committed code: sha `09fc5ca4…` (equal to the summary's `accepted_sha256`), balanced-set id sha `2be86f8c…`, 300 / 900 / 191, the verdict-source split, and the pilot and calibration overlaps | **done**: `alias_study_recount.py` (committed, tested) reproduces all 95 checked figures of §4 at the frozen shas; `artifacts/record-recount.json` (counts and shas only) |
+| 3 | The validation set's paper exclusion checked against the papers added by the extension to 300 | **done**: in `artifacts/record-recount.json`: the 377-paper exclusion list covers the 355 papers activated before the extension and not the extension (166 of its 177 papers outside, 91 of its 98 satisfied); 8 satisfied papers have validation records (O10 decided: keep the 900, print the sensitivity) |
+| 4 | **Neighbour and random selection manifests** from OpenAlex (metadata only, seeded), with the counts of §5.1 public; the **H2 power** recomputed on them, and the caps raised if it is below .80 (§8) | **done**: the private **v4** manifests (R17, R18; #915, at `617d28d`, reachable from `main` through the merge commit `a623981`), counts and sha256s in §5.1; the power run committed (item 8), caps not raised |
+| 5 | **The 9 bench collections of R26 loaded** (§5.3, §9.3) under a reviewed live-ops plan: each corpus embedded once at the same chunker, embedder and tools image, base chunk ids and content verified identical across the arms, each collection loaded once with its glossary file (an empty-row file for *none*), each with its registry entry and load receipt | **done**: 9 collections loaded and verified 2026-11-03; 811,043 points; 0 retries, evictions or purges; load receipts with `SHA256SUMS`, private |
+| 6 | **Glossaries for every added paper** in every arm, generated by the same pipeline at the same versions (symbol model and prompt, `rules/3`, `alias_abbrev.py`), merged, and their shas recorded; a census of entries per added paper | **done** (#919, #929): glossaries for every added paper in every arm, 7,068 distinct papers (2,423 per arm; the random draws overlap by 201) |
+| 7 | The `ragstack.glossary_file/v1` files (merged, placebo) that `load-embeddings` renders, with render-parity tests against the prereg's mention rule and caps (§5.3); the **reach count** of §9.1 read offline against the 480-of-600 gate | **done** (#918): parity 600 of 600 balanced G records render their own entry on the gold chunk (§5.3) |
+| 8 | **Offline power calculation** by committed code on the realised layout (normal approximation and simulation of each member's test of §7 at α = 0.05, R1; H2's caps lever at `a = 0.7` with `a = 0.6` as the sensitivity, read at α = 0.05, §8), with a clean tree and `citable true`, committed as an artifact | **done**: `artifacts/power-v4.json`, the public copy of the private v4 run (`617d28d`, clean, `citable true`; host removed; §8); the lever reads α = 0.05 (`LEVER_ALPHA`, `e3b9695`) and does not fire. The C cost rule's operating characteristics and the spot check's detection probabilities are committed (`artifacts/c_cost_rule.json`, `artifacts/spot_check_detection.json`; R12, R15) |
+| 9 | The committed replay of the composed judge rule on the validation labels (§6.4), replacing the scratch replay | **done**: `alias_study_replay.py`; `artifacts/judge-rule-replay.json`: 482 of 487 (0.990), 12 escalated, 11 right, 0 unlabelled; the gate as validated 0.992 / 2.5 % (= `analysis-gate.json`); O10 sensitivities included |
+| 10 | The code of §10 *Must be written*, merged after an independent review | **done**: merged with independent reviews (#913, #914, #918, #919, #922, #923, #925, #929, #932); the recount and replay scripts of items 2 and 9 are added with tests in the pre-freeze close-out PR and reviewed there |
 | 11 | **Owner spot check of the 40 records** (§13.4): may be done before the freeze; must be committed before any analysis | **done** (owner, 2026-11-04): 37 of 40 valid (0.925, at or above 0.85), ingested by `alias_study_spot.py`; `artifacts/spot-records-counts.json`, sheet sha256 `8fd9987e…` |
-| 12 | A dry run of the whole chain on base × BM25 × none for **non-study records only** (for example the validation set's), to check the plumbing without reading any study outcome | open |
+| 12 | A dry run of the whole chain on base × BM25 × none for **non-study records only** (for example the validation set's), to check the plumbing without reading any study outcome | **done**: a dry run of the whole chain at `main` `27def28` on 83 validation records, fake retriever and judges, exit 0; private log |
 | 13 | O1 (the C gate's numeric definition) and O9 (seed base) fixed in the text | done in this draft: rule C (§3.1) and the seed strings (§5.5) |
-| 14 | **The pre-freeze pilot** on the 191 held-out records (§5.6, R8): run after item 5 and item 10, in all 29 legs, judged, blind to outcomes (R28: no per-leg found@10, found@10-gold or RR@10, pair counts per judging stage only); its counts committed and entered in *What had been seen before writing*; any consequence recorded with the counts it rests on, and anything beyond the allowed consequences recorded as a deviation before freeze | open |
-| 15 | **The prompt-paraphrase check** (§6.6, R4): three paraphrases of `alias-judge/2`, committed before they are run, scored on the validation pairs by both primaries; the result recorded in §6.6 and §13.3 | open |
-| 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | open: *to be inserted from the calibration follow-up* |
-| 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | open |
-| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | implemented in #915, merged with a merge commit (`a623981`); the v4 build ran on it at `617d28d` (item 4) |
-| 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | decided (R23, §7); implementation open (§10) |
-| 20 | **The stage-A leg lists** (R20, R25, §5.7): retrieval 19 legs (the 5 Layer-1 attachments × default, norerank, BM25, and the 4 noise repeats), judging 14 legs (without the BM25 legs), checked against the run harness (PR #914) | written out in §5.7; the check against #914 open |
-| 21 | **The load route** (R26): each corpus embedded once (`embed-bulk.cwl`), its shards loaded once per variant with `load-embeddings.cwl` and the variant's `ragstack.glossary_file/v1` file (an explicit empty-row file for *none*, never `null`), through the workflow engine under the approved path | settled with management; the 9-collection count pending the owner's confirmation |
-| 22 | **The capacity check** (R26): about 16–19 GB of dense vectors and 2–3 GB of BM25 index for the 9 collections | confirmed by management |
-| 23 | **Base embeddings shared across the four corpus arms** (R26, §5.3) | resolved (management, from `load-embeddings.cwl` at v1.6.21): `embeddings` is a list of files, so base is embedded once and loaded with each arm's added-paper shards; one glossary file per load covers base and added documents |
-| 24 | **The glossary files of R27** (merged and placebo with the `Xs` entries, and the empty-row *none* file), written by the `glossary_file/v1` writer of item 7 under the rendering conventions of §5.3 | open: writer being built |
+| 14 | **The pre-freeze pilot** on the 191 held-out records (§5.6, R8): run after item 5 and item 10, in all 29 legs, judged, blind to outcomes (R28: no per-leg found@10, found@10-gold or RR@10, pair counts per judging stage only); its counts committed and entered in *What had been seen before writing*; any consequence recorded with the counts it rests on, and anything beyond the allowed consequences recorded as a deviation before freeze | **done** (2026-11-04): `artifacts/pilot-report.json`; entered in *What had been seen before writing*; consequences R29, R30 |
+| 15 | **The prompt-paraphrase check** (§6.6, R4): three paraphrases of `alias-judge/2`, committed before they are run, scored on the validation pairs by both primaries; the result recorded in §6.6 and §13.3 | **done** (exploratory, owner-accepted 2026-11-04; §6.6, §13.3) |
+| 16 | **Judge metrics inserted** (§6.6, R4): precision, recall, F1 for *answers*, specificity, κ and Gwet's AC1 with counts, from the calibration follow-up PR that computes them from the committed validation data; the placeholders of §6.6 replaced by its numbers and commit | **done** (§6.6, from JUDGE-CALIBRATION.md, review follow-ups, #910, `8f4043b`) |
+| 17 | **Freeze verification ready** (README, R10): a signing key for the signed annotated tag, with its public part registered so the public repository shows the tag as verified; the tag name (`prereg-alias-study-2026-11`) is fixed in the README | **partly** (2026-11-04): the owner's SSH signing key is configured for git (`gpg.format ssh`, `tag.gpgsign`); the key is passphrase-protected, so the owner signs the tag; a test signature and `git tag -v` before the tag remain |
+| 18 | **The corpus builder implements R17 and R18** (the nearest-band fill at `any` with 0 new fetches; the repetition screen on every added paper in every arm, after the C0 screen, with its exclusions counted per arm and draw), reviewed and merged before the v4 build of item 4 | **done**: implemented in #915, merged with a merge commit (`a623981`); the v4 build ran on it at `617d28d` (item 4) |
+| 19 | **O13 fixed**: the test form of the H2 chunk-volume covariate sensitivity, in §7, and implemented with the other sensitivities (§10) | **done**: decided (R23, §7); the Freedman–Lane intercept implemented in `alias_study_stats.py` (#913) |
+| 20 | **The stage-A leg lists** (R20, R25, §5.7): retrieval 19 legs (the 5 Layer-1 attachments × default, norerank, BM25, and the 4 noise repeats), judging 14 legs (without the BM25 legs), checked against the run harness (PR #914) | **done** (#914): the harness's leg lists match §5.7 |
+| 21 | **The load route** (R26): each corpus embedded once (`embed-bulk.cwl`), its shards loaded once per variant with `load-embeddings.cwl` and the variant's `ragstack.glossary_file/v1` file (an explicit empty-row file for *none*, never `null`), through the workflow engine under the approved path | **done**: settled with management; the owner confirmed 9 collections; loaded (item 5) |
+| 22 | **The capacity check** (R26): about 16–19 GB of dense vectors and 2–3 GB of BM25 index for the 9 collections | **done**: confirmed by management |
+| 23 | **Base embeddings shared across the four corpus arms** (R26, §5.3) | **done**: resolved (management, from `load-embeddings.cwl` at v1.6.21): `embeddings` is a list of files, so base is embedded once and loaded with each arm's added-paper shards; one glossary file per load covers base and added documents |
+| 24 | **The glossary files of R27** (merged and placebo with the `Xs` entries, and the empty-row *none* file), written by the `glossary_file/v1` writer of item 7 under the rendering conventions of §5.3 | **done** (#918): the glossary files with the `Xs` entries, loaded per R26 |
 

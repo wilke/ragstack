@@ -1,0 +1,685 @@
+{
+ "citable": true,
+ "discordance": {
+  "glossary_C": {
+   "cells": [
+    "base|merged|default",
+    "base|none|default"
+   ],
+   "ci95": [
+    0.0,
+    0.0
+   ],
+   "discordant": 0,
+   "missing": 0,
+   "n": 108,
+   "papers": 108,
+   "rule": "any",
+   "share": 0.0
+  },
+  "glossary_G": {
+   "cells": [
+    "base|merged|default",
+    "base|none|default"
+   ],
+   "ci95": [
+    0.0241,
+    0.1325
+   ],
+   "discordant": 6,
+   "missing": 0,
+   "n": 83,
+   "papers": 83,
+   "rule": "any",
+   "share": 0.0723
+  },
+  "growth": {
+   "cells": [
+    "neighbour|none|default",
+    "random1|none|default",
+    "random2|none|default"
+   ],
+   "ci95": [
+    0.0103,
+    0.0576
+   ],
+   "discordant": 6,
+   "missing": 0,
+   "n": 191,
+   "papers": 108,
+   "rule": "any",
+   "share": 0.0314
+  },
+  "growth_both_draws": {
+   "cells": [
+    "neighbour|none|default",
+    "random1|none|default",
+    "random2|none|default"
+   ],
+   "ci95": [
+    0.0,
+    0.0263
+   ],
+   "discordant": 2,
+   "missing": 0,
+   "n": 191,
+   "papers": 108,
+   "rule": "all",
+   "share": 0.0105
+  },
+  "growth_vs_random1": {
+   "cells": [
+    "neighbour|none|default",
+    "random1|none|default"
+   ],
+   "ci95": [
+    0.0,
+    0.0361
+   ],
+   "discordant": 3,
+   "missing": 0,
+   "n": 191,
+   "papers": 108,
+   "rule": "any",
+   "share": 0.0157
+  },
+  "growth_vs_random2": {
+   "cells": [
+    "neighbour|none|default",
+    "random2|none|default"
+   ],
+   "ci95": [
+    0.0053,
+    0.0508
+   ],
+   "discordant": 5,
+   "missing": 0,
+   "n": 191,
+   "papers": 108,
+   "rule": "any",
+   "share": 0.0262
+  },
+  "note": "growth: the record's H2 value is non-zero (differs from at least one draw); growth_both_draws: differs from both (the shared part, rho in alias_study_power). The pilot papers' own neighbours are not in the neighbour arm, so growth understates H2's discordance (\u00a75.6)."
+ },
+ "experiment_provenance": {
+  "citable": true,
+  "commit": "ea361c7bf894db8892974f69be4f14e9114cafc2",
+  "describe": "v1.6.22-4-gea361c7",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": "0.1.0",
+  "python": "3.12.13",
+  "recorded_at": "2026-11-04T02:12:00Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "regex",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 42,
+    "nltk": null,
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "regex-abbrev-v1",
+    "sha256": "a4355331b4caf444ecc2acb761ec53b9a961f1e079f2cc15468a4bc95a83e73b",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.22+ea361c7"
+ },
+ "gateway_calls": {
+  "argon": {
+   "calls": 213,
+   "per_registry_pair": 0.0596
+  },
+  "opus": {
+   "calls": 192,
+   "per_registry_pair": 0.0537
+  }
+ },
+ "inputs": {
+  "judge/final.jsonl": "0449e71e0721eafbc1c513362de361a059277d2859b6a6ffe4e3afe7042f0463",
+  "judge/judge-summary.json": "882a2a00cbc39d16428d9ea1df39e37a91899405f37ac17571e63d06a6c7d389",
+  "judge/pairs-manifest.json": "f7a25ef76dbfbcfd126c8068d9cb0193cd725ef51785bea881f1441fc9b92233",
+  "judge/pairs.jsonl": "70aca2ce664507dbde206d4aaaafecea58502bc08613aa909d1070d62c2a14c5",
+  "records": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f",
+  "runs/base/merged.jsonl": "c31b31693cc979fc7c747617d540bd7ee02ad4421f3cd61e56db7f4a1ae50805",
+  "runs/base/merged.summary.json": "f811cb9ed0a32da520ea71714db43dfae5c343a2e449aa38fa87470d8ae47c45",
+  "runs/base/none#2.jsonl": "6295f497b8f099dd07af8e59917975c31e60f9a4c907a3044ba6fd9a3e408201",
+  "runs/base/none#2.summary.json": "b42a1fa95e64e08d5199b244c24d89646029c786ae0a15620702853570093cc3",
+  "runs/base/none.jsonl": "d06b32d3a0b5d884a23a686bde71e5f047fe6b4969524d1be322113e285346bf",
+  "runs/base/none.summary.json": "8e327f89ccacd79346ab440593152611e5d57037508f633afc6893ed8b369268",
+  "runs/base/placebo.jsonl": "707a0e8b2d26654f5397d503b6779053969172c24c330ca1ef8ceaf9ad1234c3",
+  "runs/base/placebo.summary.json": "ca6e277b654dad7fece9b1d42716f7b564f433750f01560446946cd88997ecf7",
+  "runs/neighbour/merged.jsonl": "e471a1228705b3369ee54169e88bc81082c24a6e6872226efe21046f2ed3a326",
+  "runs/neighbour/merged.summary.json": "c8143fffc661142beac2e459b5b77318abb21594d3a41773e417e9b250f3f61d",
+  "runs/neighbour/none#2.jsonl": "cfdb20ec32640ee3dcce00712ece62da29ef578434929b7dfbac40416ab7806a",
+  "runs/neighbour/none#2.summary.json": "f5778e658ab08c6f457e2bc70c3c23a0503edded8d12fc18f7830b4301dbdfef",
+  "runs/neighbour/none.jsonl": "ee5d79bacc537f080c6181bc919fa5a5191315018bd12dda2aed74474c46c925",
+  "runs/neighbour/none.summary.json": "686133dc4a9ff179ff3b8067a09659f1dabea2428cd52d568db359657509a3fa",
+  "runs/random1/merged.jsonl": "fae65f493b0d0554d568c3c8eed7ef4716a2f2df1e8d96c56261e9cbbd2bb4d6",
+  "runs/random1/merged.summary.json": "1e382ce8d711a992697d7db983ff7e56b9f81482a90447d7059fc1165d25433a",
+  "runs/random1/none#2.jsonl": "75fb86c78c02c3cc18a5fef09ae9fc5c93110f1bafeb2d09ccdaf5c42bd5f6fa",
+  "runs/random1/none#2.summary.json": "6c92268ac8806b0b9e5d004e6ed97c562ff8b69986493aa336f15b66ca18714a",
+  "runs/random1/none.jsonl": "e8e5df8d573d0f1adc5f74f3142e2304358f5cc7292701553d854237d7e16ad3",
+  "runs/random1/none.summary.json": "010b3464fcd66382c328b3ad0085223c99e9a0c346bafbb06cf56d7c2f6d65bb",
+  "runs/random2/merged.jsonl": "4f12aaf6ad10a3e2bd9e3b997a3dc932db9c9af889b9533deca82f5b6a33830f",
+  "runs/random2/merged.summary.json": "589fedb7d2f2aae8c2acb92793b7f27559ee7862704a318f246e985e9eb38fc4",
+  "runs/random2/none#2.jsonl": "d352c967595f5ae97f1f5e8c2d24759e0ce5a7c978fd3047437c637cdb32d113",
+  "runs/random2/none#2.summary.json": "89949e6a41303a390a8b48306c4bcae25d92000e66e6a62885747ecb0a894fc0",
+  "runs/random2/none.jsonl": "a1354ffb7812a1de27e68d5ffd8e9d1a80a17421b393bb4f0ea3460759c72bb5",
+  "runs/random2/none.summary.json": "c441e91c77ffd26dceb0286c97f0e6a83608d3da4c2ecec4aceb2922ff2cec5e"
+ },
+ "intervals": {
+  "discordance": "paper-cluster percentile bootstrap, 95 %",
+  "n_boot": 10000,
+  "numpy_seed": 1870734150407237072,
+  "pair_shares": "Wilson score, 95 %",
+  "seed": "261101|alias|boot",
+  "seed_rule": "numpy seed = int.from_bytes(sha256(seed string)[:8], 'big'); orderings sha256('<seed>|<parts>') ascending"
+ },
+ "judge": {
+  "answers": {
+   "base": {
+    "k": 298,
+    "n": 1284,
+    "share": 0.2321,
+    "wilson95": [
+     0.2098,
+     0.256
+    ]
+   },
+   "neighbour": {
+    "k": 150,
+    "n": 875,
+    "share": 0.1714,
+    "wilson95": [
+     0.1479,
+     0.1978
+    ]
+   },
+   "overall": {
+    "k": 737,
+    "n": 3574,
+    "share": 0.2062,
+    "wilson95": [
+     0.1933,
+     0.2198
+    ]
+   },
+   "random": {
+    "k": 289,
+    "n": 1415,
+    "share": 0.2042,
+    "wilson95": [
+     0.184,
+     0.226
+    ]
+   }
+  },
+  "opus_filtered": {
+   "base": {
+    "k": 7,
+    "n": 61,
+    "share": 0.1148,
+    "wilson95": [
+     0.0567,
+     0.2184
+    ]
+   },
+   "neighbour": {
+    "k": 3,
+    "n": 59,
+    "share": 0.0508,
+    "wilson95": [
+     0.0174,
+     0.1392
+    ]
+   },
+   "overall": {
+    "k": 13,
+    "n": 179,
+    "share": 0.0726,
+    "wilson95": [
+     0.0429,
+     0.1203
+    ]
+   },
+   "random": {
+    "k": 3,
+    "n": 59,
+    "share": 0.0508,
+    "wilson95": [
+     0.0174,
+     0.1392
+    ]
+   }
+  },
+  "pairs_finalized": 3574,
+  "per_arm_pairs": {
+   "base": 1284,
+   "neighbour": 875,
+   "random": 1415
+  },
+  "tiebreaker": {
+   "escalated": {
+    "base": {
+     "k": 73,
+     "n": 1284,
+     "share": 0.0569,
+     "wilson95": [
+      0.0455,
+      0.0709
+     ]
+    },
+    "neighbour": {
+     "k": 47,
+     "n": 875,
+     "share": 0.0537,
+     "wilson95": [
+      0.0406,
+      0.0707
+     ]
+    },
+    "overall": {
+     "k": 213,
+     "n": 3574,
+     "share": 0.0596,
+     "wilson95": [
+      0.0523,
+      0.0678
+     ]
+    },
+    "random": {
+     "k": 93,
+     "n": 1415,
+     "share": 0.0657,
+     "wilson95": [
+      0.054,
+      0.0798
+     ]
+    }
+   },
+   "rule": "escalated: C and E did not agree (sent to the tiebreaker); tiebroken: the tiebreaker's label is final; unjudged: no label after the re-issue (\u00a76.3)",
+   "tiebroken": {
+    "base": {
+     "k": 73,
+     "n": 1284,
+     "share": 0.0569,
+     "wilson95": [
+      0.0455,
+      0.0709
+     ]
+    },
+    "neighbour": {
+     "k": 47,
+     "n": 875,
+     "share": 0.0537,
+     "wilson95": [
+      0.0406,
+      0.0707
+     ]
+    },
+    "overall": {
+     "k": 213,
+     "n": 3574,
+     "share": 0.0596,
+     "wilson95": [
+      0.0523,
+      0.0678
+     ]
+    },
+    "random": {
+     "k": 93,
+     "n": 1415,
+     "share": 0.0657,
+     "wilson95": [
+      0.054,
+      0.0798
+     ]
+    }
+   },
+   "unjudged": {
+    "base": {
+     "k": 0,
+     "n": 1284,
+     "share": 0.0,
+     "wilson95": [
+      0.0,
+      0.003
+     ]
+    },
+    "neighbour": {
+     "k": 0,
+     "n": 875,
+     "share": 0.0,
+     "wilson95": [
+      -0.0,
+      0.0044
+     ]
+    },
+    "overall": {
+     "k": 0,
+     "n": 3574,
+     "share": 0.0,
+     "wilson95": [
+      0.0,
+      0.0011
+     ]
+    },
+    "random": {
+     "k": 0,
+     "n": 1415,
+     "share": 0.0,
+     "wilson95": [
+      0.0,
+      0.0027
+     ]
+    }
+   }
+  }
+ },
+ "judge_registry": {
+  "pairs": 3574,
+  "per_judging_stage": {
+   "A": 1312,
+   "B": 2262
+  }
+ },
+ "legs": {
+  "base|merged|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "A"
+   }
+  },
+  "base|merged|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "base|merged|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "base|none|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "A"
+   }
+  },
+  "base|none|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "base|none|default#2": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "base|none|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "base|placebo|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "neighbour|merged|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "neighbour|merged|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "neighbour|merged|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "neighbour|none|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "A"
+   }
+  },
+  "neighbour|none|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "neighbour|none|default#2": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "neighbour|none|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "random1|merged|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "random1|merged|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "random1|merged|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "random1|none|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "A"
+   }
+  },
+  "random1|none|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "random1|none|default#2": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "random1|none|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "random2|merged|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "random2|merged|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "random2|merged|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "B"
+   }
+  },
+  "random2|none|bm25": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "B",
+    "retrieval": "A"
+   }
+  },
+  "random2|none|default": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "random2|none|default#2": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  },
+  "random2|none|norerank": {
+   "failed": 0,
+   "rows": 191,
+   "run_status": "complete",
+   "stages": {
+    "judging": "A",
+    "retrieval": "A"
+   }
+  }
+ },
+ "mode": "pilot",
+ "prereg": "DRAFT v3 \u00a75.6 (R8)",
+ "public_copy": {
+  "note": "public copy of the blind pre-freeze pilot report (R28: unsigned discordance and judge shares only)",
+  "removed": [
+   "experiment_provenance.warnings"
+  ],
+  "source_sha256": "fc71f3397e7b91c03defb31e1f812f99d9e516c5c18baa6573eef1885c7516ec"
+ },
+ "reads": "unsigned discordance and judge shares only; no found@10 level, Layer-1 test, net change, direction, gate or p value is computed",
+ "record_set": {
+  "accepted_sha256": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f",
+  "balanced": 900,
+  "balanced_sha256": "2be86f8c5fd7dafaeb5a183c4dd55cc3e7b31366a48267424916dcbcf2557a0f",
+  "descriptive": 191,
+  "records": 1091
+ },
+ "records": {
+  "C": 108,
+  "G": 83,
+  "papers": 108,
+  "pilot": 191
+ },
+ "run_dates_utc": {
+  "first": "2026-11-03T23:26:00Z",
+  "last": "2026-11-04T00:37:37Z"
+ },
+ "schema": "alias-study-pilot/1",
+ "spot_checks_waiver": "pilot (descriptive, \u00a75.6)",
+ "stage_a_commit_sha256": "8c2e9c6d065c92212152835a196003b58b2fd82511a9173af711b67fd8c0d6ed"
+}
