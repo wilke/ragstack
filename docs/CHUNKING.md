@@ -376,7 +376,7 @@ The render, from one CommonMark parse (the `[markdown]` extra):
 
 | source | rendered |
 |---|---|
-| `## Heading` | `Heading` on its own line; the heading is a section boundary |
+| `## Heading` | `Heading` on its own line; the heading is a section boundary. A heading takes raw mode's title: link text without its target, an image's alt text, code and maths content without delimiters, no inline HTML, so `## [Methods](#methods)` is `Methods` and gets the same section roles as in a raw collection |
 | `[text](url)` | `text (url)`; an autolink is written once |
 | `![alt](src)` | `alt (src)` |
 | inline HTML | its visible text, plus `href` targets: `<a href="u">x</a>` → `x (u)` |
@@ -386,9 +386,23 @@ The render, from one CommonMark parse (the `[markdown]` extra):
 | emphasis, list and quote markers, thematic breaks | dropped |
 | front matter | its YAML body |
 
-Top-level blocks are separated by one blank line. Every content word survives:
-link targets, code, table cells and maths included. Other suffixes (`.txt`,
-`.pdf`, `.xml`, `.jsonl`) are not touched.
+Top-level blocks are separated by one blank line. Every content word of the
+body survives: link targets, code, table cells and maths included. Other
+suffixes (`.txt`, `.pdf`, `.xml`, `.jsonl`) are not touched.
+
+What the render loses, by design or by the parser:
+
+- **Targets inside headings** (above): the heading keeps its text only.
+- **Excess table cells.** A row with more cells than the header row loses the
+  extra cells: GFM tables (markdown-it) drop them before the render sees them.
+  `| 1 | 2 | extra |` under a two-column header renders as `1 | 2`.
+- **HTML attributes other than `href`, and `<img>`'s `alt`/`src`.** `title=`
+  (`<abbr title="…">`), `class`, `data-*` and the like are dropped with the
+  markup.
+- **An escaped pipe in a cell** renders as `|`, indistinguishable from the
+  ` | ` cell separator (the words survive; the cell boundary does not).
+- **Maths delimiters in headings** follow the heading rule (`# Energy $E$` is
+  `Energy E`); in body text they are kept.
 
 **It is identity.** The text changes, so every offset, chunk and chunk id
 changes: a marked collection is a different collection from an unmarked one,
@@ -416,6 +430,33 @@ entry is the only source.
 extra absent, the API answers 503 before any job exists and the bulk tools exit
 2 before reading a record, whatever `STRUCTURE_METADATA` says. Nothing falls
 back to raw text.
+
+**A document that fails to render is left out, never ingested raw.** Its
+receipt row (`ingest_shard.py`) carries `text_render_failed: <error class>: …`;
+the other documents of the batch go on. An in-process ingest of a source whose
+only document fails ends with that error. `embed_shard.py` and
+`ingest_jsonl.py` print the count; with structure metadata on,
+`enrichment.structure.text_render_failed` counts them by error class.
+
+**Not with a glossary file (yet).** A glossary file (`glossary_step.py`, #847)
+is built from, and checked against, the raw record text, while a marked
+collection stores the rendered text. The combination is refused before
+anything is written: `ingest_shard.py --glossary-file` and
+`load_embeddings.py --glossary-file` exit 2 for a `text_render` collection, and
+`gowe_batch_ingest.py` refuses to submit one on a workflow that runs the
+glossary step (`jats-ingest.cwl`, `embed-bulk.cwl`, `ingest-bulk.cwl`). The
+per-chunk rules glossary (`--symbol-glossary rules`) is unaffected: it is
+computed from the rendered text. Building glossary files over the rendered text
+is a separate issue. `ingest_chunks.py`, which loads pre-chunked JSON, refuses
+any entry that records a marker.
+
+**Not on GoWe deployments until the repin.** On `INGEST_BACKEND=gowe`,
+`POST /v1/collections` refuses (400) a collection that records any marker
+until the repin step R, because the shipped workflows' tools image predates
+the markers and would ingest it unmarked. R lifts this. Note that the API's
+scatter workflow (`pdf-ingest-scatter.cwl`) runs the glossary step and passes
+`--glossary-file` to `ingest_shard.py`; until glossary files follow the
+render, a `text_render` collection cannot be ingested through it even after R.
 
 **Where it is applied, and recorded.** The GoWe extract step never sees the
 marker: its shard holds the raw text, and the render runs in the ingest step,
