@@ -137,3 +137,7 @@ Ingest facts checked 2026-11-03 at v1.6.22 (dev's checkout):
   under the Scout id while the alias is in place; Scout counts as a grader only after the real
   model is confirmed back (dated notice). Every grading row records the model id the endpoint
   reported and the call time, so rows from the alias window can be found and excluded.
+- Graders (owner, 2026-11-04): LLM grading runs on Argo models through the gateway; the local
+  Scout endpoint is dropped from the grader list. Primary/second grader choice (incl. whether
+  Opus may be primary, since no Claude model writes the answers) and the subset size are set
+  before grading, with an inter-grader agreement check on a shared subset.
