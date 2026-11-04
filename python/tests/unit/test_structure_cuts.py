@@ -600,8 +600,8 @@ def test_the_defaults_are_the_owners_numbers():
     c = _tolerant()
     assert (c.target_tokens, c.ceiling_tokens, c.min_piece_tokens) == (512, 640, 128)
     assert sentence_tolerance_provenance(c) == {
-        "method": "sentence", "chunk_size": 512, "size_tolerance": 0.25, "min_piece": 128,
-        "ceiling": 640, "window_budget": 4096}
+        "v": 1, "method": "sentence", "chunk_size": 512, "size_tolerance": 0.25,
+        "min_piece": 128, "ceiling": 640, "window_budget": 4096}
 
 
 def test_the_ceiling_is_clamped_by_max_tokens():
@@ -716,3 +716,219 @@ def test_stamp_documents_reads_the_cut_segments_under_the_marker(tiling, name):
         c.metadata.clear()
     stamp_documents([doc], chunks)
     assert [c for c in chunks if c.metadata.get("section_crossing")]
+
+
+# --------------------------------------------------------------------------- #
+# Review batch (#938): one segment list, attach inside the parent, and pins
+# --------------------------------------------------------------------------- #
+
+
+def _ws_doc(*, leading: bool = False) -> Document:
+    """Three untitled/titled level-1 sections, one of them whitespace only
+    (built directly: markdown/1 does not make such a section)."""
+    from ragstack.ingestion.structure import content_sha256, validate_structure
+    from ragstack.models import Block, DocumentStructure, Section
+
+    parts = (["   \n", "Intro text here.\n"] if leading else ["Intro text here.\n", "    \n"])
+    parts.append("# B\n\nBody of b.")
+    text = "".join(parts)
+    a, b = len(parts[0]), len(parts[0]) + len(parts[1])
+    none = {"roles": None, "role_source": None}
+    sections = [Section(start=0, end=a, level=1, title=None, path=[], **none),
+                Section(start=a, end=b, level=1, title=None, path=[], **none),
+                Section(start=b, end=len(text), level=1, title="B", path=["B"], **none)]
+    prose = (a, b - 1) if leading else (0, a - 1)
+    blocks = [Block(start=prose[0], end=prose[1], kind="prose"),
+              Block(start=b + 2, end=b + 3, kind="heading"),
+              Block(start=b + 5, end=len(text), kind="prose")]
+    structure = DocumentStructure(content_sha256=content_sha256(text), sections=sections,
+                                  blocks=blocks, structure_source="parsed", adapter="test/1")
+    validate_structure(structure, text)
+    return Document(id="ws" + str(leading), content=text, metadata={}, structure=structure)
+
+
+@pytest.mark.parametrize("leading", [False, True], ids=["trailing", "leading"])
+def test_the_cutter_and_the_stamp_fold_a_whitespace_segment_identically(tiling, leading):
+    """Review S2: the whitespace fold lives in cut_segments, so the stamp and
+    the cutter read ONE list, and a chunk over a folded whitespace segment is
+    not a section_crossing. MUTATION: fold in the cutter only → fails."""
+    doc = _ws_doc(leading=leading)
+    segs = doc_cut_segments(doc)
+    assert segs == cut_segments(doc.structure, doc.content) and len(segs) == 2
+    chunks = make_chunker("sentence", chunk_size=500, chunk_overlap=0,
+                          structure_cuts=CUTS).chunk(doc)
+    assert [(c.start_char, c.end_char) for c in chunks] == [(g.start, g.end) for g in segs]
+    stamp_documents([doc], chunks, structure_cuts=True)
+    assert not [c for c in chunks if c.metadata.get("section_crossing")]
+
+
+def _cross_parent_doc() -> Document:
+    em = Emitter()
+    em.section("P1", 1)
+    em.block("Lead one.")
+    em.section("A", 2)
+    em.block("Alpha body.")
+    em.section("Future", 2)  # a heading-only LAST child of P1
+    em.section("P2", 1)
+    em.block("Lead two.")
+    em.section("C", 2)
+    em.block("Gamma body.")
+    content, structure = em.build()
+    return Document(id="xp", content=content, metadata={}, structure=structure)
+
+
+def test_a_heading_only_last_child_does_not_attach_to_the_next_parent(tiling):
+    """Review S3: the attach stays inside the parent. MUTATION: attach to
+    whatever follows → '## Future' is cut with P2's lead text → fails."""
+    doc = _cross_parent_doc()
+    text = doc.content
+    segs = cut_segments(doc.structure, text)
+    [future] = [g for g in segs if "## Future" in text[g.start:g.end]]
+    assert text[future.start:future.end].strip() == "## Future"
+    assert future.group == 0  # a child of P1: may merge as a whole sibling there
+    chunks = make_chunker("sentence", chunk_size=500, chunk_overlap=0,
+                          structure_cuts=CUTS).chunk(doc)
+    assert not any("## Future" in c.content and "# P2" in c.content for c in chunks)
+    # Under the tolerance it joins its sibling A as a whole segment, not P2.
+    tol = make_chunker("sentence", chunk_size=30, chunk_overlap=0, size_unit="tokens",
+                       token_counter=COUNTER, max_tokens=100, structure_cuts=CUTS,
+                       size_tolerance=0.25, min_piece=10).chunk(doc)
+    [joined] = [c for c in tol if "## Future" in c.content]
+    assert "Alpha body." in joined.content and "# P2" not in joined.content
+
+
+def test_an_over_ceiling_segment_is_packed_at_the_target_not_the_ceiling(tiling):
+    """Fable N8: 30 sentences of 20 tokens (600) at target 100 / ceiling 125:
+    every piece is <= 100 (MUTATION: pack at the ceiling → 120-token pieces)."""
+    doc = _one_leaf(*(_words(20, f"s{i}x") for i in range(30)))
+    chunks = _tolerant(target=100, min_piece=0).chunk(doc)
+    counts = [COUNTER.count(c.content) for c in chunks]
+    assert max(counts) <= 100 and len(chunks) >= 6, counts
+
+
+def test_an_unstructured_document_in_a_tolerant_collection_is_one_segment(tiling):
+    """Divergence 3 (Fable N7): no structure → the whole document is one
+    segment, sized by the tolerance and merged with no walls, and counted.
+    95 + 95 + 10 tokens at target 100 / ceiling 125 / min_piece 25: the strict
+    packer would leave [95, 95, 10]; the tolerant one merges the 10."""
+    doc = Document(id="u", content=" ".join([_words(95, "a"), _words(95, "b"), _words(10, "c")]),
+                   metadata={})
+    chunker = _tolerant(target=100, min_piece=25)
+    chunks = chunker.chunk(doc)
+    assert [COUNTER.count(c.content) for c in chunks] == [95, 105]
+    assert take_cut_stats(chunker, doc.id) == Counter({"cuts:unsegmented": 1})
+
+
+def test_semantic_oversize_fallback_cuts_per_segment():
+    """§7.1 item h (Argo S5): over max_breakpoint_sentences the fixed_token
+    fallback runs with the marker, so no chunk crosses an edge — with an
+    offset tokenizer and without one. MUTATION: build the fallback without
+    structure_cuts, or drop the per-segment branch → a chunk crosses → fails."""
+    doc = sentence_paper(4)
+    for counter in (COUNTER, SimpleNamespace(count=COUNTER.count)):
+        chunker = make_chunker("semantic", chunk_size=12, chunk_overlap=0,
+                               embed_fn=topic_embed_fn, max_tokens=100, token_counter=counter,
+                               max_breakpoint_sentences=2, structure_cuts=CUTS)
+        chunks = chunker.chunk(doc)
+        _assert_walls(doc, chunks, merges=False)
+        _assert_covers(doc, chunks, tiles=False)
+        assert len(chunks) > len(doc_cut_segments(doc))
+
+
+def test_whole_document_size_is_one_chunk_per_segment_under_cuts(tiling):
+    """``chunk_size == -1`` under the marker: each segment whole."""
+    doc = sentence_paper(5)
+    for method in ("sentence", "words"):
+        chunks = make_chunker(method, chunk_size=-1, chunk_overlap=0,
+                              structure_cuts=CUTS).chunk(doc)
+        assert [(c.start_char, c.end_char) for c in chunks] == [
+            (g.start, g.end) for g in doc_cut_segments(doc)]
+
+
+def test_fixed_token_emits_a_segment_with_no_token_start_of_its_own():
+    """A segment that holds text but no token START (a token runs into it from
+    the left and covers it) is one chunk, never dropped."""
+    doc = _heading_doc()
+    text = doc.content
+    segs = doc_cut_segments(doc)
+    middle = segs[1]  # "# Methods ... ## Sample preparation ..." 
+
+    class _Swallow(type(COUNTER)):
+        def __init__(self):
+            super().__init__()
+
+            class _Tok:
+                def __call__(self, t, return_offsets_mapping=False, add_special_tokens=True):
+                    spans = [(m.start(), m.end()) for m in re.finditer(r"\S+", t)]
+                    if t == text:  # one token from the end of segment 0 to the end of segment 1
+                        last0 = max(s for s, _e in spans if s < middle.start)
+                        spans = ([sp for sp in spans if sp[0] < last0]
+                                 + [(last0, middle.end - 2)]
+                                 + [sp for sp in spans if sp[0] >= middle.end])
+                    return {"offset_mapping": spans}
+
+                def encode(self, t, add_special_tokens=True):
+                    return re.findall(r"\S+", t)
+
+            self._tok = _Tok()
+
+    chunks = make_chunker("fixed_token", chunk_size=50, chunk_overlap=0, token_counter=_Swallow(),
+                          structure_cuts=CUTS).chunk(doc)
+    assert (middle.start, middle.end) in [(c.start_char, c.end_char) for c in chunks]
+    _assert_covers(doc, chunks, tiles=False)
+
+
+# --------------------------------------------------------------------------- #
+# embed_text: the prefix, its truncation and its counts (Fable N5, Argo S5/N1)
+# --------------------------------------------------------------------------- #
+
+
+def _stamped(path, content="one two three four five", version=True):
+    from ragstack.models import Chunk
+
+    meta = {"section_path": path}
+    if version:
+        meta["structure_version"] = "test/1;stamp/1"
+    return Chunk(id="c", doc_id="d", content=content, metadata=meta, start_char=0,
+                 end_char=len(content))
+
+
+def test_embed_text_prefixes_the_stamped_path():
+    from ragstack.ingestion.structure import embed_text
+
+    c = _stamped(["A", "B", "C"])
+    counts: Counter[str] = Counter()
+    assert embed_text(c, None) == c.content
+    assert embed_text(c, "prefix/1", counts=counts) == "A › B › C\none two three four five"
+    assert embed_text(c, "prefix/1", budget=100, token_counter=COUNTER,
+                      counts=counts) == "A › B › C\none two three four five"
+    assert not counts and c.content == "one two three four five"
+
+
+def test_embed_text_cuts_the_prefix_from_the_left_and_counts_it():
+    """MUTATIONS: cut from the right, ignore the budget, skip the count → fail."""
+    from ragstack.ingestion.structure import embed_text
+
+    c = _stamped(["Outer", "Middle", "Inner"])  # 5 content tokens; '›' is a token
+    counts: Counter[str] = Counter()
+    # 5 + "Middle › Inner" (3) = 8 fits; the full prefix (5 more) would be 10.
+    assert embed_text(c, "prefix/1", budget=8, token_counter=COUNTER,
+                      counts=counts) == "Middle › Inner\none two three four five"
+    assert counts == Counter({"embed:heading_prefix_truncated": 1})
+    assert embed_text(c, "prefix/1", budget=6, token_counter=COUNTER,
+                      counts=counts) == "Inner\none two three four five"
+    # Content alone fills the budget: no prefix at all, still counted.
+    assert embed_text(c, "prefix/1", budget=5, token_counter=COUNTER,
+                      counts=counts) == "one two three four five"
+    assert counts == Counter({"embed:heading_prefix_truncated": 3})
+
+
+def test_embed_text_never_uses_a_path_the_stamp_did_not_write():
+    """Argo N1: a record's own metadata carrying ``section_path`` (copied onto
+    the chunk by _make_chunk) is not a stamped path: no prefix, counted."""
+    from ragstack.ingestion.structure import embed_text
+
+    counts: Counter[str] = Counter()
+    for c in (_stamped(["Spoof"], version=False), _stamped([])):
+        assert embed_text(c, "prefix/1", counts=counts) == c.content
+    assert counts == Counter({"embed:heading_prefix_missing": 2})

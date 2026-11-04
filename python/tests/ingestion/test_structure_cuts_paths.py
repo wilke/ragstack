@@ -346,3 +346,34 @@ def test_the_structure_joins_a_cut_documents_cache_key(tmp_path) -> None:
     # No extra: the key is the content's alone, as before.
     assert cache._key(content) == cache._key(content, "")
     cache.close()
+
+
+def test_an_unmarked_run_keys_the_cache_on_content_alone(
+    tmp_path, registry, monkeypatch  # noqa: F811
+) -> None:
+    """Fable N3: an unmarked ingest_jsonl run passes no key extra, so caches
+    written before PR 7 still hit after the upgrade; a cut run passes the
+    structure key. MUTATION: always pass the extra → fails."""
+    shard = _shard(tmp_path)
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _Embedder())
+    calls: list[tuple] = []
+    real = SegmentationCache.get_or_compute
+
+    def spy(self, doc, chunk_fn, *extra):
+        calls.append(extra)
+        return real(self, doc, chunk_fn, *extra)
+
+    monkeypatch.setattr(SegmentationCache, "get_or_compute", spy)
+    for i, params in enumerate(({}, CUTS)):
+        registry(_spec(chunk_size=200, chunk_overlap=0, chunk_params=dict(params)))
+        asyncio.run(ingest_jsonl.run(_args(shard, checkpoint=tmp_path / f"{i}.ckpt",
+                                           chunk_method="sentence", chunk_size=200,
+                                           chunk_overlap=0,
+                                           segmentation_cache=tmp_path / f"c{i}.jsonl"),
+                                     it.resolve(CID, registry=REG)))
+        if not params:
+            assert calls and all(extra == () for extra in calls)
+            calls.clear()
+    assert calls and all(len(e) == 1 and e[0].startswith("structure:") for e in calls)
