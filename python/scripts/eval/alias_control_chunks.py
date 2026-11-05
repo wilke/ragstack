@@ -12,6 +12,13 @@
     PYTHONPATH=python alias_control_chunks.py report --judge-config MAIN.json --control-config CONTROL.json \\
                                                      --control-dir DIR [--cover-config COVER.json] --out REPORT.json
 
+**Record texts for the main run** (read-only; every source is needed, or documents are excluded
+as ``no_text``): the base arm's extractor output (the round-1 ``oa.jsonl`` record file), and for the
+added arms all four per-paper text directories of the study corpus, ``text``, ``text-v2`` (it holds
+the random arms), ``text-v3`` and ``text-v4``: pass each with its own ``--texts``.
+``check`` and ``chunk`` print the resolution counts; a non-zero ``no_text`` means a directory is
+missing from the list.
+
 **The question.** Do the judges' labels change when the same question is judged against a
 boundary-respecting chunk covering the same text, instead of the ``tok512o0`` window
 (``fixed_token/512/0``) it was judged against in stage A? Exploratory, post-freeze: nothing here
@@ -640,8 +647,11 @@ def cells(rows: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], list[str]]
 def verify_spot_prefix(final: Sequence[Mapping[str, Any]], picked: Sequence[Mapping[str, Any]],
                        key: Mapping[str, Any]) -> dict[str, Any]:
     """The spot key's pairs are the x1 draw's, cell by cell, and every x1 cell is a prefix of the
-    control draw's cell (module docstring). Raises SystemExit; returns the per-cell counts."""
-    one, _ = draw(final, 1)
+    control draw's cell (module docstring): same pairs, same order, at the head. The control cell
+    must also be larger than the spot cell unless the cell has no more pairs to give (a cell the x1
+    draw already exhausted). Raises SystemExit; returns the per-cell counts."""
+    one, one_counts = draw(final, 1)
+    avail = one_counts["available"]
     c1, c3 = cells(one), cells(picked)
     kcells: dict[tuple[str, str], set[str]] = defaultdict(set)
     for v in (key.get("items") or {}).values():
@@ -652,8 +662,11 @@ def verify_spot_prefix(final: Sequence[Mapping[str, Any]], picked: Sequence[Mapp
     out = {}
     for k, ids in sorted(c1.items()):
         have = c3.get(k, [])
-        if have[:len(ids)] != ids:
+        if len(have) < len(ids) or have[:len(ids)] != ids:
             raise SystemExit(f"REFUSED: the spot sheet's {k[0]}/{k[1]} cell is not the head of the control draw's")
+        if len(have) == len(ids) and int(avail[k[0]][k[1]]) > len(ids):
+            raise SystemExit(f"REFUSED: the control draw's {k[0]}/{k[1]} cell is no larger than the spot sheet's, "
+                             "though the cell has more pairs: not a x3 draw")
         out[f"{k[0]}|{k[1]}"] = {"spot": len(ids), "control": len(have)}
     for k, ids in c3.items():
         out.setdefault(f"{k[0]}|{k[1]}", {"spot": 0, "control": len(ids)})
@@ -978,7 +991,12 @@ def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "sources": dict(Counter(str(f.get("source")) for f in fs))}
 
     covered = [r for r in flips if r.get("cover") is not None]
-    recovered = [r for r in covered if int(any(x == 1 for x in r["cover"])) == label_of(r["stage_a"])]
+    # answers -> not: the evidence may lie outside the primary chunk; recovered when any cover-any
+    # chunk answers. not -> answers: the primary chunk answered and is in the cover set, so
+    # cover-any answers by construction; reported as a consistency count, never as a recovery.
+    a2n = [r for r in covered if direction(r) == "answers_to_not"]
+    n2a = [r for r in covered if direction(r) == "not_to_answers"]
+    shared = Counter(r["control_pair"] for r in rows if r.get("control_pair"))
 
     def diag(texts: Sequence[str]) -> dict[str, Any]:
         n = len(texts)
@@ -1003,17 +1021,25 @@ def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "by_coverage_band": by(lambda r: band(r["coverage"], COVERAGE_BANDS)),
         "by_control_token_band": by(lambda r: band(r["control_tokens"] or 0, TOKEN_BANDS)),
         "by_spot_sheet": by(lambda r: "spot_pair" if r.get("in_spot_sheet") else "added_pair"),
+        "by_section_structure": by(lambda r: "one_untitled_section" if r.get("one_untitled_section")
+                                   else "sectioned"),
+        "control_pairs_shared": {"control_pairs": len(shared),
+                                 "shared_by_two_or_more_windows": sum(v > 1 for v in shared.values()),
+                                 "windows_on_shared_control_pairs": sum(v for v in shared.values() if v > 1)},
         "agreement_control_vs_stage_a": table,
         "judge_stage": {"stage_a": stage_detail("stage_a"), "control": stage_detail("control")},
         "cover_any": {"flipped": len(flips), "flipped_with_cover_any": len(covered),
-                      "recovered": wilson(len(recovered), len(covered))},
+                      "answers_to_not": {"with_cover_any": len(a2n), "recovered": wilson(
+                          sum(any(x == 1 for x in r["cover"]) for r in a2n), len(a2n))},
+                      "not_to_answers": {"with_cover_any": len(n2a), "cover_any_answers": wilson(
+                          sum(any(x == 1 for x in r["cover"]) for r in n2a), len(n2a))}},
         "boundary": {
             "windows": diag(windows), "control": diag(controls),
             "control_section_crossing": wilson(sum(bool(r.get("section_crossing")) for r in rows), len(rows)),
             "control_split_sentence_pieces": wilson(sum(bool(r.get("split_sentence")) for r in rows), len(rows)),
             "window_tokens": token_summary([int(r["window_tokens"]) for r in rows if r.get("window_tokens") is not None]),
             "control_tokens": token_summary([int(r["control_tokens"]) for r in rows if r.get("control_tokens") is not None]),
-            "one_untitled_section_documents": wilson(sum(bool(r.get("one_untitled_section")) for r in rows), len(rows)),
+            "one_untitled_section_pairs": wilson(sum(bool(r.get("one_untitled_section")) for r in rows), len(rows)),
         },
     }
 
@@ -1066,12 +1092,16 @@ def run_report(judge_config: Path, control_config: Path, control_dir: Path, out:
                     cover[sid].append(int(bool(vfin[p["pair_id"]].get("label"))))
     cc = control_chunker()
     rows = []
+    excluded: Counter[str] = Counter()
     for s in seeds:
-        w = ex.by_id[s["stage_a_chunk_id"]]
-        k = cchunk[s["chunk_id"]]
+        w = ex.by_id.get(s["stage_a_chunk_id"])
+        k = cchunk.get(s["chunk_id"])
+        if w is None or k is None:
+            excluded["stage_a_chunk_unknown" if w is None else "control_chunk_unknown"] += 1
+            continue
         di = dinfo.get(s["doc_id"]) or {}
-        rows.append({"stage_a": stage_a.get(s["control_of"]),
-                     "control": cfinal.get(aj.pair_id(s["record_id"], s["chunk_id"])),
+        cpid = aj.pair_id(s["record_id"], s["chunk_id"])
+        rows.append({"stage_a": stage_a.get(s["control_of"]), "control": cfinal.get(cpid), "control_pair": cpid,
                      "stratum": s["stratum"], "arm": s["arm"], "coverage": s["coverage"],
                      "control_tokens": s["control_tokens"], "latex_preamble": s["latex_preamble"],
                      "in_spot_sheet": s["in_spot_sheet"], "cover": cover.get(s["control_of"]) if cover_config else None,
@@ -1080,12 +1110,13 @@ def run_report(judge_config: Path, control_config: Path, control_dir: Path, out:
                      "section_crossing": k["metadata"].get("section_crossing"),
                      "split_sentence": k["metadata"].get("split_sentence"),
                      "one_untitled_section": di.get("n_sections", 0) <= 1 and di.get("untitled_only", False)})
-    docs = sorted({s["doc_id"] for s in seeds})
+    docs = sorted({s["doc_id"] for s in seeds if s["doc_id"] in cdocs})
     texts = [doc_text(cdocs[d]) or "" for d in docs]
     rec: dict[str, Any] = {"schema": SCHEMA["report"], "exploratory": True,
            "note": "EXPLORATORY, post-freeze: judge-only chunk-boundary control; changes no confirmatory figure. "
                    "Owner agreement (§5.4) dropped (owner, 2026-11-05).",
            "chunker": cc.applied(), "environment": env, "metrics": compute_report(rows),
+           "excluded": dict(excluded),
            "judge_files": {"control": judge_files(Path(ccfg["out_dir"]))},
            "inputs": {"seed_sha256": asc.sha256_file(control_dir / "pairs-seed.jsonl"),
                       "chunks_sha256": asc.sha256_file(control_dir / "chunks-control.jsonl"),

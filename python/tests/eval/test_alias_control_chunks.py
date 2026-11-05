@@ -146,6 +146,48 @@ def test_p2_invariants_titled_nested_untitled_and_an_over_budget_sentence(words:
     assert all(ctl.p2_gate(c + cb, True).values())
 
 
+def test_forged_chunks_trip_the_fragment_and_boundary_counters(words: WordCounter) -> None:
+    from ragstack.ingestion.chunkers import _make_chunk, sentence_spans
+
+    cc = ctl.control_chunker()
+    a = ctl.chunk_document("doc-a", DOC_A, cc)
+    segs = ctl.doc_segments(a.doc)
+    # a chunk spanning the last part of one segment and the first part of the next: a fragment
+    g = next(g for g in segs if g.end - g.start > 400)
+    nxt = next(h for h in segs if h.start == g.end)
+    cut = [(g.start, g.end - 50), (g.end - 50, nxt.start + 30), (nxt.start + 30, len(DOC_A))]
+    forged = [_make_chunk(a.doc, x, y) for x, y in ([(0, g.start)] if g.start else []) + cut]
+    c, _, _ = ctl.measure_document(ctl.ChunkedDoc(a.doc, forged), cc)
+    assert c["fragment_violations"] >= 1 and c["tiling_violation_docs"] == 0
+    # a boundary moved into the middle of an ordinary sentence
+    s0, e0 = next((s, e) for s, e in sentence_spans(DOC_B) if e - s > 40)
+    mid = (s0 + e0) // 2
+    forged = [_make_chunk(b := ctl.chunk_document("doc-b", DOC_B, cc).doc, 0, mid), _make_chunk(b, mid, len(DOC_B))]
+    c, _, _ = ctl.measure_document(ctl.ChunkedDoc(b, forged), cc)
+    assert c["boundary_violations"] == 1 and c["split_sentence_boundaries"] == 0
+    assert not ctl.p2_gate(c, True)["ii_boundaries_are_sentence_or_segment"]
+
+
+def test_refuses_a_chunker_with_another_min_piece_or_budget_mode(words: WordCounter,
+                                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ctl, "MIN_PIECE", 100)
+    with pytest.raises(SystemExit, match="min_piece / budget_mode"):
+        ctl.control_chunker()
+    monkeypatch.setattr(ctl, "MIN_PIECE", 128)
+    from ragstack.ingestion import chunker_config
+
+    real = chunker_config.build_chunker
+
+    def summed(*a: Any, **k: Any) -> Any:
+        ch, counter, budget = real(*a, **k)
+        ch.budget_mode = "summed"
+        return ch, counter, budget
+
+    monkeypatch.setattr(chunker_config, "build_chunker", summed)
+    with pytest.raises(SystemExit, match="min_piece / budget_mode"):
+        ctl.control_chunker()
+
+
 def test_chunking_is_deterministic(words: WordCounter) -> None:
     cc = ctl.control_chunker()
     one = [(c.id, c.start_char, c.end_char) for c in ctl.chunk_document("doc-a", DOC_A, cc).chunks]
@@ -292,6 +334,45 @@ def test_draw_x3_sizes_and_the_spot_cells_are_its_head() -> None:
         ctl.verify_spot_prefix(rows, picked, swapped)
 
 
+def _cell(picked: list[dict[str, Any]], s: str, a: str) -> list[int]:
+    return [i for i, f in enumerate(picked) if f["stratum"] == s and f["arm"] == a]
+
+
+def test_spot_prefix_refuses_a_reordered_truncated_or_swapped_cell() -> None:
+    rows = [r for s in spot.SPOT_STRATA for a in asc.ARM_GROUPS for r in frows(80, s, a)]
+    picked, _ = ctl.draw(rows)
+    one, _ = spot.draw_pairs_from(rows)
+    key = {"items": {f"p{i:03d}": {"pair_id": f["pair_id"], "stratum": f["stratum"], "arm": f["arm"]}
+                     for i, f in enumerate(one)}}
+    idx = _cell(picked, "not", "random")  # 11 spot pairs at the head of 33
+    # a spot pair moved behind a non-spot pair inside the cell
+    reordered = list(picked)
+    reordered[idx[0]], reordered[idx[20]] = reordered[idx[20]], reordered[idx[0]]
+    # the cell truncated below the spot cell
+    truncated = [f for i, f in enumerate(picked) if i not in idx[5:]]
+    # a spot pair swapped out of the head for a pair the draw did not take
+    taken = {f["pair_id"] for f in picked}
+    spare = next(r for r in rows if r["pair_id"] not in taken and spot.spot_stratum(r) == "not"
+                 and r["arm"] == "random")
+    swapped = list(picked)
+    swapped[idx[3]] = {**spare, "stratum": "not"}
+    for bad in (reordered, truncated, swapped):
+        with pytest.raises(SystemExit, match="not the head"):
+            ctl.verify_spot_prefix(rows, bad, key)
+    # a control cell no larger than the spot cell while the cell has more pairs: not a x3 draw
+    same = [f for i, f in enumerate(picked) if i not in idx[11:]]
+    with pytest.raises(SystemExit, match="no larger than the spot sheet's"):
+        ctl.verify_spot_prefix(rows, same, key)
+    # an exhausted cell may be equal: 5 pairs in it, all drawn at x1 and at x3
+    small = [r for r in rows if not (r["arm"] == "random" and spot.spot_stratum(r) == "tiebroken")]
+    small += frows(5, "tiebroken", "random")
+    p3, _ = ctl.draw(small)
+    o1, _ = spot.draw_pairs_from(small)
+    k1 = {"items": {f"p{i:03d}": {"pair_id": f["pair_id"], "stratum": f["stratum"], "arm": f["arm"]}
+                    for i, f in enumerate(o1)}}
+    assert ctl.verify_spot_prefix(small, p3, k1)["tiebroken|random"] == {"spot": 5, "control": 5}
+
+
 @pytest.fixture(scope="module")
 def dry_built(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("ctl")
@@ -434,6 +515,37 @@ def test_build_control_refuses_a_main_config_and_foreign_seed_rows(judged: Path,
                 prov={})
 
 
+def test_build_control_pairs_guards(judged: Path, tmp_path: Path) -> None:
+    main, cp, seed_p, stage_a = control_world(judged, tmp_path)
+    cfg = aj.load_config(cp)
+    chunks, _ = aj.chunk_arms(cfg)
+    control_ids = set(asc.read_chunk_exports([cfg["chunk_exports"][aj.CONTROL_EXPORT]]))
+    seed = asc.read_jsonl(seed_p)
+    pairs, counts = aj.build_control_pairs(seed, stage_a, chunks, control_ids)
+    assert counts["pairs"] == len(stage_a)
+    # a chunk that is not in the control export (here: a stage-A chunk) is refused
+    with pytest.raises(SystemExit, match="not in the control export"):
+        aj.build_control_pairs([{**seed[0], "chunk_id": stage_a[0]["chunk_id"]}], stage_a, chunks, control_ids)
+    # a control chunk of another paper than the stage-A passage is refused
+    other = next(s for s, a in zip(seed, stage_a, strict=False) if a["c_paper"] != stage_a[0]["c_paper"])
+    with pytest.raises(SystemExit, match="paper is not the stage-A passage's"):
+        aj.build_control_pairs([{**seed[0], "chunk_id": other["chunk_id"]}], stage_a, chunks, control_ids)
+    with pytest.raises(SystemExit, match="record_id is not"):
+        aj.build_control_pairs([{**seed[0], "record_id": "elsewhere"}], stage_a, chunks, control_ids)
+
+
+def test_build_control_hard_stops_on_a_main_registry_that_differs_from_its_manifest(judged: Path,
+                                                                                   tmp_path: Path) -> None:
+    main, cp, seed_p, _ = control_world(judged, tmp_path)
+    mdir = Path(json.loads(main.read_text())["out_dir"])
+    with (mdir / "pairs.jsonl").open("a") as fh:
+        fh.write("\n")
+    with pytest.raises(aj.jd.p4.HardStop, match="differs from its manifest"):
+        aj.main(["--config", str(cp), "build-control", "--seed-pairs", str(seed_p), "--main-config", str(main)],
+                prov={})
+    assert not (tmp_path / "control-judge" / "pairs.jsonl").exists()
+
+
 def test_control_config_still_enforces_the_prereg_sha(judged: Path, tmp_path: Path) -> None:
     main, cp, seed_p, _ = control_world(judged, tmp_path)
     pre = tmp_path / "PREREG.md"
@@ -462,7 +574,8 @@ def report_rows() -> list[dict[str, Any]]:
         rows.append({"stage_a": final(a), "control": final(ctl_label, "tiebreak" if i == 5 else "agree"),
                      "stratum": "answers" if a else "not", "arm": asc.ARM_GROUPS[i % 3],
                      "coverage": [0.3, 0.6, 0.95][i % 3], "control_tokens": [100, 400, 600][i % 3],
-                     "latex_preamble": i == 7, "in_spot_sheet": i < 7, "cover": [1] if i == 3 else None,
+                     "latex_preamble": i == 7, "in_spot_sheet": i < 7, "cover": [1] if i == 3 else [0] if i == 0 else None,
+                     "control_pair": f"cp{i}",
                      "window": f"window text number {i} ends here.", "control_text": f"## Head\ncontrol {i}",
                      "window_tokens": 512, "section_crossing": i == 1, "split_sentence": False,
                      "one_untitled_section": i == 2})
@@ -476,7 +589,16 @@ def test_compute_report_counts() -> None:
     assert m["flip"]["k"] == 2 and m["flip"]["n"] == 20 and m["flip"]["wilson95"] is not None
     assert m["by_direction"] == {"not_to_answers": 1, "answers_to_not": 1}
     assert m["agreement_control_vs_stage_a"]["table"] == {"tp": 9, "fp": 1, "fn": 1, "tn": 9}
-    assert m["cover_any"]["recovered"]["k"] == 1 and m["cover_any"]["flipped_with_cover_any"] == 1
+    assert m["cover_any"]["answers_to_not"] == {"with_cover_any": 1, "recovered": ctl.wilson(1, 1)}
+    assert m["cover_any"]["not_to_answers"]["with_cover_any"] == 1
+    # a not->answers flip whose cover set holds no answering chunk is a consistency miss, never a recovery
+    assert m["cover_any"]["not_to_answers"]["cover_any_answers"]["k"] == 0
+    assert m["cover_any"]["flipped_with_cover_any"] == 2
+    assert m["by_section_structure"]["one_untitled_section"]["n"] == 1
+    assert m["by_section_structure"]["sectioned"]["n"] == 19
+    assert m["boundary"]["one_untitled_section_pairs"]["k"] == 1
+    assert m["control_pairs_shared"] == {"control_pairs": 20, "shared_by_two_or_more_windows": 1,
+                                         "windows_on_shared_control_pairs": 2}
     assert m["judge_stage"]["control"]["escalated"]["k"] == 1
     assert m["by_latex_preamble"]["latex_preamble"]["n"] == 1
     assert m["boundary"]["windows"]["ends_in_sentence_punctuation"]["k"] == 21
