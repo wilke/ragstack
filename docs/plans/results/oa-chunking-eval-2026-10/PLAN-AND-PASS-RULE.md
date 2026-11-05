@@ -141,3 +141,48 @@ Ingest facts checked 2026-11-03 at v1.6.22 (dev's checkout):
   Scout endpoint is dropped from the grader list. Primary/second grader choice (incl. whether
   Opus may be primary, since no Claude model writes the answers) and the subset size are set
   before grading, with an inter-grader agreement check on a shared subset.
+
+## Addendum B, 2026-11-05 UTC: noise run and freeze (owner decisions 2026-11-05 UTC)
+
+Noise run (300 questions, seeded subset excluding ambiguous-gold and within-record repeats; baseline
+fixed_token 512/64 vs fixed_token 512/0; primary metric hit@5; full collections, server v1.6.22):
+
+| Retrieval setting | Baseline | 512/0 | Diff [95% CI] | Discordance | Half-width at planned N |
+|---|---|---|---|---|---|
+| a) hybrid + reranker, graph off | 81.0 | 78.7 | -2.3 [-5.7, +0.7] | 0.077 | 1.15 |
+| b) vector only, no reranker | 48.3 | 48.3 | 0.0 [-4.7, +4.7] | 0.173 | 1.70 |
+| c) BM25 (text) only, no reranker | 51.7 | 52.7 | +1.0 [-2.7, +4.7] | 0.110 | 1.34 |
+
+The noise compares a cheap challenger by design, so the 512/0 result on these 300 questions was seen
+before the freeze; no parameter was changed after seeing it (margins sit at the pre-set floor).
+
+Frozen:
+1. Margins (Addendum A rule; half-widths are below the 2.0 floor in every setting): M_ni = M_mid = 2.0,
+   M_high = 4.0 points of hit@5, the same for all three settings.
+2. Retrieval settings: all three are run on all arms. (a) production settings (rerank on, graph off,
+   hybrid) is the PRIMARY decision; (b) vector-only and (c) BM25-only are secondary reports, and any
+   disagreement with (a) is reported explicitly (owner: a possible reranker problem makes the extra
+   signals useful). Setting (a) keeps the reranker on (owner 2026-11-05); no hybrid-without-
+   reranker arm is run.
+3. Decision set: all selected questions except ambiguous-gold items, within-record repeats (both
+   scored separately, as HARNESS-SPEC already specifies; 102 questions, 27 carry both flags) AND the
+   300 noise-subset questions: N = 2,035 (half-width at that N: 1.22 in (a), 1.79 in (b), 1.41 in
+   (c)). A sensitivity result on the same clean set with the noise subset included (N = 2,335) is
+   reported beside it and is not the decision. (Owner preferred keeping all, leaving exclusion to the
+   analyst; exclusion chosen to keep margin-setting and testing data separate.) Correction before
+   freeze: an earlier draft of this item kept within-record repeats; the harness and the noise
+   selection exclude them, and that rule stands.
+4. Stratum guard: strata = journal_family (8) and length_band (3); the smallest has 165 questions, so
+   min_stratum_n (30) never binds. Journal x length cells are reported, not tested.
+5. Stratum guard multiplicity: Bonferroni. Per arm, a stratum fails only if its point difference < -2.0
+   AND the upper bound of its two-sided (1 - 0.05/k) paired bootstrap interval < 0, k = strata tested.
+6. Tie-break: "paired ladder". Candidates = baseline + passing challengers ordered by cost_rank; start
+   with the cheapest; a costlier candidate replaces the incumbent only if its paired difference over the
+   incumbent has a 95% lower bound > 0. Context-token rule unchanged.
+   cost_rank: fixed_token 512/0 (1) < fixed_token 512/64 baseline (2) < sentence 512 (3) <
+   fixed_token 1024/0 (4) < semantic_pooled 512 (5) < legacy semantic 512 (6) [class order, then
+   stored chunks / ingest compute within class; owner confirmed 2026-11-05].
+7. Legacy semantic arm: workflow-feasible (ingests through the standard bulk workflow); its cost
+   counts through M_high.
+Harness changes for 3, 5, 6 are made and tested before any main-run retrieval; the commit that sets
+the margins in the private config and these harness changes is the freeze point.

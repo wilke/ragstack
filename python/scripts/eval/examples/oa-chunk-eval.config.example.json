@@ -72,14 +72,15 @@
     "max_retry_after_s": 120
   },
 
+  "_arms_comment": "cost_rank (optional integer, lower = cheaper; on every arm or none) orders arms for decide.tie_break paired_ladder; placeholder values.",
   "arms": [
-    {"name": "fixed512o64", "collection_id": "example-collection-1", "cost_class": "cheap", "baseline": true},
-    {"name": "fixed512o0", "collection_id": "example-collection-2", "cost_class": "cheap", "baseline": false},
-    {"name": "sentence512", "collection_id": "example-collection-3", "cost_class": "cheap", "baseline": false},
-    {"name": "fixed1024o0", "collection_id": "example-collection-4", "cost_class": "mid", "baseline": false},
-    {"name": "semantic_pooled512", "collection_id": "example-collection-5", "cost_class": "mid", "baseline": false},
+    {"name": "fixed512o64", "collection_id": "example-collection-1", "cost_class": "cheap", "baseline": true, "cost_rank": 2},
+    {"name": "fixed512o0", "collection_id": "example-collection-2", "cost_class": "cheap", "baseline": false, "cost_rank": 1},
+    {"name": "sentence512", "collection_id": "example-collection-3", "cost_class": "cheap", "baseline": false, "cost_rank": 3},
+    {"name": "fixed1024o0", "collection_id": "example-collection-4", "cost_class": "mid", "baseline": false, "cost_rank": 4},
+    {"name": "semantic_pooled512", "collection_id": "example-collection-5", "cost_class": "mid", "baseline": false, "cost_rank": 5},
     {"name": "semantic512", "collection_id": "example-collection-6", "cost_class": "expensive", "baseline": false,
-     "workflow_feasible": false}
+     "workflow_feasible": false, "cost_rank": 6}
   ],
 
   "stop": {"max_failures": 20, "max_consecutive": 5, "pause_file": "PAUSE"},
@@ -94,10 +95,12 @@
     "tokenizer_label": null,
     "max_unlocated_share": 0.01,
     "bootstrap_iters": 10000,
-    "bootstrap_seed": 0
+    "bootstrap_seed": 0,
+    "exclude_noise_subset": false
   },
 
-  "decide": {"k": 5, "min_stratum_n": 30},
+  "_decide_comment": "stratum_correction none|bonferroni and tie_break cheapest|paired_ladder; the defaults shown keep the pre-freeze rule.",
+  "decide": {"k": 5, "min_stratum_n": 30, "stratum_correction": "none", "tie_break": "cheapest"},
 
   "_margins_comment": "Set after the noise run (noise.json), recorded in a dated plan addendum. decide refuses to run while this is null.",
   "margins": null,

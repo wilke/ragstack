@@ -35,6 +35,17 @@ retrieval row in EVERY arm are scored (paired); the per-arm count of missing row
 reported. Questions whose gold record text is not in the extracted JSONL are dropped from
 the paired set and counted (``records_without_text``).
 
+Noise-subset exclusion (``score.exclude_noise_subset``, default false; owner 2026-11-05):
+when true, the questions of the noise subset, selected by ``noise.noise_questions`` (the
+same function, config and seed ``noise`` uses; not re-implemented here), are flagged
+``noise_subset: true`` in ``per_question.jsonl`` and left out of the primary set, which is
+then named ``clean_excl_noise`` (``all_excl_noise`` without an audit). Ambiguous items are
+handled as before. The set WITH the noise subset (``clean`` / ``all``) is still scored in
+full and named in ``sensitivity_set`` with ``sensitivity_label``: a sensitivity result, NOT
+the decision set. ``noise_exclusion`` in ``score.json`` records the subset size, how many
+questions it removed from the primary set, and both set sizes. :func:`set_rows` is the one
+definition of every question set, used by ``score`` and ``decide``.
+
 Quality refusals (``refusals`` in ``score.json``; ``score`` exits 2 and ``decide`` refuses):
 any ``records_without_text``; per arm, a share of hits with an empty ``source_path`` above
 ``score.max_unlocated_share`` (0.01), or a share of gold-record hits that could not be
@@ -64,6 +75,7 @@ from typing import Any
 from .common import article_of, log, norm_ws, norm_ws_map, read_jsonl, write_json, write_jsonl
 from .config import arms as cfg_arms
 from .config import baseline_arm, out_path, require
+from .noise import noise_questions
 from .passages import iter_records
 from .retrieve import latest_ok
 from .stats import discordance, mean_ci, paired_diff, strip_private
@@ -449,6 +461,41 @@ def _set_block(rs: list[dict[str, Any]], arm_names: list[str], base: str, ks: li
     return block
 
 
+EXCL_NOISE = "_excl_noise"
+SENSITIVITY_LABEL = "SENSITIVITY: the question set with the noise subset included; NOT the decision set"
+
+
+def set_rows(rows: list[dict[str, Any]], name: str) -> list[dict[str, Any]]:
+    """The rows of question set ``name`` (``all``, ``clean``, ``ambiguous``, optionally with
+    the ``_excl_noise`` suffix), in ``rows`` order. The single definition used by ``score``
+    and ``decide``, so both see the same paired set in the same order (and therefore draw
+    the same seeded bootstrap)."""
+    excl = name.endswith(EXCL_NOISE)
+    base = name[:-len(EXCL_NOISE)] if excl else name
+    if base == "all":
+        rs = list(rows)
+    elif base == "clean":
+        rs = [r for r in rows if not r["ambiguous_gold"]]
+    elif base == "ambiguous":
+        rs = [r for r in rows if r["ambiguous_gold"]]
+    else:
+        raise ValueError(f"unknown question set {name!r}")
+    if excl:
+        if rows and not all("noise_subset" in r for r in rows):
+            raise ValueError(f"set {name!r} needs per-question noise_subset flags (rerun score)")
+        rs = [r for r in rs if not r["noise_subset"]]
+    return rs
+
+
+def mark_noise_subset(cfg: dict[str, Any], rows: list[dict[str, Any]]) -> set[str]:
+    """Flag ``noise_subset`` on every row with the ids ``noise.noise_questions`` selects from
+    ``questions.jsonl`` (the noise run's own selection, reused). Returns the selected ids."""
+    ids = {q["question_id"] for q in noise_questions(cfg, read_jsonl(out_path(cfg, "questions.jsonl")))}
+    for r in rows:
+        r["noise_subset"] = r["question_id"] in ids
+    return ids
+
+
 def summarise(rows: list[dict[str, Any]], cfg: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
     arm_list = cfg_arms(cfg)
     arm_names = [a["name"] for a in arm_list]
@@ -457,10 +504,18 @@ def summarise(rows: list[dict[str, Any]], cfg: dict[str, Any], meta: dict[str, A
     ks = [int(k) for k in sc["ks"]]
     dims = list(sc["report_dims"])
     iters, seed = int(sc["bootstrap_iters"]), int(sc["bootstrap_seed"])
-    sets = {"all": rows}
-    if meta.get("audit_present"):
-        sets["clean"] = [r for r in rows if not r["ambiguous_gold"]]
-        sets["ambiguous"] = [r for r in rows if r["ambiguous_gold"]]
+    names = ["all"] + (["clean", "ambiguous"] if meta.get("audit_present") else [])
+    reference = "clean" if meta.get("audit_present") else "all"  # the primary set without the exclusion
+    noise_info: dict[str, Any] = {"enabled": False}
+    if sc.get("exclude_noise_subset"):
+        ids = mark_noise_subset(cfg, rows)
+        names.append(reference + EXCL_NOISE)
+        ref_rows = set_rows(rows, reference)
+        n_excl = sum(1 for r in ref_rows if r["noise_subset"])
+        noise_info = {"enabled": True, "n_noise_subset": len(ids), "n_excluded_from_primary": n_excl,
+                      "n_primary": len(ref_rows) - n_excl, "n_sensitivity": len(ref_rows),
+                      "noise_seed": cfg["noise"]["seed"], "noise_n_questions": int(cfg["noise"]["n_questions"])}
+    sets = {n: set_rows(rows, n) for n in names}
     loss = skip_loss(cfg, dims)
     lossy = lossy_strata(loss, float(sc["skip_loss_threshold"]))
     out: dict[str, Any] = {**meta, "baseline": base, "arms": arm_names, "ks": ks,
@@ -469,10 +524,14 @@ def summarise(rows: list[dict[str, Any]], cfg: dict[str, Any], meta: dict[str, A
                            "skip_loss": loss, "lossy_strata": lossy, "sets": {}}
     for name, rs in sets.items():
         out["sets"][name] = _set_block(rs, arm_names, base, ks, dims, iters, seed, lossy)
+    primary = reference + EXCL_NOISE if noise_info["enabled"] else reference
     fam_of = {r["pmcid"]: r["journal_family"] for r in read_jsonl(out_path(cfg, "sample.jsonl"))}
-    primary_set = sets.get("clean", rows)
-    out["journal_confusion"] = journal_confusion(primary_set, arm_names, fam_of)
-    out["primary_set"] = "clean" if "clean" in sets else "all"
+    out["journal_confusion"] = journal_confusion(sets[primary], arm_names, fam_of)
+    out["primary_set"] = primary
+    out["noise_exclusion"] = noise_info
+    if noise_info["enabled"]:
+        out["sensitivity_set"] = reference
+        out["sensitivity_label"] = SENSITIVITY_LABEL
     return out
 
 
@@ -508,14 +567,17 @@ def run(cfg: dict[str, Any]) -> int:
     if not rows:
         log("score: no question has an ok retrieval in every arm")
         return 2
+    summary = summarise(rows, cfg, meta)  # first: it adds the noise_subset flags to the rows
     write_jsonl(out_path(cfg, "per_question.jsonl"), rows)
-    summary = summarise(rows, cfg, meta)
     summary["check_writer"] = check_writer_report(cfg)
     write_json(out_path(cfg, "score.json"), summary)
     ps = summary["sets"][summary["primary_set"]]
     k5 = ps["primary"].get("5", next(iter(ps["primary"].values())))["pooled"]
     log("score: " + ", ".join(f"{a} {v['point']:.1f}" for a, v in k5["hit"].items() if v["point"] is not None)
         + f" (hit@5, {summary['primary_set']}, n={ps['n']})")
+    if summary.get("sensitivity_set"):
+        ss = summary["sets"][summary["sensitivity_set"]]
+        log(f"score: {SENSITIVITY_LABEL}: `{summary['sensitivity_set']}`, n={ss['n']}")
     if summary["refusals"]:
         for r in summary["refusals"]:
             log(f"score: REFUSED: {r}")

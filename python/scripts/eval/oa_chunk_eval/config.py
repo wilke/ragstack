@@ -93,6 +93,9 @@ DEFAULTS: dict[str, Any] = {
         "strata_dims": ["journal_family", "length_band"],
         "report_dims": ["journal_family", "length_band", "year_band", "section_type"],
         "skip_loss_threshold": 0.10,
+        # true: the noise subset (noise.noise_questions) is left out of the primary set and the
+        # set with it is reported as a sensitivity result (owner 2026-11-05); false = old rule
+        "exclude_noise_subset": False,
     },
     "decide": {
         "k": 5,
@@ -100,6 +103,10 @@ DEFAULTS: dict[str, Any] = {
         "stratum_point": -2.0,
         "context_ratio": 1.5,
         "min_stratum_n": 30,
+        # "none" | "bonferroni" (owner 2026-11-05); "none" = the rule before that date
+        "stratum_correction": "none",
+        # "cheapest" | "paired_ladder" (owner 2026-11-05); "cheapest" = the rule before that date
+        "tie_break": "cheapest",
     },
     "margins": None,
     "noise": {
@@ -145,7 +152,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ConfigError("config must be a JSON object")
     raw = {k: v for k, v in raw.items() if not k.startswith("_")}
-    cfg = _merge(DEFAULTS, raw)
+    cfg = _merge(copy.deepcopy(DEFAULTS), raw)  # never hand out (mutable) DEFAULTS sub-dicts
     base = p.resolve().parent
     for k in _PATH_KEYS:
         if isinstance(cfg.get(k), str):

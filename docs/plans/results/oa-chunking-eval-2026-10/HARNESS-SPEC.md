@@ -1,6 +1,7 @@
 # OA chunking eval harness: spec (2026-11-04)
 
-Implements PLAN-AND-PASS-RULE.md (with Addendum A). Code lives in this repo under
+Implements PLAN-AND-PASS-RULE.md (with Addendum A; the 2026-11-05 freeze options of Addendum B are
+config keys, see `score.exclude_noise_subset`, `decide.stratum_correction`, `decide.tie_break`). Code lives in this repo under
 `python/scripts/eval/oa_chunk_eval/`; all eval data (samples, passages, questions, answers,
 ledgers, results with text) is written to a PRIVATE output directory given on the command line,
 never into the repo. No hostnames, ports, keys or private paths in code defaults: everything
@@ -24,7 +25,9 @@ comes from a JSON config file passed with `--config` (example with placeholders 
   `retrieval_mode` explicitly (`retrieve` refuses otherwise), so server defaults cannot drift between the
   noise and main runs. A 503 with `Retry-After` waits (capped at `max_retry_after_s`) and retries, up to
   `max_503_waits` times, before it counts as a failure.
-- `arms`: list of {name, collection_id, cost_class: cheap|mid|expensive, baseline: bool}.
+- `arms`: list of {name, collection_id, cost_class: cheap|mid|expensive, baseline: bool, cost_rank (optional
+  integer, lower = cheaper; set on every arm or on none; used by the `paired_ladder` tie-break, which falls
+  back to cost class then config order when it is absent)}.
 - `stop`: {max_failures: 20, max_consecutive: 5, pause_file}.
 - `questions`: {max_attempts: 3}: attempts per writer call (across runs) before the call is final; selection
   then uses the passage's completed calls.
@@ -33,9 +36,18 @@ comes from a JSON config file passed with `--config` (example with placeholders 
   is the name written to outputs (default: basename of the tokenizer model, never a path).
   `max_unlocated_share`: per arm, the largest allowed share of hits with an empty `source_path`, and of
   gold-record hits that are `unlocated` or `offsets_unverified`; above it `score`, `noise` and `decide` refuse.
+  `exclude_noise_subset` (default false = the rule before 2026-11-05): when true, the questions of the noise
+  subset (selected by `noise.noise_questions`, the noise run's own function, seed and size) are flagged
+  `noise_subset` per question and left out of the primary set (`clean_excl_noise`, or `all_excl_noise`
+  without an audit); the set with them (`clean` / `all`) is still scored and named `sensitivity_set` (a
+  labelled sensitivity result, not the decision).
 - `decide`: {k: 5, alpha_one_sided: 0.025, stratum_point: -2.0, context_ratio: 1.5, min_stratum_n: 30}.
   Strata with fewer paired questions than `min_stratum_n` are not tested by the stratum guard and are listed
   as not tested (the owner sets the value at freeze).
+  `stratum_correction`: `"none"` (default, the rule before 2026-11-05: the stratum's 95% CI) or `"bonferroni"`:
+  the guard uses the two-sided (1 - 0.05/k) paired bootstrap interval, k = strata the guard tests for that arm
+  (n >= `min_stratum_n`, across all `strata_dims`); the point condition is unchanged.
+  `tie_break`: `"cheapest"` (default, the rule before 2026-11-05) or `"paired_ladder"` (see `decide`).
 
 ## Subcommands (one CLI, `python -m oa_chunk_eval <cmd> --config C`)
 1. `sample`: filter manifest to include_pmcids; normalise journal names into families; stratify by
@@ -80,11 +92,27 @@ comes from a JSON config file passed with `--config` (example with placeholders 
    (share of wrong top-1 chunks from another article of the same journal family); per-arm hit quality
    (empty `source_path` share, `unlocated` / `offsets_unverified` counts); skip loss by stratum including
    pending passages and articles skipped at the passage stage; the check-writer set as a separate secondary
-   report.
+   report. With `score.exclude_noise_subset` the primary set leaves out the noise subset and the set with it is
+   reported beside it as the sensitivity set (`noise_exclusion` records the sizes).
 7. `decide`: applies the pass rule from PLAN-AND-PASS-RULE.md Addendum A: cheap arms non-inferiority
    (lower CI >= -M_ni), mid superiority (>= +M_mid), expensive (>= +M_high); Holm across challengers;
    stratum guard (any reported stratum with point < -2.0 and CI upper < 0 fails); context-token rule
    (> 1.5x baseline needs the next class's margin); tie-break cheaper ingest then fewer context tokens.
+   Options (owner 2026-11-05, defaults keep the rule above):
+   - `decide.stratum_correction: "bonferroni"`: the stratum guard's interval is the two-sided (1 - 0.05/k)
+     paired bootstrap interval, k = strata tested for the arm. `decide` recomputes the per-stratum bootstrap
+     from `per_question.jsonl` with the same rows, order, iterations and seed as `score` (so its 95% bounds
+     equal `score.json`'s; stratum sizes are cross-checked). k, the level and every tested stratum's bounds
+     are written per arm (`stratum_guard_detail`) and in the Markdown summary.
+   - `decide.tie_break: "paired_ladder"`: candidates = baseline + passing challengers, ordered by `cost_rank`
+     (fallback: cost class, then config order); the cheapest is the incumbent; each costlier candidate
+     replaces it only if the paired bootstrap lower bound of (candidate - incumbent) on primary hit@k, at
+     the pass rule's level (two-sided 1 - 2 x `alpha_one_sided`), is > 0. Every step (pair, n, point, lo,
+     hi, switched) is written to `ladder` and the Markdown summary. The context-token rule still applies to
+     pass/fail first.
+   - With `score.exclude_noise_subset`, the same rule is also run on the sensitivity set and written as
+     `sensitivity` (pass/fail per arm, the arm it would choose, its ladder), labelled as not the decision.
+     A config whose `exclude_noise_subset` differs from the one `score` ran with is a refusal.
    Margins come from config (set after the noise run). Refuses when the margins differ from `noise.json`,
    `noise.json` or the audit is missing, or `score` reported refusals, unless `--force-unchecked` (recorded
    in `decision.json`). Writes `decision.json` and a Markdown summary with aggregates only (no question

@@ -1501,3 +1501,256 @@ def test_read_key_plain_and_envelope(tmp_path):
     two.write_text("line1\nline2\n")
     with pytest.raises(ConfigError):
         read_key(str(two))
+
+
+# =================================================================== freeze changes (owner 2026-11-05)
+# Addendum B: Bonferroni stratum guard, paired-ladder tie-break, noise-subset exclusion.
+
+
+# ---- Bonferroni stratum guard
+
+
+def _stratum(center: float, sd: float, n: int = 200, seed: int = 0) -> dict[str, Any]:
+    d = np.random.default_rng(seed).normal(center, sd, 20000)
+    return {"point": center, "lo": float(np.percentile(d, 2.5)), "hi": float(np.percentile(d, 97.5)), "n": n,
+            "_dist": d}
+
+
+def _five_strata(min_small: bool = False) -> dict[str, Any]:
+    # fam_a: 95% upper ~ -3 + 1.96 x 1.3 = -0.45 < 0 (fails uncorrected);
+    # with k = 5 the 99% upper ~ -3 + 2.576 x 1.3 = +0.35 >= 0 (passes corrected)
+    jf = {"fam_a": _stratum(-3.0, 1.3, seed=1), "fam_b": _stratum(0.0, 1.0, seed=2),
+          "fam_c": _stratum(0.5, 1.0, seed=3)}
+    lb = {"short": _stratum(-0.5, 1.0, seed=4), "long": _stratum(0.2, 1.0, seed=5)}
+    if min_small:
+        jf["fam_tiny"] = {**_stratum(-30.0, 1.0, seed=6), "n": 5}  # below min n: not tested, not counted
+    return {"c": {"journal_family": jf, "length_band": lb}}
+
+
+def test_bonferroni_k_counts_only_tested_strata_across_dims():
+    detail: dict[str, Any] = {}
+    untested: list[dict[str, Any]] = []
+    decide.stratum_guard(_five_strata(min_small=True)["c"], -2.0, 30, untested, "bonferroni", detail)
+    assert detail["k"] == 5 and detail["correction"] == "bonferroni"
+    assert detail["level"] == pytest.approx(1 - 0.05 / 5)
+    assert [s["value"] for s in untested] == ["fam_tiny"]
+    assert {s["value"] for s in detail["strata"]} == {"fam_a", "fam_b", "fam_c", "short", "long"}
+
+
+def test_bonferroni_stratum_passes_corrected_but_fails_uncorrected():
+    strata = _five_strata()
+    base_cfg = {**DCFG, "min_stratum_n": 30}
+    r_none = decide.evaluate(_arms(("c", "cheap")), "base", {"c": _dist(0.0)}, strata, {"base": 1, "c": 1},
+                             MARGINS, {**base_cfg, "stratum_correction": "none"})
+    assert r_none["arms"]["c"]["fail_reasons"] == ["stratum_guard"]
+    assert [s["value"] for s in r_none["arms"]["c"]["stratum_failures"]] == ["fam_a"]
+    assert r_none["arms"]["c"]["stratum_guard_detail"]["level"] == pytest.approx(0.95)
+    r_b = decide.evaluate(_arms(("c", "cheap")), "base", {"c": _dist(0.0)}, strata, {"base": 1, "c": 1},
+                          MARGINS, {**base_cfg, "stratum_correction": "bonferroni"})
+    c = r_b["arms"]["c"]
+    assert c["pass"] and c["stratum_guard"] and c["stratum_failures"] == []
+    fam_a = next(s for s in c["stratum_guard_detail"]["strata"] if s["value"] == "fam_a")
+    assert fam_a["hi"] > 0 > strata["c"]["journal_family"]["fam_a"]["hi"]  # corrected bound is wider
+    assert fam_a["point"] == -3.0 and not fam_a["fails"]
+
+
+def test_bonferroni_without_bootstrap_dist_is_an_error_and_bad_value_refused():
+    strata = {"c": {"journal_family": {"fam_a": {"point": -3.0, "lo": -5.0, "hi": -1.0, "n": 200}}}}
+    with pytest.raises(ValueError):
+        decide.evaluate(_arms(("c", "cheap")), "base", {"c": _dist(0.0)}, strata, {"base": 1, "c": 1},
+                        MARGINS, {**DCFG, "stratum_correction": "bonferroni"})
+    with pytest.raises(ConfigError):
+        decide.evaluate(_arms(("c", "cheap")), "base", {"c": _dist(0.0)}, strata, {"base": 1, "c": 1},
+                        MARGINS, {**DCFG, "stratum_correction": "holm"})
+
+
+def test_bonferroni_strata_from_rows_deterministic_and_match_score():
+    rng = np.random.default_rng(3)
+    rows = [{"strata": {"journal_family": "fa" if i % 3 else "fb", "length_band": "short" if i % 2 else "long"},
+             "arms": {"base": {"5": {"primary": int(rng.random() < 0.8)}},
+                      "alt": {"5": {"primary": int(rng.random() < 0.7)}}}} for i in range(300)]
+    dims = ["journal_family", "length_band"]
+    s1 = decide.strata_from_rows(rows, ["base", "alt"], "base", 5, dims, 2000, 0)
+    s2 = decide.strata_from_rows(rows, ["base", "alt"], "base", 5, dims, 2000, 0)
+    ref = score.by_stratum(rows, dims, lambda g: score.compare(g, ["base", "alt"], "base", 5, "primary", 2000, 0))
+    for d in dims:
+        for v, c in s1["alt"][d].items():
+            assert np.array_equal(c["_dist"], s2["alt"][d][v]["_dist"])
+            # the 95% bounds are the ones score.json reports (same rows, order and seed)
+            assert round(c["lo"], 4) == ref[d][v]["diff"]["alt"]["lo"]
+            assert round(c["hi"], 4) == ref[d][v]["diff"]["alt"]["hi"]
+            assert c["n"] == ref[d][v]["diff"]["alt"]["n"]
+    det1: dict[str, Any] = {}
+    det2: dict[str, Any] = {}
+    decide.stratum_guard(s1["alt"], -2.0, 30, None, "bonferroni", det1)
+    decide.stratum_guard(s2["alt"], -2.0, 30, None, "bonferroni", det2)
+    assert det1 == det2 and det1["k"] == 4
+
+
+# ---- paired ladder tie-break
+
+
+LN = 2000
+
+
+def _base_vec(seed: int = 11) -> np.ndarray:
+    return (np.random.default_rng(seed).random(LN) < 0.75).astype(int)
+
+
+def _shift(v: np.ndarray, gains: int, losses: int, seed: int) -> np.ndarray:
+    """``v`` with ``gains`` misses turned into hits and ``losses`` hits into misses."""
+    rng = np.random.default_rng(seed)
+    out = v.copy()
+    zeros, ones = np.flatnonzero(out == 0), np.flatnonzero(out == 1)
+    out[rng.choice(zeros, gains, replace=False)] = 1
+    out[rng.choice(ones, losses, replace=False)] = 0
+    return out
+
+
+def _ladder_eval(arms, vec, **dcfg_over):
+    diffs = {a["name"]: stats.paired_diff(vec[a["name"]], vec["base"], 2000, 0) for a in arms if not a.get("baseline")}
+    ctx = {a["name"]: 100 for a in arms}
+    return decide.evaluate(arms, "base", diffs, {}, ctx, MARGINS, {**DCFG, "tie_break": "paired_ladder", **dcfg_over},
+                           vec, 2000, 0)
+
+
+def test_ladder_cheap_kept_when_mid_not_directly_better():
+    """(i) cheap passes, mid passes vs baseline but is not better than cheap directly."""
+    b = _base_vec()
+    c = _shift(b, 80, 0, 1)            # +4.0 vs base
+    m = _shift(c, 10, 5, 2)            # +4.25 vs base, +0.25 vs cheap
+    arms = _arms(("c", "cheap"), ("m", "mid"))
+    r = _ladder_eval(arms, {"base": b, "c": c, "m": m})
+    assert r["arms"]["c"]["pass"] and r["arms"]["m"]["pass"]
+    lad = r["ladder"]
+    assert lad["order"] == ["base", "c", "m"] and lad["level"] == pytest.approx(0.95)
+    assert [(s["pair"], s["switched"]) for s in lad["steps"]] == [("c - base", True), ("m - c", False)]
+    assert lad["steps"][1]["lo"] <= 0
+    assert r["winner"] == "c" and not r["kept_baseline"]
+    # the default tie-break would have picked the same cheap arm, without a ladder
+    diffs = {a: stats.paired_diff(v, b, 2000, 0) for a, v in (("c", c), ("m", m))}
+    r_old = decide.evaluate(arms, "base", diffs, {}, {"base": 100, "c": 100, "m": 100}, MARGINS, DCFG)
+    assert r_old["winner"] == "c" and r_old["ladder"] is None and r_old["tie_break"] == "cheapest"
+
+
+def test_ladder_mid_chosen_when_significantly_better_than_cheap():
+    """(ii) with Addendum B's ranks (cheap 1 < baseline 2 < mid 3)."""
+    b = _base_vec()
+    c = _shift(b, 20, 20, 3)           # 0 vs base: non-inferior
+    m = _shift(b, 100, 0, 4)           # +5 vs base
+    arms = [{"name": "base", "cost_class": "cheap", "baseline": True, "cost_rank": 2},
+            {"name": "c", "cost_class": "cheap", "cost_rank": 1}, {"name": "m", "cost_class": "mid", "cost_rank": 3}]
+    r = _ladder_eval(arms, {"base": b, "c": c, "m": m})
+    lad = r["ladder"]
+    assert lad["order"] == ["c", "base", "m"] and lad["order_basis"] == "cost_rank"
+    assert [(s["candidate"], s["incumbent"], s["switched"]) for s in lad["steps"]] == [
+        ("base", "c", False), ("m", "c", True)]
+    assert lad["steps"][1]["lo"] > 0 and r["winner"] == "m"
+
+
+def test_ladder_three_steps():
+    """(iii) cheap 1 < baseline 2 < mid 3 < expensive 4: two switches."""
+    b = _base_vec()
+    c = _shift(b, 20, 20, 5)
+    m = _shift(b, 100, 0, 6)           # +5 vs base
+    e = _shift(m, 120, 0, 7)           # +11 vs base, +6 vs mid
+    arms = [{"name": "base", "cost_class": "cheap", "baseline": True, "cost_rank": 2},
+            {"name": "c", "cost_class": "cheap", "cost_rank": 1}, {"name": "m", "cost_class": "mid", "cost_rank": 3},
+            {"name": "e", "cost_class": "expensive", "cost_rank": 4, "workflow_feasible": True}]
+    r = _ladder_eval(arms, {"base": b, "c": c, "m": m, "e": e})
+    assert all(r["arms"][a]["pass"] for a in ("c", "m", "e"))
+    steps = r["ladder"]["steps"]
+    assert [(s["pair"], s["switched"]) for s in steps] == [("base - c", False), ("m - c", True), ("e - m", True)]
+    assert all(set(s) >= {"pair", "point", "lo", "hi", "switched", "n"} for s in steps)
+    assert steps[2]["point"] == pytest.approx(6.0) and r["winner"] == "e"
+
+
+def test_ladder_cost_rank_fallback_is_class_then_config_order():
+    """(iv) no cost_rank: cheap < mid < expensive, then config order; partial cost_rank refused."""
+    arms = [{"name": "base", "cost_class": "cheap", "baseline": True}, {"name": "m", "cost_class": "mid"},
+            {"name": "c2", "cost_class": "cheap"}, {"name": "c1", "cost_class": "cheap"}]
+    order, basis = decide.ladder_order(arms, ["m", "c1", "base", "c2"])
+    assert order == ["base", "c2", "c1", "m"] and basis == "cost_class_then_config_order"
+    ranked = [{**a, "cost_rank": r} for a, r in zip(arms, (3, 1, 2, 2), strict=True)]
+    assert decide.ladder_order(ranked, ["m", "c1", "base", "c2"])[0] == ["m", "c2", "c1", "base"]
+    with pytest.raises(ConfigError):
+        decide.ladder_order([{**arms[0], "cost_rank": 1}] + arms[1:], ["base", "m"])
+    with pytest.raises(ConfigError):
+        decide.ladder_order([{**a, "cost_rank": "1"} for a in arms], ["base", "m"])
+    b = _base_vec()
+    c1 = _shift(b, 20, 20, 8)
+    m = _shift(b, 100, 0, 9)
+    r = _ladder_eval([arms[0], arms[1], arms[3]], {"base": b, "m": m, "c1": c1})
+    assert r["ladder"]["order"] == ["base", "c1", "m"] and r["winner"] == "m"
+
+
+def test_ladder_baseline_chosen_when_nothing_passes():
+    """(v)"""
+    b = _base_vec()
+    m = _shift(b, 10, 10, 10)          # 0 vs base: fails mid superiority
+    r = _ladder_eval(_arms(("m", "mid")), {"base": b, "m": m})
+    assert not r["arms"]["m"]["pass"] and r["no_arm_passed"]
+    assert r["winner"] == "base" and r["kept_baseline"]
+    assert r["ladder"]["order"] == ["base"] and r["ladder"]["steps"] == []
+
+
+def test_ladder_needs_vectors_and_rejects_unknown_tie_break():
+    with pytest.raises(ValueError):
+        decide.evaluate(_arms(("c", "cheap")), "base", {"c": _dist(0.0)}, {}, {"base": 1, "c": 1}, MARGINS,
+                        {**DCFG, "tie_break": "paired_ladder"})
+    with pytest.raises(ConfigError):
+        decide.evaluate(_arms(("c", "cheap")), "base", {"c": _dist(0.0)}, {}, {"base": 1, "c": 1}, MARGINS,
+                        {**DCFG, "tie_break": "highest_class"})
+
+
+# ---- noise-subset exclusion + sensitivity, end to end
+
+
+def test_noise_subset_excluded_from_primary_and_sensitivity_reported(tmp_path):
+    cfg = build_fixture(tmp_path)
+    cfg["score"]["exclude_noise_subset"] = True
+    cfg["decide"].update({"stratum_correction": "bonferroni", "tie_break": "paired_ladder", "min_stratum_n": 10})
+    out = Path(cfg["out_dir"])
+    expected = {q["question_id"] for q in noise.noise_questions(cfg, read_jsonl(out / "questions.jsonl"))}
+    assert len(expected) == 10
+    assert score.run(cfg) == 0
+    rows = read_jsonl(out / "per_question.jsonl")
+    assert {r["question_id"] for r in rows if r["noise_subset"]} == expected
+    s = json.loads((out / "score.json").read_text())
+    assert s["primary_set"] == "clean_excl_noise" and s["sensitivity_set"] == "clean"
+    assert "NOT the decision" in s["sensitivity_label"]
+    ne = s["noise_exclusion"]
+    assert ne["enabled"] and ne["n_noise_subset"] == 10 and ne["n_excluded_from_primary"] == 10
+    assert s["sets"]["clean"]["n"] == 39 and s["sets"]["clean_excl_noise"]["n"] == 39 - 10 == ne["n_primary"]
+    write_noise(cfg)
+    assert decide.run(cfg) == 0
+    dec = json.loads((out / "decision.json").read_text())
+    assert dec["inputs"]["set"] == "clean_excl_noise" and dec["inputs"]["n"] == 29
+    sens = dec["sensitivity"]
+    assert sens["is_decision"] is False and "NOT the decision" in sens["label"]
+    assert sens["set"] == "clean" and sens["n"] == 39 and set(sens["arms"]) == {"alt"}
+    assert "pass" in sens["arms"]["alt"] and sens["winner"] in ("base", "alt")
+    det = dec["arms"]["alt"]["stratum_guard_detail"]
+    # journal_family fa, fb + length_band short (every fixture question is short)
+    assert det["correction"] == "bonferroni" and det["k"] == 3 and det["level"] == pytest.approx(1 - 0.05 / 3)
+    assert dec["ladder"]["order"][0] == "base" and dec["tie_break"] == "paired_ladder"
+    md = (out / "decision.md").read_text()
+    assert "## Sensitivity (SENSITIVITY" in md and "NOT the decision" in md
+    assert "## Stratum guard (bonferroni)" in md and "## Tie-break: paired ladder" in md
+    assert "marker gene" not in md and "col-alt" not in md
+    # decide refuses a config that no longer matches how score was computed
+    cfg["score"]["exclude_noise_subset"] = False
+    assert decide.run(cfg) == 2
+
+
+def test_default_score_has_no_noise_exclusion_and_no_sensitivity(tmp_path):
+    cfg = build_fixture(tmp_path)
+    assert score.run(cfg) == 0
+    out = Path(cfg["out_dir"])
+    s = json.loads((out / "score.json").read_text())
+    assert s["noise_exclusion"] == {"enabled": False} and "sensitivity_set" not in s
+    assert all("noise_subset" not in r for r in read_jsonl(out / "per_question.jsonl"))
+    write_noise(cfg)
+    assert decide.run(cfg) == 0
+    dec = json.loads((out / "decision.json").read_text())
+    assert dec["sensitivity"] is None and dec["ladder"] is None and dec["stratum_correction"] == "none"
