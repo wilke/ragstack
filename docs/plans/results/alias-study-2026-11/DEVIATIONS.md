@@ -209,3 +209,10 @@ derivable from committed figures before the script ran; its CI and display p wer
 **Which results it touches.** None. The H1b gold-only figure enters no gate, no family procedure and no
 verdict; H1b's label, p and level are the stage-B run's. The figure's p is a display figure of the same
 label randomization, not a test. Every sentence that quotes H1b's gold-only figure cites this entry.
+
+## Cross-reference, 2026-11-05: the chunk-boundary control is an addendum, not a deviation
+
+The exploratory chunk-boundary control, with its cover-any step and its test-retest null, changes no
+hypothesis, cell, record, judge, threshold, seed, gate or analysis of the frozen text. It is recorded in
+[`ADDENDUM-2026-11-05-chunk-boundary-control.md`](ADDENDUM-2026-11-05-chunk-boundary-control.md) (plan:
+`control/CONTROL-PLAN.md` §1).
