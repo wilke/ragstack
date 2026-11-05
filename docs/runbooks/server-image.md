@@ -13,7 +13,7 @@ migration step 6. Two images, one build script, one identity mechanism:
 | runs as | `apptainer exec` by a GoWe worker | `apptainer run` (the `%runscript`), an instance owned by the ctl |
 | lives in | `/scout/containers/ragstack/` (GoWe's placement; released builds only, copied by hand — ADR-0010 decision 6 (c)) | `/rag/data/ctl/images/server/`, entered only through `ragstack-ctl fleet image prepare --sif` (PR-F F3) |
 
-Both carry the same extras (`vector,pdf,text,tokenization,graph,postgres` +
+Both carry the same extras (`vector,pdf,text,tokenization,graph,postgres,chunking,markdown` +
 sentencepiece/protobuf; no torch) and read the HF tokenizer from a bound
 `HF_HOME` (default `/rag/cache`).
 
