@@ -439,6 +439,11 @@ subcommand's behaviour.
 9. **When?** — After the §11 PR is merged and reviewed, in a gap on the Qwen endpoints, under one gateway
    notice; not interleaved with any other gateway work.
 
+**Owner answers, 2026-11-05.** n = 318 at 90 % power, 334 drawn (4); one pair per record (3); pairwise
+deletion of unjudged pairs with the *unjudged = not* sensitivity printed beside it (6); 1, 2, 5, 7, 8 and 9 as
+recommended. Review: this pre-registration and its §11 code each get two independent reviews (Fable and an
+argo-agent read) before merge. The freeze itself still needs the owner's go naming the commit (§9.2).
+
 ## 14. What is released
 
 **Private, never in the repository:** `sample.jsonl`, the chunk and document files, the two seed files, both
