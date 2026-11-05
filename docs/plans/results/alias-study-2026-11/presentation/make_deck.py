@@ -350,6 +350,46 @@ slide("Design", "How it was measured",
       source="<code>record_set.balanced</code>, <code>layer1.H1.n</code>, <code>layer2.c_change.n</code>, <code>judge.pairs_finalized</code> (results-stage-B); prereg §4, §6")
 
 # --------------------------------------------------------------------------- #
+# 3o. Why judge at all (owner request, 2026-11-05)
+# --------------------------------------------------------------------------- #
+HBO = ORIGIN["hits_by_origin"]
+assert HBO["base|none|default"]["records"] == "G" and HBO["neighbour|none|default"]["records"] == "all"
+
+
+def origin_bar(cell: str, n: int, label: str) -> str:
+    h = HBO[cell]
+    tot = h["gold"] + h["same"] + h["other"]
+    miss = n - tot
+    return (f'<p class="small"><b>{esc(label)}</b>: {tot} of {n} found</p>'
+            f'<div class="split" role="img" aria-label="{esc(label)}: gold chunk {h["gold"]}, another passage of the same paper {h["same"]}, another paper {h["other"]}, not found {miss}">'
+            f'<span class="seg s1" style="flex:{h["gold"]}">{h["gold"]} gold</span>'
+            f'<span class="seg s2 tex" style="flex:{max(h["same"], 1)}">{h["same"]}</span>'
+            f'<span class="seg s3" style="flex:{max(h["other"], 1)}">{h["other"]}</span>'
+            f'<span class="seg miss" style="flex:{max(miss, 1)}">{miss}</span></div>')
+
+
+base_g, nb = HBO["base|none|default"], HBO["neighbour|none|default"]
+slide("Design · the outcome", "Why judge at all?",
+      f"""<div class="cols2">
+<div>
+<p class="lede">Each question asks for a <b>fact</b>, not a passage. It was written from one gold chunk, but the fact is often stated elsewhere too (abstract, discussion, a caption, a citing paper), and a reader who retrieves any of those has the answer.</p>
+<p><b>Counting only the gold chunk would score those as misses.</b> Without a glossary, {base_g['gold'] + base_g['same'] + base_g['other']} of {N_G} G questions were answered in the top 10, but only {base_g['gold']} by the gold chunk: {base_g['same']} by another passage of the same paper and {base_g['other']} by another paper.</p>
+<p><b>For H2 it decides the question.</b> A citation neighbour is more likely than a random paper to <i>answer</i>. Gold-only would count every gold chunk a neighbour pushes out as a loss, even when the neighbour supplies the answer. With neighbours added, {nb['other']} questions were answered by another paper, against {HBO['random1|none|default']['other']} and {HBO['random2|none|default']['other']} in the random draws. Judged H2 asks whether neighbours displace more than they add (prereg §3.1).</p>
+<p class="small"><b>So judged found@10 is the outcome</b> (what a reader gets), with found@10-gold beside every figure as a judge-free check and as H2's direction gate. The price: the judge has to be right (next two slides).</p>
+</div>
+<div class="card"><p class="fam">Who answered: gold chunk / same paper / another paper / not found</p>
+<div class="legend-row small"><span class="key s1"></span> gold chunk <span class="key s2 tex"></span> another passage, same paper <span class="key s3"></span> another paper <span class="key miss"></span> not found</div>
+{origin_bar("base|none|default", N_G, "G questions, base corpus, no glossary")}
+{origin_bar("neighbour|none|default", N_ALL, "all questions, neighbours added")}
+{origin_bar("random1|none|default", N_ALL, "all questions, random draw 1 added")}
+{origin_bar("random2|none|default", N_ALL, "all questions, random draw 2 added")}
+<p class="small">Counts are exact; small segments are widened to fit their labels, so widths are approximate.</p>
+</div>
+</div>""",
+      flag=True,
+      source="<code>fixed_sensitivities.origin.hits_by_origin</code> (stage-A2); <code>layer1.H1.n</code>, <code>record_set.balanced</code>; prereg §3.1, §6.1")
+
+# --------------------------------------------------------------------------- #
 # 3a. What "judged" means (owner request, 2026-11-05)
 # --------------------------------------------------------------------------- #
 DA, DB = A["judge"]["drift"], B["judge"]["drift"]
@@ -809,6 +849,7 @@ table.scen caption{text-align:left;font-weight:600;color:var(--ink2);padding-bot
 .split{display:flex;gap:3px;height:2.1em;margin:.3em 0 .8em;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:.9em}
 .seg{display:flex;align-items:center;padding:0 .7em;color:#fff;font-weight:600;background:var(--s1)}
 .seg.s2{background:var(--s2)}
+.seg.s3{background:var(--s3)}.seg.miss{background:var(--muted,#8a8f8c)}.legend-row{display:flex;flex-wrap:wrap;align-items:center;gap:.35em .6em;margin:.2em 0 .6em}.key{display:inline-block;width:1.1em;height:.8em;border-radius:2px;background:var(--s1)}.key.s2{background:var(--s2)}.key.s3{background:var(--s3)}.key.miss{background:var(--muted,#8a8f8c)}.key.tex{background-image:repeating-linear-gradient(45deg,transparent 0 3px,var(--patline) 3px 4.5px)}
 .seg.tex{background-image:repeating-linear-gradient(45deg,transparent 0 5px,var(--patline) 5px 6.5px)}
 .lim{margin:0;padding-left:1.1em}
 .lim li{margin:0 0 .8em}

@@ -146,3 +146,13 @@ never sets a label; agreement with Opus 0.948 in stage A and 0.960 cumulative ag
 report-only under R29; the arm gap never fired; 59 pairs ended as *no reference*; all from `judge.drift`
 and `judge.opus_no_reference`). The deck now has 17 slides; the "15 slides" in the status above refers to
 the first version.
+
+### Addition, 2026-11-05 (later still): why judge at all
+
+The deck gains a slide before the two judge slides, at the owner's request: why the outcome is judged at
+all. A question asks for a fact that is often stated in more than one place; counting only the gold chunk
+would score answers from other passages as misses (without a glossary, 591 of 600 G questions were
+answered, 550 by the gold chunk, 23 by another passage of the same paper, 18 by another paper), and for
+H2 it would count every displaced gold chunk as a loss even where a neighbour supplies the answer
+(other-paper answers 67 with neighbours, 48 and 49 with the random draws). All from
+`fixed_sensitivities.origin.hits_by_origin`. The deck now has 18 slides.
