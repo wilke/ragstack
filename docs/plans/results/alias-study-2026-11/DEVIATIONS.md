@@ -216,3 +216,26 @@ The exploratory chunk-boundary control, with its cover-any step and its test-ret
 hypothesis, cell, record, judge, threshold, seed, gate or analysis of the frozen text. It is recorded in
 [`ADDENDUM-2026-11-05-chunk-boundary-control.md`](ADDENDUM-2026-11-05-chunk-boundary-control.md) (plan:
 `control/CONTROL-PLAN.md` §1).
+
+## D-3, 2026-11-05: the §3.3 wording table has no row for a *not resolved* glossary reading beside H1 confirmed
+
+**What the frozen text says.** §3.3's table of serving statements pairs each Layer-2 reading of the
+glossary decision with the Layer-1 verdict. Its *not resolved* row covers only "H1 not confirmed or
+GATE-NOT-EVALUABLE" ("the Layer-2 phrase, with the H1 verdict beside it"). No row covers *not resolved*
+beside **H1 confirmed**.
+
+**What happened.** Stage B's glossary decision reads *not resolved* (`results-stage-B.public.json`
+`layer2.decisions.attach_merged_glossary.reading`). H1 and H1b were confirmed in stage A. The table
+therefore gives no serving statement for this combination.
+
+**Decision (owner, 2026-11-05).** `RESULTS.md` uses the nearest frozen rule: the Layer-2 phrase
+*not resolved*, quoted as the artifact states it, with the Layer-1 verdicts (H1 confirmed, H1b confirmed)
+beside it. Beside that statement, `RESULTS.md` quotes the frozen §3.2 reading for H1 confirmed × H1b
+confirmed (an alias-specific gain, for questions using the glossary's primary term) and the §3.3 2-point
+action threshold; no threshold or reading was changed.
+
+**What had been seen, and when.** The stage-B results, including this reading and both Layer-1 verdicts,
+had been read before this entry was written.
+
+**Which results it touches.** Only the wording of the glossary serving statement in `RESULTS.md`. Every
+figure, threshold and verdict is as computed.
