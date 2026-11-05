@@ -9,8 +9,8 @@ After freeze this file is never edited; any later change is a `DEVIATIONS.md` en
 "freeze after fixes") and the owner's decision of the same day on the draw cap and the primary test (§13):
 the cap is one pair per (record, arm); the primary test is the exact sign-flip over records; exact McNemar
 is a pre-specified sensitivity; the power is re-done by simulation under the clustered design, and **90 %
-power is not reachable within the pool** under the sizing assumptions (§3.3) — the choice of draw size is
-the one open decision (§13 Q4).
+power is not reachable within the pool** under the sizing assumptions (§3.3); the owner chose n_draw = 370
+(80 %) on 2026-11-05 (§13).
 
 **Tier: record** (study-writeup skill). This is a **confirmatory** follow-up to the **exploratory**
 chunk-boundary control of the alias study
