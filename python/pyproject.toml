@@ -105,7 +105,7 @@ markdown = [
     # fallback (#815). Bounded to the majors the adapter was tested on: the
     # parse decides every section boundary, so a parser major is an adapter
     # change, and `enrichment.structure.backend` records the versions that ran.
-    # NEITHER image def installs this extra yet (see the #828 PR 2 body).
+    # Both image defs install this extra (#828 step R; test_image_defs_extras.py).
     "markdown-it-py>=4.0,<5",
     "mdit-py-plugins>=0.6,<0.7",
 ]
