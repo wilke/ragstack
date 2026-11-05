@@ -195,9 +195,10 @@ Christopher Sciavolino, Zexuan Zhong, Jinhyuk Lee, Danqi Chen. EMNLP 2021, 6138â
 EntityQuestions, simple questions from Wikidata facts. Top-20 retrieval accuracy (Table 1 and the full
 Table 5 "Average" row): DPR (NQ) 49.7, DPR (multi) 56.7, BM25 71.2 on average; the authors write that
 the gap reaches "60% absolute" on some patterns, and the largest per-pattern gap in Table 5 is 63.7
-points ("Who is [E]'s child?": DPR-NQ 19.2 vs BM25 82.9). (A review suggested 72.0 and 65.8; those are
-single cells of other tables, not the averages or the largest gap; the figures above were re-read from
-the full text.) Dense
+points ("Who is [E]'s child?": DPR-NQ 19.2 vs BM25 82.9). These are the **EMNLP 2021 proceedings**
+figures (aclanthology.org/2021.emnlp-main.496, checked 2026-11-05). The later arXiv revision
+(arXiv:2109.08535) reports BM25 72.0 on average (micro 71.3) and 85.0 on that pattern, a 65.8-point gap.
+Cite the version you quote. Dense
 retrievers generalise to common entities and degrade on rarer ones unless the question pattern was seen
 in training; data augmentation does not fix it; REALM is also below BM25 (19.6 points on average).
 
