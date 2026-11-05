@@ -202,7 +202,7 @@ value at or above .80 at every larger grid value).
 For continuity: the v1 design (one pair per record, independent pairs, exact McNemar, analytic) needed
 237 / 318 pairs for 80 % / 90 % (`analytic_reference`).
 
-### 3.3 The draw size (owner decision pending, §13 Q4)
+### 3.3 The draw size (owner decision, 2026-11-05: n_draw = 370)
 
 - **Recommended: n_draw = 370** (80 % power in the sizing case; `n_draw_recommended`). Realised n ≈ 352
   pairs with both final labels over ≈ 215 records; quotas 124 / 123 / 123 by arm (§4.3), within every arm's
@@ -592,6 +592,13 @@ power was re-done under this design by simulation (§3.2), with a stated within-
 draw rule's own cluster frequencies. **Under those assumptions 90 % power is not reachable within the 470
 (record, arm) cells; the draw size (Q4) is open**, with 370 (80 %) recommended. Answers 1, 2, 5–9 stand; Q10
 is new.
+
+**Owner answers, 2026-11-05 (v2, after the revision).** Q4: **n_draw = 370** (80 % power in the sizing case;
+n₈₀ = 352 realised pairs is the floor). Q5: the sizing assumptions **13 % vs 6 %, φ 0, ρ 0.5** are accepted. Q10:
+the **arm alternation per backend** as written in §5 step 5. Cache check: the parent's judge harness is **not**
+changed; the gateway cache status reads *absent*, and §10.10's retest-vs-stage-A Argon agreement check carries
+the threat. The freeze still needs the owner's go naming the commit (§9.2), after the second round of both
+reviews.
 
 ## 14. What is released
 
