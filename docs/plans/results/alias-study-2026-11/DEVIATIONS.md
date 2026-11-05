@@ -230,7 +230,9 @@ therefore gives no serving statement for this combination.
 
 **Decision (owner, 2026-11-05).** `RESULTS.md` uses the nearest frozen rule: the Layer-2 phrase
 *not resolved*, quoted as the artifact states it, with the Layer-1 verdicts (H1 confirmed, H1b confirmed)
-beside it. No new wording was written, and no threshold or reading was changed.
+beside it. Beside that statement, `RESULTS.md` quotes the frozen §3.2 reading for H1 confirmed × H1b
+confirmed (an alias-specific gain, for questions using the glossary's primary term) and the §3.3 2-point
+action threshold; no threshold or reading was changed.
 
 **What had been seen, and when.** The stage-B results, including this reading and both Layer-1 verdicts,
 had been read before this entry was written.

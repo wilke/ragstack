@@ -5,26 +5,27 @@
 defines them (prereg §5.7). **Family G: H1 confirmed, H1b confirmed. Family N: H2 not confirmed.** Every
 result in this file carries the flag ***judge validity below threshold (§13.5)***: the owner's 100-pair spot
 check agreed with the final judge label on 0.87 re-weighted and on 0.82 of the *answers* stratum, both
-below the frozen 0.90 rule, so found@10-gold is printed beside every found@10 figure as the prereg's named
-sensitivity. The labels *confirmed*, *not confirmed* and *GATE-NOT-EVALUABLE* are the committed statistics
+below the frozen 0.90 rule, so found@10-gold is printed beside every Layer-1, Layer-2 and per-cell figure as
+the prereg's named sensitivity. The labels *confirmed*, *not confirmed* and *GATE-NOT-EVALUABLE* are the committed statistics
 script's own (`layer1.<H>.status`). Every number in this file is in a committed artifact under
 [`artifacts/`](artifacts/) or in [`DEVIATIONS.md`](DEVIATIONS.md), and each table names its source and
-key path. Two deviations touch what is reported: **D-1** (the tercile cut points and the other R6 inputs
-were built after the stage-A analysis had run; the binding figures are the first re-run with them) and
-**D-2** (H1b's found@10-gold figure was computed afterwards, display only).
+key path. Three deviations touch what is reported: **D-1** (the tercile cut points and the other R6 inputs
+were built after the stage-A analysis had run; the binding figures are the first re-run with them),
+**D-2** (H1b's found@10-gold figure was computed afterwards, display only) and **D-3** (wording only: the
+frozen §3.3 table has no serving-statement row for a *not resolved* glossary reading beside H1 confirmed).
 
 ## Provenance
 
 | | |
 |---|---|
-| pre-registration | [prereg/PREREG-alias-study.md](prereg/PREREG-alias-study.md), sha256 `d54f4201a4d1281dd895adeca292162999b55109e518129c87f61af473e0822e`, frozen 2026-11-04T05:39:34Z on the owner's go at commit `e6ecfa6`; signed tag `prereg-alias-study-2026-11`; never edited. Every run verified the sha (`study.prereg_verified` true in both results files) |
-| deviations | [DEVIATIONS.md](DEVIATIONS.md): **D-1** the R6 inputs (topic, citation count, text similarity, XML-only, added chunks, neighbour attribution) and the three declared subset lists were built after the stage-A analysis ran; the tercile cut points are therefore post hoc; the first re-run with them (A2) is the binding stage-A analysis. **D-2** H1b's found@10-gold was computed afterwards by a new script that decides nothing |
+| pre-registration | [prereg/PREREG-alias-study.md](prereg/PREREG-alias-study.md), sha256 `d54f4201a4d1281dd895adeca292162999b55109e518129c87f61af473e0822e`, frozen 2026-11-04T05:39:34Z on the owner's go at commit `e6ecfa6`; signed tag `prereg-alias-study-2026-11`; never edited. Every run verified the sha (`study.prereg_verified` true in both results files). (Codes such as R6, O10 and P2 point into the prereg's registers: **R** the owner decisions of 2026-11-02 and 2026-11-03, R1–R11 adopted from an independent methodology review; **O** the open decisions of §14, each settled by the owner; **P** the pre-freeze corrections of 2026-11-03. The prereg's D1–D10 are its owner decisions of 2026-11-01; D-1 to D-3, with a hyphen, are the post-freeze deviations.) |
+| deviations | [DEVIATIONS.md](DEVIATIONS.md): **D-1** the R6 inputs (topic, citation count, text similarity, XML-only, added chunks, neighbour attribution) and the three declared subset lists were built after the stage-A analysis ran; the tercile cut points are therefore post hoc; the first re-run with them (A2) is the binding stage-A analysis. **D-2** H1b's found@10-gold was computed afterwards by a new script that decides nothing. **D-3** (wording only) the frozen §3.3 table has no serving-statement row for a *not resolved* glossary reading beside H1 confirmed; the nearest frozen rule is used and no threshold or reading changed |
 | stages | **stage A**: 19 retrieval legs (5 Layer-1 attachments × default, norerank, BM25, plus 4 noise repeats; 20,729 calls, every leg 1,091 rows, 0 failed), 14 judged legs, 9,205 deduplicated pairs; committed 2026-11-04T12:12:27Z (`artifacts/stage-a-commit.public.json`, commit sha256 `f53ca9d0…`). **Stage B**: the remaining 9 cells and the placebo leg (10 legs), stage-B judging 15,354 further pairs; 24,559 in all |
 | code pins | runs: stage A at `d0d3555`, stage B at `812fea0` (`runs.<leg>.commit`), every run `citable` true, `mode main`. Statistics: `alias_study_stats.py` at `15ee347` for the binding stage-A re-run (**A2**, recorded 2026-11-04T23:18:52Z) and for stage B (2026-11-05T14:15:52Z); inputs builder at `a83d520` (D-1); H1b-gold display at `a179383` (D-2); recount and replay at `3c138ab`; power at `617d28d`; the disagreement-tag counts at `d93eddaa`. Every provenance block records `dirty false`, `untracked 0`, `citable true`, `in_image false` (no tools image; commit and clean tree recorded instead) |
 | artifacts | [`results-stage-A2.public.json`](artifacts/results-stage-A2.public.json) (Layer 1, binding), [`results-stage-B.public.json`](artifacts/results-stage-B.public.json) (Layer 2 and every cell), [`h1b-gold.public.json`](artifacts/h1b-gold.public.json) (D-2), [`stage-a-commit.public.json`](artifacts/stage-a-commit.public.json), [`spot-records-counts.json`](artifacts/spot-records-counts.json), [`spot-judge-record.json`](artifacts/spot-judge-record.json), [`disagreement-tags.json`](artifacts/disagreement-tags.json) (made by [`make_disagreement_tags.py`](artifacts/make_disagreement_tags.py)), [`tercile-cuts.json`](artifacts/tercile-cuts.json), [`power-v4.json`](artifacts/power-v4.json), [`pilot-report.json`](artifacts/pilot-report.json), [`record-recount.json`](artifacts/record-recount.json), [`judge-rule-replay.json`](artifacts/judge-rule-replay.json). Public copies hold counts, rates, CIs, p values, model ids, version strings, commit shas and sha256s of the private files only (prereg §11) |
 | records | the frozen record set (sha256 `09fc5ca4…`, 1,091 accepted; `record_set`), the balanced set of 900 on 300 papers (600 G, 300 C; ids sha256 `2be86f8c…`), the 191 held-out records as the descriptive leg. Recounted by committed code: every one of the 95 checked figures of prereg §4 matches (`record-recount.json`, `checks`) |
 | corpus and cells | OA-1000 (32,765 chunks, 512-token windows `tok512o0`; the token counts of these windows are in the SFR-Embedding-Mistral tokenizer, as the control addendum's `chunker` block records) plus the v4 expanded arms (2,423 added papers each; neighbour 88,765 chunks, random-1 84,762, random-2 84,552; prereg §5.1). 9 bench collections written once (R26); 24 cells + 4 noise repeats + the placebo leg = 29 legs, every leg 1,091 rows (`legs_read`) |
-| judge | C `Qwen3.6-35B-A3B` (n 5, T 0.7, thinking) + E `Qwen3.8-27B` (n 1), tiebreak `Gemini 4 Argon`, drift reference `Claude Opus 5.5` on 5 % of pairs, prompt `alias-judge/2` (prereg §6.3); unjudged pairs 0 (`judge.unjudged`), so no figure carries *judge incomplete* |
+| judge | C `Qwen3.6-35B-A3B` (n 5, T 0.7, thinking) + E `Qwen3.8-27B` (n 1), tiebreak `Gemini 4 Argon`, drift reference `Claude Opus 5.5` on 5 % of pairs, prompt `alias-judge/2` (Opus: `alias-judge/1`) (prereg §6.3); unjudged pairs 0 (`judge.unjudged`), so no figure carries *judge incomplete* |
 | chunk-boundary control | an exploratory, post-freeze judge-only control that changes no figure here is recorded in [`ADDENDUM-2026-11-05-chunk-boundary-control.md`](ADDENDUM-2026-11-05-chunk-boundary-control.md); its numbers are not restated in this file |
 
 ## Contents
@@ -52,6 +53,13 @@ growing it with the same number of random same-field papers? Every glossary clai
 using the glossary's primary term* (prereg §3, R3), and every result sentence carries ***judge validity
 below threshold (§13.5)***.
 
+**G and C records.** A **G record** is a question asked with the full term whose answering passage uses
+only the paper's short form: a symbol, or an abbreviation the paper defines once, somewhere else. A **C
+record** holds the same machinery fixed on a passage that already carries the term, so a glossary effect
+on G can be told apart from a general change in what is retrieved (prereg §1, §4). The balanced set holds
+300 papers with exactly 2 G and 1 C each: 600 G and 300 C records, 900 in all. A **point** is one
+percentage point of records ([What found@10 measures](#what-found10-measures)).
+
 | | H1 (Family G): merged > none on 600 G, base × default, one-sided | H1b (Family G): the G gain exceeds the C change, fixed sequence after H1 | H2 (Family N): neighbour < random average on 900, default × none, one-sided, gold-only gate |
 |---|---|---|---|
 | **label** | **confirmed**; judge validity below threshold (§13.5); C gate ceiling-limited; not *fragile* (D-1) | **confirmed**; judge validity below threshold (§13.5); never *fragile* (exempt) | **not confirmed**; judge validity below threshold (§13.5); within random-draw variation; within the judge false-yes bound; not *fragile* (D-1) |
@@ -60,34 +68,49 @@ below threshold (§13.5)***.
 | gained / lost records | 6 / 0 | 7 / 0 (papers) | 11 / 9 |
 | p (level 0.05) | 0.015625 | 0.0293 | 0.615 |
 
-- **H1.** The merged glossary raised judged found@10 on the 600 G records by 1.00 point (6 records gained, 0
-  lost, in 6 of 300 papers; exact sign-flip p 0.015625, which is also the minimum attainable p with 6
+- **H1.** The merged glossary raised judged found@10 on the 600 G records by 1.00 point: 6 more of the 600
+  G records found, 591 → 597 of 600 (`layer2.placebo.G.found10`, `base|none|default` and
+  `base|merged|default`); 6 records gained, 0 lost, in 6 of 300 papers (exact sign-flip p 0.015625,
+  which is also the minimum attainable p with 6
   non-zero papers), with found@10-gold up 5.50 points beside it; **confirmed**, judge validity below
   threshold (§13.5); the C gate is *ceiling-limited* (baseline C found@10 is 100.0 %, headroom 0, so the
   gate could not have fired on a C rise) and did not fire; not *fragile* under the bootstrap-t or topic
   clustering (D-1). The realised G discordance was 1.0 % against the 5 % and 10 % planning scenarios.
-- **H1b.** The gain on G exceeded the change on C by 1.33 points (7 papers non-zero, all positive; label
-  randomization p 0.0293, also its minimum attainable p), read beside a baseline C found@10 of 100.0 % with
+- **H1b.** The gain on G exceeded the change on C by 1.33 points: the G change +1.00 minus the C change
+  −0.33, which is 1 of the 300 C records lost, 300 → 299 of 300 (`layer2.placebo.C.found10`;
+  `layer1.H1b.baseline_c_found10` 300 of 300); 7 papers non-zero, all positive (label randomization p
+  0.0293, also its minimum attainable p), read beside a baseline C found@10 of 100.0 % with
   no headroom; **confirmed**, judge validity below threshold (§13.5). Its power floor at the planning
   scenarios was .67 and .54. On found@10-gold the same estimator gives +5.50 points [3.17, 7.83], computed
   post hoc as a display (D-2). By prereg §3.2, H1 confirmed with H1b confirmed reads: the merged glossary
   makes alias passages findable, and the gain on G exceeds the change on C, an alias-specific gain, for
   questions using the glossary's primary term.
-- **H2.** On found@10-gold the neighbour arm found 2.17 points fewer than the random average (35 lost, 16
-  gained; 95 % CI [−3.50, −0.94]), so the gold-only direction gate passes; on judged found@10 the net is
-  +0.06 points (11 gained, 9 lost; p 0.615), so H2 is **not confirmed**, judge validity below threshold
-  (§13.5), within random-draw variation (the draws differ by 0.11 points), within the judge false-yes bound
+- **H2.** On found@10-gold the neighbour arm found 2.17 points fewer than the random average: 776 against
+  795.5 of 900 records (random-1 798, random-2 793; `layer2.cells.<arm>|none|default.found10_gold`); 35
+  lost, 16 gained; 95 % CI [−3.50, −0.94], so the gold-only direction gate passes. On judged found@10 the
+  net is +0.06 points: 882 against 881.5 of 900 (random-1 882, random-2 881; `.found10`); 11 gained, 9
+  lost; p 0.615. So H2 is **not confirmed**, judge validity below threshold (§13.5), within random-draw
+  variation (the draws differ by 0.11 points, 882 against 881 records), within the judge false-yes bound
   (B 2.48 points), not *fragile* under the bootstrap-t, topic clustering or the volume covariate (D-1). The
   power to confirm at the planning scenarios was .96 and .90, so a drop of the planned sizes would have been
-  seen; on judged found@10 the equivalence bound reads *no effect larger than 1.39 points* (the realised
-  80 %-power MDE at the realised discordance of 2.2 %, 20 discordant records). Neighbours displaced gold
-  chunks and supplied judged answers in their place ([What this shows](#what-this-shows), item 3).
+  seen (§8's mean change μ = q (2p − 1): 3.5 and 4.0 points at q .05 / p .85 and q .10 / p .70, where q is
+  defined at the planned dose; about 3.0 and 3.5 points at the realised dose 0.865, derived as 3.5 × 0.865
+  and 4.0 × 0.865). At the realised discordance (2.2 %, 20 discordant records), which lies between the
+  tabulated q 2 % and q 3 % scenarios, the power to confirm at p .85 lay between .73 and .88 (`power-v4.json`
+  `simulation.H2.rho1.p0.85_q0.02.0.05.confirm_a0.7` 0.7345, `…q0.03…` 0.878), so only the equivalence bound
+  reads smaller effects: on judged found@10 it reads *no effect larger than 1.39 points* (≈ 12.5 of 900
+  records; the realised 80 %-power MDE at the realised discordance, `layer1.H2.equivalence`). The pattern
+  is consistent with neighbours displacing gold chunks and supplying judged answers in their place (a
+  reading from per-cell totals; no per-record transition count is in the artifact; the other-paper hits
+  are judged labels, judge validity below threshold (§13.5); [What this shows](#what-this-shows), item 3).
 
-Layer 2 (stage B, descriptive): the glossary serving decision is ***not resolved*** (lift +1.00 point,
-below the 2-point action threshold), quoted beside H1 confirmed and H1b confirmed; the reranker decision
-is *keep the default (non-inferior to BM25)* (default − BM25 on the neighbour arm +6.33 points [4.67,
-8.11]); related-paper growth is *not a concern: no effect larger than 1.39 points*, beside H2 not
-confirmed. Every Layer-2 figure carries judge validity below threshold (§13.5) and has found@10-gold
+Layer 2 (stage B, descriptive): the glossary serving decision is ***not resolved*** (lift +1.00 point, 6
+of the 600 G records, below the 2-point action threshold, which is 12 of the 600), quoted beside H1
+confirmed and H1b confirmed (D-3); the reranker decision is *keep the default (non-inferior to BM25)*
+(default − BM25 on the neighbour arm +6.33 points [4.67, 8.11]: 882 against 825 of 900 records,
+`layer2.cells.neighbour|none|default` and `neighbour|none|bm25`); related-paper growth is *not a concern:
+no effect larger than 1.39 points* (≈ 12.5 of 900 records), beside H2 not confirmed. Every Layer-2 figure
+carries judge validity below threshold (§13.5) and has found@10-gold
 beside it ([Layer 2](#layer-2-stage-b-serving-decisions-and-secondary-figures)).
 
 ## What found@10 measures
@@ -100,16 +123,25 @@ retriever, rank or other chunk. So a hit means **at least one top-10 chunk that,
 core of the answer**. found@10 is a measure of **reach**, not of answer quality: it does not grade how well
 the chunk answers, does not credit two chunks that together would answer, and does not read rank (RR@10 is
 the rank-based secondary of Layer 2). A hit from another paper counts. found@10-gold is the gold-only
-version, the gold chunk in the top 10 and nothing judged, and it is printed beside every found@10 figure.
-Both are quoted in points, percentage points of records.
+version, the gold chunk in the top 10 and nothing judged, and it is printed beside every Layer-1, Layer-2
+and per-cell figure (not beside the sensitivity, subgroup and single-draw displays; [What is not
+reported](#what-is-not-reported)).
+
+**What a point is.** found@10 is the share of records for which at least one top-10 chunk, read alone,
+states the core of the answer. A **point** is one percentage point of that share. One record is 0.17
+points on the 600 G records (100 / 600), 0.33 points on the 300 C records (100 / 300) and 0.11 points on
+the 900 balanced records (100 / 900). So H1's +1.00 point is 6 G records, H1b's C change of −0.33 is 1 C
+record, and H2's +0.06 is half a record on the average of two random draws; each carries judge validity
+below threshold (§13.5). found@10-gold is quoted in the same points.
 
 ## The two owner spot checks, and the judge-validity flag
 
 Both checks were labelled by the owner and committed before any analysis (`study.gate.spot_checks_sha256`
-in both results files equals the ingest sha256s; `spot_checks_waived` false).
+in both results files equals the ingest sha256s; `spot_checks_waived` false). Every Wilson upper limit in
+this file is rounded up, never to nearest (prereg §3.3, R24).
 
 **Record validity (prereg §13.4, the 0.85 rule).** 40 records drawn from the 900 by seeded hash, labelled
-valid / invalid blind to kind and arm: **37 of 40 valid, 0.925**, Wilson 95 % [0.801, 0.974]
+valid / invalid blind to kind and arm: **37 of 40 valid, 0.925**, Wilson 95 % [0.801, 0.975]
 (`spot_checks.record_validity`; `spot-records-counts.json`; sheet sha256 `8fd9987e…`). The point estimate
 is at or above 0.85, so the rule does not fire and no sentence carries *validity below threshold*
 (`below_threshold` false). The interval is printed and decides nothing.
@@ -122,7 +154,7 @@ sha256 `4b723b9c…`, sheet sha256 `f0e34a7f…`, stage-A commit `f53ca9d0…`).
 
 | stratum | owner agrees with the final label | rate | Wilson 95 % |
 |---|---|---|---|
-| *answers* (C and E agreed) | 41 of 50 | **0.82** | [0.692, 0.902] |
+| *answers* (C and E agreed) | 41 of 50 | **0.82** | [0.692, 0.903] |
 | *not* (C and E agreed) | 30 of 33 | 0.909 | [0.764, 0.969] |
 | tiebroken (Argon's label final) | 10 of 17 | 0.588 | [0.360, 0.784] |
 | all 100 (unweighted) | 81 of 100 | 0.81 | — |
@@ -132,7 +164,7 @@ Final label × owner label, over the 100 (`metrics.table`; final *answers* and o
 *answers* and owner *not* 13, final *not* and owner *answers* 6, both *not* 34): precision for *answers*
 0.783, recall 0.887, specificity 0.723, F1 0.832, Cohen's κ 0.615, Gwet's AC1 0.626 (n 100). Per arm, the
 share of owner-*not* pairs that the final label calls *answers* (the §6.3 false-yes rate on the spot check):
-base 4 of 17 [0.096, 0.473], neighbour 5 of 14 [0.163, 0.612], random 4 of 16 [0.102, 0.495]
+base 4 of 17 [0.096, 0.473], neighbour 5 of 14 [0.163, 0.613], random 4 of 16 [0.102, 0.495]
 (`false_yes_per_arm`).
 
 **The rule fired on both of its clauses**: the re-weighted agreement 0.872 is below 0.90 at the point
@@ -140,9 +172,9 @@ estimate, and the *answers*-stratum agreement 0.82 is below 0.90 (`below_thresho
 text fixes the consequence and no wording: *stated in every result sentence, and found@10-gold reported
 alongside each found@10 result as the sensitivity*. This file states it as ***judge validity below
 threshold (§13.5)*** on every result, in prose and in every result table, and prints found@10-gold beside
-every found@10 figure. Nothing was re-labelled, and no figure changes.
+every Layer-1, Layer-2 and per-cell figure. Nothing was re-labelled, and no figure changes.
 
-**What the 19 disagreements were (descriptive, owner-supplied tags).** The owner later tagged each of the
+**What the 19 disagreements were (exploratory, post hoc; descriptive, owner-supplied tags).** The owner later tagged each of the
 19 pairs on which the owner's spot-check label and the final judge label disagree as *full* (the passage
 answers the question in full), *partial*, *none* or *other answer*. Source: `disagreement-tags.json`,
 counts only, made by `make_disagreement_tags.py` from the owner's private tag export and the 19 sheet items
@@ -158,8 +190,8 @@ tags are descriptive, change no figure, and are not an independent annotation.
 | **all 19** (`counts.tags`) | **19** | **7** | **12** | **0** | **0** |
 
 By spot-check stratum (`counts.by_stratum`): *answers* 9 (5 full, 4 partial), *not* 3 (1 full, 2
-partial), tiebroken 7 (1 full, 6 partial). **The analysis's reading, labelled as such:** none of the 19 is
-tagged *none* or *other*, so on the owner's tags none is a judge misreading of a passage that holds no
+partial), tiebroken 7 (1 full, 6 partial). **The analysis's reading, exploratory (post hoc), labelled as such:**
+none of the 19 is tagged *none* or *other*, so on the owner's tags none is a judge misreading of a passage that holds no
 answer; all 19 sit on the partial-versus-full line. Read with *partial = not answering*, the judge's label
 matches the tag-implied label on 9 of 19 and the owner's on 10 of 19; read with *partial = answers*, the
 judge matches on 13 of 19 and the owner on 6 of 19 (`counts.readings`). The tags do not change the flag:
@@ -182,14 +214,20 @@ field quoted here, except H2's per-arm false-yes rates, which it reads from the 
 | **H1b** G − C difference-in-differences, base × default, one-sided > 0 | 300 (300; 7) | +1.33 [+0.50, +2.50]; [+0.50, +2.17] | 7 / 0 (papers) | 0.0293 (lattice) | 0.0293 | 0.0146 | 7 / 0 | 0.023 | .67 / .54 (simulation; `layer1.H1b.power_floor`) | +5.50 [+3.17, +7.83], display only (D-2; `h1b-gold.public.json`) | **confirmed**; judge validity below threshold (§13.5) |
 | **H2** neighbour − mean(random-1, random-2), default × none, one-sided < 0 | 900 (300; 19) | +0.06 [−0.72, +0.78]; [−0.56, +0.67] | 11 / 9 | 0.615 (enumeration) | 1.9 × 10⁻⁶ | 0.557 | 15 / 5 | 0.022 | .999 / .985 (normal, test alone); .96 / .90 (simulation, power to confirm at a = 0.7, `power-v4.json` `h2_at_q05_p85_lever`, `simulation.H2.rho1`) | **−2.17** [−3.50, −0.94]; gate passes | **not confirmed**; judge validity below threshold (§13.5); within random-draw variation; within the judge false-yes bound; not *fragile* (D-1) |
 
+*For H2 the gold-only figure is the one quoted first (§3.4); the column order is the table's layout.*
+
 - **MDE split** is `mde_split`: the gained / lost split of the observed discordant records that the member's
   one-sided test needed at its level. H1 needed 6 / 0 and saw 6 / 0; H2 needed 15 / 5 and saw 11 / 9.
 - **Minimum attainable p.** H1's p equals its floor (2⁻⁶ with 6 non-zero papers), and so does H1b's
   (0.0293, the randomization floor of §8): both confirmations rest on every discordant paper moving the
   hypothesised way. Each is above the GATE-NOT-EVALUABLE line (the floor is below 0.05), so neither member
   was gated.
-- **Powered or unresolved.** H1 and H2 had power ≥ .80 at both planning scenarios. H2's *not confirmed* is
-  therefore a null for the hypothesised drop at those scenarios, and the equivalence bound
+- **Powered or unresolved.** H1 and H2 had power ≥ .80 at both planning scenarios. H2's *not confirmed*, judge validity
+  below threshold (§13.5), is therefore a null for the hypothesised drop at those scenarios (§8's μ = q (2p − 1): 3.5 and 4.0 points at
+  q .05 / p .85 and q .10 / p .70, at the planned dose where q is defined; about 3.0 and 3.5 at the
+  realised dose 0.865, derived). At the realised discordance (2.2 %), between the tabulated q 2 % and 3 %,
+  the power to confirm at p .85 lay between .73 and .88 (`simulation.H2.rho1.p0.85_q0.02.0.05.confirm_a0.7`
+  0.7345, `…q0.03…` 0.878), so only the equivalence bound reads smaller effects: it
   (`layer1.H2.equivalence`, within true) reads *no effect larger than 1.3863 points* on judged found@10, at
   the realised discordance of 2.2 % (20 of 900 records; the planning MDE at q 5 % was 2.08 points,
   `power-v4.json` `mde80_points.H2`). H1b's power was below .80 at both scenarios (.67 / .54); it was
@@ -327,6 +365,8 @@ threshold (§13.5)** and found@10-gold beside it.
 | keep the reranker default | D = default − BM25, neighbour arm, glossary none: **+6.33** [+4.67, +8.11] (62 gained / 5 lost of 900) | +14.44 [+12.11, +16.78] | non-inferiority margin −3: D_lo 4.67 > −3 | ***keep the default (non-inferior to BM25)*** (Layer 2, descriptive, no Layer-1 member); judge validity below threshold (§13.5) |
 | related-paper growth is a concern | neighbour − random average: **+0.06** [−0.72, +0.78] | −2.17 [−3.50, −0.94] | a concern if ≤ −3 with the CI excluding 0: no | ***not a concern: no effect larger than 1.3863 points*** (equivalence, 90 % CI [−0.56, +0.67] within ±1.39), beside **H2 not confirmed**; judge validity below threshold (§13.5); within random-draw variation; within the judge false-yes bound |
 
+*For H2 the gold-only figure is the one quoted first (§3.4); the column order is the table's layout.*
+
 The serving statement for the glossary is the Layer-2 phrase *not resolved* read beside H1 confirmed and
 H1b confirmed (the frozen §3.3 table has no row for this combination; DEVIATIONS D-3): the gain is
 confirmed and alias-specific, and smaller than the 2-point threshold the owner fixed as worth acting on;
@@ -341,6 +381,8 @@ judge validity below threshold (§13.5).
 | random average − base, default × none | −1.06 [−1.78, −0.33]; 4 / 17 | **−5.06** [−6.50, −3.72]; 0 / 57 | not resolved |
 | random-1 − random-2, default × none (the draw gap) | +0.11 [−0.67, +0.89]; 7 / 6 | +0.56 [−0.56, +1.67]; 14 / 9 | no effect larger than 1.1177 points |
 | neighbour − random average, default × none (the H2 figure) | +0.06 [−0.72, +0.78]; 11 / 9 | −2.17 [−3.50, −0.94]; 16 / 35 | no effect larger than 1.3863 points |
+
+*For H2 the gold-only figure is the one quoted first (§3.4); the column order is the table's layout.*
 
 **H1 and H2 under the other retrievers and corpora** (`layer2.h1_other_cells`, `layer2.h2_other`; judged
 net [95 % CI], with the found@10-gold net in brackets after it; 600 G for H1, 900 for H2):
@@ -460,10 +502,10 @@ final × Opus, *answers* positive):
 
 **Per-arm false-yes rates against Opus** (Opus-*not* pairs the final label calls *answers*,
 `drift.scopes.<arm>.false_yes`): stage A base 6 / 96 (6.25 %), neighbour 4 / 108 (3.70 %), random 4 / 100
-(4.00 %); cumulative base 13 / 317 (4.10 % [2.41, 6.89]), neighbour 10 / 323 (3.10 % [1.69, 5.60]), random
-10 / 326 (3.07 % [1.67, 5.55]). Among final-*answers* pairs (`false_yes_among_answers`, the share the H2
+(4.00 %); cumulative base 13 / 317 (4.10 % [2.41, 6.89]), neighbour 10 / 323 (3.10 % [1.69, 5.61]), random
+10 / 326 (3.07 % [1.67, 5.56]). Among final-*answers* pairs (`false_yes_among_answers`, the share the H2
 bound reads) the cumulative figures are base 13 / 89, neighbour 10 / 67, random 10 / 66, overall 33 / 222
-(14.9 % [10.8, 20.1]); H2's bound reads the frozen stage-A summary (P2), above.
+(14.9 % [10.8, 20.2]); H2's bound reads the frozen stage-A summary (P2), above.
 
 **Against the owner** (§13.5): the table in [the spot-check section](#the-two-owner-spot-checks-and-the-judge-validity-flag)
 (precision 0.783, recall 0.887, specificity 0.723, F1 0.832, κ 0.615, AC1 0.626 on 100 pairs).
@@ -505,24 +547,33 @@ In the record's own voice, from the figures above. Every item: judge validity be
    value; these records are the case the glossary was built for (prereg §2 item 1), and on them the
    hypothesised direction was seen. The two designs differ in attachment rule and record type, so this is a
    reading across records, not a contrast.
-2. **The serving decision stays open.** Layer 2 reads *not resolved*: the lift is confirmed but below the
-   2-point threshold the owner fixed as worth acting on, and the C cost rule did not fire (ΔC −0.33, C_lo
-   −1.00). A C cost smaller than about 3.6 points cannot be ruled out with 300 C records. Under norerank
+2. **The serving decision stays open.** Layer 2 reads *not resolved*, beside H1 and H1b confirmed (D-3):
+   the lift is confirmed but below the 2-point threshold (12 of the 600 G records) the owner fixed as worth
+   acting on, and the C cost rule did not fire (ΔC −0.33, C_lo −1.00); judge
+   validity below threshold (§13.5). A C cost smaller than about 3.6 points cannot be ruled out with 300 C records. Under norerank
    and BM25 the lift is larger (+2.50 and +4.17 on base; gold +8.00 and +13.17), descriptively: the
    glossary matters most where the cross-encoder is not there to recover the passage.
-3. **Citation neighbours displaced gold chunks and supplied answers in their place.** On found@10-gold the
-   neighbour arm lost 2.17 points against the random average (35 lost, 16 gained), and the RR@10 gold
-   figure fell by 3.35 points; on judged found@10 the net was +0.06 (11 gained, 9 lost): the neighbour
-   arm's other-paper judged hits were 67 against 48 and 49 in the random draws. The gold-only gate pointed
+3. **The figures are consistent with citation neighbours displacing gold chunks and supplying answers in
+   their place.** On found@10-gold the neighbour arm lost 2.17 points against the random average (35 lost,
+   16 gained), and the RR@10 gold figure fell by 3.35 points; on judged found@10 the net was +0.06 (11
+   gained, 9 lost): the neighbour arm's other-paper judged hits were 67 against 48 and 49 in the random
+   draws. This is consistent with neighbours displacing gold chunks and supplying judged answers in their
+   place (a reading from per-cell totals; no per-record transition count is in the artifact), and the
+   other-paper hits are judged labels, so they carry judge validity below threshold (§13.5) like every
+   judged figure. The gold-only gate pointed
    the hypothesised way, the judged test did not reject, and **H2 is not confirmed**: *no effect larger
    than 1.39 points* on judged found@10, within random-draw variation, within the judge false-yes bound,
-   with power .96 and .90 to confirm at the planning scenarios. This is the pattern prereg §3.1 named:
+   with power .96 and .90 to confirm at the planning scenarios (planned drops of 3.5 and 4.0 points, about
+   3.0 and 3.5 at the realised dose). This is the pattern prereg §3.1 named:
    neighbours are more likely than random papers to answer a question, and an answer from another paper
    counts. The study makes no claim about the neighbours of one paper alone (the estimand, R11).
-4. **Growing the collection costs reach whichever papers are added.** Against base, the neighbour arm lost
-   1.00 point judged and 7.22 gold; the random draws lost 1.06 judged and 5.06 gold. Under the served path
-   the judged loss is about 1 point for either kind of growth; the gold-only loss is larger for neighbours
-   (7.22 against 5.06; descriptive).
+4. **Growing the collection costs gold-only reach clearly; judged reach moves by about 1 point.** Against
+   base, the neighbour arm lost 7.22 gold [−9.00, −5.56] and 1.00 point judged [−2.11, 0.00]; the random
+   draws lost 5.06 gold [−6.50, −3.72] and 1.06 judged [−1.78, −0.33]. On gold the loss is clear for either
+   kind of growth and larger for neighbours (7.22 against 5.06: 841 → 776 and 841 → 795.5 of 900); on
+   judged found@10 it is about 1 point (891 → 882 and 891 → 881.5 of 900, 9 and 9.5 records;
+   `layer2.cells.<arm>|none|default`), and the neighbour CI reaches 0 (descriptive; Layer 2; judge
+   validity below threshold (§13.5)).
 5. **The reranker default holds on the neighbour arm**: default beat BM25 by 6.33 points [4.67, 8.11],
    14.44 on gold; non-inferior by the −3 margin. H3 (the reranker's change under growth against BM25's) is
    +1.22 [−0.56, +2.89], not resolved. The reranker-test's papers-OC reading (prereg §2 item 2) does not
@@ -531,7 +582,8 @@ In the record's own voice, from the figures above. Every item: judge validity be
    re-weighted and 0.82 of *answers* labels, and on only 10 of 17 tiebroken pairs; the drift agreement with
    Opus sat below its reference lines (0.948 in stage A, 0.960 cumulative). On the owner's tags all 19
    disagreements sit on the partial-versus-full line, none on a passage with no answer (the analysis's
-   reading of owner-supplied tags). found@10-gold, which needs no judge, is printed beside every figure and
+   reading of owner-supplied tags, exploratory, post hoc). found@10-gold, which needs no judge, is printed
+   beside every Layer-1, Layer-2 and per-cell figure and
    agrees in direction with the judged figure on H1 and H1b, and points the hypothesised way on H2 where
    the judged figure does not.
 
@@ -549,6 +601,7 @@ In the record's own voice, from the figures above. Every item: judge validity be
 | any *fragile* label | did not attach | no R14 re-test flipped a verdict (D-1) |
 | the chunk-boundary control's figures | in the addendum | [`ADDENDUM-2026-11-05-chunk-boundary-control.md`](ADDENDUM-2026-11-05-chunk-boundary-control.md), exploratory, changes nothing here |
 | a second rater for the spot check | absent | single rater by owner decision (O12) |
+| found@10-gold beside the declared, fixed (R6) and subgroup sensitivities and the H2-vs-one-draw displays | **absent** | not computed by the statistics at `15ee347`; the artifacts carry no gold companion for them, so those displays are judged found@10 only |
 
 ## Limitations
 
@@ -556,15 +609,17 @@ In the record's own voice, from the figures above. Every item: judge validity be
   who also designed the study (O12). The 100 pairs put the re-weighted agreement at 0.872 and the
   *answers*-stratum agreement at 0.82, below the frozen 0.90; the tiebroken stratum, the hardest pairs,
   agreed on 10 of 17. Both primary judges are Qwen models, so errors they share never reach the tiebreaker
-  (§6.6). found@10-gold is the sensitivity the prereg names, and it is printed everywhere; it is not a
+  (§6.6). found@10-gold is the sensitivity the prereg names, and it is printed beside every Layer-1,
+  Layer-2 and per-cell figure (not beside the sensitivity displays); it is not a
   substitute, because a record can be answered by a chunk that is not its gold.
-- **The disagreement tags are the owner's, after LLM-assisted deliberation on some items.** They describe
-  the 19 pairs and are not a second annotation; the reading that all 19 sit on the partial-versus-full
-  line is the analysis's.
+- **The disagreement tags are the owner's, after LLM-assisted deliberation on some items, and their reading
+  is exploratory (post hoc).** They describe the 19 pairs and are not a second annotation; the reading
+  that all 19 sit on the partial-versus-full line is the analysis's.
 - **A single-chunk binary rubric cannot credit partial evidence.** A hit needs one chunk that, read alone,
   states the core of the answer. Two top-10 chunks that together would answer, or a chunk that answers in
   part, score as no hit; a downstream synthesis step that combined them would see more than found@10
-  does. The owner's tags show that the judge's disagreements with the owner lie exactly on that line.
+  does. On the owner's tags, the judge's disagreements with the owner lie on that line (exploratory, post
+  hoc).
 - **H1 rests on 6 records in 6 papers**, every one a gain, and its p equals its minimum attainable p; H1b
   rests on 7 papers. The realised G discordance (1.0 %) was far below the 5 % and 10 % planning
   scenarios, and the base rate on G was 98.5 % before any glossary. The gain is real under the frozen test
