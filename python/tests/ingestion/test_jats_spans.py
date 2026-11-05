@@ -384,9 +384,25 @@ def test_title_only_section_is_a_span_of_just_its_heading():
 def test_span_rows_are_json_shaped():
     _, spans = jats.article_spans(_root("synthetic"))
     row = spans[0]._asdict()
-    assert list(row) == ["kind", "path", "xml_id", "start", "end", "title", "depth"]
+    assert list(row) == ["kind", "path", "xml_id", "start", "end", "title", "depth",
+                         "sec_type"]
     assert row == {"kind": "abstract", "path": "abstract", "xml_id": None,
-                   "start": 0, "end": row["end"], "title": None, "depth": 0}
+                   "start": 0, "end": row["end"], "title": None, "depth": 0,
+                   "sec_type": None}
+
+
+def test_sec_type_is_recorded_on_sec_spans_only():
+    xml = _article("42", '<sec sec-type=" materials|methods "><title>M</title>'
+                         '<p sec-type="x">Para.</p></sec>'
+                         '<sec sec-type="  "><p>Blank type.</p></sec>'
+                         "<sec><p>No type.</p></sec>")
+    _, spans = jats.article_spans(ET.fromstring(xml))
+    by_path = {s.path: s for s in spans}
+    assert by_path["body/sec[1]"].sec_type == "materials|methods"   # stripped, verbatim
+    assert by_path["body/sec[2]"].sec_type is None                   # blank -> None
+    assert by_path["body/sec[3]"].sec_type is None                   # absent
+    assert all(s.sec_type is None for s in spans if s.kind != "sec")
+    assert by_path["body/sec[1]"]._asdict()["sec_type"] == "materials|methods"
 
 
 # ------------------------------------------------------------------ CLI flag

@@ -437,6 +437,11 @@ class Span(NamedTuple):
     spans, ``None`` when the ``<sec>`` has no title or it normalises to empty —
     an untitled section is a first-class span, not a gap. ``None`` on leaves.
 
+    ``sec_type`` is the ``<sec>``'s ``sec-type`` attribute, stripped, on ``sec``
+    spans (``None`` when absent or blank, and on every other kind). It is read
+    verbatim — the ``declared/1`` role map that interprets it lives in
+    :mod:`ragstack.ingestion.jats_structure` (#828 §5).
+
     EMPTY ELEMENTS GET NO SPAN. An element whose normalised text is ``""`` is
     dropped by the ``if p`` join filter and contributes nothing to the text, so
     there is no offset it could honestly own; every emitted span has
@@ -454,6 +459,7 @@ class Span(NamedTuple):
     end: int
     title: str | None
     depth: int
+    sec_type: str | None = None
 
 
 def _section_walk(sec, depth: int, path: str, base: int,
@@ -513,7 +519,8 @@ def _section_walk(sec, depth: int, path: str, base: int,
     if out and spans is not None:
         # Pre-order: the container precedes its children (same start, larger end).
         spans.insert(first, Span("sec", path, sec.get("id"), base, base + len(out),
-                                 head_title, depth))
+                                 head_title, depth,
+                                 (sec.get("sec-type") or "").strip() or None))
     return out
 
 
