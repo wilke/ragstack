@@ -323,13 +323,14 @@ threshold (§13.5)** and found@10-gold beside it.
 
 | decision | figure (judged) | found@10-gold beside it | rule applied | reading, with the Layer-1 verdict beside it |
 |---|---|---|---|---|
-| attach the merged glossary | G lift L = **+1.00** [+0.33, +1.83] (600 G); ΔC = **−0.33** [−1.00, 0.00] (300 C) | L +5.50 [+3.50, +7.50]; ΔC 0.00 [−1.33, +1.33] | harm (L_hi < 0): no; C cost (ΔC < −1 or C_lo < −3.6): no; attach (L ≥ 2 and L_lo > 0): no, L < 2 | ***not resolved*** (Layer 2, descriptive), beside **H1 confirmed** and **H1b confirmed**; judge validity below threshold (§13.5). A C cost smaller than about 3.6 points cannot be ruled out with 300 C records (R12; C_lo here is −1.00) |
+| attach the merged glossary | G lift L = **+1.00** [+0.33, +1.83] (600 G); ΔC = **−0.33** [−1.00, 0.00] (300 C) | L +5.50 [+3.50, +7.50]; ΔC 0.00 [−1.33, +1.33] | harm (L_hi < 0): no; C cost (ΔC < −1 or C_lo < −3.6): no; attach (L ≥ 2 and L_lo > 0): no, L < 2 | ***not resolved*** (Layer 2, descriptive), beside **H1 confirmed** and **H1b confirmed** (D-3); judge validity below threshold (§13.5). A C cost smaller than about 3.6 points cannot be ruled out with 300 C records (R12; C_lo here is −1.00) |
 | keep the reranker default | D = default − BM25, neighbour arm, glossary none: **+6.33** [+4.67, +8.11] (62 gained / 5 lost of 900) | +14.44 [+12.11, +16.78] | non-inferiority margin −3: D_lo 4.67 > −3 | ***keep the default (non-inferior to BM25)*** (Layer 2, descriptive, no Layer-1 member); judge validity below threshold (§13.5) |
 | related-paper growth is a concern | neighbour − random average: **+0.06** [−0.72, +0.78] | −2.17 [−3.50, −0.94] | a concern if ≤ −3 with the CI excluding 0: no | ***not a concern: no effect larger than 1.3863 points*** (equivalence, 90 % CI [−0.56, +0.67] within ±1.39), beside **H2 not confirmed**; judge validity below threshold (§13.5); within random-draw variation; within the judge false-yes bound |
 
 The serving statement for the glossary is the Layer-2 phrase *not resolved* read beside H1 confirmed and
-H1b confirmed: the gain is confirmed and alias-specific, and smaller than the 2-point threshold the owner
-fixed as worth acting on.
+H1b confirmed (the frozen §3.3 table has no row for this combination; DEVIATIONS D-3): the gain is
+confirmed and alias-specific, and smaller than the 2-point threshold the owner fixed as worth acting on;
+judge validity below threshold (§13.5).
 
 ### Other Layer-2 contrasts (900 balanced records; `layer2.<key>`)
 
