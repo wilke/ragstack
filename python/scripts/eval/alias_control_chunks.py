@@ -997,7 +997,7 @@ def retest_export_bytes(rows: Iterable[tuple[str, Mapping[str, Any]]]) -> tuple[
     with its key order kept (:func:`jsonl_bytes`' reason). Returns the bytes and the re-escaped count."""
     parts, escaped = [], 0
     for line, obj in rows:
-        if line.isascii() and json.loads(line) == obj:
+        if line.isascii():
             parts.append(line + "\n")
         else:
             parts.append(json.dumps(obj, ensure_ascii=True) + "\n")
@@ -1139,7 +1139,9 @@ def compute_retest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "n_seed": len(rows), "n_judged_both": len(judged),
         "n_without_retest_label": sum(r["retest"] is None for r in rows),
         "flip": wilson(len(flips), len(judged)),
-        "by_direction": {
+        "by_direction": {"answers_to_not": sum(label_of(r["stage_a"]) == 1 for r in flips),
+                         "not_to_answers": sum(label_of(r["stage_a"]) == 0 for r in flips)},
+        "direction_rates": {
             "answers_to_not": wilson(sum(label_of(r["stage_a"]) == 1 for r in flips),
                                      sum(label_of(r["stage_a"]) == 1 for r in judged)),
             "not_to_answers": wilson(sum(label_of(r["stage_a"]) == 0 for r in flips),

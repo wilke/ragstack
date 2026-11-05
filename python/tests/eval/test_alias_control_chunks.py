@@ -707,7 +707,8 @@ def test_retest_metrics_flip_direction_and_route() -> None:
     m = ctl.compute_retest(rows)
     assert m["n_seed"] == 7 and m["n_judged_both"] == 6 and m["n_without_retest_label"] == 1
     assert m["flip"] == ctl.wilson(2, 6)
-    assert m["by_direction"] == {"answers_to_not": ctl.wilson(1, 3), "not_to_answers": ctl.wilson(1, 3)}
+    assert m["direction_rates"] == {"answers_to_not": ctl.wilson(1, 3), "not_to_answers": ctl.wilson(1, 3)}
+    assert m["by_direction"] == {"answers_to_not": 1, "not_to_answers": 1}
     assert m["by_route"] == {"agree": ctl.wilson(0, 3), "tiebreak_or_other": ctl.wilson(2, 3)}
     assert m["by_route_retest"] == {"agree": ctl.wilson(1, 5), "tiebreak_or_other": ctl.wilson(1, 1)}
     assert m["by_stratum"]["not"] == ctl.wilson(1, 2)
