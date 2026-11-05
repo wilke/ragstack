@@ -348,6 +348,10 @@ graph TB
     WF --> ES
 ```
 
+Step-level diagrams of ingest, indexing and retrieval, with the planned document
+and chunk registry ([ADR-0012](adr/0012-document-chunk-registry.md)), are in
+[diagrams/system-components.md](diagrams/system-components.md).
+
 ---
 
 ## 6. Data flow

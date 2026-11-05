@@ -1,7 +1,8 @@
 # System components — ingest, index, retrieve
 
-Three views of the pipeline, drawn from the code at `d2c289e` (not from the
-design sketch they replace). Stage names match the per-stage timings
+Three views of the pipeline, drawn from the code at `d2c289e`. They go one
+level below the component map in [ARCHITECTURE.md §5](../ARCHITECTURE.md#5-system-diagram).
+Stage names match the per-stage timings
 (`authz`, `rewrite`, `embed`, `vector`, `text`, `graph`, `fuse`, `rerank`,
 `glossary`, `expand`, `generate`) so a diagram box and a log field share a name.
 
@@ -20,7 +21,7 @@ flowchart TB
   DOCS[/"Documents<br/>upload · ws:// · path"/]
   LOAD("Load<br/>LoaderRegistry")
   DOI("DOI enrichment")
-  DUP("Duplicate-paper guard<br/>work identity: refuse · allow · off")
+  DUP("Duplicate-paper guard<br/>work identity: refuse · allow · off<br/>API default refuse, tools default off")
   RENDER("Text render + structure<br/>Markdown only")
   CHUNK("Chunk<br/>per document")
   BP("Boilerplate filter")
@@ -31,7 +32,7 @@ flowchart TB
 
   DOCS --> LOAD --> DOI --> DUP --> RENDER --> CHUNK --> BP --> GLOSS --> EMB --> CHK --> OUT
 
-  DUP -. "refused duplicate: no chunks" .-> STOP(["not ingested<br/>409 at upload if name matches"])
+  DUP -. "refused duplicate: no chunks" .-> STOP(["not ingested<br/>409 at upload when the file name<br/>carries an indexed DOI or PMCID"])
 
   REG[("Document &amp; chunk registry<br/>original · extracted text<br/>chunk sets as offsets · layers")]
   LOAD -. "original + extracted text" .-> REG
@@ -53,12 +54,13 @@ document's record is derived later from its chunks (section 2).
 **Planned (ADR-0012):** the registry stores the original, the extracted text,
 and each chunk set as ranges into that text, with embeddings, glossary and
 other layers attached. The duplicate guard would then look up work identity in
-the registry's catalog instead of the text index.
+the document catalog (a Postgres table) instead of the text index.
 
 ## 2. Index: where chunks land
 
-`index_chunks` deletes the prior version of each document, then writes the two
-main stores in parallel. The graph is built separately, from chunks.
+`index_chunks` deletes the prior version of each document from all three
+stores, then writes the two main stores in parallel. The graph is built from
+chunks after those writes.
 
 ```mermaid
 flowchart TB
@@ -73,6 +75,7 @@ flowchart TB
   IN --> DEL
   DEL --> QD
   DEL --> ES
+  DEL -. "graph store wired" .-> NEO
   IN -. "chunk text" .-> KG -.-> NEO
   ES -. "distinct doc_id, one exemplar chunk" .-> DOCS
 
@@ -90,14 +93,21 @@ flowchart TB
 
 - The vector store gets the embedding; the text index gets the text. Nothing is
   embedded "into" the text index, and the glossary lives only in Elasticsearch.
-- Graph extraction takes **chunks** (`kg_extractor.extract(chunks)`), and for
-  large collections it runs as its own job (`POST /v1/collections/{id}/graph`,
-  `graph-extract.cwl`) over an archived chunk version.
-- The document list is an aggregation over the text index, not a registry
-  table. PostgreSQL holds jobs, collections, ACLs and users.
-- **Planned (ADR-0012):** the registry becomes the system of record and the
-  three stores become projections rebuilt from it. The document list moves to
-  a catalog in PostgreSQL.
+- Delete-prior runs only when enabled (the default; replays with stable ids
+  can opt out) and also clears the document's triples when a graph store is
+  wired.
+- Graph extraction takes **chunks** (`kg_extractor.extract(chunks)`) after the
+  two writes: inline in the same `index_chunks` call when an extractor is wired
+  (`KG_EXTRACTION_ENABLED`), or as its own job
+  (`POST /v1/collections/{id}/graph`, `graph-extract.cwl`) over an archived
+  chunk version.
+- The document list is an aggregation over the text index; there is no
+  document table. PostgreSQL holds jobs, the collection registry (ADR-0002),
+  ACLs and users.
+- **Planned (ADR-0012):** the document and chunk registry becomes the system of record
+  and the three stores become projections rebuilt from it. The document list
+  moves to a document catalog table in PostgreSQL, next to the collection
+  registry.
 
 ## 3. Retrieve: question to chunks
 
@@ -108,7 +118,7 @@ flowchart TB
 flowchart TB
   Q[/"Question"/]
   AUTHZ("authz<br/>resolve collections + filters<br/>ACL check")
-  RW("rewrite<br/>passthrough (default) · multi_query · hyde")
+  RW("rewrite<br/>passthrough (default) · multiquery · hyde")
   LEGS("Retrieve per variant<br/>and per collection")
   EMBQ{{"embed"}}
   VEC[("Qdrant")]
@@ -144,8 +154,13 @@ What the boxes hide:
 - **Fusion happens twice.** Each variant is fused across its own legs, then the
   variants are fused again. The reranker sees the final pool once, scored
   against the original question (not a rewritten one).
-- **Pool depth.** With a reranker the legs fetch `rerank_candidates` (default
-  50) so it has recall to work with; the cut to `top_k` is after reranking.
+- **Strategy names.** `rewrite_strategies` accepts `passthrough`, `multiquery`
+  and `hyde` (the last two only when an LLM is configured). An unknown name is
+  skipped silently, with no `degraded` entry.
+- **Pool depth.** With a reranker the retriever is asked for
+  `max(top_k, rerank_candidates)` (default 50), and each leg fetches twice that
+  (`retrieval_candidate_multiplier`, default 2) before RRF. The cut to `top_k`
+  is after reranking.
 - **Rerank can be skipped.** `rerank: false` per request, or no reranker wired.
   An outage falls back to the fused order and adds a `degraded` entry.
 - **The reranker reads the glossary.** It scores content plus symbol glossary
