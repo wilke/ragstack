@@ -173,3 +173,39 @@ The stage-A statistics are to be re-run with these inputs; the config keys are w
 outputs, and the cut points are read from the committed file. Every sentence that quotes a tercile result
 says that its cut points were fixed after the stage-A outputs had been read. Every sentence that quotes
 H1's or H2's *fragile* reading cites this entry.
+
+## D-2, 2026-11-05: H1b's found@10-gold figure was computed afterwards, by a new script that decides nothing
+
+**What the frozen text says.** §6.1: found@10-gold "is printed beside it everywhere"; §7 lists
+found@10-gold among the figures printed beside every Layer-1 member; §3.4 gives H1b the same displays.
+
+**What happened.** The statistics script (`python/scripts/eval/alias_study_stats.py`, at `15ee347` for both
+the binding stage-A re-run of D-1 and the stage-B analysis) prints a gold-only net beside H1
+(`gold_only_net_points`) and beside H2 (the gold-only direction gate), but **none beside H1b**. Its H1b
+helpers already take the hit key as an argument; `layer1` calls them with the judged hit only. The gap was
+not caught in review, and neither committed results file (`artifacts/results-stage-A2.public.json`,
+`artifacts/results-stage-B.public.json`) carries the figure.
+
+**Decision (2026-11-05).** Compute it afterwards, as a display, without re-running the statistics and
+without changing any function of the statistics script (D-1's binding rule: the first re-run is the
+reported one). A new committed script, `python/scripts/eval/alias_study_h1b_gold.py`, imports the
+statistics module and calls its own loaders (`Data`, so the preflight, the analysis gate and the record-set
+check run first), its H1b helpers (`h1b_label_supports`, `member_randomization`) and its seeds and counts,
+with the gold-only hit vector (`hit_gold`) in place of the judged one. Same records, same cells, same
+per-paper construction, same estimator. It reads the stage-B config, and before writing anything it
+recomputes the judged H1b by the same path and requires it to equal the committed stage-B H1b exactly
+(net, p, CI, counts), the H1 and H2 gold-only nets to equal theirs, and the input hashes to equal the
+stage-B run's; otherwise it writes nothing. Its public output is `artifacts/h1b-gold.public.json`,
+labelled *display only, decides nothing; computed post-hoc (DEVIATIONS D-2)*.
+
+**What had been seen, and when.** Before this entry was written and before the figure was computed, the
+stage-B results had been read: H1b's judged verdict (*confirmed*, net +1.3333 points, label-randomization
+p 0.0293), H1's gold-only net (+5.5 points) and H2's gold-only net (−2.1667 points). The stage-B Layer-2
+figures were also committed and had been read, including the gold-only G lift (+5.5) and the gold-only C
+change (0.0) on the same base × default cells. Since every paper keeps its 2 G and 1 C records (none
+missing), H1b's gold-only net is arithmetically the difference of those two, so its point estimate was
+derivable from committed figures before the script ran; its CI and display p were not.
+
+**Which results it touches.** None. The H1b gold-only figure enters no gate, no family procedure and no
+verdict; H1b's label, p and level are the stage-B run's. The figure's p is a display figure of the same
+label randomization, not a test. Every sentence that quotes H1b's gold-only figure cites this entry.
