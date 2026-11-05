@@ -5,7 +5,7 @@
 Five parallel auditors, one per issue-number range, each verdict checked against code on main
 (72db803) or a merged PR; the planner re-verified every closure-driving claim before acting.
 Result: 195 → 150 open. Closed as done (22, incl. epics #201 #246 #353; #609 on the 2026-10-24
-dev acceptance run), obsolete (16: #55 #56 #62 #63 #64 #71 #77 #106 #125 #176 #260 #261
+dev acceptance run; #786 as a duplicate of #810, fixed by #813), obsolete (16: #55 #56 #62 #63 #64 #71 #77 #106 #125 #176 #260 #261
 #319–#321 #374; the ingest_jsonl.py items folded into #25), duplicates (7: #449→#443,
 #448→#442, #789→#617, #575→#740, #169→#809, #88→#561, #198→#773). Retitled to their remainder:
 #86 #273 #445 #754. Every close comment names the PR/commit/file that justifies it.

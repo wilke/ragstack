@@ -163,7 +163,7 @@ flowchart TD
 
 Ordered by leverage; each step is independently shippable.
 
-1. **Safety block** — #130, #197, #341, #343; triage #260/#261/#264 against the shipped plane. Small, no dependencies, one PR each.
+1. **Safety block** — #130, #197, #341, #343; #264 manifest overwrite (#260/#261 closed 2026-10-25). Small, no dependencies, one PR each.
 2. **#322 prev/next expansion** — a day; the seam the user guide already describes.
 3. **#333 measurement** — run the published quantization protocol on one eval collection; the answer decides the next collection build's RAM footprint (~770 GB → ~240 GB if int8 + cold originals holds).
 4. ~~#319 pre-screen → #320/#321~~ — closed 2026-10-25; the chunking study answered the question by another route.
