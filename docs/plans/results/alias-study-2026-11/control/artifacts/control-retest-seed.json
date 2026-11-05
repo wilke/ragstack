@@ -1,0 +1,63 @@
+{
+ "chunk_exports_sha256": {
+  "base": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+  "neighbour": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+  "random1": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
+  "random2": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c"
+ },
+ "chunks_sha256": "8cad99f3c1b0956f0b80888409199f11d4ea1365d8c2de7aa334458718213389",
+ "control_seed_sha256": "4bda07e5a9eefc52f0a558da01ddf43679628853af18f8936b447ec0bde905e2",
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "exploratory": true,
+ "per_arm": {
+  "base": 100,
+  "neighbour": 100,
+  "random": 100
+ },
+ "per_stratum": {
+  "answers": 150,
+  "not": 99,
+  "tiebroken": 51
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "c0c62ea62b396095e4aa370d4505ac19da1540a0",
+  "describe": "v1.6.23-10-gc0c62ea",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-05T19:47:04Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.23+c0c62ea",
+  "warnings_n": 1
+ },
+ "schema": "alias-control-retest-seed/1",
+ "seed_rows": 300,
+ "seed_sha256": "416e1d17c5b52e46f9bff3cc222774bd42de79b9785efdf79980fe56381d66dc",
+ "stage_a_pairs": 300,
+ "windows": 297,
+ "windows_reescaped": 170
+}
