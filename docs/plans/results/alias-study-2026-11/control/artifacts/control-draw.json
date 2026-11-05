@@ -1,0 +1,141 @@
+{
+ "counts": {
+  "available": {
+   "answers": {
+    "base": 816,
+    "neighbour": 542,
+    "random": 706
+   },
+   "not": {
+    "base": 2217,
+    "neighbour": 1809,
+    "random": 2490
+   },
+   "tiebroken": {
+    "base": 210,
+    "neighbour": 174,
+    "random": 241
+   }
+  },
+  "drawn": {
+   "answers": {
+    "base": 50,
+    "neighbour": 50,
+    "random": 50
+   },
+   "not": {
+    "base": 33,
+    "neighbour": 33,
+    "random": 33
+   },
+   "tiebroken": {
+    "base": 17,
+    "neighbour": 17,
+    "random": 17
+   }
+  },
+  "n": 300,
+  "unjudged_excluded": 0
+ },
+ "draw_rule": "alias_study_spot.draw_pairs_from at 3 x the spot check's nominal sizes, over stage A's committed final labels",
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "exploratory": true,
+ "factor": 3,
+ "judge_inputs": {
+  "chunks_base": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+  "chunks_neighbour": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+  "chunks_random1": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
+  "chunks_random2": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c",
+  "glossaries": [
+   "229519d7974e578ad7b025c313f6bc7cf96458983ca380ebe30d150153667715",
+   "26361b0d331166edd2f09f737fdd4773eb9f1a4a383f453b0a5f6859e7d8f216",
+   "7876c69825a66751128809b399460f76f8a59c04146ce9f09df5a12edabd3403",
+   "f7fbfbb5a448099bae1ab42e1ec23483e0934826aaa21d823eaab02db417def9"
+  ],
+  "matches_stage_a_pairs_manifest": true
+ },
+ "nominal": {
+  "answers": 150,
+  "not": 99,
+  "tiebroken": 51
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "c9af66cc6c9b90c1cf3d6baddd477a894ccbab7e",
+  "describe": "v1.6.23-5-gc9af66c",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-05T16:57:12Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.23+c9af66c",
+  "warnings_n": 1
+ },
+ "sample_sha256": "64a8bbc1adc5c22db1f0a3fee447bc3f691d3ee6f7fae7bf1948bfd8a118d39e",
+ "schema": "alias-control-draw/1",
+ "seed": "261101|alias|spot|judge",
+ "spot_pairs_in_sample": 100,
+ "spot_prefix": {
+  "answers|base": {
+   "control": 50,
+   "spot": 17
+  },
+  "answers|neighbour": {
+   "control": 50,
+   "spot": 17
+  },
+  "answers|random": {
+   "control": 50,
+   "spot": 16
+  },
+  "not|base": {
+   "control": 33,
+   "spot": 11
+  },
+  "not|neighbour": {
+   "control": 33,
+   "spot": 11
+  },
+  "not|random": {
+   "control": 33,
+   "spot": 11
+  },
+  "tiebroken|base": {
+   "control": 17,
+   "spot": 6
+  },
+  "tiebroken|neighbour": {
+   "control": 17,
+   "spot": 6
+  },
+  "tiebroken|random": {
+   "control": 17,
+   "spot": 5
+  }
+ },
+ "spot_sheet_sha256": "f0e34a7feb692d75aba125cc5fcc0123504c8a1758232f5abf6ff1d031fc0483",
+ "stage_a_commit_sha256": "f53ca9d0b18fb66753ae3fbe219b7b63e2163aee44f8dfe0e9ce386b04d266cd"
+}

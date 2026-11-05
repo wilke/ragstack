@@ -1,0 +1,134 @@
+{
+ "chunker": {
+  "budget_mode": "joined",
+  "chunk_descriptor": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+  "chunk_params": {
+   "min_piece": 128,
+   "pack": "318",
+   "size_tolerance": 0.25,
+   "size_unit": "tokens",
+   "structure_cuts": "sections/1"
+  },
+  "markers": {
+   "structure_cuts": "sections/1"
+  },
+  "model_window": 4096,
+  "stage_a_descriptor": "fixed_token/512/0",
+  "tokenizer": "Salesforce/SFR-Embedding-Mistral",
+  "tolerance": {
+   "ceiling": 640,
+   "chunk_size": 512,
+   "method": "sentence",
+   "min_piece": 128,
+   "size_tolerance": 0.25,
+   "v": 1,
+   "window_budget": 4080
+  },
+  "window_budget": 4080
+ },
+ "chunks": 7402,
+ "chunks_sha256": "14842cc11a3041c6a5c0c4b174c4b47c033eb6339e3997ffbe934a2d81e0c124",
+ "docs_sha256": "bf6595dc852fb5c35f6c8400a5b40d090014b0f2c4905d1355f1f5579c01c100",
+ "documents": 282,
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "exploratory": true,
+ "p2_counts": {
+  "chunks": 7402,
+  "content_mismatch": 0,
+  "docs": 282,
+  "ingest:adapter:markdown/1": 282,
+  "ingest:backend:markdown-it-py/4.2.0;mdit-py-plugins/0.6.1": 282,
+  "ingest:chunks_stamped": 7402,
+  "ingest:cuts:short_pieces": 143,
+  "ingest:cuts:sibling_merges": 339,
+  "latex_preamble_docs": 14,
+  "one_untitled_section_chunks": 704,
+  "one_untitled_section_docs": 75,
+  "over_ceiling": 0,
+  "over_target": 581,
+  "section_crossing": 339,
+  "split_sentence_boundaries": 25,
+  "split_sentence_pieces": 37,
+  "split_sentences": 22,
+  "stamped": 7402,
+  "structured_docs": 282,
+  "under_min_piece": 143,
+  "whole_segment_unions": 339
+ },
+ "p2_gate": {
+  "i_no_fragment_of_two_segments": true,
+  "ii_boundaries_are_sentence_or_segment": true,
+  "iii_at_or_under_ceiling": true,
+  "iv_chunks_tile_documents": true,
+  "v_stage_a_offsets_reproduce": true,
+  "vi_environment": true
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "c9af66cc6c9b90c1cf3d6baddd477a894ccbab7e",
+  "describe": "v1.6.23-5-gc9af66c",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-05T16:57:56Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 282,
+    "n_spans": 64523,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "run",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "ccf540e40cd2be42a996d51959a64b78011a8f71bfe5fda4e7f51dead01612d1",
+    "texts_sha256": "ab3224f5589b3de9061232b49b3a7c2ebc304599015f4d07caf7e0c27cdeb0f0"
+   },
+   {
+    "kind": "sections",
+    "n_docs": 282,
+    "n_spans": 4759,
+    "producer": "ragstack.ingestion.structure.attach_structure (markdown/1, raw mode)",
+    "sha256": "efd0a3e2596d6de2cda9d756ceb7869d67e56747cc3a53ece6fa4b2a29868e34",
+    "texts_sha256": "ab3224f5589b3de9061232b49b3a7c2ebc304599015f4d07caf7e0c27cdeb0f0"
+   },
+   {
+    "kind": "chunks",
+    "n_docs": 282,
+    "n_spans": 7402,
+    "producer": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+    "sha256": "efea757f763be79fd07a77412423947560f7fc88f46317d5c36f48ce000070a9",
+    "texts_sha256": "ab3224f5589b3de9061232b49b3a7c2ebc304599015f4d07caf7e0c27cdeb0f0"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.23+c9af66c",
+  "warnings_n": 1
+ },
+ "resolution": {
+  "ok": 282
+ },
+ "sample_sha256": "64a8bbc1adc5c22db1f0a3fee447bc3f691d3ee6f7fae7bf1948bfd8a118d39e",
+ "schema": "alias-control-chunk/1",
+ "tokens": {
+  "max": 640,
+  "mean": 397.19,
+  "min": 4,
+  "n": 7402,
+  "p10": 191,
+  "p50": 457,
+  "p90": 511,
+  "share_over_ceiling": 0.0,
+  "share_over_target": 0.0785,
+  "share_under_min_piece": 0.0193
+ }
+}
