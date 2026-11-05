@@ -93,7 +93,7 @@ EOF
     # The SAME extras as the tools image (ragstack-tools.def explains each one;
     # version bounds live in python/pyproject.toml only). fastapi and
     # uvicorn[standard] are base dependencies of ragstack. torch is absent.
-    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres,chunking]"
+    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres,chunking,markdown]"
     python -m pip install sentencepiece protobuf
 
     # Bytecode for the staged tree now: at runtime the image root is read-only,

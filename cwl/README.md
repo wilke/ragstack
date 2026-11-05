@@ -119,6 +119,12 @@ apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
 # (the "extract" leg) does NOT need the driver, it only writes the extraction
 # delta, but the check below is cheap enough to run unconditionally anyway.
 apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif python -c "import neo4j"
+# The markdown extra (#828): the structure-marker backends need markdown-it-py
+# and mdit-py-plugins. Assert the import AND that every registered backend loads.
+apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
+    python -c "import markdown_it, mdit_py_plugins"
+apptainer exec apptainer/images/ragstack-tools-<version>-b<N>.sif \
+    python -c "from ragstack.ingestion.structure import require_structure_backends; require_structure_backends()"
 ```
 
 `--help` alone is not a runnable check for `load_graph.py` -- it never

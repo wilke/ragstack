@@ -27,7 +27,7 @@ _INSTALL = re.compile(r'pip install "/opt/ragstack/python\[([^\]]*)\]"')
 
 #: Extras an image must carry. ``chunking`` is nltk — the Punkt segmenter the
 #: sentence/semantic chunkers were measured with (#815).
-REQUIRED = {"vector", "pdf", "text", "tokenization", "graph", "postgres", "chunking"}
+REQUIRED = {"vector", "pdf", "text", "tokenization", "graph", "postgres", "chunking", "markdown"}
 
 
 def _extras(def_path: Path) -> list[str]:

@@ -201,6 +201,9 @@ apptainer exec "$SIF" python -c "import ragstack, fitz, qdrant_client, elasticse
 #   Expect 1.6.5 (PEP 440: no leading v)
 apptainer exec "$SIF" python -c "from ragstack.ingestion.chunkers import segmenter_version as s; assert s()=='punkt-abbrev-v1', s()"
 #   the sentence chunkers run Punkt, not the regex fallback (#815)
+apptainer exec "$SIF" python -c "import markdown_it, mdit_py_plugins"
+apptainer exec "$SIF" python -c "from ragstack.ingestion.structure import require_structure_backends; require_structure_backends()"
+#   the markdown extra (#828): structure-marker backends import and register
 apptainer exec "$SIF" python /opt/ragstack/scripts/load_graph.py --help >/dev/null
 apptainer exec "$SIF" python /opt/ragstack/scripts/ingest_shard.py --help | grep -- --workflow-id
 #   the provenance flags (#668) must be there; the first stamped release turns them on
