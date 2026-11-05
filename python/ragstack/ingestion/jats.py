@@ -79,9 +79,10 @@ so reaching the type table through ``ingestion.enrich`` (pydantic) or
 ``stores.filters`` (which executes ``ragstack.stores.__init__``: neo4j,
 qdrant-client) would put a 16x import-time and 3x RSS floor on every task.
 Since #828 PR 5b ``scripts/jats_extract.py`` also imports
-:mod:`ragstack.ingestion.jats_structure` to write the ``structure`` key, which
-brings pydantic (``ragstack.models``) but still no store client; this module
-itself stays stdlib + ``metadata_schema``.
+:mod:`ragstack.ingestion.jats_structure` to write the ``structure`` key (it
+already imported pydantic before that, through ``ragstack.provenance``; measured
++8 modules, ~13 ms, no RSS change, still no store client); this module itself
+stays stdlib + ``metadata_schema``.
 """
 
 from __future__ import annotations

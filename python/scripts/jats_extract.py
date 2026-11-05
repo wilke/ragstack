@@ -177,12 +177,13 @@ def _attach_structure(record: dict, spans: list, units: dict,
             layout, supplementary = units[record["path"]]
             structure = unit_structure(text, layout, kind=kind, supplementary=supplementary)
         validate_structure(structure, text)
+        dumped = structure.model_dump()
     except StructureInvalid as e:
         reason = e.reason
     except Exception as e:  # noqa: BLE001 - a dropped structure, never a crashed file
         reason = type(e).__name__
     else:
-        record["structure"] = structure.model_dump()
+        record["structure"] = dumped
         return
     structure_dropped[reason] += 1
     print(f"jats_extract: {record['path']}: structure dropped ({reason})", file=sys.stderr)
