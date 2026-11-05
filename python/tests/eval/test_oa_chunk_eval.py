@@ -1483,3 +1483,21 @@ def test_passages_fallback_keeps_reason_when_it_fails_too():
     ps, why = passages.pick_passages(rec, {"chars": 1200, "per_article": 1, "section_targets": ["results"],
                                            "min_frac": 0.75, "max_frac": 1.25, "fallback_body": True}, seed=1)
     assert ps == [] and why == "no_target_region"
+
+
+def test_read_key_plain_and_envelope(tmp_path):
+    from oa_chunk_eval.config import read_key
+    plain = tmp_path / "k.txt"
+    plain.write_text("rk-plain-123\n")
+    assert read_key(str(plain)) == "rk-plain-123"
+    env = tmp_path / "env.json"
+    env.write_text(json.dumps({"kind": "credentials", "secrets": [{"name": "svc", "value": "rk-env-456"}]}, indent=1))
+    assert read_key(str(env)) == "rk-env-456"
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"other": 1}))
+    with pytest.raises(ConfigError):
+        read_key(str(bad))
+    two = tmp_path / "two.txt"
+    two.write_text("line1\nline2\n")
+    with pytest.raises(ConfigError):
+        read_key(str(two))

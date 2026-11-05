@@ -220,5 +220,21 @@ def read_key(path: str | None) -> str | None:
     """Read an API key from a file at call time. The value is never logged or stored."""
     if not path:
         return None
-    key = Path(path).read_text(encoding="utf-8").strip()
-    return key or None
+    raw = Path(path).read_text(encoding="utf-8").strip()
+    if raw.startswith("{"):
+        # ragstack credentials envelope: {"secrets": [{"value": ...}, ...]} (or {"key"|"api_key": ...})
+        import json
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            raise ConfigError(f"api key file {path} looks like JSON but does not parse") from None
+        secrets = doc.get("secrets") if isinstance(doc, dict) else None
+        if isinstance(secrets, list) and secrets and isinstance(secrets[0], dict):
+            raw = str(secrets[0].get("value") or "").strip()
+        elif isinstance(doc, dict) and (doc.get("api_key") or doc.get("key")):
+            raw = str(doc.get("api_key") or doc.get("key")).strip()
+        else:
+            raise ConfigError(f"api key file {path}: JSON without secrets[0].value / api_key / key")
+    if any(c in raw for c in "\r\n"):
+        raise ConfigError(f"api key file {path}: key contains a line break")
+    return raw or None
