@@ -36,13 +36,21 @@ The mapping (§9.2):
 * leaf spans → blocks by tag (:data:`LEAF_BLOCK_KINDS`, ``prose`` for any other
   tag). Floats (``<table-wrap>``/``<fig>``, in ``<floats-group>`` or nested in a
   ``<p>``) have no span and so no block: they are separate unit records.
+
+Unit records (``content_type="table"|"figure"``) get :func:`unit_structure`
+from the :class:`~ragstack.ingestion.jats.UnitLayout` the unit builder
+recorded: ONE level-1 section titled with the float's ``<label>`` (so the
+stamped ``section_title`` is ``Table 2``, Q13), a ``heading`` block over that
+leading label, a caption block carrying the normalised label, and a
+``table``/``figure`` block over the grid.
 """
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
-from ragstack.ingestion.jats import Span
-from ragstack.ingestion.structure import DECLARED_VERSION, content_sha256
+from ragstack.ingestion.jats import Span, UnitLayout
+from ragstack.ingestion.structure import DECLARED_VERSION, content_sha256, normalise_label
 from ragstack.models import Block, DocumentStructure, Section
 
 #: The adapter's identity, in ``DocumentStructure.adapter`` and in
@@ -185,6 +193,55 @@ def article_structure(text: str, spans: Sequence[Span]) -> DocumentStructure:
     )
 
 
+def unit_structure(text: str, layout: UnitLayout, *,
+                   kind: Literal["table", "figure"], supplementary: bool) -> DocumentStructure:
+    """The ``jats/1`` structure of one table/figure unit record (§9.2).
+
+    One level-1 section over the whole text, titled with ``layout.label``
+    (untitled when the float has none), ``roles=["supplementary"]`` declared
+    only when the float sat inside ``<supplementary-material>`` (else
+    unclassified: the rules decide). Blocks, in order and never overlapping: a
+    ``heading`` over the leading label; the ``table_caption`` /
+    ``figure_caption`` over the caption range, ``label`` = the normalised
+    label (``Fig. 2A`` → ``Figure 2``; ``None`` when it does not parse); the
+    ``table`` / ``figure`` block over the body range when there is one.
+    Raises :class:`ValueError` when the text does not start with the label or
+    a range lies outside the text — a layout paired with the wrong text."""
+    n = len(text)
+    label = layout.label
+    if not n:
+        raise ValueError("a unit record has text")
+    if text[:len(label)] != label:
+        raise ValueError(f"unit text does not start with its label {label!r}")
+    title = label or None
+    blocks: list[Block] = []
+    if label:
+        blocks.append(Block(start=0, end=len(label), kind="heading"))
+    cs, ce = layout.caption_start, layout.caption_end
+    if not (len(label) <= cs <= ce <= n):
+        raise ValueError(f"caption range [{cs}, {ce}) outside [{len(label)}, {n}]")
+    if ce > cs:
+        blocks.append(Block(start=cs, end=ce, kind=f"{kind}_caption",
+                            label=normalise_label(label) if label else None))
+    if layout.body_start is not None and layout.body_end is not None:
+        bs, be = layout.body_start, layout.body_end
+        if not (ce <= bs < be <= n):
+            raise ValueError(f"body range [{bs}, {be}) outside [{ce}, {n}]")
+        blocks.append(Block(start=bs, end=be, kind=kind))
+    section = Section(
+        start=0, end=n, level=1, title=title, path=[title] if title is not None else [],
+        roles=["supplementary"] if supplementary else None,
+        role_source=DECLARED_VERSION if supplementary else None,
+        rank=None, locator=None)
+    return DocumentStructure(
+        content_sha256=content_sha256(text),
+        sections=[section],
+        blocks=blocks,
+        structure_source="parsed",
+        adapter=ADAPTER,
+    )
+
+
 def _extend_ends(sections: list[Section], parent_of: list[int | None], n: int) -> None:
     """§2 invariant 3, top-down: each section ends at its next sibling's start,
     else at its parent's already-extended end, else (level 1) at ``n``.
@@ -203,4 +260,4 @@ def _extend_ends(sections: list[Section], parent_of: list[int | None], n: int) -
 
 
 __all__ = ["ADAPTER", "DECLARED_SEC_TYPES", "LEAF_BLOCK_KINDS", "article_structure",
-           "declared_roles"]
+           "declared_roles", "unit_structure"]

@@ -204,9 +204,10 @@ def _all_secs(root):
 def test_with_spans_leaves_records_unchanged_and_returns_spans_in_parallel():
     root = _root("synthetic")
     plain = jats.article_records(root, "PMC40")
-    recs, skipped, spans = jats.article_records(root, "PMC40", with_spans=True)
+    recs, skipped, spans, units = jats.article_records(root, "PMC40", with_spans=True)
     assert (recs, skipped) == plain
     assert spans == jats.article_spans(root)[1]
+    assert set(units) == {r["path"] for r in recs if r["metadata"]["content_type"] != "article"}
     for r in recs:                       # nothing leaks into the stored shape
         assert set(r) == {"text", "path", "metadata"}
         assert "spans" not in r["metadata"]
@@ -215,12 +216,12 @@ def test_with_spans_leaves_records_unchanged_and_returns_spans_in_parallel():
 def test_with_spans_on_an_article_without_prose_is_empty(tmp_path):
     p = tmp_path / "PMC8.xml"
     p.write_text(FIXTURES["no_prose"], encoding="utf-8")
-    recs, skipped, spans = jats.convert_file(p, with_spans=True)
+    recs, skipped, spans, _units = jats.convert_file(p, with_spans=True)
     assert spans == [] and [s["kind"] for s in skipped] == ["prose"]
     bad = tmp_path / "PMC9.xml"
     bad.write_text("<article><body><p>trunc", encoding="utf-8")
     assert jats.convert_file(bad, with_spans=True) == (
-        [], jats.convert_file(bad)[1], [])
+        [], jats.convert_file(bad)[1], [], {})
 
 
 # --------------------------------------------------------------- round trip

@@ -176,10 +176,10 @@ def extract_articles(
                                        max_chars, min_unit_chars,
                                        count_tokens, max_tokens)
         else:
-            recs, skips, art_spans = convert_file(item["xml_path"], pmcid, row,
-                                                  max_chars, min_unit_chars,
-                                                  count_tokens, max_tokens,
-                                                  with_spans=True)
+            recs, skips, art_spans, _units = convert_file(item["xml_path"], pmcid, row,
+                                                          max_chars, min_unit_chars,
+                                                          count_tokens, max_tokens,
+                                                          with_spans=True)
             if art_spans:
                 spans.append({"pmcid": pmcid,
                               "spans": [s._asdict() for s in art_spans]})
