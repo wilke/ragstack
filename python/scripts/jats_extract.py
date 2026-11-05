@@ -15,7 +15,9 @@ Ported from the validated out-of-tree converter ``/rag/oa/scripts/jats_to_jsonl.
 17.78% -> 0.27% after lifting floats out of the prose). The parsing rules — two
 record kinds, floats lifted at any depth, ``<floats-group>`` captured,
 row-splitting of oversized tables with the caption+header repeated — live in
-``ragstack/ingestion/jats.py`` and are documented there. This file is I/O only.
+``ragstack/ingestion/jats.py`` and are documented there; the structure adapter
+(``jats/1``) lives in ``ragstack/ingestion/jats_structure.py``. This file is I/O
+plus attaching and validating each record's structure.
 
 INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad hoc)
 
@@ -45,18 +47,29 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
 
 OUTPUT CONTRACT
 
-* ``--out FILE`` — one JSONL shard: ``{"text", "path", "metadata"}`` per line.
-  ``path`` is unique per record (``PMC123``, ``PMC123#table-2``,
+* ``--out FILE`` — one JSONL shard: ``{"text", "path", "metadata", "structure"}``
+  per line. ``path`` is unique per record (``PMC123``, ``PMC123#table-2``,
   ``PMC123#table-2-part-3``) because ``JsonlLoader`` derives the document id from
-  it and colliding paths overwrite each other.
-* ``--spans-out FILE`` (optional, off by default) — one ``{"pmcid", "spans"}``
-  JSONL row per article record: every element's ``(start, end)`` in that
-  record's ``text`` (:class:`ragstack.ingestion.jats.Span`). Never written into
-  the ``--out`` shard: spans are large and not a filterable field.
+  it and colliding paths overwrite each other. ``structure`` (#828 §4) is the
+  record's ``jats/1`` document structure, ``DocumentStructure.model_dump()``,
+  as the LAST top-level key and never inside ``metadata``: built from the
+  article's element spans (article records) or the unit's layout (table/figure
+  records) and validated against ``text`` before it is written. A record whose
+  structure fails is written WITHOUT the key — byte-identical to a record from
+  before the key existed — with the drop counted in the report and one stderr
+  line; the record itself is never dropped. The shard is the only carrier of
+  the structure from this step to the ingest step, which re-validates it.
+* ``--spans-out FILE`` (optional, off by default) — a debugging side file: one
+  ``{"pmcid", "spans"}`` JSONL row per article record, every element's
+  ``(start, end)`` in that record's ``text``
+  (:class:`ragstack.ingestion.jats.Span`). It duplicates what the shard's
+  ``structure`` key was built from; the ``--out`` shard is byte-identical with
+  or without it.
 * ``--report FILE`` (alias ``--skip-report``, the flag ``jats-ingest.cwl`` binds)
-  — sidecar JSON: per-kind record counts and the full list of
-  skipped items (unparseable articles, articles with no prose, units under
-  ``--min-unit-chars``). Nothing is dropped silently.
+  — sidecar JSON: per-kind record counts, ``n_structured`` (records with a
+  ``structure`` key) and ``structure_dropped`` (``{reason: n}``), and the full
+  list of skipped items (unparseable articles, articles with no prose, units
+  under ``--min-unit-chars``). Nothing is dropped silently.
 
 Exit code is 0 on success, 1 if no XML matched, if every article failed to parse,
 or if the parse-failure rate exceeds ``--max-fail-rate`` (default 1%) — under
@@ -75,6 +88,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 from ragstack.ingestion.jats import (
@@ -84,6 +98,8 @@ from ragstack.ingestion.jats import (
     DEFAULT_MIN_UNIT_CHARS,
     convert_file,
 )
+from ragstack.ingestion.jats_structure import article_structure, unit_structure
+from ragstack.ingestion.structure import StructureInvalid, validate_structure
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 
@@ -141,6 +157,37 @@ def walk_corpus(corpus: str | Path, tree: str = "clean") -> list[dict]:
             for f in sorted(root.rglob("*.xml"))]
 
 
+def _attach_structure(record: dict, spans: list, units: dict,
+                      structure_dropped: Counter[str]) -> None:
+    """Build, validate and attach one record's ``jats/1`` structure (#828 §4).
+
+    Article records get :func:`article_structure` from the article spans, unit
+    records :func:`unit_structure` from their layout. On success the structure
+    is the record's LAST top-level key, ``structure`` (never inside
+    ``metadata``). On any failure — an adapter ``ValueError``, any other
+    exception, a :class:`StructureInvalid` — no key is written, the drop is
+    counted under the validator's reason (or the exception class name), one
+    stderr line says so, and the record is kept exactly as it was."""
+    kind = record["metadata"].get("content_type", "article")
+    text = record["text"]
+    try:
+        if kind == "article":
+            structure = article_structure(text, spans)
+        else:
+            layout, supplementary = units[record["path"]]
+            structure = unit_structure(text, layout, kind=kind, supplementary=supplementary)
+        validate_structure(structure, text)
+    except StructureInvalid as e:
+        reason = e.reason
+    except Exception as e:  # noqa: BLE001 - a dropped structure, never a crashed file
+        reason = type(e).__name__
+    else:
+        record["structure"] = structure.model_dump()
+        return
+    structure_dropped[reason] += 1
+    print(f"jats_extract: {record['path']}: structure dropped ({reason})", file=sys.stderr)
+
+
 def extract_articles(
     items: list[dict],
     manifest: dict[str, dict] | None = None,
@@ -150,6 +197,7 @@ def extract_articles(
     count_tokens=None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     spans: list[dict] | None = None,
+    structure_dropped: Counter[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Convert ``items`` -> ``(records, skipped)``. Pure — no filesystem writes.
 
@@ -157,13 +205,20 @@ def extract_articles(
     fills in underneath, so a self-contained shard needs no corpus manifest.
     ``kinds`` filters emitted records by ``content_type`` (default: all).
 
+    Every record carries its ``jats/1`` document structure as the top-level
+    ``structure`` key (#828 §4), validated against its ``text`` here; a record
+    whose structure cannot be built or is invalid is emitted without the key
+    and the drop is counted in ``structure_dropped`` (by reason), when given.
+
     ``spans``, when a list, receives one ``{"pmcid", "spans"}`` row per article
     that produced an article record (independent of ``kinds``): the element
     spans of :func:`ragstack.ingestion.jats.article_spans`, offsets into that
-    record's ``text``. The records themselves are unchanged.
+    record's ``text`` — a debugging duplicate of what the structure was built
+    from. The records are the same either way.
     """
     manifest = manifest or {}
     kinds = kinds or set(CONTENT_TYPES)
+    dropped = structure_dropped if structure_dropped is not None else Counter()
     records: list[dict] = []
     skipped: list[dict] = []
     for item in items:
@@ -171,21 +226,18 @@ def extract_articles(
         row = dict(manifest.get(pmcid, {}))
         row.update({k: v for k, v in item.items()
                     if k not in ("xml_path", "pmcid") and v not in (None, "")})
-        if spans is None:
-            recs, skips = convert_file(item["xml_path"], pmcid, row,
-                                       max_chars, min_unit_chars,
-                                       count_tokens, max_tokens)
-        else:
-            recs, skips, art_spans, _units = convert_file(item["xml_path"], pmcid, row,
-                                                          max_chars, min_unit_chars,
-                                                          count_tokens, max_tokens,
-                                                          with_spans=True)
-            if art_spans:
-                spans.append({"pmcid": pmcid,
-                              "spans": [s._asdict() for s in art_spans]})
+        recs, skips, art_spans, units = convert_file(item["xml_path"], pmcid, row,
+                                                     max_chars, min_unit_chars,
+                                                     count_tokens, max_tokens,
+                                                     with_spans=True)
+        if spans is not None and art_spans:
+            spans.append({"pmcid": pmcid,
+                          "spans": [s._asdict() for s in art_spans]})
         skipped.extend(skips)
-        records.extend(r for r in recs
-                       if r["metadata"].get("content_type", "article") in kinds)
+        for r in recs:
+            if r["metadata"].get("content_type", "article") in kinds:
+                _attach_structure(r, art_spans, units, dropped)
+                records.append(r)
     return records, skipped
 
 
@@ -197,8 +249,10 @@ def write_jsonl(records: list[dict], out: str) -> None:
 
 
 def build_report(records: list[dict], skipped: list[dict], n_input: int,
-                 out: str) -> dict:
-    """Sidecar report: per-kind counts + every skipped article/unit."""
+                 out: str, structure_dropped: Counter[str] | None = None) -> dict:
+    """Sidecar report: per-kind counts + every skipped article/unit, and how
+    many records carry a ``structure`` key (``n_structured``) and why the
+    others' were dropped (``structure_dropped``, ``{reason: n}``)."""
     by_kind = dict.fromkeys(CONTENT_TYPES, 0)
     for rec in records:
         ct = rec["metadata"].get("content_type", "article")
@@ -215,6 +269,8 @@ def build_report(records: list[dict], skipped: list[dict], n_input: int,
         "n_units_too_short": sum(1 for s in skipped if s.get("kind") == "unit"),
         "n_articles_without_prose": sum(1 for s in skipped if s.get("kind") == "prose"),
         "n_chars": sum(len(r["text"]) for r in records),
+        "n_structured": sum(1 for r in records if "structure" in r),
+        "structure_dropped": dict(sorted((structure_dropped or Counter()).items())),
         "skipped": skipped,
     }
 
@@ -270,14 +326,16 @@ def main(argv=None) -> int:
     kinds = {k.strip() for k in args.kinds.split(",") if k.strip()}
     count_tokens = _unit_token_counter(args)
     span_rows: list[dict] | None = [] if args.spans_out else None
+    structure_dropped: Counter[str] = Counter()
     records, skipped = extract_articles(items, manifest, args.max_table_chars,
                                         args.min_unit_chars, kinds,
                                         count_tokens, args.unit_token_budget,
-                                        spans=span_rows)
+                                        spans=span_rows,
+                                        structure_dropped=structure_dropped)
     write_jsonl(records, args.out)
     if span_rows is not None:
         write_jsonl(span_rows, args.spans_out)
-    report = build_report(records, skipped, len(items), args.out)
+    report = build_report(records, skipped, len(items), args.out, structure_dropped)
     # ADR-0010 decision 8, #821: which workflow and which tools image
     # extracted this shard (never all-null: segmenter_version is always known).
     report["provenance"] = provenance_from_args(args)
@@ -291,7 +349,9 @@ def main(argv=None) -> int:
           f"(article {by.get('article', 0)}, table {by.get('table', 0)}, "
           f"figure {by.get('figure', 0)}) "
           f"units_too_short={report['n_units_too_short']} "
-          f"chars={report['n_chars']} -> {args.out}"
+          f"structured={report['n_structured']} "
+          + (f"structure_dropped={report['structure_dropped']} " if structure_dropped else "")
+          + f"chars={report['n_chars']} -> {args.out}"
           + (f" (report: {args.report})" if args.report else ""), flush=True)
     for s in skipped:
         if s.get("kind") == "article":
@@ -359,9 +419,12 @@ def parse_args(argv=None):
     p.add_argument("--kinds", default=",".join(CONTENT_TYPES),
                    help="comma-separated content_type filter")
     p.add_argument("--spans-out", default=None,
-                   help="also write element spans, one {pmcid, spans} JSONL row "
-                        "per article record (offsets into its text; #318). Off "
-                        "by default; the --out shard is unchanged either way")
+                   help="debugging side file: also write the element spans, one "
+                        "{pmcid, spans} JSONL row per article record (offsets into "
+                        "its text; #318). The shard record already carries the "
+                        "structure built from them (its top-level 'structure' key, "
+                        "#828 §4); the --out shard is byte-identical with or "
+                        "without this flag")
     p.add_argument("--max-fail-rate", type=float, default=0.01,
                    help="exit non-zero if more than this fraction of articles fail "
                         "to parse (0 disables)")

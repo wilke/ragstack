@@ -67,16 +67,21 @@ opt-in (``article_records(..., with_spans=True)``) and never enter a record's
 ``metadata``. Since #828 (docs/plans/828-document-structure.md §4) the JATS
 adapter's document structure, built from these spans, travels in the JSONL
 shard as the record's top-level ``structure`` key; the record dicts this module
-returns are unchanged by that (the key is added by the extract tool).
+returns are unchanged by that (the key is added by the extract tool, from
+these spans for the article record and from each unit's :class:`UnitLayout`
+for table/figure records).
 
 Stdlib ``xml.etree.ElementTree`` only — the CWL worker image is CPU-only and
 carries no lxml guarantee. The one non-stdlib import is
 ``ragstack.metadata_schema``, which is a dependency-free leaf ON PURPOSE:
-``scripts/jats_extract.py`` imports this module and nothing else, once per
-document across a 1.44M-document corpus, so reaching the type table through
-``ingestion.enrich`` (pydantic) or ``stores.filters`` (which executes
-``ragstack.stores.__init__``: neo4j, qdrant-client) would put a 16x import-time
-and 3x RSS floor on every extract task.
+this module is imported once per extract task across a 1.44M-document corpus,
+so reaching the type table through ``ingestion.enrich`` (pydantic) or
+``stores.filters`` (which executes ``ragstack.stores.__init__``: neo4j,
+qdrant-client) would put a 16x import-time and 3x RSS floor on every task.
+Since #828 PR 5b ``scripts/jats_extract.py`` also imports
+:mod:`ragstack.ingestion.jats_structure` to write the ``structure`` key, which
+brings pydantic (``ragstack.models``) but still no store client; this module
+itself stays stdlib + ``metadata_schema``.
 """
 
 from __future__ import annotations
