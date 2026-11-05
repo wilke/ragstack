@@ -1,5 +1,26 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-10-25 — triage of all 195 open issues; 2026-11-05 re-checks
+
+Five parallel auditors, one per issue-number range, each verdict checked against code on main
+(72db803) or a merged PR; the planner re-verified every closure-driving claim before acting.
+Result: 195 → 150 open. Closed as done (22, incl. epics #201 #246 #353; #609 on the 2026-10-24
+dev acceptance run), obsolete (16: #55 #56 #62 #63 #64 #71 #77 #106 #125 #176 #260 #261
+#319–#321 #374; the ingest_jsonl.py items folded into #25), duplicates (7: #449→#443,
+#448→#442, #789→#617, #575→#740, #169→#809, #88→#561, #198→#773). Retitled to their remainder:
+#86 #273 #445 #754. Every close comment names the PR/commit/file that justifies it.
+
+Highest-ranked open risks from the audit: archive/restore invariants (#632 #633 #676 #442);
+write-path scripts defaulting to the production stores (#454); credential handling (#735 #592
+#722); store stability (#140 sysctl at the ES floor, #283 ES heap not persisted).
+
+2026-11-05, on main 95cf2b9 (after the #828 structure series): #489 re-measured — the no-span
+path still returns one whole-text chunk and the hard split still overshoots max_tokens by ~2
+tokens on a dense run; #809's fallback is unchanged in substance (no max_tokens, fixed window,
+span-count-only trigger; it now cuts per segment under structure_cuts). Both commented.
+ROADMAP: the #319–#321 gate and #260/#261 rows removed.
+
+
 ## Session 2026-10-24 — chunking release cut (v1.6.16 tools / v1.6.17 server), #815 found by the runbook
 
 Owner decision: deploy to dev first, #806–#809 after a live signal; #810 fixed first (#813, three

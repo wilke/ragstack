@@ -55,14 +55,13 @@ Status: ✅ done · 🟡 partial · ⛔ not started. "Blocked by" names the hard
 | #197 | `get_chunks` silently drops every filter key but tenant | ⛔ | same class; ADR-0003 made it "an ordinary bug" — still a bug |
 | #341 | loader must restore the parked ES refresh on SIGTERM | ⛔ | bit twice during the build |
 | #343 | per-batch fleet-utilisation floor alarm | ⛔ | the condition of the shared-pool decision |
-| #260 / #261 / #264 | drain-agent silent drop · FileSink truncation · manifest blind overwrite | ⛔ | verify which paths the GoWe plane retired; close as superseded where it did |
+| #264 | manifest blind overwrite (primitive + no-target branch) | ⛔ | #260 / #261 closed 2026-10-25: drain agent and FileSink are gone from main and every deployed checkout |
 
 ### Decisions with the research done — run the measurement
 | Issue | What | Status | Blocked by |
 |---|---|---|---|
 | #333 | quantization + sharding/replica decision | 🟡 research landed (PR #344) | one eval collection through the 5-step protocol |
-| #319 | zero-GPU boundary-discordance pre-screen | ⛔ | — ; gates #320/#321 |
-| #320 / #321 | span-coverage metric · 4-arm chunker eval driver | ⛔ | #319 says "worth running" |
+| ~~#319 / #320 / #321~~ | pre-screen · span-coverage metric · 4-arm driver | ✖ closed 2026-10-25 | superseded by the TREC-CDS chunking study (`docs/plans/chunking-evaluation.md`) |
 
 ### Ingest plane (ADR-0006)
 | Issue | What | Status | Blocked by |
@@ -144,8 +143,7 @@ flowchart TD
 
   ABL["#122 ablation harness"] --> GRAPHGO["#350 graph go/no-go"]
   GRAPHGO --> G347["#347 + #349"]
-  PRE["#319 pre-screen"] --> CHUNKEVAL["#320 #321 chunker eval"]
-  CHUNKEVAL -. arm .-> ABL
+  CHUNKEVAL["chunking study (done)"] -. arm .-> ABL
 
   FMT["#342 binary vectors"] --> FC["#328 re-test"]
   ROUTE["#203 user ingest → GoWe"] --> UPLOAD["#202 upload path"]
@@ -168,7 +166,7 @@ Ordered by leverage; each step is independently shippable.
 1. **Safety block** — #130, #197, #341, #343; triage #260/#261/#264 against the shipped plane. Small, no dependencies, one PR each.
 2. **#322 prev/next expansion** — a day; the seam the user guide already describes.
 3. **#333 measurement** — run the published quantization protocol on one eval collection; the answer decides the next collection build's RAM footprint (~770 GB → ~240 GB if int8 + cold originals holds).
-4. **#319 pre-screen** → decide whether #320/#321 run at all.
+4. ~~#319 pre-screen → #320/#321~~ — closed 2026-10-25; the chunking study answered the question by another route.
 5. **#342 binary vectors** → re-test #328 → close or re-scope.
 6. **ADR-0006 follow-through** — retire `ingest_jsonl.py` (deprecate → delete after next tag), close #25/#71/#63, rewrite #265, fix README/STATUS wording on the Go implementation.
 7. **Personal-collections chain** — #203 → #202, #290/#291, #253. This is what the access-control MVP was built for, and the GoWe plane makes #203 tractable now.
