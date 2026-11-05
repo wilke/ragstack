@@ -269,7 +269,9 @@ def test_sec_type_map():
                                                        DECLARED_VERSION)
     assert declared_roles("supplementary-material") == (["supplementary"], DECLARED_VERSION)
     assert declared_roles("cases") == (["other"], DECLARED_VERSION)
-    assert declared_roles("not-a-known-type") == (["other"], DECLARED_VERSION)
+    assert declared_roles("cases|results") == (["results"], DECLARED_VERSION)
+    assert declared_roles("display-objects") == (["other"], DECLARED_VERSION)
+    assert declared_roles("not-a-known-type")== (["other"], DECLARED_VERSION)
     assert declared_roles("foo|methods") == (["methods"], DECLARED_VERSION)
     assert declared_roles("subjects|methods") == (["methods"], DECLARED_VERSION)
     assert declared_roles("methods|methods") == (["methods"], DECLARED_VERSION)
@@ -335,6 +337,20 @@ def test_block_kinds():
     assert got["Introduction"] == "heading"
     abstract = spans[0]
     assert got[text[abstract.start:abstract.end]] == "prose"
+
+
+def test_paragraph_with_an_inline_float_is_one_prose_block():
+    """The <table-wrap> nested in "Lead paragraph two" is pruned from the prose;
+    the paragraph stays ONE prose block whose text is the record's paragraph."""
+    text, spans, structure = _build("rich")
+    span = next(s for s in spans if s.path == "body/p[2]")
+    para = text[span.start:span.end]
+    assert para.startswith("Lead paragraph two holds a float")
+    assert para.endswith("in the middle.") and "ZZCELLZZ" not in para
+    record = jats.article_records(ET.fromstring(FIXTURES["rich"]), "PMC60")[0][0]
+    assert record["text"] == text and para in record["text"]
+    hits = [b for b in structure.blocks if b.start < span.end and span.start < b.end]
+    assert [(b.start, b.end, b.kind) for b in hits] == [(span.start, span.end, "prose")]
 
 
 @pytest.mark.parametrize("name", ["with_floats", "floats_group", "two_tables", "rich"])

@@ -189,6 +189,7 @@ def _extend_ends(sections: list[Section], parent_of: list[int | None], n: int) -
     """§2 invariant 3, top-down: each section ends at its next sibling's start,
     else at its parent's already-extended end, else (level 1) at ``n``.
     Pre-order guarantees a parent is extended before its children read it."""
+    # Assigning Section.end in place is intended: the models are not frozen.
     children: dict[int | None, list[int]] = {None: []}
     for i, p in enumerate(parent_of):
         children.setdefault(p, []).append(i)
