@@ -1171,7 +1171,7 @@ def compute_retest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "sources": {"stage_a": dict(Counter(str(r["stage_a"].get("source")) for r in judged)),
                     "retest": dict(Counter(str(r["retest"].get("source")) for r in judged))},
         "agreement_retest_vs_stage_a": ast.agreement_metrics(c[(1, 1)], c[(1, 0)], c[(0, 1)], c[(0, 0)]),
-        "escalation_overlap": {"stage_a": len(esc_a), "retest": len(esc_r), "both": len(esc_a & esc_r),
+        "escalation_overlap": {"n": len(judged), "stage_a_escalated": len(esc_a), "retest_escalated": len(esc_r), "both": len(esc_a & esc_r),
                                "stage_a_only": len(esc_a - esc_r), "retest_only": len(esc_r - esc_a),
                                "jaccard": round(len(esc_a & esc_r) / len(union), 4) if union else None},
     }
@@ -1194,11 +1194,16 @@ def tiebreak_replicate(pair_ids: Iterable[str], stage_a_argon: Mapping[str, Mapp
 
 
 def argon_labels(out_dir: Path) -> dict[str, dict[str, Any]]:
-    """The Argon label rows of a judge dir by pair id (as ``alias_study_judge`` reads them)."""
+    """The Argon label rows of a judge dir by pair id. A plain read (a report never repairs or
+    rewrites a judge file); a pair id seen twice is refused rather than resolved last-row-wins."""
     import alias_study_judge as aj
-    import glossbench_alias_judge as jd
 
-    return {r["pair_id"]: r for r in jd.p4.read_jsonl_repair_tail(out_dir / aj.LABEL_FILES["argon"])}
+    out: dict[str, dict[str, Any]] = {}
+    for r in asc.read_jsonl(out_dir / aj.LABEL_FILES["argon"]):
+        if r["pair_id"] in out:
+            raise SystemExit(f"REFUSED: {aj.LABEL_FILES['argon']} in a judge dir holds a pair id twice")
+        out[r["pair_id"]] = r
+    return out
 
 
 def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

@@ -752,7 +752,7 @@ def test_retest_escalation_overlap_counts_and_jaccard() -> None:
             row("agree", "agree"), row("agree", "agree"),                 # neither
             row("tiebreak", None), row(None, "tiebreak")]                 # not judged both: not counted
     m = ctl.compute_retest(rows)["escalation_overlap"]
-    assert m == {"stage_a": 4, "retest": 3, "both": 2, "stage_a_only": 2, "retest_only": 1,
+    assert m == {"n": 7, "stage_a_escalated": 4, "retest_escalated": 3, "both": 2, "stage_a_only": 2, "retest_only": 1,
                  "jaccard": round(2 / 5, 4)}
     assert ctl.compute_retest([row("agree", "agree")])["escalation_overlap"]["jaccard"] is None
 
@@ -855,3 +855,14 @@ def test_retest_seed_refuses_a_mismatched_chunk_and_a_missing_window(judged: Pat
     with pytest.raises(SystemExit, match="1 stage-A window"):
         ctl.run_retest_seed(cut, cdir, tmp_path / "rt2")
     assert not (tmp_path / "rt2" / "chunks-retest.jsonl").exists()
+
+
+def test_argon_labels_plain_read_refuses_a_duplicate_pair(tmp_path: Path) -> None:
+    import alias_study_judge as aj
+
+    f = tmp_path / aj.LABEL_FILES["argon"]
+    f.write_text(json.dumps({"pair_id": "p1", "verdict": True}) + "\n" + json.dumps({"pair_id": "p2", "verdict": False}) + "\n")
+    assert set(ctl.argon_labels(tmp_path)) == {"p1", "p2"}
+    f.write_text(f.read_text() + json.dumps({"pair_id": "p1", "verdict": False}) + "\n")
+    with pytest.raises(SystemExit):
+        ctl.argon_labels(tmp_path)
