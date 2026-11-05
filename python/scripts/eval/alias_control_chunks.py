@@ -124,10 +124,18 @@ byte when pure ASCII, else re-serialized ASCII-escaped), ``pairs-seed-retest.jso
 ``control`` export is ``chunks-retest.jsonl`` then runs ``alias_study_judge.py build-control`` /
 ``preflight`` / ``label`` / ``finalize`` unchanged in its own out dir (duplicate chunk ids with
 identical content are accepted, and the retest pair ids are the stage-A pair ids).
-``report --retest-config RETEST.json --retest-dir RDIR`` adds ``metrics.retest`` (flip of the
+(``metrics.by_route`` gives the control flip by the same stage-A route, to be read beside the
+retest's; ``metrics.cover_any.split.by_route`` repeats the four-way split and
+``recovered_by_other_chunk`` per stage-A route and direction; for ``not_to_answers`` that count is
+a non-primary chunk that also answers, never a recovery.) ``report --retest-config RETEST.json --retest-dir RDIR`` adds ``metrics.retest`` (flip of the
 retest final label against the committed stage-A label, unjudged = *not*, by direction, stratum,
 arm, stage-A route ``agree`` / ``tiebreak_or_other`` and the retest's own route, and the 2 x 2
-agreement table) and ``metrics.flip_minus_retest`` (the control flip rate minus the retest flip
+agreement table; ``escalation_overlap``: over the pairs with both final rows, how many left the
+``agree`` route in stage A, in the retest, in both, in one only, and the Jaccard of the two
+escalated sets; ``tiebreak_replicate``: over the retest registry's pairs with an Argon label row in
+both the main judge dir and the retest judge dir, how many share the prompt and the system sha256,
+and the Wilson agreement of the two Argon verdicts where both are non-null, with the null-verdict
+pairs counted apart) and ``metrics.flip_minus_retest`` (the control flip rate minus the retest flip
 rate, for display; no test is made of it).
 
 Every artifact embeds ``experiment_provenance()`` with span fingerprints: sentences over the
@@ -1107,9 +1115,14 @@ def cover_split(covered: Sequence[Mapping[str, Any]], direction: Any) -> dict[st
         return wilson(sum(r["cover_primary"] == label_of(r["control"]) for r in have), len(have))
 
     pool = [r for r in covered if "cover_other" in r]
+    # by stage-A route, per direction; recovered_by_other_chunk is shown for both directions here
+    # (for not_to_answers it only counts a non-primary chunk that answers too, never a recovery)
+    by_route = {g: {d: one([r for r in pool if route(r["stage_a"]) == g and direction(r) == d], True)
+                    for d in ("answers_to_not", "not_to_answers")}
+                for g in ("agree", "tiebreak_or_other")}
     return {"answers_to_not": one([r for r in pool if direction(r) == "answers_to_not"], True),
             "not_to_answers": one([r for r in pool if direction(r) == "not_to_answers"], False),
-            "primary_rejudge_agreement_selected": rejudge(pool)}
+            "primary_rejudge_agreement_selected": rejudge(pool), "by_route": by_route}
 
 
 def route(f: Mapping[str, Any] | None) -> str:
@@ -1135,6 +1148,9 @@ def compute_retest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     flips = [r for r in judged if flipped(r)]
     c = Counter((label_of(r["retest"]), label_of(r["stage_a"])) for r in judged)
+    esc_a = {i for i, r in enumerate(judged) if route(r["stage_a"]) != "agree"}
+    esc_r = {i for i, r in enumerate(judged) if route(r["retest"]) != "agree"}
+    union = esc_a | esc_r
     return {
         "n_seed": len(rows), "n_judged_both": len(judged),
         "n_without_retest_label": sum(r["retest"] is None for r in rows),
@@ -1152,7 +1168,34 @@ def compute_retest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "sources": {"stage_a": dict(Counter(str(r["stage_a"].get("source")) for r in judged)),
                     "retest": dict(Counter(str(r["retest"].get("source")) for r in judged))},
         "agreement_retest_vs_stage_a": ast.agreement_metrics(c[(1, 1)], c[(1, 0)], c[(0, 1)], c[(0, 0)]),
+        "escalation_overlap": {"stage_a": len(esc_a), "retest": len(esc_r), "both": len(esc_a & esc_r),
+                               "stage_a_only": len(esc_a - esc_r), "retest_only": len(esc_r - esc_a),
+                               "jaccard": round(len(esc_a & esc_r) / len(union), 4) if union else None},
     }
+
+
+def tiebreak_replicate(pair_ids: Iterable[str], stage_a_argon: Mapping[str, Mapping[str, Any]],
+                       retest_argon: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """The Argon tiebreak replicate (module docstring, *retest*): over the given (retest registry)
+    pair ids with an Argon label row in both the stage-A and the retest judge dir, how many share
+    the prompt and system sha256, and how often the two Argon verdicts agree (rows where both
+    verdicts are non-null; the rest are counted in ``n_null_verdict``). Counts and rates only."""
+    both = [(stage_a_argon[p], retest_argon[p]) for p in sorted(set(pair_ids))
+            if p in stage_a_argon and p in retest_argon]
+    have = [(a, b) for a, b in both if a.get("verdict") is not None and b.get("verdict") is not None]
+    return {"n": len(both),
+            "same_prompt_sha256": sum(a.get("prompt_sha256") == b.get("prompt_sha256") for a, b in both),
+            "same_system_sha256": sum(a.get("system_sha256") == b.get("system_sha256") for a, b in both),
+            "n_null_verdict": len(both) - len(have),
+            "verdict_agreement": wilson(sum(a["verdict"] == b["verdict"] for a, b in have), len(have))}
+
+
+def argon_labels(out_dir: Path) -> dict[str, dict[str, Any]]:
+    """The Argon label rows of a judge dir by pair id (as ``alias_study_judge`` reads them)."""
+    import alias_study_judge as aj
+    import glossbench_alias_judge as jd
+
+    return {r["pair_id"]: r for r in jd.p4.read_jsonl_repair_tail(out_dir / aj.LABEL_FILES["argon"])}
 
 
 def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1222,6 +1265,7 @@ def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                             "not_to_answers": wilson(sum(direction(r) == "not_to_answers" for r in flips),
                                                      sum(label_of(r["stage_a"]) == 0 for r in judged))},
         "by_stratum": by(lambda r: r["stratum"]), "by_arm": by(lambda r: r["arm"]),
+        "by_route": by(lambda r: route(r["stage_a"])),
         "by_stratum_direction": dict(Counter(f"{r['stratum']}|{direction(r)}" for r in flips)),
         "by_latex_preamble": by(lambda r: "latex_preamble" if r["latex_preamble"] else "no_latex_preamble"),
         "by_coverage_band": by(lambda r: band(r["coverage"], COVERAGE_BANDS)),
@@ -1382,6 +1426,8 @@ def run_report(judge_config: Path, control_config: Path, control_dir: Path, out:
         rseeds = asc.read_jsonl(retest_dir / "pairs-seed-retest.jsonl")
         rfinal = final_pairs(Path(rcfg["out_dir"]))
         rmetrics = compute_retest(retest_rows(rseeds, stage_a, rfinal))
+        rmetrics["tiebreak_replicate"] = tiebreak_replicate(
+            (p["pair_id"] for p in asc.read_jsonl(Path(rcfg["out_dir"]) / "pairs.jsonl")), argon_labels(Path(cfg["out_dir"])), argon_labels(Path(rcfg["out_dir"])))
         rec["metrics"]["retest"] = rmetrics
         cflip, rflip = rec["metrics"]["flip"]["rate"], rmetrics["flip"]["rate"]
         rec["metrics"]["flip_minus_retest"] = {

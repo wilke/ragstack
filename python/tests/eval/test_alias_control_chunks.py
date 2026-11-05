@@ -678,13 +678,36 @@ def test_cover_split_four_ways_and_the_primary_rejudge() -> None:
     assert a2n["primary_rejudge_agreement_selected"] == ctl.wilson(3, 5)
     assert n2a["primary_rejudge_agreement_selected"] == ctl.wilson(1, 2)
     assert m["split"]["primary_rejudge_agreement_selected"] == ctl.wilson(4, 7)
+    assert set(m["split"]) == {"answers_to_not", "not_to_answers", "primary_rejudge_agreement_selected",
+                               "by_route"}
     # the existing cover-any fields are unchanged
     assert m["answers_to_not"] == {"with_cover_any": 6, "recovered": ctl.wilson(4, 6)}  # any cover chunk
     assert m["not_to_answers"]["cover_any_answers"] == ctl.wilson(1, 2)
 
 
+def test_cover_split_by_stage_a_route() -> None:
+    rows = split_rows()
+    for i in (0, 2, 6):  # other_only, both (answers->not) and primary_only (not->answers) go to tiebreak
+        rows[i] = {**rows[i], "stage_a": final(label_of_row(rows[i]), "tiebreak")}
+    br = ctl.compute_report(rows)["cover_any"]["split"]["by_route"]
+    ag, tb = br["agree"], br["tiebreak_or_other"]
+    assert {k: ag["answers_to_not"][k] for k in (*ctl.COVER_SPLIT, "n")} == {
+        "other_only": 1, "both": 0, "primary_only": 1, "none": 2, "n": 4}
+    assert ag["answers_to_not"]["recovered_by_other_chunk"] == ctl.wilson(1, 4)
+    assert {k: tb["answers_to_not"][k] for k in (*ctl.COVER_SPLIT, "n")} == {
+        "other_only": 1, "both": 1, "primary_only": 0, "none": 0, "n": 2}
+    assert tb["answers_to_not"]["recovered_by_other_chunk"] == ctl.wilson(2, 2)
+    assert ag["not_to_answers"]["n"] == 1 and ag["not_to_answers"]["none"] == 1
+    assert tb["not_to_answers"]["n"] == 1 and tb["not_to_answers"]["primary_only"] == 1
+    assert tb["not_to_answers"]["recovered_by_other_chunk"] == ctl.wilson(0, 1)
+
+
+def label_of_row(r: dict[str, Any]) -> int:
+    return int(r["stage_a"]["label"])
+
+
 REPORT_KEYS = {"n_mapped", "n_judged_both", "n_without_control_label", "flip", "by_direction", "direction_rates",
-               "by_stratum", "by_arm", "by_stratum_direction", "by_latex_preamble", "by_coverage_band",
+               "by_stratum", "by_arm", "by_route", "by_stratum_direction", "by_latex_preamble", "by_coverage_band",
                "by_control_token_band", "by_spot_sheet", "by_section_structure", "control_pairs_shared",
                "agreement_control_vs_stage_a", "judge_stage", "cover_any", "boundary"}
 
@@ -715,6 +738,54 @@ def test_retest_metrics_flip_direction_and_route() -> None:
     assert m["agreement_retest_vs_stage_a"]["table"] == {"tp": 2, "fp": 1, "fn": 1, "tn": 2}
     # unjudged = not: an unjudged retest of an answers pair is a flip
     assert ctl.compute_retest([row(1, None) | {"retest": final(None, "unjudged")}])["flip"]["k"] == 1
+
+
+def test_retest_escalation_overlap_counts_and_jaccard() -> None:
+    def row(sa_src: str | None, rt_src: str | None) -> dict[str, Any]:
+        return {"stage_a": None if sa_src is None else final(1, sa_src),
+                "retest": None if rt_src is None else final(1, rt_src), "stratum": "answers", "arm": "base"}
+
+    rows = [row("tiebreak", "tiebreak"), row("tiebreak", "tiebreak"),      # both x2
+            row("tiebreak", "agree"), row("unjudged", "agree"),           # stage A only x2 (unjudged != agree)
+            row("agree", "tiebreak"),                                     # retest only
+            row("agree", "agree"), row("agree", "agree"),                 # neither
+            row("tiebreak", None), row(None, "tiebreak")]                 # not judged both: not counted
+    m = ctl.compute_retest(rows)["escalation_overlap"]
+    assert m == {"stage_a": 4, "retest": 3, "both": 2, "stage_a_only": 2, "retest_only": 1,
+                 "jaccard": round(2 / 5, 4)}
+    assert ctl.compute_retest([row("agree", "agree")])["escalation_overlap"]["jaccard"] is None
+
+
+def test_retest_tiebreak_replicate_counts_null_verdicts_and_sha_mismatches() -> None:
+    def lab(v: Any, prompt: str = "p", system: str = "s") -> dict[str, Any]:
+        return {"verdict": v, "prompt_sha256": prompt, "system_sha256": system}
+
+    sa = {"a": lab(True), "b": lab(False), "c": lab(True, prompt="p-old"), "d": lab(None), "e": lab(True),
+          "x": lab(True)}
+    rt = {"a": lab(True), "b": lab(True), "c": lab(True), "d": lab(False), "e": lab(True, system="s2"),
+          "f": lab(True), "x": lab(False)}
+    m = ctl.tiebreak_replicate(["a", "b", "c", "d", "e", "f", "g"], sa, rt)  # x: not a registry pair
+    assert m["n"] == 5 and m["n_null_verdict"] == 1
+    assert m["same_prompt_sha256"] == 4 and m["same_system_sha256"] == 4
+    assert m["verdict_agreement"] == ctl.wilson(3, 4)  # a, c, e agree; b disagrees; d has a null verdict
+    assert "length" not in json.dumps(m)
+
+
+def test_control_flip_by_stage_a_route() -> None:
+    base = {k: v for k, v in report_rows()[0].items() if k not in ("stage_a", "control")}
+    rows = [{**base, "stage_a": final(1, "agree"), "control": final(0)},
+            {**base, "stage_a": final(1, "agree"), "control": final(1)},
+            {**base, "stage_a": final(0, "agree"), "control": final(0)},
+            {**base, "stage_a": final(0, "tiebreak"), "control": final(1)},
+            {**base, "stage_a": final(1, "unjudged"), "control": final(1)},
+            {**base, "stage_a": final(1, "tiebreak"), "control": None}]  # not judged both
+    assert ctl.compute_report(rows)["by_route"] == {"agree": ctl.wilson(1, 3),
+                                                    "tiebreak_or_other": ctl.wilson(1, 2)}
+
+
+def test_retest_fields_absent_without_the_retest() -> None:
+    m = ctl.compute_report(report_rows())
+    assert "retest" not in m and "escalation_overlap" not in m and "tiebreak_replicate" not in m
 
 
 def test_retest_rows_refuse_a_seed_that_is_not_its_stage_a_pair() -> None:
