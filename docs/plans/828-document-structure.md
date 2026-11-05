@@ -976,6 +976,27 @@ mapping is mechanical:
   over the body, so `caption_labels` works on them. The article record's `refers_to` resolves to
   those labels across records of the same `pmcid`.
 
+Implementation notes (decided in PR 5b; the abstract and unit-heading rules confirmed by the owner
+2026-11-05, the rest stand as implemented):
+
+- The abstract section is **untitled** (`title=None`, `locator="abstract"`, `roles=["abstract"]`,
+  `role_source="declared/1"`), not titled `Abstract` as above: the record text has no abstract
+  heading line, so there is nothing for invariant 5's `heading` block to cover. Owner-confirmed
+  2026-11-05. The section is still filterable by role (`section_roles=abstract`).
+- A `sec-type` whose every `|`-separated part is blank (`" | "`) is no declaration: `roles=None`,
+  and the rules classify the section.
+- A `<p>` after a parent's last child `<sec>` lies inside that child (invariant 3 extends the last
+  child to the parent's end), so the stamp owns it there. Tracked as #960 (0 of 772 parent
+  leaves in a 630-article open-access sample).
+- The heading block's offset is computed from the title span's own depth, which is its `<sec>`'s
+  depth + 1: the block starts `min(depth + 1, 6) + 1` characters after `span.start` — the same
+  number as the `min(sec_depth + 2, 6) + 1` written above.
+- Unit records also get a `heading` block over the leading label (the unit text starts with it),
+  since a titled section must own one (invariant 5). The caption block starts after the label and
+  its one-space separator; a label-less float is an untitled section whose caption block starts at
+  0. The offsets come from a `UnitLayout` the unit builders record from the lengths they join.
+  Owner-confirmed 2026-11-05. A labelled float with no caption gets no caption block (#961).
+
 Detects: everything the XML states. Cannot detect: anything the publisher did not tag (an
 untitled `<sec>` is a real untitled section, not a failure), and `sec-type` is absent on most
 non-PMC-style articles, which is why the rules exist.

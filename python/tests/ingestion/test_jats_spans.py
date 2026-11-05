@@ -204,9 +204,10 @@ def _all_secs(root):
 def test_with_spans_leaves_records_unchanged_and_returns_spans_in_parallel():
     root = _root("synthetic")
     plain = jats.article_records(root, "PMC40")
-    recs, skipped, spans = jats.article_records(root, "PMC40", with_spans=True)
+    recs, skipped, spans, units = jats.article_records(root, "PMC40", with_spans=True)
     assert (recs, skipped) == plain
     assert spans == jats.article_spans(root)[1]
+    assert set(units) == {r["path"] for r in recs if r["metadata"]["content_type"] != "article"}
     for r in recs:                       # nothing leaks into the stored shape
         assert set(r) == {"text", "path", "metadata"}
         assert "spans" not in r["metadata"]
@@ -215,12 +216,12 @@ def test_with_spans_leaves_records_unchanged_and_returns_spans_in_parallel():
 def test_with_spans_on_an_article_without_prose_is_empty(tmp_path):
     p = tmp_path / "PMC8.xml"
     p.write_text(FIXTURES["no_prose"], encoding="utf-8")
-    recs, skipped, spans = jats.convert_file(p, with_spans=True)
+    recs, skipped, spans, _units = jats.convert_file(p, with_spans=True)
     assert spans == [] and [s["kind"] for s in skipped] == ["prose"]
     bad = tmp_path / "PMC9.xml"
     bad.write_text("<article><body><p>trunc", encoding="utf-8")
     assert jats.convert_file(bad, with_spans=True) == (
-        [], jats.convert_file(bad)[1], [])
+        [], jats.convert_file(bad)[1], [], {})
 
 
 # --------------------------------------------------------------- round trip
@@ -384,9 +385,25 @@ def test_title_only_section_is_a_span_of_just_its_heading():
 def test_span_rows_are_json_shaped():
     _, spans = jats.article_spans(_root("synthetic"))
     row = spans[0]._asdict()
-    assert list(row) == ["kind", "path", "xml_id", "start", "end", "title", "depth"]
+    assert list(row) == ["kind", "path", "xml_id", "start", "end", "title", "depth",
+                         "sec_type"]
     assert row == {"kind": "abstract", "path": "abstract", "xml_id": None,
-                   "start": 0, "end": row["end"], "title": None, "depth": 0}
+                   "start": 0, "end": row["end"], "title": None, "depth": 0,
+                   "sec_type": None}
+
+
+def test_sec_type_is_recorded_on_sec_spans_only():
+    xml = _article("42", '<sec sec-type=" materials|methods "><title>M</title>'
+                         '<p sec-type="x">Para.</p></sec>'
+                         '<sec sec-type="  "><p>Blank type.</p></sec>'
+                         "<sec><p>No type.</p></sec>")
+    _, spans = jats.article_spans(ET.fromstring(xml))
+    by_path = {s.path: s for s in spans}
+    assert by_path["body/sec[1]"].sec_type == "materials|methods"   # stripped, verbatim
+    assert by_path["body/sec[2]"].sec_type is None                   # blank -> None
+    assert by_path["body/sec[3]"].sec_type is None                   # absent
+    assert all(s.sec_type is None for s in spans if s.kind != "sec")
+    assert by_path["body/sec[1]"]._asdict()["sec_type"] == "materials|methods"
 
 
 # ------------------------------------------------------------------ CLI flag

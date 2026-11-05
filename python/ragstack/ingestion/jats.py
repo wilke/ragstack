@@ -67,16 +67,22 @@ opt-in (``article_records(..., with_spans=True)``) and never enter a record's
 ``metadata``. Since #828 (docs/plans/828-document-structure.md §4) the JATS
 adapter's document structure, built from these spans, travels in the JSONL
 shard as the record's top-level ``structure`` key; the record dicts this module
-returns are unchanged by that (the key is added by the extract tool).
+returns are unchanged by that (the key is added by the extract tool, from
+these spans for the article record and from each unit's :class:`UnitLayout`
+for table/figure records).
 
 Stdlib ``xml.etree.ElementTree`` only — the CWL worker image is CPU-only and
 carries no lxml guarantee. The one non-stdlib import is
 ``ragstack.metadata_schema``, which is a dependency-free leaf ON PURPOSE:
-``scripts/jats_extract.py`` imports this module and nothing else, once per
-document across a 1.44M-document corpus, so reaching the type table through
-``ingestion.enrich`` (pydantic) or ``stores.filters`` (which executes
-``ragstack.stores.__init__``: neo4j, qdrant-client) would put a 16x import-time
-and 3x RSS floor on every extract task.
+this module is imported once per extract task across a 1.44M-document corpus,
+so reaching the type table through ``ingestion.enrich`` (pydantic) or
+``stores.filters`` (which executes ``ragstack.stores.__init__``: neo4j,
+qdrant-client) would put a 16x import-time and 3x RSS floor on every task.
+Since #828 PR 5b ``scripts/jats_extract.py`` also imports
+:mod:`ragstack.ingestion.jats_structure` to write the ``structure`` key (it
+already imported pydantic before that, through ``ragstack.provenance``; measured
++8 modules, ~13 ms, no RSS change, still no store client); this module itself
+stays stdlib + ``metadata_schema``.
 """
 
 from __future__ import annotations
@@ -268,6 +274,30 @@ def render_rows(head: list[str], rows: list[list[str]]) -> str:
     return "\n".join(out)
 
 
+def _split_long_pieces(label: str, body: str, max_chars: int) -> list[tuple[str, int]]:
+    """:func:`split_long` plus, per piece, the offset where its ``body`` part
+    starts (the length of the repeated ``label`` prefix; the piece's length
+    when it is the label alone). Offsets are lengths of what was appended."""
+    prefix = f"{label} " if label else ""
+    budget = max(200, max_chars - len(prefix))
+    out: list[tuple[str, int]] = []
+    cur = ""
+    for s in _SENT.split(body):
+        if cur and len(cur) + len(s) + 1 > budget:
+            out.append((prefix + cur.strip(), len(prefix)))
+            cur = ""
+        cur = f"{cur} {s}".strip() if cur else s
+        while len(cur) > budget:            # a single sentence over budget
+            out.append((prefix + cur[:budget].strip(), len(prefix)))
+            cur = cur[budget:].strip()
+    if cur:
+        out.append((prefix + cur.strip(), len(prefix)))
+    if not out:
+        only = prefix.strip()
+        return [(only, len(only))]
+    return out
+
+
 def split_long(label: str, body: str, max_chars: int) -> list[str]:
     """Split an over-long unit on sentence boundaries, repeating ``label``.
 
@@ -275,20 +305,60 @@ def split_long(label: str, body: str, max_chars: int) -> list[str]:
     a ~3,600-token blob -- inside SFR's 4080 window, so it would not error, but
     wildly out of family with a 512-token collection and a poor retrieval unit.
     """
-    prefix = f"{label} " if label else ""
-    budget = max(200, max_chars - len(prefix))
-    out, cur = [], ""
-    for s in _SENT.split(body):
-        if cur and len(cur) + len(s) + 1 > budget:
-            out.append(prefix + cur.strip())
-            cur = ""
-        cur = f"{cur} {s}".strip() if cur else s
-        while len(cur) > budget:            # a single sentence over budget
-            out.append(prefix + cur[:budget].strip())
-            cur = cur[budget:].strip()
-    if cur:
-        out.append(prefix + cur.strip())
-    return out or [prefix.strip()]
+    return [t for t, _ in _split_long_pieces(label, body, max_chars)]
+
+
+class UnitLayout(NamedTuple):
+    """Where the parts of ONE table/figure unit record's ``text`` lie (#828 §9.2).
+
+    ``label`` is the raw ``<label>`` text (``""`` when the float has none); the
+    unit text starts with it by construction. ``[caption_start, caption_end)``
+    is the caption (plus, for a bitmap-only table, its ``<table-wrap-foot>``),
+    empty (``caption_start == caption_end``) when there is none.
+    ``[body_start, body_end)`` is the rendered grid (with the foot after it on a
+    table's last piece), ``None`` for a figure and for a piece with no grid.
+    Offsets come from the lengths of the strings the builders join, never from
+    a search — the same rule as :class:`Span`. Consumed by
+    :func:`ragstack.ingestion.jats_structure.unit_structure`."""
+
+    label: str
+    caption_start: int
+    caption_end: int
+    body_start: int | None
+    body_end: int | None
+
+
+def _head_caption(label: str, caption: str) -> tuple[int, int]:
+    """The caption's range inside ``" ".join(x for x in (label, caption) if x)``."""
+    if label and caption:
+        return len(label) + 1, len(label) + 1 + len(caption)
+    if label:
+        return len(label), len(label)
+    return 0, len(caption)
+
+
+def _after_label(label: str, text: str) -> int:
+    """Where the text after ``label`` and its one-space separator starts."""
+    if not label:
+        return 0
+    return len(label) + 1 if len(text) > len(label) else len(label)
+
+
+def _reset_layouts(layouts: dict[str, UnitLayout] | None, base: str) -> None:
+    """Drop this unit's entries before a build attempt: :func:`_fit_pieces`
+    rebuilds, and a first attempt's ``-part-3`` must not outlive a final build
+    with two parts. Other units' entries in a shared dict are left alone."""
+    if layouts is None:
+        return
+    for key in [k for k in layouts if k == base or k.startswith(f"{base}-part-")]:
+        del layouts[key]
+
+
+def _record_layouts(layouts: dict[str, UnitLayout] | None, suffixes: Iterable[str],
+                    lays: Iterable[UnitLayout]) -> None:
+    if layouts is not None:
+        for suffix, lay in zip(suffixes, lays, strict=True):
+            layouts[suffix] = lay
 
 
 def table_units(
@@ -297,6 +367,7 @@ def table_units(
     max_chars: int = DEFAULT_MAX_CHARS,
     count_tokens: TokenCounter | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    layouts: dict[str, UnitLayout] | None = None,
 ) -> list[tuple[str, str]]:
     """Serialise one ``<table-wrap>`` into ``(suffix, text)`` pieces.
 
@@ -305,7 +376,11 @@ def table_units(
     would otherwise reach the embedder with no column names. "Oversized" is
     measured in TOKENS when ``count_tokens`` is given (see ``DEFAULT_MAX_CHARS``
     for why a char cap alone under-split 32% of real tables), else in chars.
+
+    ``layouts``, when a dict, receives a :class:`UnitLayout` per returned piece,
+    keyed by its suffix (the pieces themselves are unchanged).
     """
+    base = f"table-{idx}"
     label = itext(tw.find("label"))
     caption = itext(tw.find("caption"))
     # <table-wrap-foot> holds the abbreviation legends and statistical notes that
@@ -318,43 +393,71 @@ def table_units(
     if table is None:  # bitmap-only table: caption is all there is, honestly
         only = " ".join(x for x in (head_txt, foot) if x).strip()
         if not only:
+            _reset_layouts(layouts, base)
             return []
         # Oversized caption-only wraps split like prose, with the short <label>
         # ("Table 3") as the repeated prefix and caption+foot as the body — NOT
         # head_txt as both, which would duplicate the caption into every piece.
         body = " ".join(x for x in (caption, foot) if x).strip() or only
-        return _fit_pieces(
-            lambda cap: ([(f"table-{idx}", only)] if len(only) <= cap else
-                         [(f"table-{idx}-part-{i}", t) for i, t in
-                          enumerate(split_long(label, body, cap), 1)]),
-            lambda p: p[1], only, max_chars, count_tokens, max_tokens,
-        )
+
+        def build_caption_only(cap: int) -> list[tuple[str, str]]:
+            _reset_layouts(layouts, base)
+            if len(only) <= cap:
+                pieces = [(base, only)]
+                lays = [UnitLayout(label, _after_label(label, only), len(only), None, None)]
+            else:
+                split = _split_long_pieces(label, body, cap)
+                pieces = [(f"{base}-part-{i}", t) for i, (t, _) in enumerate(split, 1)]
+                lays = [UnitLayout(label, cs, len(t), None, None) for t, cs in split]
+            _record_layouts(layouts, (s for s, _ in pieces), lays)
+            return pieces
+
+        return _fit_pieces(build_caption_only, lambda p: p[1], only, max_chars,
+                           count_tokens, max_tokens)
 
     head, rows = table_rows(table)
     whole = render_rows(head, rows)
     tail = f"\n\n{foot}" if foot else ""
-    full = f"{head_txt}\n\n{whole}{tail}".strip()
+    raw = f"{head_txt}\n\n{whole}{tail}"
+    full = raw.strip()
+    cap_start, cap_end = _head_caption(label, caption)
+
+    def single() -> UnitLayout:
+        # ``full`` is ``raw`` stripped: shift by what the strip removed in front
+        # (only when head_txt is empty) and clamp to what it left at the end.
+        lead = len(raw) - len(raw.lstrip())
+        body_start = min(max(0, len(head_txt) + len(_SEP) - lead), len(full))
+        if body_start >= len(full):
+            return UnitLayout(label, cap_start, cap_end, None, None)
+        return UnitLayout(label, cap_start, cap_end, body_start, len(full))
 
     def build(cap: int) -> list[tuple[str, str]]:
+        _reset_layouts(layouts, base)
         if len(head_txt) + len(whole) + len(tail) <= cap:
-            return [(f"table-{idx}", full)]
+            _record_layouts(layouts, [base], [single()])
+            return [(base, full)]
         if not rows:  # no parseable rows but over budget -- treat the blob as prose
-            return [(f"table-{idx}-part-{i}", t) for i, t in
-                    enumerate(split_long(head_txt, whole + tail, cap), 1)]
+            split = _split_long_pieces(head_txt, whole + tail, cap)
+            pieces = [(f"{base}-part-{i}", t) for i, (t, _) in enumerate(split, 1)]
+            _record_layouts(layouts, (s for s, _ in pieces), [
+                UnitLayout(label, cap_start, cap_end, *((bs, len(t)) if bs < len(t)
+                                                        else (None, None)))
+                for t, bs in split])
+            return pieces
         prefix = f"{head_txt}\n\n" if head_txt else ""
         hdr = render_rows(head, []) + "\n" if head else ""
         budget = max(200, cap - len(prefix) - len(hdr))
-        pieces: list[tuple[str, str]] = []
+        pieces = []
         cur: list[str] = []
         cur_len, part = 0, 1
         for r in rows:
             line = " | ".join(r)
             if cur and cur_len + len(line) > budget:
-                pieces.append((f"table-{idx}-part-{part}",
+                pieces.append((f"{base}-part-{part}",
                                f"{prefix}{hdr}" + "\n".join(cur)))
                 part, cur, cur_len = part + 1, [], 0
             while len(line) > budget:  # a single row wider than the whole budget
-                pieces.append((f"table-{idx}-part-{part}",
+                pieces.append((f"{base}-part-{part}",
                                f"{prefix}{hdr}" + line[:budget]))
                 part, line = part + 1, line[budget:]
             if not line:
@@ -362,10 +465,14 @@ def table_units(
             cur.append(line)
             cur_len += len(line) + 1
         if cur:
-            pieces.append((f"table-{idx}-part-{part}", f"{prefix}{hdr}" + "\n".join(cur)))
+            pieces.append((f"{base}-part-{part}", f"{prefix}{hdr}" + "\n".join(cur)))
         if foot and pieces:  # keep the legend with the last piece, not lost
             s, t = pieces[-1]
             pieces[-1] = (s, f"{t}\n\n{foot}")
+        # Every piece is prefix + (header + rows [+ foot]): the body starts
+        # right after the repeated caption block.
+        _record_layouts(layouts, (s for s, _ in pieces), [
+            UnitLayout(label, cap_start, cap_end, len(prefix), len(t)) for _, t in pieces])
         return pieces
 
     return _fit_pieces(build, lambda p: p[1], full, max_chars, count_tokens, max_tokens)
@@ -377,12 +484,15 @@ def fig_units(
     max_chars: int = DEFAULT_MAX_CHARS,
     count_tokens: TokenCounter | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    layouts: dict[str, UnitLayout] | None = None,
 ) -> list[tuple[str, str, str]]:
     """``[(suffix, text, graphic_href)]`` for one ``<fig>``.
 
     Captions are 8.5% of body text and are real prose; the image bytes are
-    separate S3 objects and are not needed to retrieve.
+    separate S3 objects and are not needed to retrieve. ``layouts`` is as in
+    :func:`table_units` (a figure has no body range).
     """
+    base = f"figure-{idx}"
     label = itext(fig.find("label"))
     caption = itext(fig.find("caption"))
     g = fig.find(".//graphic")
@@ -390,10 +500,16 @@ def fig_units(
     whole = " ".join(x for x in (label, caption) if x).strip()
 
     def build(cap: int) -> list[tuple[str, str, str]]:
+        _reset_layouts(layouts, base)
         if len(whole) <= cap:
-            return [(f"figure-{idx}", whole, href)]
-        return [(f"figure-{idx}-part-{i}", t, href)
-                for i, t in enumerate(split_long(label, caption, cap), 1)]
+            _record_layouts(layouts, [base],
+                            [UnitLayout(label, *_head_caption(label, caption), None, None)])
+            return [(base, whole, href)]
+        split = _split_long_pieces(label, caption, cap)
+        pieces = [(f"{base}-part-{i}", t, href) for i, (t, _) in enumerate(split, 1)]
+        _record_layouts(layouts, (p[0] for p in pieces),
+                        [UnitLayout(label, cs, len(t), None, None) for t, cs in split])
+        return pieces
 
     return _fit_pieces(build, lambda p: p[1], whole, max_chars, count_tokens, max_tokens)
 
@@ -437,6 +553,11 @@ class Span(NamedTuple):
     spans, ``None`` when the ``<sec>`` has no title or it normalises to empty —
     an untitled section is a first-class span, not a gap. ``None`` on leaves.
 
+    ``sec_type`` is the ``<sec>``'s ``sec-type`` attribute, stripped, on ``sec``
+    spans (``None`` when absent or blank, and on every other kind). It is read
+    verbatim — the ``declared/1`` role map that interprets it lives in
+    :mod:`ragstack.ingestion.jats_structure` (#828 §5).
+
     EMPTY ELEMENTS GET NO SPAN. An element whose normalised text is ``""`` is
     dropped by the ``if p`` join filter and contributes nothing to the text, so
     there is no offset it could honestly own; every emitted span has
@@ -454,6 +575,7 @@ class Span(NamedTuple):
     end: int
     title: str | None
     depth: int
+    sec_type: str | None = None
 
 
 def _section_walk(sec, depth: int, path: str, base: int,
@@ -513,7 +635,8 @@ def _section_walk(sec, depth: int, path: str, base: int,
     if out and spans is not None:
         # Pre-order: the container precedes its children (same start, larger end).
         spans.insert(first, Span("sec", path, sec.get("id"), base, base + len(out),
-                                 head_title, depth))
+                                 head_title, depth,
+                                 (sec.get("sec-type") or "").strip() or None))
     return out
 
 
@@ -667,7 +790,8 @@ def merge_manifest(meta: dict, pmcid: str, manifest: dict | None) -> dict:
 # -------------------------------------------------------------------- records
 
 _Records = tuple[list[dict], list[dict]]
-_RecordsWithSpans = tuple[list[dict], list[dict], list[Span]]
+_RecordsWithSpans = tuple[list[dict], list[dict], list[Span],
+                          dict[str, tuple[UnitLayout, bool]]]
 
 
 @overload
@@ -700,9 +824,12 @@ def article_records(
     ``min_unit_chars`` (``kind="unit"``) and for an article with no prose at all
     (``kind="prose"``). Nothing is dropped silently. Pure — no filesystem access.
 
-    ``with_spans=True`` returns a THIRD element: the article record's
+    ``with_spans=True`` returns two more elements: the article record's
     :class:`Span` list (offsets into that record's ``text``; ``[]`` when no
-    article record is emitted). It is a parallel return, not a record key, on
+    article record is emitted) and ``units``, ``{record path: (UnitLayout,
+    supplementary)}`` for every emitted table/figure record — its
+    :class:`UnitLayout` and whether the float sits inside a
+    ``<supplementary-material>``. Both are parallel returns, not record keys, on
     purpose: spans are large and are not a filterable field, so they must never
     reach ``metadata`` (what the passthrough allow-list, ``index_metadata`` and
     the Elasticsearch mapping read) — the record dicts are identical either way.
@@ -727,8 +854,22 @@ def article_records(
         skipped.append({"path": pmcid, "pmcid": pmcid, "kind": "prose",
                         "reason": "no abstract or body text"})
 
-    def _emit(units: Iterable[tuple[str, str, dict]], content_type: str) -> None:
-        for suffix, text, extra in units:
+    units: dict[str, tuple[UnitLayout, bool]] | None = {} if with_spans else None
+    # ElementTree has no parent pointers: one {child: parent} map, built only
+    # when unit layouts are wanted, answers "inside <supplementary-material>?".
+    parent_of = ({c: p for p in root.iter() for c in p} if units is not None else {})
+
+    def _supplementary(el) -> bool:
+        node = parent_of.get(el)
+        while node is not None:
+            if node.tag == "supplementary-material":
+                return True
+            node = parent_of.get(node)
+        return False
+
+    def _emit(units_in: Iterable[tuple[str, str, dict, UnitLayout | None, bool]],
+              content_type: str) -> None:
+        for suffix, text, extra, layout, supplementary in units_in:
             path = f"{pmcid}#{suffix}"
             if len(text.strip()) < min_unit_chars:
                 skipped.append({
@@ -740,16 +881,30 @@ def article_records(
             m = dict(meta, content_type=content_type, section_title=suffix, **extra)
             m.pop("abstract", None)
             records.append({"text": text, "path": path, "metadata": m})
+            if units is not None and layout is not None:
+                units[path] = (layout, supplementary)
 
-    _emit(((s, t, {}) for i, tw in enumerate(tws, 1)
-           for s, t in table_units(tw, i, max_chars, count_tokens, max_tokens)),
-          "table")
-    _emit(((s, t, {"graphic": href}) for i, fig in enumerate(figs, 1)
-           for s, t, href in fig_units(fig, i, max_chars, count_tokens, max_tokens)),
-          "figure")
+    def _tables() -> Iterable[tuple[str, str, dict, UnitLayout | None, bool]]:
+        for i, tw in enumerate(tws, 1):
+            lays: dict[str, UnitLayout] | None = {} if units is not None else None
+            pieces = table_units(tw, i, max_chars, count_tokens, max_tokens, lays)
+            sup = units is not None and _supplementary(tw)
+            for s, t in pieces:
+                yield s, t, {}, (lays or {}).get(s), sup
 
-    if spans is not None:
-        return records, skipped, (spans if prose.strip() else [])
+    def _figures() -> Iterable[tuple[str, str, dict, UnitLayout | None, bool]]:
+        for i, fig in enumerate(figs, 1):
+            lays: dict[str, UnitLayout] | None = {} if units is not None else None
+            pieces = fig_units(fig, i, max_chars, count_tokens, max_tokens, lays)
+            sup = units is not None and _supplementary(fig)
+            for s, t, href in pieces:
+                yield s, t, {"graphic": href}, (lays or {}).get(s), sup
+
+    _emit(_tables(), "table")
+    _emit(_figures(), "figure")
+
+    if spans is not None and units is not None:
+        return records, skipped, (spans if prose.strip() else []), units
     return records, skipped
 
 
@@ -784,7 +939,7 @@ def convert_file(
     ``kind="article"`` — one bad file is reported, never raised, so it cannot sink
     a shard. ``pmcid`` defaults to the filename stem up to the first ``.``
     (``PMC123.1.xml`` -> ``PMC123``). ``with_spans`` is as in
-    :func:`article_records` (a failed file's spans are ``[]``).
+    :func:`article_records` (a failed file's spans are ``[]``, its units ``{}``).
     """
     path = Path(xml_path)
     pmcid = pmcid or path.name.split(".")[0]
@@ -798,7 +953,7 @@ def convert_file(
         failed = [{"path": str(path), "pmcid": pmcid, "kind": "article",
                    "reason": f"{type(e).__name__}: {e}"}]
     if failed is not None:
-        return ([], failed, []) if with_spans else ([], failed)
+        return ([], failed, [], {}) if with_spans else ([], failed)
     if with_spans:
         return article_records(root, pmcid, manifest, max_chars, min_unit_chars,
                                count_tokens, max_tokens, with_spans=True)
