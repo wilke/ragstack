@@ -128,12 +128,12 @@ the null were added after the overall rate had been seen.
 | the collision split stays absent | H1 by alias collision is reported as *absent* (no collision annotation was supplied) rather than built after the results | RESULTS *What is not reported*; B `layer2.h1_by_collision` |
 | the control's owner agreement dropped | the control carries no owner labels; every control label is the frozen judge's | ADDENDUM *What differs from the plan*; control-judge `note` |
 | the test-retest null approved | the same 300 stage-A windows re-judged unchanged, as the floor for the control | ADDENDUM *What differs from the plan* |
-| a confirmatory paired test approved | a new pre-registered test of the agreed-pair *answers → not* pattern on fresh pairs. **Its pre-registration is being drafted; nothing has run.** | this entry |
-| the paper tier started | the study moves into the paper tier (`docs/papers/`), whose numbers must resolve to the record's artifacts | this entry |
+| a confirmatory paired test approved (owner, 2026-11-05, after the addendum merged; this supersedes the addendum's "none has been run or approved", which was true when it was written) | a new pre-registered test of the agreed-pair *answers → not* pattern on fresh pairs. **Its pre-registration is a draft in review (not frozen); nothing has run.** | this entry |
+| the paper tier started | an outline and two drafted sections are in review as a draft pull request, not yet merged into `docs/papers/`; its numbers must resolve to the record's artifacts | this entry |
 
 ### Open questions
 
-- **Review-split policy:** unanswered as of this entry.
-- **Gateway refusals at 00:26Z and 11:04Z (2026-11-05):** the gateway twice refused study calls; the cause is
-  unexplained as of this entry. Neither touched the control's three steps, whose 124 gateway calls all
+- **Review-split policy:** answered by the owner on 2026-11-05: pre-registrations, data paths, auth and durable formats get two independent reviews; record-only and docs changes one.
+- **Gateway refusals at 00:26Z and 11:04Z (2026-11-05):** the gateway twice refused study calls (from the private call
+  ledger, not a committed artifact); the cause is unexplained as of this entry. Neither touched the control's three steps, whose 124 gateway calls all
   returned `ok` (ADDENDUM *What was run, and when*).

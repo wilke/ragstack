@@ -364,6 +364,7 @@ slide("Reading the numbers", "What one point is, in records",
 <p>H1b's C change <span class="num">{sgn(cgate['delta_c_points'])}</span> pt = <b>{recs(cgate['delta_c_points'], N_C)}</b> C record</p>
 <p>H2's <span class="num">{sgn(H2['net_points'])}</span> pt = <b>{recs(H2['net_points'], N_ALL)}</b> record (an average of two random draws)</p>
 </div>""",
+      flag=True,
       source="100 / n; <code>layer1.H1.net_points</code>, <code>layer1.H1.c_gate.delta_c_points</code>, <code>layer1.H2.net_points</code>")
 
 # --------------------------------------------------------------------------- #
@@ -420,18 +421,19 @@ slide("The alias problem", "An invented example of what the glossary is for",
 # --------------------------------------------------------------------------- #
 h1_chart = hbar(
     ["no glossary", "merged glossary", "placebo glossary\n(another paper's)"],
-    [("judged found@10", [G_miss["none"], G_miss["merged"], G_miss["placebo"]], 1, False),
-     ("gold-only", [N_G - G_gold["none"], N_G - G_gold["merged"], None], 2, True)],
-    xmax=60, xlabel=f"G records NOT found in the top 10 (of {N_G}) — fewer is better", ticks=[0, 10, 20, 30, 40, 50, 60],
+    [("missed (judged)", [G_miss["none"], G_miss["merged"], G_miss["placebo"]], 1, False),
+     ("missed (gold chunk)", [N_G - G_gold["none"], N_G - G_gold["merged"], None], 2, True)],
+    xmax=60, xlabel=f"G questions MISSED, of {N_G}: no top-10 chunk answers (judged) / gold chunk not in top 10 — fewer is better", ticks=[0, 10, 20, 30, 40, 50, 60],
     title="G records not found, by glossary arm",
     desc=f"Judged misses: none {G_miss['none']}, merged {G_miss['merged']}, placebo {G_miss['placebo']}. Gold-only misses: none {N_G - G_gold['none']}, merged {N_G - G_gold['merged']}; placebo gold-only not in the artifacts.",
     absent={(1, 2): "absent (no G-only gold count in the artifacts)"})
 slide("Family G · H1 · confirmatory", f"H1 {esc(H1['status'])}: the merged glossary rescued {gl['gained']} of the {G_miss['none']} missed G records",
       f"""<div class="cols-chart"><div>{h1_chart}</div>
 <div class="side">
+<p>The bars count <b>misses</b>: questions where no top-10 chunk answers (judged), or where the record's own gold chunk is not in the top 10. Misses fell from <b>{G_miss['none']} to {G_miss['merged']}</b> judged and from <b>{N_G - G_gold['none']} to {N_G - G_gold['merged']}</b> by gold chunk.</p>
 <p><b>{G_found['none']} → {G_found['merged']}</b> of {N_G} G records found (judged): <span class="num">{sgn(H1['net_points'])}</span> pt, 95 % CI <span class="num">{ci(H1['ci95'])}</span>; {H1['gained']} gained, {H1['lost']} lost, in {H1['n_nonzero']} papers; exact sign-flip p = <span class="num">{H1['p']}</span> (its minimum attainable p).</p>
 <p>Gold-only: {G_gold['none']} → {G_gold['merged']} (<span class="num">{sgn(H1['gold_only_net_points'])}</span> pt = {recs(H1['gold_only_net_points'], N_G)} records; {gl['gold_only']['gained']} gained, {gl['gold_only']['lost']} lost).</p>
-<p><b>Placebo</b> — another paper's glossary, same rule: {G_found['placebo']} of {N_G}, the same as none ({pmn['gained']} gained, {pmn['lost']} lost). Extra glossary-shaped text alone did nothing. It is a weaker dose: it renders on {fc_p['chunks_with_field']:,} chunks vs {fc_m['chunks_with_field']:,} for merged.</p>
+<p><b>Placebo</b> — another paper's glossary, same rule: {G_found['placebo']} of {N_G}, the same as none ({pmn['gained']} gained, {pmn['lost']} lost): placebo − none <span class="num">{sgn(pmn['net_points'])}</span> pt, {esc(pmn['equivalence']['reading'])}. That bounds foreign glossary text only at a far weaker dose: it renders on only {fc_p['chunks_with_field']:,} chunks vs {fc_m['chunks_with_field']:,} for merged, so it rules out little about extra text in general (prereg §5.3 reads it with field coverage).</p>
 <p class="small">The gain is at the ceiling: {pp(G_found['none'] / N_G)} of G records were already found before any glossary.</p>
 </div></div>""",
       flag=True,
@@ -462,7 +464,7 @@ slide("Family G · H1b · confirmatory", f"H1b {esc(H1B['status'])}: the gain is
 <p class="small">Observed: G {recs(cgate['delta_g_points'], N_G)}, C {recs(dc, N_C)} — the alias-bridging pattern.</p>
 </div>
 <div class="side">
-<p class="callout"><b>The C ceiling.</b> Baseline C was {cgate['baseline_c_found10']['found']} of {cgate['baseline_c_found10']['n']} found (headroom {cgate['headroom_records']} records), so C could only fall or stay. The C gate (fires only if ΔC &gt; 0, |ΔC| ≥ ½|ΔG| and its CI excludes 0) was <b>{esc(cgate['note'])}</b>: it could not have fired however much C “wanted” to rise.</p>
+<p class="callout"><b>The C ceiling.</b> Baseline C was {cgate['baseline_c_found10']['found']} of {cgate['baseline_c_found10']['n']} found (headroom {cgate['headroom_records']} records), so C could only fall or stay. The C gate fires only if ΔC &gt; 0, |ΔC| ≥ ½|ΔG| and its CI excludes 0; the record reads <b>{esc(cgate['note'])}</b>: it could not have fired however much C “wanted” to rise.</p>
 <p>So the evidence <b>against a general boost is one-sided</b>: a general upward shift was not observable on C. The <b>placebo</b> supports the reading: glossary text without the paper's own entries moved G by {sgn(pmn['net_points'])} pt ({pmn['gained']} / {pmn['lost']}).</p>
 </div></div>""",
       flag=True,
@@ -493,12 +495,12 @@ slide("Family N · the problem", "Neighbours vs matched random papers",
 # --------------------------------------------------------------------------- #
 h2_chart = hbar(
     [lab for _, lab in ARMS],
-    [("judged found@10", [N_ALL - judged[a] for a, _ in ARMS], 1, False),
-     ("gold-only", [N_ALL - gold[a] for a, _ in ARMS], 2, True)],
-    xmax=140, xlabel=f"records NOT found in the top 10 (of {N_ALL}) — fewer is better", ticks=[0, 20, 40, 60, 80, 100, 120, 140],
+    [("missed (judged)", [N_ALL - judged[a] for a, _ in ARMS], 1, False),
+     ("missed (gold chunk)", [N_ALL - gold[a] for a, _ in ARMS], 2, True)],
+    xmax=140, xlabel=f"questions MISSED, of {N_ALL}: no top-10 chunk answers (judged) / gold chunk not in top 10 — fewer is better", ticks=[0, 20, 40, 60, 80, 100, 120, 140],
     title="Records not found, by corpus arm",
     desc="; ".join(f"{lab}: judged {N_ALL - judged[a]}, gold-only {N_ALL - gold[a]}" for a, lab in ARMS))
-slide("Family N · H2 · confirmatory", f"H2 {esc(H2['status'])}: neighbours displaced gold chunks, but judged reach held",
+slide("Family N · H2 · confirmatory", f"H2 {esc(H2['status'])}: neighbours displaced gold chunks; judged reach: no effect larger than {d_gr['equivalence']['delta_points']:.2f} pt",
       f"""<div class="cols-chart"><div>{h2_chart}</div>
 <div class="side">
 <p><b>Gold-only</b> (the direction gate, quoted first): neighbour {gold['neighbour']} vs random average {num(rand_g, 1)} of {N_ALL} — <span class="num">{sgn(H2['gold_only_net_points'])}</span> pt ({recs(H2['gold_only_net_points'], N_ALL)} records), CI <span class="num">{ci(nmr['gold_only']['ci95'])}</span>. Gate passes.</p>
@@ -524,7 +526,7 @@ slide("Layer 2 · descriptive", "The three serving reads",
 <p>Default − BM25 on the neighbour arm: <span class="num">{sgn(d_rr['default_minus_bm25'])}</span> pt = <b>{recs(d_rr['default_minus_bm25'], N_ALL)} of {N_ALL}</b> records ({rr['gained']} gained, {rr['lost']} lost), CI <span class="num">{ci(d_rr['ci95'])}</span>.</p>
 <p class="small">Non-inferiority rule: keep if CI low &gt; <span class="num">{sgn(d_rr['margin'], 0)}</span> pt. Not merely non-inferior — better.</p></div>
 <div class="card"><p class="fam">Is related-paper growth a concern?</p>
-<p class="verdict">not a concern</p>
+<p class="verdict">{esc(d_gr['reading'].split(':')[0])}</p>
 <p>Neighbour − random <span class="num">{sgn(d_gr['neighbour_minus_random'])}</span> pt; no effect larger than <span class="num">{d_gr['equivalence']['delta_points']:.2f}</span> pt (≈ {rec(d_gr['equivalence']['delta_points'], N_ALL):.1f} of {N_ALL}).</p>
 <p class="small">A concern only at ≤ <span class="num">{sgn(d_gr['margin'], 0)}</span> pt with the CI excluding 0. Beside H2 not confirmed.</p></div>
 </div>
@@ -537,9 +539,9 @@ slide("Layer 2 · descriptive", "The three serving reads",
 # --------------------------------------------------------------------------- #
 rr_chart = hbar(
     [lab for _, lab in ARMS],
-    [("served default (reranker)", [N_ALL - judged[a] for a, _ in ARMS], 1, False),
-     ("BM25 alone", [N_ALL - bm25[a] for a, _ in ARMS], 3, True)],
-    xmax=80, xlabel=f"records NOT found in the top 10 (judged, of {N_ALL}) — fewer is better", ticks=[0, 20, 40, 60, 80],
+    [("missed, served default (reranker)", [N_ALL - judged[a] for a, _ in ARMS], 1, False),
+     ("missed, BM25 alone", [N_ALL - bm25[a] for a, _ in ARMS], 3, True)],
+    xmax=80, xlabel=f"questions MISSED, of {N_ALL} (judged: no top-10 chunk answers) — fewer is better", ticks=[0, 20, 40, 60, 80],
     title="Records not found, default vs BM25, by corpus arm",
     desc="; ".join(f"{lab}: default {N_ALL - judged[a]}, BM25 {N_ALL - bm25[a]}" for a, lab in ARMS))
 slide("Layer 2 · reranker", "The reranker default holds in every corpus arm",
@@ -626,6 +628,7 @@ slide("Limitations", "What this does not show",
 <li><b>One corpus, one population.</b> OA-1000 only; records LLM-drafted and LLM-verified, plus the owner's check of {A['spot_checks']['record_validity']['n']} ({A['spot_checks']['record_validity']['valid']} valid); questions use the glossary's primary term.</li>
 <li><b>Two families, no joint error control.</b> No sentence here combines “the glossary helps” with a growth claim.</li>
 </ul></div>""",
+      flag=True,
       source="RESULTS.md § Limitations; ADDENDUM § Limitations; <code>layer2.placebo.*.found10</code>, <code>layer1.H1</code>")
 
 # --------------------------------------------------------------------------- #
@@ -757,7 +760,7 @@ table.scen caption{text-align:left;font-weight:600;color:var(--ink2);padding-bot
 .srcs li{margin:0 0 .45em}
 .srcs code{color:var(--muted);font-size:.8em}
 /* charts */
-svg.chart{width:100%;height:auto;display:block;overflow:visible}
+svg.chart{width:100%;height:auto;display:block;overflow:visible}@media (max-width:760px){.cols-chart>div:first-child{overflow-x:auto}svg.chart{min-width:640px}}
 .chart .grid{stroke:var(--grid);stroke-width:1}
 .chart .axis{stroke:var(--muted);stroke-width:1}
 .chart .tick{fill:var(--muted);font-size:13px}
