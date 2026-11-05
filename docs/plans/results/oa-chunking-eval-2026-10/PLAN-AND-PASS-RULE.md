@@ -186,3 +186,11 @@ Frozen:
    counts through M_high.
 Harness changes for 3, 5, 6 are made and tested before any main-run retrieval; the commit that sets
 the margins in the private config and these harness changes is the freeze point.
+
+### Amendment B.1, 2026-11-05 UTC (owner, after the freeze, before any main-run retrieval)
+A fourth retrieval setting is added as a SECONDARY report: (d) hybrid (dense + BM25, RRF), reranker
+off, graph off. It separates the reranker's contribution from the fusion's in setting (a). The primary
+decision, margins and decision set are unchanged. Noise run for (d), same 300 questions: baseline
+62.7, fixed_token 512/0 60.7, diff -2.0 [-6.3, +2.3], discordance 0.153, half-width 1.66 at N = 2,035;
+margins at the floor (2.0 / 2.0 / 4.0). Baseline hit@5 across settings: vector 48.3, BM25 51.7,
+hybrid 62.7, hybrid + reranker 81.0.
