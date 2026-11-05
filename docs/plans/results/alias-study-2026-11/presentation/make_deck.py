@@ -350,6 +350,62 @@ slide("Design", "How it was measured",
       source="<code>record_set.balanced</code>, <code>layer1.H1.n</code>, <code>layer2.c_change.n</code>, <code>judge.pairs_finalized</code> (results-stage-B); prereg §4, §6")
 
 # --------------------------------------------------------------------------- #
+# 3a. What "judged" means (owner request, 2026-11-05)
+# --------------------------------------------------------------------------- #
+DA, DB = A["judge"]["drift"], B["judge"]["drift"]
+OA, OB = DA["scopes"]["overall"], DB["scopes"]["overall"]
+NOREF = B["judge"]["opus_no_reference"]
+slide("Design · the judge", "What \u201cjudged\u201d means",
+      f"""<div class="cols2">
+<div>
+<p class="lede">An LLM judge decides whether a chunk answers the question. The alternative, found@10-gold, only checks whether the one known source chunk was retrieved.</p>
+<p>For each question the system retrieves its top 10 chunks. For any chunk that matters, the frozen judge reads the question and that one chunk, with the paper title and the chunk's glossary entries, and answers one question: <b>does this passage, read on its own, state the core of what is asked?</b> Any chunk can count: the same paper, another paper, or a passage other than the gold one. A question is <b>found (judged)</b> if at least one top-10 chunk is labelled <i>answers</i>.</p>
+<ul class="tight">
+<li>Two Qwen models judge first: {esc(PREREG['judge_c'])}, and {esc(PREREG['judge_e'])}.</li>
+<li>If they agree, that is the label; if they disagree (or either gives no valid label), {esc(PREREG['judge_tiebreak'])} breaks the tie ({n_(f"{B['judge']['sources']['tiebreak']:,}")} of {n_(f"{B['judge']['pairs_finalized']:,}")} pairs).</li>
+<li>Claude Opus 5.5 re-labels a 5 % sample to watch for drift and never sets a label (next slide).</li>
+<li>To save calls, a chunk is judged only where its label can change found@10 or RR@10: with the gold chunk in the top 10 the question already counts as found, and only the chunks ranked above it are judged (for RR@10).</li>
+</ul>
+</div>
+<div>
+<div class="card"><p class="fam">Gold vs judged</p>
+<p><b>Gold:</b> is the record's own source passage in the top 10? A fixed fact, no judge involved.</p>
+<p><b>Judged:</b> does <i>any</i> top-10 passage answer? Broader, because another passage can stand in for the gold one. That is why judged found@10 was already {PLAC['G']['found10']['base|none|default']['found']} of {N_G} G questions without a glossary, while the gold chunk was in the top 10 for {G_gold['none']} of them.</p></div>
+<div class="card"><p class="fam">The cost of judging</p>
+<p>It depends on the judge being right. On 100 spot-check pairs the owner's labels agreed with the judge's {SPOT['reweighted_agreement']:.3f} of the time (re-weighted), below the prereg's {PREREG['judge_validity_rule']:.2f} line. So every judged result carries <i>{esc(FLAG)}</i>, with the gold figure beside it. The owner's tags on the {TAGS['counts']['n']} disagreements (exploratory) put every one on the partial-versus-full line; none is a passage with no answer in it.</p></div>
+</div>
+</div>""",
+      flag=True,
+      source="prereg §6.2–§6.3; <code>judge.sources</code>, <code>judge.pairs_finalized</code>, <code>layer2.placebo.G.found10</code> (results-stage-B); <code>fixed_sensitivities.origin.hits_by_origin</code>, <code>spot_checks.judge_validity</code> (stage-A2); <code>counts</code> (disagreement-tags)")
+
+# --------------------------------------------------------------------------- #
+# 3b. The drift reference (owner request, 2026-11-05)
+# --------------------------------------------------------------------------- #
+slide("Design · the judge", "The drift reference: a monitor, not a judge",
+      f"""<div class="cols2">
+<div>
+<p class="lede">It checks that the judging pipeline stays the same over a long run. Across two stages, {n_(f"{B['judge']['pairs_finalized']:,}")} pairs were judged on two Qwen endpoints and a gateway; an endpoint swapped to another model, a server setting or a gateway update could shift the judge without anyone noticing.</p>
+<ul class="tight">
+<li>A seeded 5 % sample of judged pairs, stratified equally across the three corpus arms ({n_(f"{OB['sampled']:,}")} of {n_(f"{B['judge']['pairs_finalized']:,}")}) is also sent to Claude Opus 5.5, on <code>alias-judge/1</code>, the prompt of the earlier judge calibration: a fixed external yardstick.</li>
+<li>The run tracks how often the final label agrees with Opus, overall and per corpus arm, as batches accumulate.</li>
+<li><b>It never sets a label.</b> If it could override labels it would be part of what it measures.</li>
+</ul>
+<p class="small"><b>Rules</b> (prereg §6.3, amended R29): reference lines {OB['threshold']:.2f} overall and {DB['scopes']['base']['threshold']:.2f} per arm, report-only; the one alarm that pauses the run is an <b>arm gap</b> above {DB['arm_gap']['threshold']:.2f} once every arm has {DB['arm_gap']['min_pairs']} Opus-answered pairs. An empty Opus answer (a known topic quirk) is re-issued once, then the pair is <i>no reference</i>: filtered, never a drift failure.</p>
+</div>
+<div>
+<div class="tiles two">
+{tile(f"{OA['agreement']:.3f}", f"agreement with Opus, stage A ({OA['agree']} of {OA['answered']} answered) · line {OA['threshold']:.2f}")}
+{tile(f"{OB['agreement']:.3f}", f"cumulative, both stages ({OB['agree']:,} of {OB['answered']:,}) · line {OB['threshold']:.2f}")}
+</div>
+<p>Both sit below the {OB['threshold']:.2f} line, so they are reported, as R29 requires; it is not a deviation. The arm gap was {DB['arm_gap']['value']:.3f} (alarm above {DB['arm_gap']['threshold']:.2f}): <b>{'fired' if DB['arm_gap']['fires'] else 'never fired'}</b>, so the run never paused. Per arm, cumulative: {DB['scopes']['base']['agreement']:.3f} base, {DB['scopes']['neighbour']['agreement']:.3f} neighbour, {DB['scopes']['random']['agreement']:.3f} random against the {DB['scopes']['base']['threshold']:.2f} line; in stage A neighbour ({DA['scopes']['neighbour']['agreement']:.3f}) and random ({DA['scopes']['random']['agreement']:.3f}) sat below it, likewise report-only. {NOREF['total']} pairs ended as <i>no reference</i> ({NOREF['base']} base, {NOREF['neighbour']} neighbour, {NOREF['random']} random).</p>
+<div class="card"><p class="fam">Drift reference vs the owner's spot check</p>
+<p><b>Drift reference:</b> is the judge <i>consistent</i> over time and across arms? One model against another.</p>
+<p><b>Spot check:</b> is the judge <i>right</i>? The owner against the judge. That one fell below its line ({SPOT['reweighted_agreement']:.3f} vs {PREREG['judge_validity_rule']:.2f}) and put the flag on every result.</p></div>
+</div>
+</div>""",
+      source="<code>judge.drift</code>, <code>judge.opus_no_reference</code>, <code>judge.pairs_finalized</code> (results-stage-B; stage A from results-stage-A2); prereg §6.3, R29")
+
+# --------------------------------------------------------------------------- #
 # 4. What a point is
 # --------------------------------------------------------------------------- #
 slide("Reading the numbers", "What one point is, in records",

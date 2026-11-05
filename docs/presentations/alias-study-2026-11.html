@@ -227,6 +227,46 @@ And does growing a collection with a paper's citation neighbours cost more than 
 <p class="small">Blind to arm, retriever and rank. <span class="num">24,559</span> pairs judged, <span class="num">1,230</span> by tiebreak, <span class="num">0</span> unjudged.</p></div>
 </div>
 <p class="callout"><b>What a point is:</b> one percentage point of found@10. 1 of 600 G records = <span class="num">0.17</span> pt · 1 of 300 C = <span class="num">0.33</span> pt · 1 of 900 = <span class="num">0.11</span> pt. Every point figure in this deck is also given in records.</p></div><footer class="sf"><p class="src">Source: <code>record_set.balanced</code>, <code>layer1.H1.n</code>, <code>layer2.c_change.n</code>, <code>judge.pairs_finalized</code> (results-stage-B); prereg §4, §6</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · the judge </p><h2>What “judged” means</h2></header><div class="sb"><div class="cols2">
+<div>
+<p class="lede">An LLM judge decides whether a chunk answers the question. The alternative, found@10-gold, only checks whether the one known source chunk was retrieved.</p>
+<p>For each question the system retrieves its top 10 chunks. For any chunk that matters, the frozen judge reads the question and that one chunk, with the paper title and the chunk's glossary entries, and answers one question: <b>does this passage, read on its own, state the core of what is asked?</b> Any chunk can count: the same paper, another paper, or a passage other than the gold one. A question is <b>found (judged)</b> if at least one top-10 chunk is labelled <i>answers</i>.</p>
+<ul class="tight">
+<li>Two Qwen models judge first: Qwen3.6-35B-A3B (n 5, T 0.7, thinking), and Qwen3.8-27B (n 1).</li>
+<li>If they agree, that is the label; if they disagree (or either gives no valid label), Gemini 4 Argon breaks the tie (<span class="num">1,230</span> of <span class="num">24,559</span> pairs).</li>
+<li>Claude Opus 5.5 re-labels a 5 % sample to watch for drift and never sets a label (next slide).</li>
+<li>To save calls, a chunk is judged only where its label can change found@10 or RR@10: with the gold chunk in the top 10 the question already counts as found, and only the chunks ranked above it are judged (for RR@10).</li>
+</ul>
+</div>
+<div>
+<div class="card"><p class="fam">Gold vs judged</p>
+<p><b>Gold:</b> is the record's own source passage in the top 10? A fixed fact, no judge involved.</p>
+<p><b>Judged:</b> does <i>any</i> top-10 passage answer? Broader, because another passage can stand in for the gold one. That is why judged found@10 was already 591 of 600 G questions without a glossary, while the gold chunk was in the top 10 for 550 of them.</p></div>
+<div class="card"><p class="fam">The cost of judging</p>
+<p>It depends on the judge being right. On 100 spot-check pairs the owner's labels agreed with the judge's 0.872 of the time (re-weighted), below the prereg's 0.90 line. So every judged result carries <i>judge validity below threshold (§13.5)</i>, with the gold figure beside it. The owner's tags on the 19 disagreements (exploratory) put every one on the partial-versus-full line; none is a passage with no answer in it.</p></div>
+</div>
+</div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: prereg §6.2–§6.3; <code>judge.sources</code>, <code>judge.pairs_finalized</code>, <code>layer2.placebo.G.found10</code> (results-stage-B); <code>fixed_sensitivities.origin.hits_by_origin</code>, <code>spot_checks.judge_validity</code> (stage-A2); <code>counts</code> (disagreement-tags)</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · the judge </p><h2>The drift reference: a monitor, not a judge</h2></header><div class="sb"><div class="cols2">
+<div>
+<p class="lede">It checks that the judging pipeline stays the same over a long run. Across two stages, <span class="num">24,559</span> pairs were judged on two Qwen endpoints and a gateway; an endpoint swapped to another model, a server setting or a gateway update could shift the judge without anyone noticing.</p>
+<ul class="tight">
+<li>A seeded 5 % sample of judged pairs, stratified equally across the three corpus arms (<span class="num">1,228</span> of <span class="num">24,559</span>) is also sent to Claude Opus 5.5, on <code>alias-judge/1</code>, the prompt of the earlier judge calibration: a fixed external yardstick.</li>
+<li>The run tracks how often the final label agrees with Opus, overall and per corpus arm, as batches accumulate.</li>
+<li><b>It never sets a label.</b> If it could override labels it would be part of what it measures.</li>
+</ul>
+<p class="small"><b>Rules</b> (prereg §6.3, amended R29): reference lines 0.97 overall and 0.95 per arm, report-only; the one alarm that pauses the run is an <b>arm gap</b> above 0.05 once every arm has 100 Opus-answered pairs. An empty Opus answer (a known topic quirk) is re-issued once, then the pair is <i>no reference</i>: filtered, never a drift failure.</p>
+</div>
+<div>
+<div class="tiles two">
+<div class="tile "><p class="big num">0.948</p><p class="small">agreement with Opus, stage A (386 of 407 answered) · line 0.97</p></div>
+<div class="tile "><p class="big num">0.960</p><p class="small">cumulative, both stages (1,122 of 1,169) · line 0.97</p></div>
+</div>
+<p>Both sit below the 0.97 line, so they are reported, as R29 requires; it is not a deviation. The arm gap was 0.016 (alarm above 0.05): <b>never fired</b>, so the run never paused. Per arm, cumulative: 0.950 base, 0.966 neighbour, 0.964 random against the 0.95 line; in stage A neighbour (0.947) and random (0.948) sat below it, likewise report-only. 59 pairs ended as <i>no reference</i> (17 base, 23 neighbour, 19 random).</p>
+<div class="card"><p class="fam">Drift reference vs the owner's spot check</p>
+<p><b>Drift reference:</b> is the judge <i>consistent</i> over time and across arms? One model against another.</p>
+<p><b>Spot check:</b> is the judge <i>right</i>? The owner against the judge. That one fell below its line (0.872 vs 0.90) and put the flag on every result.</p></div>
+</div>
+</div></div><footer class="sf"><p class="src">Source: <code>judge.drift</code>, <code>judge.opus_no_reference</code>, <code>judge.pairs_finalized</code> (results-stage-B; stage A from results-stage-A2); prereg §6.3, R29</p><span class="pg"></span></footer></section>
 <section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Reading the numbers </p><h2>What one point is, in records</h2></header><div class="sb"><p class="lede">A <b>point</b> is one percentage point of found@10. With these sample sizes a point is a handful of records, so every point figure in this deck is translated into records.</p>
 <div class="tiles">
 <div class="tile "><p class="big num">0.17 pt</p><p class="small">= <b>1</b> of the 600 G records</p></div>
@@ -400,7 +440,7 @@ And does growing a collection with a paper's citation neighbours cost more than 
 </div>
 <nav class="controls" aria-label="Slide navigation">
 <button id="prev" type="button" aria-label="Previous slide">&larr;</button>
-<span class="counter" id="counter" aria-live="polite">1 / 15</span>
+<span class="counter" id="counter" aria-live="polite">1 / 17</span>
 <button id="next" type="button" aria-label="Next slide">&rarr;</button>
 <button id="theme" type="button" aria-label="Toggle light or dark theme">theme</button>
 </nav>

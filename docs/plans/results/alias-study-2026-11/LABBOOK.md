@@ -137,3 +137,12 @@ the null were added after the overall rate had been seen.
 - **Gateway refusals at 00:26Z and 11:04Z (2026-11-05):** the gateway twice refused study calls (from the private call
   ledger, not a committed artifact); the cause is unexplained as of this entry. Neither touched the control's three steps, whose 124 gateway calls all
   returned `ok` (ADDENDUM *What was run, and when*).
+
+### Addition, 2026-11-05 (later): two judge slides
+
+At the owner's request the deck gains two slides after "How it was measured": what *judged* means (the
+judge's question, the line-up, gold vs judged, the cost of judging) and the drift reference (a monitor that
+never sets a label; agreement with Opus 0.948 in stage A and 0.960 cumulative against the 0.97 line,
+report-only under R29; the arm gap never fired; 59 pairs ended as *no reference*; all from `judge.drift`
+and `judge.opus_no_reference`). The deck now has 17 slides; the "15 slides" in the status above refers to
+the first version.
