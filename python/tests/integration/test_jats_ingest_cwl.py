@@ -1,5 +1,9 @@
 """Run ``cwl/jats-ingest.cwl`` through ``cwltool`` (#847 G2b, the parallel branch).
 
+Since the repin step R (#828 §12) the run also proves the embed step resolves
+the same registry entry as the load step: every embedding-file header's
+``chunking.collection_id`` is the job's ``collection_id``.
+
 The bulk JATS plane runs ``glossary`` in parallel with ``embed`` (both read
 the extract output), gathers the per-shard glossary files in
 ``merge_glossary`` and joins them at ``load`` (``load_embeddings
@@ -61,6 +65,8 @@ def _localised(dest: Path) -> Path:
                               for i, (k, v) in enumerate(extra)]
         if not tool["requirements"]:
             del tool["requirements"]
+    # Test-only output: the embedding files, so their headers can be read.
+    wf["outputs"]["embeddings"] = {"type": "File[]", "outputSource": "embed/embeddings"}
     dest.write_text(yaml.safe_dump(wf, sort_keys=False), encoding="utf-8")
     return dest
 
@@ -123,3 +129,11 @@ def test_glossary_branch_joins_the_embeddings_at_load(
     assert [Path(r["path"]).name for r in out["receipts"]] == [
         "shard-0000.receipt.json", "shard-0001.receipt.json"]
     assert all(r["provenance"]["segmenter_version"] for r in receipts)
+    # #828 step R: the embed step resolves the entry the load step resolves
+    # (the same registry_db through the same EnvVarRequirement), so every
+    # embedding-file header names it — an unresolved embed writes no id.
+    from ragstack.ingestion.embedding_file import read_header
+
+    ids = [(read_header(f["path"]).get("chunking") or {}).get("collection_id")
+           for f in out["embeddings"]]
+    assert ids == [CID, CID], ids

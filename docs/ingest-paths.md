@@ -145,7 +145,9 @@ Where each step runs, path by path:
 | **7. Write** | The entry's stores, as resolved by the API | The URLs the API seeds per run (#407) | The registry-resolved stores. `load_embeddings.py` **requires** a URL per leg (#636) | A registry route, else `--qdrant-url` / `--es-url`, which **default to localhost** (#454). ES only with `--text-backend elasticsearch` (default `none`) |
 | **8. Archive** | none | `versions/<n>/`, recorded on the registry | `pdf-ingest.cwl` only, not recorded | none |
 | **Chunk cap** (#291) | Yes, once per job | Yes, per task (`--max-chunks`) | Only if a cap is passed (`--max-chunks`, default 0 = off) or the registry entry sets an override, on both `load_embeddings.py` and `ingest_shard.py` (#849) | **No** |
-| **Duplicate guard** (#747) | Yes: `DUPLICATE_POLICY` (default `refuse`), per request `duplicate_policy` | Admission pre-check on file names; the worker check (`--duplicate-policy`) only once the registered CWL declares `duplicate_policy` (the tools-image repin) | `ingest_shard.py --duplicate-policy`, default `off` | **No** |
+| **Duplicate guard** (#747) | Yes: `DUPLICATE_POLICY` (default `refuse`), per request `duplicate_policy` | Admission pre-check on file names, plus the worker check (`--duplicate-policy`): `pdf-ingest-scatter.cwl` declares `duplicate_policy` since the v1.6.8 tools-image repin (#765) | `ingest_shard.py --duplicate-policy`, default `off` | **No** |
+| **Structure metadata** (#828) | `STRUCTURE_METADATA` (default `off`; `on` exactly turns it on) | Sent as the `structure_metadata` workflow input (`"on"`/`"off"`) when the registered CWL declares it and names a stamped tools image; every shard-tool workflow declares it since the v1.6.23 tools-image repin (#828 step R) | `structure_metadata` on `ingest-bulk.cwl`, `jats-ingest.cwl`, `pdf-ingest.cwl`, `embed-bulk.cwl` (null = the tool default, `off`) | `--structure-metadata off\|on`, default `off` |
+| **Structure markers** (#828, `chunk_params`) | Applied in-process from the entry | `ingest_shard.py` reads them from the entry it resolves; accepted on GoWe since the v1.6.23 repin (#828 step R) | `ingest_shard.py`, and `embed_shard.py` through the `collection_id` its step binds since the v1.6.23 repin; `load_embeddings.py` and `gowe_batch_ingest.py` refuse an unproven build | From the entry |
 
 What each step means:
 
@@ -716,19 +718,19 @@ is indexed (the chunk-cap sizing pass). Per path:
 | Path | Where | Refused document |
 |---|---|---|
 | API, local | `ShardedIngestor.ingest_manifest` → `prepare_source` | the item fails with the refusal (`DuplicateWork.job_error`); a 1-file job is `failed` |
-| API, gowe | the pre-check in the API; the worker check only when the registered workflow declares the `duplicate_policy` input (not yet — see below) | the receipt row carries the refusal; the batch completes (exit 0) |
+| API, gowe | the pre-check in the API, and the worker check when the registered workflow declares the `duplicate_policy` input (`pdf-ingest-scatter.cwl` does since #765 — see below) | the receipt row carries the refusal; the batch completes (exit 0) |
 | operator `ingest_shard.py` | `run_shard(duplicate_policy=…)`, `--duplicate-policy`, default `off` (D10) | as gowe |
 | `ingest_jsonl.py`, `load_embeddings.py`, replay | **not guarded** | — |
 
-**GoWe path until the tools-image repin (ADR-0010).** The pinned tools image's
-`ingest_shard.py` predates `--duplicate-policy` (argparse would exit 2 on it), and
-under ADR-0010 the CWL is what declares which image a workflow runs. So
-`cwl/pdf-ingest-scatter.cwl` does **not** declare a `duplicate_policy` input yet,
-and `_gowe_inputs` sends it only when the registered workflow declares it
-(`tool_image.declared_workflow_inputs`, the `provenance_inputs` precedent). Until
-the repin PR adds the input (nullable, no default) with the image that carries the
-flag, **the GoWe path is guarded only by the admission check on file names**: a
-`PMC…`-named or ASM-named PDF is refused; a `sha-*` or other id-less name is not.
+**GoWe path and the tools-image repin (ADR-0010).** Under ADR-0010 the CWL is
+what declares which image a workflow runs, so a flag is declared only with the
+image that carries it. `cwl/pdf-ingest-scatter.cwl` declares the
+`duplicate_policy` input (nullable, no default) since the repin to
+`ragstack-tools-v1.6.8-b1` (#765), and `_gowe_inputs` sends it only when the
+registered workflow declares it (`tool_image.declared_workflow_inputs`, the
+`provenance_inputs` precedent). A deployment whose registered workflow predates
+that repin is guarded only by the admission check on file names: a `PMC…`-named
+or ASM-named PDF is refused; a `sha-*` or other id-less name is not.
 
 **DOI normalisation (D8).** `doi_metadata.normalize_doi` cuts a trailing `/-/…`,
 `/-/`, `/-` or `/`. That fixes the text scan too: PNAS's footer link

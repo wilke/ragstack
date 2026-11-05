@@ -73,7 +73,8 @@ inputs:
   registry_db:
     type: File
     doc: "The tenant's sqlite collection store (COLLECTION_STORE_PATH). Read-only
-      here: the load step resolves collection_id through it."
+      here: the embed and load steps both resolve collection_id through it
+      (#828 §7: embed builds its chunker and structure markers from the entry)."
   tenant:
     type: string
     default: "public"
@@ -157,6 +158,14 @@ inputs:
       max_chunks override still applies. The submitter decides the cap (the
       API for user jobs, the operator for bulk jobs); nothing is derived from
       the worker."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure metadata on the chunks (#828 PR 1), passed to
+      embed_shard --structure-metadata (off|on). No default: null leaves the
+      flag off the argv and the tool runs its own default (off). Stamping only:
+      content, offsets, chunk ids and the collection identity are unchanged
+      either way. The structure MARKERS are not inputs: embed reads them from
+      the registry entry it resolves through collection_id."
   # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
   # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
   # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
@@ -333,6 +342,11 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      # #828 §7 (repin step R): the embed step resolves the same registry entry
+      # as `load`, so its chunker and structure markers come from the entry.
+      collection_id: collection_id
+      registry_db: registry_db
+      structure_metadata: structure_metadata
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -342,6 +356,12 @@ steps:
           dockerImageId: ragstack-tools-v1.6.20-b1.sif
         NetworkAccess:
           networkAccess: true
+        # The same registry pointer as the load step's (below): embed_shard
+        # resolves collection_id through the sqlite file, no --registry.
+        EnvVarRequirement:
+          envDef:
+            COLLECTION_STORE_BACKEND: sqlite
+            COLLECTION_STORE_PATH: $(inputs.registry_db.path)
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
       inputs:
         shard:
@@ -411,6 +431,22 @@ steps:
           inputBinding:
             prefix: --tool-image-digest
             position: 16
+        # #828 PR 3: resolve the entry (no store contact) and refuse a chunk
+        # flag that contradicts it; the header records the resolved id.
+        collection_id:
+          type: string
+          inputBinding:
+            prefix: --collection-id
+            position: 17
+        registry_db:
+          type: File
+          doc: "Consumed via COLLECTION_STORE_PATH above, not a CLI flag."
+        # #828 PR 1: stamping only (off|on).
+        structure_metadata:
+          type: ["null", string]
+          inputBinding:
+            prefix: --structure-metadata
+            position: 18
       arguments:
         - position: 11
           prefix: --out

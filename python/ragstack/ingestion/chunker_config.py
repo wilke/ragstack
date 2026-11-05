@@ -440,15 +440,21 @@ class StructureMarkers:
 
 
 #: Whether a document-structure marker may be ingested through GoWe workers
-#: from this source tree. ``False`` until the repin step R of #828 (§12): the
-#: shipped workflows name a tools image that predates the markers, so
-#: ``ingest_shard.py`` there would ingest a ``text_render`` collection as RAW
-#: Markdown under a name that claims the render, with no error. Read at
-#: collection create AND at the API's GoWe dispatch (an entry can arrive by
-#: ``seed_from_json``, a collections file or a registry shared with an
-#: in-process deployment). R flips it, and its pin tests, in the commit that
-#: repins the tools image.
-GOWE_STRUCTURE_MARKERS_SUPPORTED = False
+#: from this source tree. ``True`` since the repin step R of #828 (§12): the
+#: shipped workflows name ``ragstack-tools-v1.6.23-b1`` (tag v1.6.23), the
+#: first tools image whose ``ingest_shard.py``/``embed_shard.py`` read the
+#: markers from the registry entry, and R wires ``collection_id`` into every
+#: ``embed_shard.py`` step. Before R it was ``False``: the image then named
+#: would have ingested a ``text_render`` collection as RAW Markdown under a
+#: name that claims the render, with no error. Read at collection create AND
+#: at the API's GoWe dispatch (an entry can arrive by ``seed_from_json``, a
+#: collections file or a registry shared with an in-process deployment).
+#: What stays refused on GoWe after R, by the dispatch gate in
+#: ``documents.py``: ``text_render`` on a workflow that builds a glossary file
+#: (every shipped ingest workflow, the API's scatter included), a workflow
+#: whose ``embed_shard.py`` step is unwired, and ``structure_infer``
+#: everywhere (not yet applied, PR 8).
+GOWE_STRUCTURE_MARKERS_SUPPORTED = True
 
 #: No marker: today's behaviour on every path.
 NO_STRUCTURE_MARKERS = StructureMarkers()

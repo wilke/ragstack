@@ -12,6 +12,13 @@ embedding_url:
   - http://localhost:9002
 # Bearer token for keyed endpoints (e.g. lambda13); drop for keyless.
 embedding_api_key: CHANGE-ME-EMBED-API-KEY
+# #828 §7: resolve the target collection's registry entry in the embed step
+# (no store contact): the chunker and any structure markers then come from the
+# entry, and each embedding-file header records the id, which
+# load-embeddings.cwl checks. Needed for a collection that records a marker.
+# collection_id: CHANGE-ME-COLLECTION-ID
+# registry: CHANGE-ME-REGISTRY-NAME
+# structure_metadata: "on"
 # #847 G2b: the glossary step. "off" (the default) = rules only, offline. With
 # "on" give the endpoint, the model and every limit (the tool refuses 0 with
 # "on"); the key travels by NAME — the worker's --secret-file sets it.

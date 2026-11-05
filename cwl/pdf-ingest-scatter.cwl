@@ -280,6 +280,15 @@ inputs:
   duplicate_policy:
     type: ["null", string]
     doc: "The duplicate-paper guard policy passed to ingest_shard --duplicate-policy (off|refuse|allow); null = the tool's default (off)."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure metadata on the chunks (#828 PR 1), passed to
+      ingest_shard --structure-metadata (off|on). The API seeds it per job from
+      STRUCTURE_METADATA (documents.py::_gowe_inputs), only when this text
+      declares the input AND names a stamped tools image, always as the string
+      on or off. No default: null leaves the flag off the argv and the tool runs
+      its own default (off). Stamping only: content, offsets, chunk ids and the
+      collection identity are unchanged either way."
   symbol_glossary:
     type: string
     default: "rules"
@@ -589,6 +598,7 @@ steps:
       tool_image_digest: tool_image_digest
       duplicate_policy: duplicate_policy
       symbol_glossary: symbol_glossary
+      structure_metadata: structure_metadata
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
@@ -686,6 +696,10 @@ steps:
         glossary:
           type: File
           inputBinding: {prefix: --glossary-file, position: 29}
+        # #828 PR 1, wired at the repin step R: stamping only (off|on).
+        structure_metadata:
+          type: ["null", string]
+          inputBinding: {prefix: --structure-metadata, position: 30}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.

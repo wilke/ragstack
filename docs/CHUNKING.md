@@ -415,12 +415,13 @@ metadata of the rendered text is stamped on the chunks only when structure
 metadata is on.
 
 **Validation and recording.** `POST /v1/collections` refuses an unknown value
-with 400; `null` counts as not sent. The other three structure markers,
-`structure_cuts` (`sections/1`), `embed_heading_path` (`prefix/1`) and
-`structure_infer` (`text-heuristic/1`), are recognised but **refused** (400 at
-create, exit 2 on the bulk tools) until the release that applies them (#828
-PR 7 and PR 8). Accepting them now would chunk a collection without them and,
-after that release, with them. One reader,
+with 400; `null` counts as not sent. Of the other three structure markers,
+`structure_cuts` (`sections/1`) and `embed_heading_path` (`prefix/1`) are
+applied since #828 PR 7 and are accepted and recorded the same way.
+`structure_infer` (`text-heuristic/1`) is recognised but **refused** (400 at
+create, exit 2 on the bulk tools) until the release that applies it (#828
+PR 8). Accepting it now would chunk a collection without it and, after that
+release, with it. One reader,
 `chunker_config.structure_from_params`, serves the API, `ingest_shard.py`,
 `embed_shard.py` (with `--collection-id`), `ingest_jsonl.py`, the load-time
 check and the batch driver. There is no marker flag on the tools: the registry
@@ -463,17 +464,23 @@ computed from the rendered text. Building glossary files over the rendered text
 is a separate issue. `ingest_chunks.py`, which loads pre-chunked JSON, refuses
 any entry that records a marker.
 
-**Not on GoWe deployments until the repin.** On `INGEST_BACKEND=gowe`,
-`POST /v1/collections` refuses (400) a collection that records any marker
-until the repin step R, because the shipped workflows' tools image predates
-the markers and would ingest it unmarked. An entry that arrived another way
-(seeded, a collections file, a registry shared with an in-process deployment)
-is refused when an ingest is dispatched (422, before anything is uploaded or a
-version reserved). The dispatch also refuses `text_render` on a workflow that
-builds a glossary file. R lifts the first refusal. Note that the API's
-scatter workflow (`pdf-ingest-scatter.cwl`) runs the glossary step and passes
-`--glossary-file` to `ingest_shard.py`; until glossary files follow the
-render, a `text_render` collection cannot be ingested through it even after R.
+**On GoWe deployments since the repin.** Since the release that names
+`ragstack-tools-v1.6.23-b1` in its CWL (the repin step R of #828), an
+`INGEST_BACKEND=gowe` deployment accepts a collection that records a marker
+at `POST /v1/collections`, as an in-process one does. A server release older
+than that refuses one (400), because its workflows name a tools image that
+predates the markers and would ingest it unmarked; it also refuses (422, at
+dispatch) an entry that arrived another way (seeded, a collections file, a
+registry shared with an in-process deployment). What the dispatch still
+refuses (422, before anything is uploaded or a version reserved):
+
+- `text_render` on a workflow that builds a glossary file. The API's scatter
+  workflow (`pdf-ingest-scatter.cwl`) runs the glossary step and passes
+  `--glossary-file` to `ingest_shard.py`, so until glossary files follow the
+  render, a `text_render` collection cannot be ingested through it.
+  `structure_cuts` and `embed_heading_path` can.
+- any marker on a workflow whose `embed_shard.py` step does not bind
+  `collection_id` (never the case for the shipped texts, see below).
 
 **Where it is applied, and recorded.** The GoWe extract step never sees the
 marker: its shard holds the raw text, and the render runs in the ingest step,
@@ -488,11 +495,20 @@ on every path. What ran is recorded:
 **Release order.** A tools image built before #828 PR 4 ignores the key: on
 `ingest-bulk.cwl` and the API's scatter workflow it ingests a marked
 collection as raw Markdown, with no error; its receipts have no
-`chunking.text_render`. Roll the tools image before creating marked
-collections on a GoWe tenant. On the operator embed workflows
-(`jats-ingest.cwl`, `pdf-ingest.cwl`, `embed-bulk.cwl`), the embed step must
-also pass `collection_id`, which the shipped texts do not yet do (repin step
-R). Three backstops refuse what they cannot prove was built from the entry:
+`chunking.text_render`. So the order is: (1) the tools image at tag v1.6.23,
+the first carrying PR 3's registry resolution in `embed_shard.py` and PR 4's
+reader; (2) the server release that stamps that image into every CWL text,
+wires the operator embed workflows and lifts the GoWe create refusal; (3)
+then marked collections on a GoWe tenant, after a scratch ingest on a
+non-production tenant shows the keys in its receipt and embedding-file
+header. On the operator embed workflows (`jats-ingest.cwl`, `pdf-ingest.cwl`,
+`embed-bulk.cwl`) the embed step passes `collection_id` since that release:
+`pdf-ingest.cwl` and `embed-bulk.cwl` with the registry NAME (`registry`;
+`embed-bulk.cwl`'s two inputs are optional and must be given for a marked
+collection), `jats-ingest.cwl` with the load step's `registry_db`. Submit
+from the stamped tree of the deployed server release: an older checkout's
+text does not wire the embed step. Three backstops refuse what they cannot
+prove was built from the entry:
 `load_embeddings.py` refuses, before any write, an embedding file whose
 header's markers differ from the entry's (an old header with no `chunking`
 object, against a marked entry, included); `gowe_batch_ingest.py` refuses to

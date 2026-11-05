@@ -21,6 +21,9 @@ es_url: http://CHANGE-ME-ES:9200
 # #849: the chunk cap is the submitter's decision; 0 = none (the registry
 # entry's explicit max_chunks override still applies).
 # max_chunks: 0
+# #828: section metadata on every chunk (off|on); omitted = the tool's
+# default (off). Stamping only — it never changes the chunks or their ids.
+# structure_metadata: "on"
 # #847 G2b: the glossary step. "off" (the default) = rules only, offline. With
 # "on" give the endpoint, the model and every limit (the tool refuses 0 with
 # "on"); the key travels by NAME — the worker's --secret-file sets it.

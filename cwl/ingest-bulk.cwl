@@ -127,6 +127,15 @@ inputs:
       = no cap from this input; the registry entry's explicit max_chunks
       override still applies. The submitter decides the cap (the API for user
       jobs, the operator for bulk jobs); nothing is derived from the worker."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure metadata on the chunks (#828 PR 1), passed to
+      ingest_shard --structure-metadata (off|on). No default: null leaves the
+      flag off the argv and the tool runs its own default (off). Stamping only:
+      content, offsets, chunk ids and the collection identity are unchanged
+      either way. The structure MARKERS (text_render, structure_cuts,
+      embed_heading_path) are not inputs: ingest_shard reads them from the
+      registry entry it resolves through collection_id."
   # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
   # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
   # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
@@ -326,6 +335,7 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      structure_metadata: structure_metadata
     out: [receipt]
     run:
       class: CommandLineTool
@@ -388,6 +398,10 @@ steps:
         tool_image_digest:
           type: ["null", string]
           inputBinding: {prefix: --tool-image-digest, position: 22}
+        # #828 PR 1, wired at the repin step R: stamping only (off|on).
+        structure_metadata:
+          type: ["null", string]
+          inputBinding: {prefix: --structure-metadata, position: 23}
       arguments:
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
         - {position: 12, prefix: --out, valueFrom: $(inputs.shard.nameroot).receipt.json}

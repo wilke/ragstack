@@ -529,14 +529,15 @@ def test_a_comment_naming_the_script_is_not_a_mention():
 
 
 @pytest.mark.parametrize("name", EMBED_WORKFLOWS)
-def test_the_reader_sees_each_shipped_embed_workflow_as_unwired(name):
-    """Through the driver's own entry point, on the real texts."""
+def test_the_reader_sees_each_shipped_embed_workflow_as_wired(name):
+    """Through the driver's own entry point, on the real texts: wired since the
+    repin step R (before it, each read ``[False]``)."""
     path = CWL_DIR / name
     if not path.is_file():
         pytest.skip("no cwl/ in this checkout")
     wiring = gbi.embed_step_wiring(str(path))
     assert len(wiring) == 1, wiring
-    assert list(wiring.values()) == [False], wiring
+    assert list(wiring.values()) == [True], wiring
 
 
 def test_every_other_shipped_workflow_reads_as_no_embed_step():
@@ -551,19 +552,29 @@ def test_every_other_shipped_workflow_reads_as_no_embed_step():
 
 
 # --------------------------------------------------------------------------- #
-# the pin: no shipped embed step binds collection_id until the repin step R
+# the pin: every shipped embed step binds collection_id since the repin step R
 # --------------------------------------------------------------------------- #
 
 
-def test_no_shipped_embed_step_binds_collection_id_until_the_image_repin() -> None:
-    """ADR-0010 decision 4: a CWL binds a tool flag only once the image it NAMES
-    carries it. Every shipped workflow names a tools image older than #828 PR 3,
-    whose ``embed_shard.py`` has no ``--collection-id`` — binding it now would
-    fail every embed task at argparse. Flip this pin on the repin branch (step R
-    of docs/plans/828-document-structure.md §12), which wires ``collection_id``
-    (and ``registry`` / ``registry_db``) into the embed steps of
-    ``pdf-ingest.cwl`` and ``jats-ingest.cwl`` and gives ``embed-bulk.cwl`` its
-    two optional inputs."""
+#: How each embed step reaches the registry, besides ``--collection-id``: by
+#: NAME (``--registry``, #563), or — jats-ingest.cwl — through the sqlite file
+#: the load step also reads, pinned by ``EnvVarRequirement``.
+EMBED_REGISTRY = {"embed-bulk.cwl": "registry", "pdf-ingest.cwl": "registry",
+                  "jats-ingest.cwl": "registry_db"}
+
+
+def test_every_shipped_embed_step_binds_collection_id_since_the_image_repin() -> None:
+    """The repin step R (docs/plans/828-document-structure.md §12) flipped PR
+    3's ``test_no_shipped_embed_step_binds_collection_id_until_the_image_repin``:
+    every shipped ``embed_shard.py`` step binds the workflow's ``collection_id``
+    in its ``in:`` and its tool binds it to ``--collection-id``, so the embed
+    tool resolves the entry the load step resolves. ``pdf-ingest.cwl`` and
+    ``embed-bulk.cwl`` also pass ``registry`` (``--registry``);
+    ``jats-ingest.cwl`` hands the embed tool the load step's ``registry_db``
+    through the same ``EnvVarRequirement``. ``embed-bulk.cwl``'s two inputs
+    are OPTIONAL (a workflow contract change, so every existing input file
+    still validates). MUTATION: remove ``collection_id`` from one embed step →
+    fails."""
     if not CWL_DIR.is_dir():
         pytest.skip("no cwl/ in this checkout")
     import yaml
@@ -572,11 +583,29 @@ def test_no_shipped_embed_step_binds_collection_id_until_the_image_repin() -> No
     for path in sorted(CWL_DIR.glob("*.cwl")):
         text = path.read_text(encoding="utf-8")
         wiring = embed_shard_step_wiring(text)
-        assert not any(wiring.values()), (path.name, wiring)
-        steps = (yaml.safe_load(text) or {}).get("steps") or {}
+        assert all(w is True for w in wiring.values()), (path.name, wiring)
+        doc = yaml.safe_load(text) or {}
+        steps = doc.get("steps") or {}
         for sid in wiring:
-            tool_inputs = steps[sid]["run"].get("inputs") or {}
-            assert "collection_id" not in tool_inputs, (path.name, sid)
-            assert "--collection-id" not in json.dumps(steps[sid]["run"]), (path.name, sid)
+            step, tool = steps[sid], steps[sid]["run"]
+            tool_inputs = tool.get("inputs") or {}
+            assert step["in"]["collection_id"] == "collection_id", (path.name, sid)
+            assert tool_inputs["collection_id"]["inputBinding"]["prefix"] == "--collection-id"
+            reg = EMBED_REGISTRY[path.name]
+            assert step["in"][reg] == reg, (path.name, sid)
+            if reg == "registry":
+                assert tool_inputs["registry"]["inputBinding"]["prefix"] == "--registry"
+            else:
+                assert "inputBinding" not in tool_inputs["registry_db"]
+                env = tool["requirements"]["EnvVarRequirement"]["envDef"]
+                load_env = steps["load"]["run"]["requirements"]["EnvVarRequirement"]["envDef"]
+                assert env == load_env == {
+                    "COLLECTION_STORE_BACKEND": "sqlite",
+                    "COLLECTION_STORE_PATH": "$(inputs.registry_db.path)"}
+                assert "--registry" not in json.dumps(tool)
+            if path.name == "embed-bulk.cwl":
+                for name in ("collection_id", "registry"):
+                    inp = doc["inputs"][name]
+                    assert inp["type"] == ["null", "string"] and "default" not in inp, name
             seen += 1
     assert seen == len(EMBED_WORKFLOWS)

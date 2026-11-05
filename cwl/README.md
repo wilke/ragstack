@@ -662,6 +662,34 @@ The two step tools live in the ragstack package's script tree:
   (and `workflow_id` with `--workflow-id`), and records the load's glossary counts per
   batch in its ledger.
 
+### Document structure: the repin step R (tools v1.6.23, #828)
+
+- **`structure_metadata`** (nullable, no default; `"on"`/`"off"`) on every shard-tool
+  workflow (`pdf-ingest-scatter`, `ingest-bulk`, `pdf-ingest`, `jats-ingest`,
+  `embed-bulk`), bound to `--structure-metadata` on each `ingest_shard.py` /
+  `embed_shard.py` step. The API sends it from `STRUCTURE_METADATA` only when the
+  registered text declares it and names a stamped image. Stamping only: chunks and ids
+  are unchanged.
+- **The embed steps resolve the registry entry.** `pdf-ingest.cwl` binds its
+  `collection_id` and `registry` into the `embed` step (`--collection-id`,
+  `--registry`); `jats-ingest.cwl` binds `collection_id` and hands the embed tool the
+  load step's `registry_db` through the same `EnvVarRequirement`; `embed-bulk.cwl`
+  gains two **optional** inputs, `collection_id` and `registry` (a contract change that
+  keeps every existing input file valid). The embed tool then builds its chunker and
+  the structure markers from the entry, refuses a contradicting `chunk_*` input, and
+  records the id in the embedding-file header, which `load_embeddings.py` checks. A
+  collection whose `chunk_params` record a marker needs them: `gowe_batch_ingest.py`
+  refuses to submit it on an unwired text and `load_embeddings.py` refuses a file
+  built without the entry. Submit from the stamped tree of the deployed release.
+- **Glossary steps are unchanged.** `text_render` is still refused on every workflow that
+  builds a glossary file (all four glossary workflows and the API's scatter);
+  `structure_cuts` and `embed_heading_path` are not.
+- Pins: `tests/api/test_ingest_structure_metadata_gowe.py`,
+  `tests/unit/test_embed_shard_registry.py` (wiring),
+  `tests/integration/test_embed_step_registry_cwl.py` and
+  `tests/integration/test_jats_ingest_cwl.py` (the embedding-file header names the
+  entry, under cwltool).
+
 ## Running it
 
 Each step stages `python/scripts/eval/` into its job sandbox via

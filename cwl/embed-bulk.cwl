@@ -67,6 +67,34 @@ inputs:
     doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  # #828 §7 (repin step R): registry resolution in the embed step. OPTIONAL, so
+  # every existing input file still validates; omitted = the embed step
+  # resolves nothing and builds its chunker from the flags, as before.
+  collection_id:
+    type: ["null", string]
+    doc: "REGISTRY collection id (#263) the embedding files are for. Given, the
+      embed step resolves the entry (no store contact), builds its chunker and
+      the document-structure markers from it, refuses a chunk_* or
+      embedding_model input that contradicts it, and records the id in each
+      embedding-file header (chunking.collection_id), which load-embeddings.cwl
+      checks against the entry it loads into. REQUIRED in practice for a
+      collection whose chunk_params record a structure marker:
+      gowe_batch_ingest.py and load_embeddings.py refuse it otherwise."
+  registry:
+    type: ["null", string]
+    doc: "WHICH collection registry to resolve collection_id against, by NAME
+      (#563), e.g. hackathon: the worker reads COLLECTION_STORE_BACKEND_<NAME>
+      and COLLECTION_STORE_{PATH,DSN}_<NAME> from its own environment (the DSN
+      through gowe-worker --secret-file). A name, never coordinates or a
+      credential. Omitted = the worker's unsuffixed COLLECTION_STORE_*
+      variables. Refused without collection_id."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure metadata on the chunks (#828 PR 1), passed to
+      embed_shard --structure-metadata (off|on). No default: null leaves the
+      flag off the argv and the tool runs its own default (off). Stamping only:
+      content, offsets, chunk ids and the collection identity are unchanged
+      either way."
   # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
   # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
   # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
@@ -177,6 +205,9 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      collection_id: collection_id
+      registry: registry
+      structure_metadata: structure_metadata
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -250,6 +281,24 @@ steps:
           inputBinding:
             prefix: --tool-image-digest
             position: 15
+        # #828 PR 3: resolve the entry (no store contact) and refuse a chunk
+        # flag that contradicts it; the header records the resolved id.
+        collection_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --collection-id
+            position: 16
+        registry:
+          type: ["null", string]
+          inputBinding:
+            prefix: --registry
+            position: 17
+        # #828 PR 1: stamping only (off|on).
+        structure_metadata:
+          type: ["null", string]
+          inputBinding:
+            prefix: --structure-metadata
+            position: 18
       arguments:
         - position: 10
           prefix: --out

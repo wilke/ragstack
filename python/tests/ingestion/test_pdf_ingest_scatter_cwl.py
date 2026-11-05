@@ -226,6 +226,38 @@ def test_duplicate_policy_is_an_optional_input_threaded_to_ingest_shard(wf: dict
     assert "duplicate_policy" in declared_workflow_inputs(CWL_PATH.read_text())
 
 
+def test_structure_metadata_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> None:
+    """#828 PR 1, declared at the repin step R: ``STRUCTURE_METADATA`` reaches
+    the worker as ONE nullable workflow input with NO default, bound to
+    ``ingest_shard --structure-metadata``. ``_gowe_inputs`` sends it — always
+    as ``"on"`` or ``"off"`` — only when the registered text DECLARES it and
+    names a stamped image; an omitted value stays null, the flag is left off
+    the argv and the tool runs its own default (``off``). Same shape as
+    ``duplicate_policy`` above."""
+    from ragstack.api.routers.documents import gowe_structure_metadata
+    from ragstack.tool_image import declared_workflow_inputs, names_stamped_image
+
+    inp = wf["inputs"]["structure_metadata"]
+    assert inp["type"] == ["null", "string"] and "default" not in inp
+    for value in {gowe_structure_metadata("on"), gowe_structure_metadata("off")}:
+        assert value in inp["doc"], value
+    ingest = _steps(wf)["ingest"]
+    assert ingest["in"]["structure_metadata"] == "structure_metadata"
+    tool_in = ingest["run"]["inputs"]["structure_metadata"]
+    assert tool_in["type"] == ["null", "string"] and "default" not in tool_in
+    assert tool_in["inputBinding"]["prefix"] == "--structure-metadata"
+    positions = [i["inputBinding"]["position"]
+                 for i in ingest["run"]["inputs"].values()
+                 if isinstance(i, dict) and "inputBinding" in i]
+    positions += [a["position"] for a in ingest["run"]["arguments"]]
+    assert positions.count(tool_in["inputBinding"]["position"]) == 1
+    # What the API actually reads off the registered text: declared, and the
+    # text names a stamped image, so the API sends it.
+    text = CWL_PATH.read_text()
+    assert "structure_metadata" in declared_workflow_inputs(text)
+    assert names_stamped_image(text)
+
+
 # --- the store-target sweep: every CWL in the repo, not just this one -------- #
 #
 # #407: `qdrant_url`/`es_url` defaulted to `http://localhost:6333`/`:9200` and

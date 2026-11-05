@@ -12,6 +12,7 @@ conftest's in-memory doubles and a fake engine; no live store, no GoWe server.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -121,18 +122,108 @@ async def test_settings_default_off_and_deps_build_the_pipeline_from_it(
         assert deps.build_ingestor_for(state, _entry("fixed"))._pipeline.structure_metadata is on
 
 
-def test_no_shipped_workflow_declares_it_until_the_image_repin() -> None:
-    """ADR-0010: a CWL declares only what the image it NAMES supports (#765:
-    "this lands on the same branch as the tools-image repin"). Every shipped
-    workflow names ragstack-tools-v1.6.x, which has no ``--structure-metadata``;
-    declaring the input now would make the API send it to that image (the text
-    IS stamped) and fail every task at argparse. Flip this pin in the commit
-    that repins the tools image to a build carrying the flag."""
+#: The shipped workflows whose steps run a shard tool (``ingest_shard.py`` or
+#: ``embed_shard.py``), the tools that take ``--structure-metadata``.
+SHARD_TOOL_WORKFLOWS = ("embed-bulk.cwl", "ingest-bulk.cwl", "jats-ingest.cwl",
+                        "pdf-ingest-scatter.cwl", "pdf-ingest.cwl")
+SHARD_TOOLS = ("ingest_shard.py", "embed_shard.py")
+
+#: The first tools tag whose shard tools take ``--structure-metadata`` AND whose
+#: ``embed_shard.py`` takes ``--collection-id`` with #828 PR 4's marker reader:
+#: the image the repin step R names (ragstack-tools-v1.6.23-b1).
+FIRST_TOOLS_TAG_WITH_THE_FLAGS = (1, 6, 23)
+
+
+def _shard_steps(doc: dict) -> dict:
+    steps = doc.get("steps") or {}
+    out = {}
+    for sid, step in steps.items():
+        run = step.get("run")
+        base = run.get("baseCommand") if isinstance(run, dict) else None
+        if isinstance(base, list) and any(
+                isinstance(b, str) and b.rsplit("/", 1)[-1] in SHARD_TOOLS for b in base):
+            out[sid] = step
+    return out
+
+
+def test_every_shard_tool_workflow_declares_it_and_no_other_does() -> None:
+    """The repin step R (#828 §12) flipped PR 1's
+    ``test_no_shipped_workflow_declares_it_until_the_image_repin``: every
+    shipped workflow that runs a shard tool declares ``structure_metadata``
+    like ``duplicate_policy`` (nullable, NO default — the API sends "on" or
+    "off" only when the text declares it and names a stamped image; null
+    leaves the flag off the argv) and threads it into EVERY shard-tool step,
+    bound to ``--structure-metadata`` at a position no other input or
+    argument of that tool uses. No other workflow declares or binds it.
+    MUTATION: drop the input (or its step binding) from one shard workflow →
+    fails."""
     if not CWL_DIR.is_dir():
         pytest.skip("no cwl/ in this checkout")
+    seen = []
     for path in sorted(CWL_DIR.glob("*.cwl")):
         text = path.read_text(encoding="utf-8")
         doc = yaml.safe_load(text)
-        assert "structure_metadata" not in declared_workflow_inputs(text), path.name
-        assert "--structure-metadata" not in text, path.name
         assert isinstance(doc, dict)
+        steps = _shard_steps(doc) if doc.get("class") == "Workflow" else {}
+        if path.name not in SHARD_TOOL_WORKFLOWS:
+            assert not steps, (path.name, sorted(steps))
+            assert "structure_metadata" not in declared_workflow_inputs(text), path.name
+            assert "--structure-metadata" not in text, path.name
+            continue
+        seen.append(path.name)
+        assert names_stamped_image(text), path.name     # else the API sends nothing
+        assert "structure_metadata" in declared_workflow_inputs(text), path.name
+        inp = doc["inputs"]["structure_metadata"]
+        assert inp["type"] == ["null", "string"] and "default" not in inp, path.name
+        assert steps, path.name
+        for sid, step in steps.items():
+            assert step["in"].get("structure_metadata") == "structure_metadata", (path.name, sid)
+            tool_inputs = step["run"]["inputs"]
+            tool_in = tool_inputs["structure_metadata"]
+            assert tool_in["type"] == ["null", "string"] and "default" not in tool_in
+            assert tool_in["inputBinding"]["prefix"] == "--structure-metadata", (path.name, sid)
+            positions = [i["inputBinding"]["position"] for i in tool_inputs.values()
+                         if isinstance(i, dict) and "position" in (i.get("inputBinding") or {})]
+            positions += [a["position"] for a in step["run"].get("arguments") or []
+                          if isinstance(a, dict) and "position" in a]
+            assert positions.count(tool_in["inputBinding"]["position"]) == 1, (path.name, sid)
+    assert seen == sorted(SHARD_TOOL_WORKFLOWS)
+
+
+def _tools_tag(name: str) -> tuple[int, ...]:
+    from ragstack.tool_image import STAMPED_IMAGE_RE
+
+    m = STAMPED_IMAGE_RE.match(name)
+    assert m is not None, name
+    core = m.group("version").lstrip("v").split("+", 1)[0]
+    return tuple(int(x) for x in core.split(".")[:3])
+
+
+def test_the_tree_names_a_tools_image_that_takes_the_new_flags() -> None:
+    """ADR-0010 decision 4: a CWL binds a flag only once the image it NAMES
+    carries it. The texts above bind ``--structure-metadata`` and (in the
+    embed steps) ``--collection-id``/``--registry``, which a tools image
+    older than tag v1.6.23 rejects at argparse on every task. So a STAMPED
+    tree must name that image or a later one (an unstamped tree names
+    ragstack-worker.sif, which the worker's ``--image-dir`` resolves, and to
+    which the API sends no ``structure_metadata``).
+
+    RESTAMP-DEPENDENT: this fails on the repin branch until
+    ``scripts/stamp_tool_image.py`` has rewritten the tree to
+    ragstack-tools-v1.6.23-b1 — the guard that keeps the branch from merging
+    with the wiring but without the image."""
+    from ragstack.tool_image import check_tree_state
+
+    if not CWL_DIR.is_dir():
+        pytest.skip("no cwl/ in this checkout")
+    docs = {p.name: p.read_text(encoding="utf-8") for p in sorted(CWL_DIR.glob("*.cwl"))}
+    state, name, problems = check_tree_state(docs)
+    assert not problems, problems
+    if state == "unstamped":
+        return
+    assert name is not None
+    assert _tools_tag(name) >= FIRST_TOOLS_TAG_WITH_THE_FLAGS, (
+        f"the tree names {name}, older than ragstack-tools-v1.6.23: it would refuse "
+        "--structure-metadata/--collection-id. Restamp (scripts/stamp_tool_image.py).")
+    receipt = json.loads((CWL_DIR / "tool-image.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["name"] == name

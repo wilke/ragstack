@@ -100,9 +100,11 @@ inputs:
   collection_id:
     type: string
     doc: "Registry collection id (#263): what `load` RESOLVES through the
-      registry to get the physical stores, and what `pack` records in the
-      archive manifest. NOT the physical `collection` store name above.
-      REQUIRED."
+      registry to get the physical stores, what `embed` resolves to build its
+      chunker and the document-structure markers from the entry (#828 §7,
+      recorded in the embedding-file header's chunking.collection_id, which
+      `load` checks), and what `pack` records in the archive manifest. NOT the
+      physical `collection` store name above. REQUIRED."
   registry:
     type: ["null", string]
     doc: "WHICH collection registry to resolve `collection_id` against, by NAME
@@ -156,6 +158,14 @@ inputs:
     doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure metadata on the chunks (#828 PR 1), passed to
+      embed_shard --structure-metadata (off|on). No default: null leaves the
+      flag off the argv and the tool runs its own default (off). Stamping only:
+      content, offsets, chunk ids and the collection identity are unchanged
+      either way. The structure MARKERS are not inputs: embed reads them from
+      the registry entry it resolves through collection_id."
 
 steps:
   extract:
@@ -212,6 +222,11 @@ steps:
       doi_mailto: doi_mailto
       doi_cache_dir: doi_cache_dir
       symbol_glossary: symbol_glossary
+      # #828 §7 (repin step R): the embed step resolves the same registry entry
+      # as `load`, so its chunker and structure markers come from the entry.
+      collection_id: collection_id
+      registry: registry
+      structure_metadata: structure_metadata
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -255,6 +270,19 @@ steps:
           type: string
           default: "rules"
           inputBinding: {prefix: --symbol-glossary, position: 15}
+        # #828 PR 3: resolve the entry (no store contact) and refuse a chunk
+        # flag that contradicts it; the header records the resolved id. The
+        # worker reads COLLECTION_STORE_*_<NAME> for `registry`, as `load` does.
+        collection_id:
+          type: ["null", string]
+          inputBinding: {prefix: --collection-id, position: 16}
+        registry:
+          type: ["null", string]
+          inputBinding: {prefix: --registry, position: 17}
+        # #828 PR 1: stamping only (off|on).
+        structure_metadata:
+          type: ["null", string]
+          inputBinding: {prefix: --structure-metadata, position: 18}
       arguments:
         - {position: 10, prefix: --out, valueFrom: $(inputs.shard.nameroot).emb.jsonl}
         - {position: 11, prefix: --receipt, valueFrom: $(inputs.shard.nameroot).receipt.json}
