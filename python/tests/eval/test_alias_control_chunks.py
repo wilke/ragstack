@@ -629,3 +629,156 @@ def test_jsonl_rows_survive_unicode_line_separators(tmp_path: Path) -> None:
     p.write_bytes(ctl.jsonl_bytes(rows))
     assert p.read_bytes().count(b"\n") == 2
     assert asc.read_jsonl(p) == rows
+
+
+# ------------------------------------------------------------------ cover-any split and the retest null
+
+def test_cover_labels_tell_the_primary_chunk_from_the_others() -> None:
+    # one cover pair controls two stage-A pairs: primary for s1, a non-primary chunk for s2
+    vreg = [{"pair_id": "v1", "chunk_id": "k1", "control_of": ["s1", "s2"]},
+            {"pair_id": "v2", "chunk_id": "k2", "control_of": ["s2"]},
+            {"pair_id": "v3", "chunk_id": "k3", "control_of": ["s1"]},
+            {"pair_id": "v4", "chunk_id": "k4", "control_of": ["s3"]}]  # no final row: ignored
+    vfin = {"v1": {"label": 1}, "v2": {"label": None}, "v3": {"label": 0}}
+    every, prim, other = ctl.cover_labels(vreg, vfin, {"s1": "k1", "s2": "k2", "s3": "k4"})
+    assert every == {"s1": [1, 0], "s2": [1, 0]}
+    assert prim == {"s1": 1, "s2": 0}  # unjudged = not
+    assert other == {"s1": [0], "s2": [1]}
+
+
+def split_rows() -> list[dict[str, Any]]:
+    """Flipped pairs with a cover split: answers->not (stage A 1, control 0) in all four cells, and
+    two not->answers (stage A 0, control 1); plus one unflipped pair, never counted."""
+    rows = report_rows()[:1]  # i=0 is a not->answers flip; reuse its shape
+    base = {k: v for k, v in rows[0].items() if k not in ("stage_a", "control", "cover")}
+
+    def r(sa: int, cl: int, prim: int | None, other: list[int], i: int) -> dict[str, Any]:
+        return {**base, "stage_a": final(sa), "control": final(cl), "control_pair": f"x{i}",
+                "cover": ([prim] if prim is not None else []) + other, "cover_primary": prim, "cover_other": other}
+
+    return [r(1, 0, 0, [1], 1), r(1, 0, 0, [1, 0], 2),  # other_only x2 (primary re-judged 0 = control: agree)
+            r(1, 0, 1, [1], 3),                          # both (primary disagrees)
+            r(1, 0, 1, [0], 4),                          # primary_only (disagrees)
+            r(1, 0, 0, [], 5), r(1, 0, None, [0], 6),    # none x2 (one primary without a cover label)
+            r(0, 1, 1, [0], 7), r(0, 1, 0, [], 8),       # not->answers: primary_only (agree), none (disagree)
+            r(1, 1, 1, [1], 9)]                          # not flipped
+
+
+def test_cover_split_four_ways_and_the_primary_rejudge() -> None:
+    m = ctl.compute_report(split_rows())["cover_any"]
+    a2n, n2a = m["split"]["answers_to_not"], m["split"]["not_to_answers"]
+    assert {k: a2n[k] for k in (*ctl.COVER_SPLIT, "n")} == {"other_only": 2, "both": 1, "primary_only": 1,
+                                                            "none": 2, "n": 6}
+    assert a2n["primary_without_cover_label"] == 1
+    assert a2n["recovered_by_other_chunk"] == ctl.wilson(3, 6)
+    assert {k: n2a[k] for k in (*ctl.COVER_SPLIT, "n")} == {"other_only": 0, "both": 0, "primary_only": 1,
+                                                            "none": 1, "n": 2}
+    assert "recovered_by_other_chunk" not in n2a  # not->answers is never a recovery
+    # same-bytes re-judge of the primary against the control label, pairs with a cover primary only
+    assert a2n["primary_rejudge_agreement_selected"] == ctl.wilson(3, 5)
+    assert n2a["primary_rejudge_agreement_selected"] == ctl.wilson(1, 2)
+    assert m["split"]["primary_rejudge_agreement_selected"] == ctl.wilson(4, 7)
+    # the existing cover-any fields are unchanged
+    assert m["answers_to_not"] == {"with_cover_any": 6, "recovered": ctl.wilson(4, 6)}  # any cover chunk
+    assert m["not_to_answers"]["cover_any_answers"] == ctl.wilson(1, 2)
+
+
+REPORT_KEYS = {"n_mapped", "n_judged_both", "n_without_control_label", "flip", "by_direction", "direction_rates",
+               "by_stratum", "by_arm", "by_stratum_direction", "by_latex_preamble", "by_coverage_band",
+               "by_control_token_band", "by_spot_sheet", "by_section_structure", "control_pairs_shared",
+               "agreement_control_vs_stage_a", "judge_stage", "cover_any", "boundary"}
+
+
+def test_report_keys_unchanged_without_the_new_inputs() -> None:
+    m = ctl.compute_report(report_rows())
+    assert set(m) == REPORT_KEYS
+    assert set(m["cover_any"]) == {"flipped", "flipped_with_cover_any", "answers_to_not", "not_to_answers"}
+
+
+def test_retest_metrics_flip_direction_and_route() -> None:
+    def row(sa: int, rt: int | None, sa_src: str = "agree", rt_src: str = "agree", stratum: str = "answers"
+            ) -> dict[str, Any]:
+        return {"stage_a": final(sa, sa_src), "retest": None if rt is None else final(rt, rt_src),
+                "stratum": stratum, "arm": "base"}
+
+    rows = [row(1, 1), row(1, 1), row(1, 0, "tiebreak", "tiebreak"), row(0, 0, stratum="not"),
+            row(0, 1, "tiebreak", stratum="not"), row(0, 0, "tiebreak", stratum="tiebroken"),
+            row(1, None)]
+    m = ctl.compute_retest(rows)
+    assert m["n_seed"] == 7 and m["n_judged_both"] == 6 and m["n_without_retest_label"] == 1
+    assert m["flip"] == ctl.wilson(2, 6)
+    assert m["by_direction"] == {"answers_to_not": ctl.wilson(1, 3), "not_to_answers": ctl.wilson(1, 3)}
+    assert m["by_route"] == {"agree": ctl.wilson(0, 3), "tiebreak_or_other": ctl.wilson(2, 3)}
+    assert m["by_route_retest"] == {"agree": ctl.wilson(1, 5), "tiebreak_or_other": ctl.wilson(1, 1)}
+    assert m["by_stratum"]["not"] == ctl.wilson(1, 2)
+    assert m["agreement_retest_vs_stage_a"]["table"] == {"tp": 2, "fp": 1, "fn": 1, "tn": 2}
+    # unjudged = not: an unjudged retest of an answers pair is a flip
+    assert ctl.compute_retest([row(1, None) | {"retest": final(None, "unjudged")}])["flip"]["k"] == 1
+
+
+def test_retest_rows_refuse_a_seed_that_is_not_its_stage_a_pair() -> None:
+    pid = aj.pair_id("r1", "c1")
+    sa = {pid: final(1)}
+    rows = ctl.retest_rows([{"control_of": pid, "record_id": "r1", "chunk_id": "c1", "stratum": "answers",
+                             "arm": "base"}], sa, {pid: final(0)})
+    assert ctl.compute_retest(rows)["flip"]["k"] == 1
+    with pytest.raises(SystemExit, match="not the stage-A pair it retests"):
+        ctl.retest_rows([{"control_of": pid, "record_id": "r1", "chunk_id": "c2", "stratum": "answers",
+                          "arm": "base"}], sa, {})
+
+
+def retest_world(judged: Path, tmp_path: Path, n: int = 10) -> tuple[Path, Path, list[dict[str, Any]]]:
+    main = judged / "work" / "judge-config.json"
+    raw = json.loads(main.read_text())
+    stage_a = [p for p in asc.read_jsonl(Path(raw["out_dir"]) / "pairs.jsonl") if p.get("stage", "A") == "A"][:n]
+    cdir = tmp_path / "control-run"
+    cdir.mkdir()
+    seed = [{"control_of": p["pair_id"], "record_id": p["record_id"], "stage_a_chunk_id": p["chunk_id"],
+             "chunk_id": f"ctl-{i}", "doc_id": "d", "stratum": "answers", "arm": p["arm"], "in_spot_sheet": False}
+            for i, p in enumerate(stage_a)]
+    fx.write_jsonl(cdir / "pairs-seed.jsonl", seed)
+    return main, cdir, stage_a
+
+
+def test_retest_seed_writes_the_stage_a_windows_and_their_pair_ids(judged: Path, tmp_path: Path) -> None:
+    main, cdir, stage_a = retest_world(judged, tmp_path)
+    res = ctl.run_retest_seed(main, cdir, tmp_path / "rt")
+    out = tmp_path / "rt"
+    windows = {p["chunk_id"] for p in stage_a}
+    assert res["seed_rows"] == len(stage_a) and res["windows"] == len(windows)
+    raw = json.loads(main.read_text())
+    orig = asc.read_chunk_exports(list(raw["chunk_exports"].values()))
+    got = asc.read_chunk_exports([out / "chunks-retest.jsonl"])
+    assert set(got) == windows and all(got[c] == orig[c] for c in got)
+    # the control-shaped config: build_control_pairs gives the stage-A pair ids themselves
+    ccfg = {**aj.load_config(main), "chunk_exports": {**raw["chunk_exports"],
+                                                       aj.CONTROL_EXPORT: str(out / "chunks-retest.jsonl")}}
+    chunks, _ = aj.chunk_arms(ccfg)
+    pairs, _ = aj.build_control_pairs(asc.read_jsonl(out / "pairs-seed-retest.jsonl"), stage_a, chunks, set(got))
+    assert sorted(p["pair_id"] for p in pairs) == sorted(p["pair_id"] for p in stage_a)
+    summary = json.loads((out / "retest-seed.json").read_text())
+    assert summary["chunks_sha256"] == asc.sha256_file(out / "chunks-retest.jsonl")
+    assert not asc.public_problems(summary, windows | {p["pair_id"] for p in stage_a}, [])
+
+
+def test_retest_seed_refuses_a_mismatched_chunk_and_a_missing_window(judged: Path, tmp_path: Path) -> None:
+    main, cdir, stage_a = retest_world(judged, tmp_path)
+    seed = asc.read_jsonl(cdir / "pairs-seed.jsonl")
+    fx.write_jsonl(cdir / "pairs-seed.jsonl", [{**seed[0], "stage_a_chunk_id": stage_a[1]["chunk_id"]}, *seed[1:]])
+    with pytest.raises(SystemExit, match="not that stage-A pair's"):
+        ctl.run_retest_seed(main, cdir, tmp_path / "rt1")
+    fx.write_jsonl(cdir / "pairs-seed.jsonl", seed)
+    # every export without the first window
+    raw = json.loads(main.read_text())
+    gone = stage_a[0]["chunk_id"]
+    for arm, p in list(raw["chunk_exports"].items()):
+        lines = [x for x in Path(p).read_text(encoding="utf-8").splitlines(keepends=True)
+                 if not x.strip() or json.loads(x).get("chunk_id", json.loads(x).get("id")) != gone]
+        dst = tmp_path / f"export-{arm}.jsonl"
+        dst.write_text("".join(lines), encoding="utf-8")
+        raw["chunk_exports"][arm] = str(dst)
+    cut = tmp_path / "judge-config-cut.json"
+    cut.write_text(json.dumps(raw))
+    with pytest.raises(SystemExit, match="1 stage-A window"):
+        ctl.run_retest_seed(cut, cdir, tmp_path / "rt2")
+    assert not (tmp_path / "rt2" / "chunks-retest.jsonl").exists()
