@@ -126,8 +126,8 @@ byte when pure ASCII, else re-serialized ASCII-escaped), ``pairs-seed-retest.jso
 identical content are accepted, and the retest pair ids are the stage-A pair ids).
 (``metrics.by_route`` gives the control flip by the same stage-A route, to be read beside the
 retest's; ``metrics.cover_any.split.by_route`` repeats the four-way split and
-``recovered_by_other_chunk`` per stage-A route and direction; for ``not_to_answers`` that count is
-a non-primary chunk that also answers, never a recovery.) ``report --retest-config RETEST.json --retest-dir RDIR`` adds ``metrics.retest`` (flip of the
+``recovered_by_other_chunk`` per stage-A route for ``answers_to_not``; for ``not_to_answers`` the
+same count is named ``other_chunk_also_answers``, since it is never a recovery.) ``report --retest-config RETEST.json --retest-dir RDIR`` adds ``metrics.retest`` (flip of the
 retest final label against the committed stage-A label, unjudged = *not*, by direction, stratum,
 arm, stage-A route ``agree`` / ``tiebreak_or_other`` and the retest's own route, and the 2 x 2
 agreement table; ``escalation_overlap``: over the pairs with both final rows, how many left the
@@ -1097,7 +1097,7 @@ def cover_split(covered: Sequence[Mapping[str, Any]], direction: Any) -> dict[st
     a NON-primary overlapping chunk answers and whether the re-judged primary chunk answers (a primary
     without a cover label counts as not answering, and is counted); and the same-bytes re-judge of
     the primary chunk against the control run's label, on these selected (flipped) pairs only."""
-    def one(pool: Sequence[Mapping[str, Any]], recovery: bool) -> dict[str, Any]:
+    def one(pool: Sequence[Mapping[str, Any]], recovery: bool | None) -> dict[str, Any]:
         c: Counter[str] = Counter()
         for r in pool:
             o = any(x == 1 for x in r.get("cover_other") or [])
@@ -1106,8 +1106,10 @@ def cover_split(covered: Sequence[Mapping[str, Any]], direction: Any) -> dict[st
         out: dict[str, Any] = {"n": len(pool), **{k: c[k] for k in COVER_SPLIT},
                                "primary_without_cover_label": sum(r.get("cover_primary") is None for r in pool),
                                "primary_rejudge_agreement_selected": rejudge(pool)}
-        if recovery:
+        if recovery is True:
             out["recovered_by_other_chunk"] = wilson(c["other_only"] + c["both"], len(pool))
+        elif recovery is None:
+            out["other_chunk_also_answers"] = wilson(c["other_only"] + c["both"], len(pool))
         return out
 
     def rejudge(pool: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1115,9 +1117,10 @@ def cover_split(covered: Sequence[Mapping[str, Any]], direction: Any) -> dict[st
         return wilson(sum(r["cover_primary"] == label_of(r["control"]) for r in have), len(have))
 
     pool = [r for r in covered if "cover_other" in r]
-    # by stage-A route, per direction; recovered_by_other_chunk is shown for both directions here
-    # (for not_to_answers it only counts a non-primary chunk that answers too, never a recovery)
-    by_route = {g: {d: one([r for r in pool if route(r["stage_a"]) == g and direction(r) == d], True)
+    # by stage-A route, per direction: answers_to_not carries recovered_by_other_chunk; not_to_answers
+    # carries other_chunk_also_answers (a non-primary chunk answers too, never a recovery)
+    by_route = {g: {d: one([r for r in pool if route(r["stage_a"]) == g and direction(r) == d],
+                           True if d == "answers_to_not" else None)
                     for d in ("answers_to_not", "not_to_answers")}
                 for g in ("agree", "tiebreak_or_other")}
     return {"answers_to_not": one([r for r in pool if direction(r) == "answers_to_not"], True),

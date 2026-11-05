@@ -699,7 +699,8 @@ def test_cover_split_by_stage_a_route() -> None:
     assert tb["answers_to_not"]["recovered_by_other_chunk"] == ctl.wilson(2, 2)
     assert ag["not_to_answers"]["n"] == 1 and ag["not_to_answers"]["none"] == 1
     assert tb["not_to_answers"]["n"] == 1 and tb["not_to_answers"]["primary_only"] == 1
-    assert tb["not_to_answers"]["recovered_by_other_chunk"] == ctl.wilson(0, 1)
+    assert tb["not_to_answers"]["other_chunk_also_answers"] == ctl.wilson(0, 1)
+    assert "recovered_by_other_chunk" not in tb["not_to_answers"]
 
 
 def label_of_row(r: dict[str, Any]) -> int:
