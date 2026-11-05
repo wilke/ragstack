@@ -11,6 +11,7 @@ check, the size notice, PAUSE / INFLIGHT, the budget stop and the call caps.
     alias_study_judge.py --config CFG finalize  --batch N
     alias_study_judge.py --config CFG commit-stage-a
     alias_study_judge.py --config CFG check-analysis-gate
+    alias_study_judge.py --config CONTROL build-control --seed-pairs SEED.jsonl --main-config MAIN
 
 **Pairs, on demand (§6.2, R9).** Only top-10 non-gold chunks are judged, and only when a leg
 needs them. ``found10``: a record's top 10 in a leg is judged only when its gold chunk is
@@ -113,6 +114,21 @@ exceed ``argon_share`` / ``opus_share`` (defaults 1.0 (R30) and 0.07; §14 O7, �
 ``argon_max_calls`` / ``opus_max_calls`` when set; inside a run the remaining cap is the
 segment's call cap, so a re-issue can never overrun it (the run pauses at the cap).
 
+**The chunk-boundary control (exploratory, post-freeze; ``alias_control_chunks.py``).** A
+*control config* is the main judge config with exactly two changes: a new ``out_dir``, and
+``chunk_exports`` with one key added, :data:`CONTROL_EXPORT` (the control chunks, in the export row
+shape). ``build-control --seed-pairs FILE --main-config MAIN`` checks that (and that neither
+``out_dir`` holds the other), reads the main run's committed stage-A registry read-only (its
+sha256 against its manifest), and writes the same registry files as ``build-pairs``
+(``pairs.jsonl``, ``batches.json``, ``pairs-manifest.json`` with ``inputs_sha256``) into the control
+``out_dir``: one row per (record, control chunk), the question, term, papers, kind, arm and need of
+the stage-A pair it controls, ``stage`` = ``control``, ``control_of`` = the stage-A pair ids it
+controls (a list: two stage-A windows of one record can map to one control chunk), the control
+chunk's text sha256, the judge's seeded order. ``preflight``, ``label`` and ``finalize`` then run
+unchanged on that directory (the control export is read with the others); ``build-pairs`` and
+``commit-stage-a`` are refused on a control config. The config is validated exactly as the main
+one (``pinned_problems``, the frozen prereg's sha256).
+
 **Modes.** As the runner (``dry_run``, ``pilot``, main; a ``STUDY-MODE`` marker in the out dir;
 the main run pins the frozen prereg, §9.2). Main and pilot also pin the prereg's numbers (batch
 2,000, drift share .05, reference lines .97 / .95, arm gap .05, 100 pairs, the retry cap 2), the drift
@@ -212,6 +228,9 @@ PREFIX_FILE_NAMES = ("labels-qwen-C.jsonl", "labels-qwen-E.jsonl", "labels-gw-ar
 PILOT_WITHHELD_COUNTS = ("found10_per_leg", "found10_gold_per_leg")
 #: what ``build-pairs`` prints in the pilot (R28): the deduplicated counts only
 PILOT_BUILD_PRINT = ("pairs", "per_need", "per_arm")
+#: the chunk-boundary control's export key in ``chunk_exports`` (module docstring)
+CONTROL_EXPORT = "control"
+CONTROL_STAGE = "control"
 LABEL_FILES = {"C": "labels-qwen-C.jsonl", "E": "labels-qwen-E.jsonl", "argon": "labels-gw-argon.jsonl",
                "opus": "labels-gw-opus.jsonl"}
 
@@ -231,8 +250,9 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
               "drift_ref"):
         if not cfg.get(k):
             raise SystemExit(f"judge config has no {k!r}")
-    if "base" not in cfg["chunk_exports"] or not set(cfg["chunk_exports"]) <= set(asc.CORPUS_ARMS):
-        raise SystemExit(f"chunk_exports: keys from {list(asc.CORPUS_ARMS)}, base required")
+    if "base" not in cfg["chunk_exports"] or not set(cfg["chunk_exports"]) <= {*asc.CORPUS_ARMS, CONTROL_EXPORT}:
+        raise SystemExit(f"chunk_exports: keys from {list(asc.CORPUS_ARMS)} (and {CONTROL_EXPORT!r} in a control "
+                         "config), base required")
     if cfg.get("dry_run") and cfg.get("pilot"):
         raise SystemExit("dry_run and pilot exclude each other")
     out = Path(cfg["out_dir"]).resolve()
@@ -287,7 +307,7 @@ def pinned_problems(cfg: Mapping[str, Any]) -> None:
     if miss:
         bad.append(f"limits must state {miss} (no calibration defaults outside a dry run)")
     g = cfg["glossary"]
-    if not isinstance(g, Mapping) or set(g) != set(cfg["chunk_exports"]):
+    if not isinstance(g, Mapping) or set(g) != set(cfg["chunk_exports"]) - {CONTROL_EXPORT}:
         bad.append(f"glossary must name a file (or list) per corpus arm of chunk_exports {sorted(cfg['chunk_exports'])}"
                    " (§5.3: a missing file makes that arm's prompts read '(none listed)')")
     else:
@@ -404,7 +424,75 @@ def chunk_arms(cfg: Mapping[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[
             if cid in chunks and chunks[cid]["content"] != row["content"]:
                 raise SystemExit(f"chunk {cid[:8]}… has other content in the {arm} export")
             chunks.setdefault(cid, row)
+    path = cfg["chunk_exports"].get(CONTROL_EXPORT)
+    if path:
+        # the chunk-boundary control's chunks (module docstring): read with the others, no arm of
+        # their own (a control pair takes the arm of the stage-A pair it controls)
+        for cid, row in asc.read_chunk_exports([path]).items():
+            if cid in chunks and chunks[cid]["content"] != row["content"]:
+                raise SystemExit(f"chunk {cid[:8]}… has other content in the control export")
+            chunks.setdefault(cid, row)
     return chunks, arm_of
+
+
+def is_control(cfg: Mapping[str, Any]) -> bool:
+    return bool(cfg["chunk_exports"].get(CONTROL_EXPORT))
+
+
+def control_config_problems(raw: Mapping[str, Any], main_raw: Mapping[str, Any]) -> list[str]:
+    """A control config is the main one with only ``out_dir`` and ``chunk_exports`` changed, the
+    latter by exactly one added key, :data:`CONTROL_EXPORT` (``_comment`` may differ)."""
+    bad = []
+    for k in sorted((set(raw) | set(main_raw)) - {"out_dir", "chunk_exports", "_comment"}):
+        if raw.get(k) != main_raw.get(k):
+            bad.append(f"{k!r} differs from the main judge config")
+    ce, me = dict(raw.get("chunk_exports") or {}), dict(main_raw.get("chunk_exports") or {})
+    if not ce.get(CONTROL_EXPORT) or {k: v for k, v in ce.items() if k != CONTROL_EXPORT} != me:
+        bad.append(f"chunk_exports must be the main config's plus {CONTROL_EXPORT!r}")
+    out, mout = Path(str(raw.get("out_dir"))).resolve(), Path(str(main_raw.get("out_dir"))).resolve()
+    if out == mout or mout in out.parents or out in mout.parents:
+        bad.append("out_dir must be a new directory, neither the main run's judge dir nor inside or above it")
+    return bad
+
+
+def build_control_pairs(seed: Sequence[Mapping[str, Any]], main_pairs: Sequence[Mapping[str, Any]],
+                        chunks: Mapping[str, Mapping[str, Any]], control_ids: set[str]
+                        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The control registry rows (module docstring) from the seed rows ``{control_of, record_id,
+    chunk_id}`` and the main run's registry. Raises SystemExit on a seed row that does not fit."""
+    by_id = {p["pair_id"]: p for p in main_pairs}
+    out: dict[str, dict[str, Any]] = {}
+    for i, s in enumerate(seed, 1):
+        a = by_id.get(s.get("control_of"))
+        if a is None:
+            raise SystemExit(f"seed row {i}: control_of is not a pair of the main run's registry")
+        if a.get("stage", "A") != "A":
+            raise SystemExit(f"seed row {i}: the control is drawn from stage A's pairs only")
+        if s.get("record_id") != a["record_id"]:
+            raise SystemExit(f"seed row {i}: record_id is not the stage-A pair's")
+        cid = s.get("chunk_id")
+        if cid not in control_ids:
+            raise SystemExit(f"seed row {i}: the chunk is not in the control export")
+        ch = chunks[cid]
+        if str(ch["paper"]) != str(a["c_paper"]):
+            raise SystemExit(f"seed row {i}: the control chunk's paper is not the stage-A passage's")
+        pid = pair_id(a["record_id"], cid)
+        row = out.get(pid)
+        if row is not None:
+            if a["pair_id"] not in row["control_of"]:
+                row["control_of"] = sorted([*row["control_of"], a["pair_id"]])
+            continue
+        out[pid] = {"pair_id": pid, "record_id": a["record_id"], "chunk_id": cid,
+                    "content_sha256": asc.sha_text(ch["content"]), "question": a["question"], "term": a["term"],
+                    "q_paper": a["q_paper"], "c_paper": a["c_paper"], "record_kind": a["record_kind"],
+                    "arm": a["arm"], "stage": CONTROL_STAGE, "need": a.get("need", "found10"),
+                    "control_of": [a["pair_id"]], "order": asc.seeded_key(asc.SEEDS["judge_order"], pid)}
+    pairs = sorted(out.values(), key=lambda p: p["order"])
+    counts = {"pairs": len(pairs), "seed_rows": len(seed),
+              "stage_a_pairs_controlled": len({x for p in pairs for x in p["control_of"]}),
+              "per_arm": dict(Counter(p["arm"] for p in pairs)), "per_need": dict(Counter(p["need"] for p in pairs)),
+              "same_paper": sum(p["c_paper"] == p["q_paper"] for p in pairs)}
+    return pairs, counts
 
 
 def pair_id(record_id: str, chunk_id: str) -> str:
@@ -1156,6 +1244,8 @@ class Pipeline:
         anywhere is finished or undone by :meth:`recover_build` on the next start."""
         if stage not in ar.STAGES:
             raise SystemExit("--stage A or B (§5.7)")
+        if is_control(self.cfg):
+            raise SystemExit("a control config (chunk_exports names the control export): use build-control")
         recs = asc.load_records(self.cfg["records"])
         if stage == "A":
             if self.pairs_path.exists():
@@ -1248,6 +1338,59 @@ class Pipeline:
                 tmp.unlink()
             return "rolled_back"
         raise jd.p4.HardStop("pairs.jsonl matches neither side of the pending build")
+
+    def build_control(self, seed_path: Path, main_config: Path, raw: Mapping[str, Any]) -> dict[str, Any]:
+        """``build-control`` (module docstring, *The chunk-boundary control*). Writes only into this
+        (control) out_dir; the main run's judge dir is read, never written."""
+        if not is_control(self.cfg):
+            raise SystemExit(f"build-control needs a control config (chunk_exports with {CONTROL_EXPORT!r})")
+        main_raw = json.loads(main_config.read_text(encoding="utf-8"))
+        bad = control_config_problems(raw, main_raw)
+        if bad:
+            raise SystemExit("HARD STOP (control config): " + "; ".join(bad))
+        main_cfg = load_config(main_config)
+        if self.pairs_path.exists():
+            raise SystemExit("pairs.jsonl exists; the control registry is frozen once built")
+        mout = Path(main_cfg["out_dir"])
+        mman = json.loads((mout / "pairs-manifest.json").read_text(encoding="utf-8"))
+        if asc.sha256_file(mout / "pairs.jsonl") != mman.get("pairs_sha256"):
+            raise jd.p4.HardStop("the main run's pairs.jsonl differs from its manifest")
+        main_pairs = asc.read_jsonl(mout / "pairs.jsonl")
+        chunks, _ = chunk_arms(self.cfg)
+        self._chunks = chunks
+        control_ids = set(asc.read_chunk_exports([self.cfg["chunk_exports"][CONTROL_EXPORT]]))
+        seed = asc.read_jsonl(seed_path)
+        pairs, counts = build_control_pairs(seed, main_pairs, chunks, control_ids)
+        counts["definitions_coverage"] = definitions_coverage(pairs, self.glossary())
+        data = "".join(json.dumps(p, sort_keys=True) + "\n" for p in pairs).encode("utf-8")
+        new = batches(pairs, int(self.cfg["batch_size"]))
+        stages = {CONTROL_STAGE: list(range(1, len(new) + 1))}
+        bdoc = {"batch_size": int(self.cfg["batch_size"]), "batches": new, "stages": stages,
+                "seed": asc.SEEDS["judge_order"]}
+        man = {"schema": PAIRS_SCHEMA, "counts": counts,
+               "stages": {CONTROL_STAGE: {"counts": counts, "batches": stages[CONTROL_STAGE], "legs": [],
+                                          "needs": {}, "pairs_bytes_from": 0, "pairs_bytes_to": len(data),
+                                          "t": jd.g.now_iso()}},
+               "batches": len(new), "mode": self.mode, "pairs_sha256": hashlib.sha256(data).hexdigest(),
+               "inputs_sha256": {"records": asc.sha256_file(self.cfg["records"]),
+                                 "glossaries": [asc.sha256_file(x) for x in glossary_paths(self.cfg)],
+                                 **{f"chunks_{a}": asc.sha256_file(p) for a, p in self.cfg["chunk_exports"].items()},
+                                 "seed_pairs": asc.sha256_file(seed_path),
+                                 "main_pairs": mman["pairs_sha256"]},
+               "control": {"main_out_dir_pairs_sha256": mman["pairs_sha256"], "stage": CONTROL_STAGE,
+                           "exploratory": True},
+               "provenance": self.prov, "t": jd.g.now_iso()}
+        jd.g.write_json_atomic(self.pending_path, {"stage": CONTROL_STAGE,
+                                                   "old_sha256": hashlib.sha256(b"").hexdigest(),
+                                                   "manifest": man, "batches": bdoc})
+        tmp = self.pairs_path.with_suffix(".jsonl.tmp")
+        with tmp.open("wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.pairs_path)
+        self._apply_pending()
+        return {**man, "counts": counts}
 
     # -- labels on disk
     def labels(self, backend: str) -> dict[str, dict[str, Any]]:
@@ -1524,6 +1667,8 @@ class Pipeline:
         return out
 
     def commit_stage_a(self) -> dict[str, Any]:
+        if is_control(self.cfg):
+            raise SystemExit("a control config: stage A is committed from the main run's judge dir only")
         if (self.out / "PAUSE").exists():
             raise SystemExit("PAUSE present: stage A is committed only after the owner has cleared it")
         if self.committed() is not None:
@@ -1668,6 +1813,9 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
     pf.add_argument("--batch", type=int, required=True)
     sub.add_parser("commit-stage-a")
     sub.add_parser("check-analysis-gate")
+    bc = sub.add_parser("build-control")
+    bc.add_argument("--seed-pairs", required=True, type=Path)
+    bc.add_argument("--main-config", required=True, type=Path)
     args = ap.parse_args(argv)
     os.umask(0o077)
     cfg = load_config(args.config)
@@ -1685,6 +1833,11 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
             # bound a contrast's direction in a degenerate case
             counts = {k: counts.get(k) for k in PILOT_BUILD_PRINT}
         print(json.dumps(counts, indent=1))
+        return EXIT_OK
+    if args.cmd == "build-control":
+        man = pl.build_control(args.seed_pairs, args.main_config,
+                               json.loads(args.config.read_text(encoding="utf-8")))
+        print(json.dumps(man["counts"], indent=1))
         return EXIT_OK
     if args.cmd == "status":
         print(json.dumps(pl.status(), indent=1))

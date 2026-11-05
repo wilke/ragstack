@@ -209,34 +209,42 @@ def draw_records(records: Path, exports: Sequence[Path], out_dir: Path) -> dict[
 spot_stratum = ast.spot_stratum
 
 
-def stratum_totals(sizes: Mapping[str, int]) -> dict[str, int]:
+def stratum_totals(sizes: Mapping[str, int], nominal: Mapping[str, int] | None = None) -> dict[str, int]:
     """§13.5: the pairs each stratum gives, from the pairs it has. A stratum short of its nominal
     size gives what it has; *tiebroken*'s shortfall goes to *answers*, then to *not*;
     *not*'s to *answers*; *answers*'s to *not*. *tiebroken* never receives a shortfall: it gives
     at most its 17, so the sheet is smaller than 100 whenever *answers* and *not* together cannot
-    make up the rest, even while *tiebroken* still holds pairs it does not give."""
+    make up the rest, even while *tiebroken* still holds pairs it does not give.
+
+    ``nominal`` (default :data:`NOMINAL`, the spot check's 50 / 33 / 17) lets the exploratory
+    chunk-boundary control (``alias_control_chunks.py draw``) run the same rule at other sizes;
+    the total is their sum (100 by default)."""
+    nom = NOMINAL if nominal is None else nominal
+    total = SPOT_JUDGE_N if nominal is None else sum(int(v) for v in nom.values())
     s_a, s_n, s_t = (int(sizes.get(k, 0)) for k in SPOT_STRATA)
-    t = min(NOMINAL["tiebroken"], s_t)
-    short_t = NOMINAL["tiebroken"] - t
-    short_n = max(0, NOMINAL["not"] - s_n)
-    a = min(s_a, NOMINAL["answers"] + short_t + short_n)
-    n = min(s_n, SPOT_JUDGE_N - a - t)
+    t = min(nom["tiebroken"], s_t)
+    short_t = nom["tiebroken"] - t
+    short_n = max(0, nom["not"] - s_n)
+    a = min(s_a, nom["answers"] + short_t + short_n)
+    n = min(s_n, total - a - t)
     return {"answers": a, "not": n, "tiebroken": t}
 
 
-def allocate(sizes: Mapping[str, Mapping[str, int]]) -> dict[str, dict[str, int]]:
+def allocate(sizes: Mapping[str, Mapping[str, int]],
+             nominal: Mapping[str, int] | None = None) -> dict[str, dict[str, int]]:
     """stratum -> arm -> pairs drawn (module docstring): :func:`stratum_totals`, then each
     stratum's count split across the arms by :func:`alias_study_judge.drift_allocation` (equal,
     the remainder to base then neighbour, a short cell's shortfall to the stratum's other arms)."""
     import alias_study_judge as aj
 
-    tot = stratum_totals({s: sum(int(v) for v in (sizes.get(s) or {}).values()) for s in SPOT_STRATA})
+    tot = stratum_totals({s: sum(int(v) for v in (sizes.get(s) or {}).values()) for s in SPOT_STRATA}, nominal)
     return {s: aj.drift_allocation(tot[s], dict(sizes.get(s) or {})) for s in SPOT_STRATA}
 
 
-def draw_pairs_from(final: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def draw_pairs_from(final: Sequence[Mapping[str, Any]],
+                    nominal: Mapping[str, int] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The drawn final rows (stratum and arm attached) and the counts. Every row must be a
-    stage-A row; an unjudged pair is in no stratum."""
+    stage-A row; an unjudged pair is in no stratum. ``nominal``: :func:`stratum_totals`."""
     seed = asc.SEEDS["spot_judge"]
     cells: dict[str, dict[str, list[Mapping[str, Any]]]] = {s: {a: [] for a in asc.ARM_GROUPS} for s in SPOT_STRATA}
     unjudged = 0
@@ -251,7 +259,7 @@ def draw_pairs_from(final: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, 
             raise SystemExit(f"a final label carries arm {f.get('arm')!r}")
         cells[st][f["arm"]].append(f)
     sizes = {s: {a: len(v) for a, v in arms.items()} for s, arms in cells.items()}
-    alloc = allocate(sizes)
+    alloc = allocate(sizes, nominal)
     picked: list[dict[str, Any]] = []
     for s in SPOT_STRATA:
         for a in asc.ARM_GROUPS:
