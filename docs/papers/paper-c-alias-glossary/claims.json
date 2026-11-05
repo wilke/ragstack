@@ -1,0 +1,920 @@
+{
+ "paper": "A glossary makes alias passages findable, and the gain is small: a pre-registered test of glossary attachment and citation-neighbour growth in scientific-paper retrieval",
+ "generated_utc": "2026-11-05T00:00:00Z",
+ "checker": "docs/papers/check_claims.py",
+ "population_note": "Unless a claim says otherwise, every number is over the 900 balanced records (600 G, 300 C) on 300 open-access papers of the OA-1000 corpus, questions asked with the glossary's primary term, under the served path (hybrid BM25 + dense, cross-encoder rerank, top 10). Every judged figure carries 'judge validity below threshold (prereg §13.5)'; found@10-gold is the named sensitivity. Claims in section '6x' are exploratory and decide nothing. Ids are stable; values, sources and pointers may be re-measured.",
+ "claims": [
+  {
+   "id": "records-balanced",
+   "section": "4",
+   "statement": "The balanced set holds 900 records (600 G, 300 C) on 300 papers, 2 G and 1 C each.",
+   "value": {
+    "balanced": 900,
+    "records": 1091,
+    "descriptive": 191
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "record_set",
+   "kind": "json",
+   "verified": true,
+   "note": "records = 1,091 accepted in all; 191 of them are the held-out descriptive leg and enter no test. A point is one percentage point of records: 100/600 = 0.17 points per G record, 100/300 = 0.33 per C record, 100/900 = 0.11 per balanced record."
+  },
+  {
+   "id": "records-recount",
+   "section": "4",
+   "statement": "Committed code recounts the pre-registration's record table exactly: 1,091 accepted records on 408 papers, of which 600 G and 300 C form the balanced set.",
+   "value": {
+    "[accepted.records].recomputed": 1091,
+    "[accepted.papers].recomputed": 408,
+    "[balanced.G].recomputed": 600,
+    "[balanced.C].recomputed": 300,
+    "[balanced.G].status": "match",
+    "[balanced.C].status": "match"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/record-recount.json",
+   "pointer": "checks",
+   "kind": "json",
+   "verified": true,
+   "note": "The recount compares the prereg's counts with a recomputation from the frozen record file; status 'match' on every checked figure."
+  },
+  {
+   "id": "records-alias-kind",
+   "section": "4",
+   "statement": "Of the 600 G records, 508 are abbreviation aliases and 88 are symbols (4 both).",
+   "value": {
+    "[balanced.alias_kind.abbreviation.G].recomputed": 508,
+    "[balanced.alias_kind.symbol.G].recomputed": 88,
+    "[balanced.alias_kind.both.G].recomputed": 4
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/record-recount.json",
+   "pointer": "checks",
+   "kind": "json",
+   "verified": true,
+   "note": "C records: abbreviation 257, symbol 38, both 5 (same block)."
+  },
+  {
+   "id": "corpus-chunks",
+   "section": "4",
+   "statement": "The base corpus is 32,765 chunks of 512 tokens (SFR-Embedding-Mistral tokenizer) over 1,000 open-access papers.",
+   "value": 32765,
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/record-recount.json",
+   "pointer": "corpus.chunks",
+   "kind": "json",
+   "verified": true,
+   "note": "Token counts are in the Salesforce/SFR-Embedding-Mistral tokenizer (the control addendum's chunker block names it). The chunker is fixed_token/512/0 (tok512o0)."
+  },
+  {
+   "id": "legs-rows",
+   "section": "4",
+   "statement": "Every one of the 29 legs read 1,091 rows; stage A labelled 9,205 deduplicated pairs and stage B 15,354, 24,559 in all, with 0 unjudged.",
+   "value": {
+    "stages.A.pairs_finalized": 9205,
+    "stages.B.pairs_finalized": 15354,
+    "sources.agree": 23329,
+    "sources.tiebreak": 1230,
+    "unjudged": 0
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "judge",
+   "kind": "json",
+   "verified": true,
+   "note": "sources: 23,329 pairs by the two Qwen judges agreeing, 1,230 by the tiebreak (5.0 %). The per-leg row counts are legs_read.<leg> = 1091 on all 29 legs of the same file."
+  },
+  {
+   "id": "glossary-field-coverage",
+   "section": "4",
+   "statement": "The merged glossary renders a field on 24,749 of 32,765 base chunks (75.5 %).",
+   "value": {
+    "chunks": 32765,
+    "chunks_with_field": 24749
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.placebo.field_coverage.merged",
+   "kind": "json",
+   "verified": true,
+   "note": "Mean rendered length 71.2 characters per chunk (94.3 where a field is rendered). The placebo renders on 817 chunks (2.49 %), so the placebo bounds 'extra text' only at that coverage."
+  },
+  {
+   "id": "added-papers-per-arm",
+   "section": "4",
+   "statement": "Each expanded corpus arm adds 2,423 papers to the base corpus (the citation neighbours, or a size-matched random draw).",
+   "value": 2423,
+   "source": "docs/plans/results/alias-study-2026-11/RESULTS.md",
+   "pointer": "v4 expanded arms (2,423 added papers each",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the per-arm added-paper count is stated in the record's provenance table and in the prereg; no committed JSON artifact carries it as a scalar. Chunk counts per arm (neighbour 88,765; random-1 84,762; random-2 84,552) are in the same table."
+  },
+  {
+   "id": "h1-net-points",
+   "section": "5.1",
+   "statement": "On the 600 G records under the served path, attaching the merged glossary raised judged found@10 by 1.00 point (6 records gained, 0 lost), 95 % CI [+0.33, +1.83]; H1 confirmed.",
+   "value": {
+    "net_points": 1.0,
+    "ci95.0": 0.3333,
+    "ci95.1": 1.8333,
+    "gained": 6,
+    "lost": 0,
+    "n": 600,
+    "papers": 300,
+    "n_nonzero": 6,
+    "status": "confirmed"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Paper-bootstrap percentile CI, 10,000 resamples. 6 non-zero papers of 300."
+  },
+  {
+   "id": "h1-p",
+   "section": "5.1",
+   "statement": "H1's exact conditional paper sign-flip p is 0.015625, which equals its minimum attainable p with 6 non-zero papers.",
+   "value": {
+    "p": 0.015625,
+    "min_attainable_p": 0.015625,
+    "p_method": "enumeration"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1",
+   "kind": "json",
+   "verified": true,
+   "note": "One-sided at alpha 0.05. The confirmation rests on every discordant paper moving the hypothesised way."
+  },
+  {
+   "id": "h1-g-found-counts",
+   "section": "5.1",
+   "statement": "G records found by some top-10 chunk under base x default: 591 of 600 without a glossary, 597 of 600 with the merged glossary, 591 of 600 with the placebo.",
+   "value": {
+    "[base|none|default].found": 591,
+    "[base|merged|default].found": 597,
+    "[base|placebo|default].found": 591,
+    "[base|none|default].n": 600
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.placebo.G.found10",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. The baseline is 98.5 %: the G gain is measured at the ceiling."
+  },
+  {
+   "id": "h1-gold-net-points",
+   "section": "5.1",
+   "statement": "On found@10-gold (the gold chunk in the top 10, no judge) the same contrast is +5.50 points.",
+   "value": 5.5,
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1.gold_only_net_points",
+   "kind": "json",
+   "verified": true,
+   "note": "The sensitivity the prereg names; printed beside every judged Layer-1 figure. 37 gained, 4 lost (stage-B layer2.decisions / rr blocks)."
+  },
+  {
+   "id": "h1-realised-discordance",
+   "section": "5.1",
+   "statement": "The realised G discordance was 1.0 %, against planning scenarios of 5 % and 10 %.",
+   "value": 0.01,
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1.realised_discordance",
+   "kind": "json",
+   "verified": true,
+   "note": "6 discordant records of 600."
+  },
+  {
+   "id": "h1-power-floor",
+   "section": "5.1",
+   "statement": "H1's power floor at the planning scenarios (q .05 / p .85 and q .10 / p .70) was .987 and .930 by the normal approximation.",
+   "value": {
+    "[q0.05_p0.85]": 0.9874,
+    "[q0.1_p0.7]": 0.9304
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1.power_floor_normal",
+   "kind": "json",
+   "verified": true,
+   "note": "Simulation (power-v4.json) gives .99 / .92. Not read as a null: H1 was confirmed."
+  },
+  {
+   "id": "h1-c-gate",
+   "section": "5.1",
+   "statement": "The C gate on H1 did not fire and was ceiling-limited: baseline C found@10 was 300 of 300 (100.0 %), headroom 0, and the C change under the glossary was -0.33 points (0 gained, 1 lost), 95 % CI [-1.00, 0.00].",
+   "value": {
+    "fires": false,
+    "ceiling_limited": true,
+    "baseline_c_found10.found": 300,
+    "baseline_c_found10.n": 300,
+    "delta_c_points": -0.3333,
+    "delta_c_ci95.0": -1.0,
+    "delta_c_ci95.1": 0.0,
+    "headroom_records": 0
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1.c_gate",
+   "kind": "json",
+   "verified": true,
+   "note": "The gate could not have fired on a C rise however large; it is read in Layer 2 by the C-cost rule. On found@10-gold the C change is 0.00 (2 gained, 2 lost; stage-B layer2.c_change.gold_only)."
+  },
+  {
+   "id": "h1-fragile",
+   "section": "5.1",
+   "statement": "No re-test (bootstrap-t, topic clustering) flipped H1's verdict: not fragile.",
+   "value": false,
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1.fragile.fragile",
+   "kind": "json",
+   "verified": true,
+   "note": "DEVIATIONS D-1: the topic input was built after the stage-A outputs had been read; the binding figures are the first re-run with it."
+  },
+  {
+   "id": "h1b-net-points",
+   "section": "5.1",
+   "statement": "The gain on G exceeded the change on C by 1.33 points (difference-in-differences within paper), 95 % CI [+0.50, +2.50]; 7 papers non-zero, all positive; H1b confirmed.",
+   "value": {
+    "net_points": 1.3333,
+    "ci95.0": 0.5,
+    "ci95.1": 2.5,
+    "n_nonzero": 7,
+    "gained": 7,
+    "lost": 0,
+    "papers": 300,
+    "status": "confirmed"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1b",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. n = 300 papers (the unit), not 900 records. Read beside a baseline C found@10 of 100.0 % with no headroom: C could only fall or stay."
+  },
+  {
+   "id": "h1b-p",
+   "section": "5.1",
+   "statement": "H1b's exact G/C label-randomization p is 0.0293, equal to its minimum attainable p.",
+   "value": {
+    "p": 0.02926383173296753,
+    "min_attainable_p": 0.029263831732967514,
+    "p_method": "lattice"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1b",
+   "kind": "json",
+   "verified": true,
+   "note": "Fixed-sequence after H1 within Family G."
+  },
+  {
+   "id": "h1b-power-floor",
+   "section": "5.1",
+   "statement": "H1b's power floor at the planning scenarios was .67 and .54, below .80; it was confirmed, so no null is read from it.",
+   "value": {
+    "[q0.05_p0.85]": 0.67,
+    "[q0.1_p0.7]": 0.54
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H1b.power_floor",
+   "kind": "json",
+   "verified": true,
+   "note": "Simulation, C with no effect, alpha 0.05 (the artifact's own source note)."
+  },
+  {
+   "id": "h1b-gold-net-points",
+   "section": "5.1",
+   "statement": "On found@10-gold, H1b's estimator gives +5.50 points, 95 % CI [+3.17, +7.83]; computed after the statistics ran, as a display that decides nothing (DEVIATIONS D-2).",
+   "value": {
+    "net_points": 5.5,
+    "ci95.0": 3.1667,
+    "ci95.1": 7.8333,
+    "gained": 37,
+    "lost": 5,
+    "n": 300
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/h1b-gold.public.json",
+   "pointer": "h1b_gold",
+   "kind": "json",
+   "verified": true,
+   "note": "D-2: the committed statistics printed no gold figure beside H1b; a separate script recomputed the judged H1b exactly before writing this (h1b_judged_crosscheck.agree true). Its p is a display figure, not a test. Every sentence quoting it cites D-2."
+  },
+  {
+   "id": "h2-net-points",
+   "section": "5.2",
+   "statement": "On judged found@10 the neighbour arm differed from the random average by +0.06 points (11 gained, 9 lost of 900), 95 % CI [-0.72, +0.78]; H2 not confirmed.",
+   "value": {
+    "net_points": 0.0556,
+    "ci95.0": -0.7222,
+    "ci95.1": 0.7778,
+    "gained": 11,
+    "lost": 9,
+    "n": 900,
+    "papers": 300,
+    "n_nonzero": 19,
+    "status": "not confirmed"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H2",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. One-sided test for a drop (neighbour < random average), default retriever, no glossary."
+  },
+  {
+   "id": "h2-p",
+   "section": "5.2",
+   "statement": "H2's exact sign-flip p is 0.615.",
+   "value": 0.6148529052734375,
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H2.p",
+   "kind": "json",
+   "verified": true,
+   "note": "Minimum attainable p 1.9e-6 with 19 non-zero papers, so the member was evaluable."
+  },
+  {
+   "id": "h2-gold-net-points",
+   "section": "5.2",
+   "statement": "On found@10-gold the neighbour arm found 2.17 points fewer than the random average, 95 % CI [-3.50, -0.94]; the gold-only direction gate passes.",
+   "value": {
+    "gold_only_net_points": -2.1667,
+    "gold_gate_pass": true
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H2",
+   "kind": "json",
+   "verified": true,
+   "note": "776 against 795.5 of 900 (random-1 798, random-2 793): 35 lost, 16 gained (stage-B layer2 cells and the H2 row of the other-contrasts table). Quoted first in every H2 sentence because the judged net lies within the false-yes bound."
+  },
+  {
+   "id": "h2-equivalence",
+   "section": "5.2",
+   "statement": "The equivalence bound reads no effect larger than 1.39 points on judged found@10 (90 % CI within +-1.3863, the realised 80 %-power MDE at the realised discordance of 2.2 %).",
+   "value": {
+    "delta_points": 1.3863,
+    "within": true,
+    "realised_discordance": 0.0222,
+    "discordant": 20,
+    "reading": "no effect larger than 1.3863 points"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H2.equivalence",
+   "kind": "json",
+   "verified": true,
+   "note": "About 12.5 of 900 records. The planning MDE at q 5 % was 2.08 points (power-v4 mde80_points.H2)."
+  },
+  {
+   "id": "h2-within-draw-and-bound",
+   "section": "5.2",
+   "statement": "H2's net lies within the random-draw gap (0.11 points) and within the judge false-yes bound B = 2.48 points.",
+   "value": {
+    "within_random_draw_variation": true,
+    "draw_gap_points": 0.1111,
+    "judge_false_yes_bound.B_points": 2.4806,
+    "judge_false_yes_bound.within_bound": true,
+    "judge_false_yes_bound.U": 0.2596,
+    "judge_false_yes_bound.J_r": 86.0
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H2",
+   "kind": "json",
+   "verified": true,
+   "note": "B = 100 x U x J_r / 900 with U the Wilson upper limit of the Opus-not share among final-answers drift pairs in the random arm (4 of 35) and J_r = 86 records resting on judged pairs only in the random cells. B never changes a label."
+  },
+  {
+   "id": "h2-power-planning",
+   "section": "5.2",
+   "statement": "The simulated power to confirm H2 at the planning scenarios was .96 (q .05, p .85) and .90 (q .10, p .70), so a drop of the planned sizes would have been seen.",
+   "value": {
+    "[p0.85_q0.05][0.05][confirm_a0.7]": 0.958,
+    "[p0.7_q0.1][0.05][confirm_a0.7]": 0.902
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/power-v4.json",
+   "pointer": "simulation.H2.rho1",
+   "kind": "json",
+   "verified": true,
+   "note": "Planned drops of 3.5 and 4.0 points at the planned dose (mu = q(2p-1)); about 3.0 and 3.5 at the realised dose 0.865. Power to confirm at a = 0.7 (the procedure, not the test alone)."
+  },
+  {
+   "id": "h2-power-realised",
+   "section": "5.2",
+   "statement": "At the realised discordance (2.2 %, between the tabulated 2 % and 3 % scenarios) the power to confirm at p .85 lay between .73 and .88, so only the equivalence bound reads smaller effects.",
+   "value": {
+    "[p0.85_q0.02][0.05][confirm_a0.7]": 0.7345,
+    "[p0.85_q0.03][0.05][confirm_a0.7]": 0.878
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/power-v4.json",
+   "pointer": "simulation.H2.rho1",
+   "kind": "json",
+   "verified": true,
+   "note": "Quote the power floor beside the null: H2 is a powered null for the planned drop and an unresolved contrast below about 1.4 points."
+  },
+  {
+   "id": "h2-fragile",
+   "section": "5.2",
+   "statement": "No re-test (bootstrap-t, topic clustering, chunk-volume covariate) flipped H2's verdict: not fragile.",
+   "value": false,
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "layer1.H2.fragile.fragile",
+   "kind": "json",
+   "verified": true,
+   "note": "DEVIATIONS D-1 applies to the topic and volume inputs."
+  },
+  {
+   "id": "h2-cells-found10",
+   "section": "5.2",
+   "statement": "Judged found@10 of 900 under default x none: neighbour 882, random-1 882, random-2 881, base 891; found@10-gold: 776, 798, 793, 841.",
+   "value": {
+    "[neighbour|none|default].found10.found": 882,
+    "[random1|none|default].found10.found": 882,
+    "[random2|none|default].found10.found": 881,
+    "[base|none|default].found10.found": 891,
+    "[neighbour|none|default].found10_gold.found": 776,
+    "[random1|none|default].found10_gold.found": 798,
+    "[random2|none|default].found10_gold.found": 793,
+    "[base|none|default].found10_gold.found": 841
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.cells",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Each noise repeat equals its first leg on every record (noise_floor discordant 0)."
+  },
+  {
+   "id": "h2-hits-by-origin",
+   "section": "5.2",
+   "statement": "Under default x none the neighbour arm's hits were 776 gold, 39 same-paper judged and 67 other-paper judged; the random draws' other-paper judged hits were 48 and 49.",
+   "value": {
+    "[neighbour|none|default].gold": 776,
+    "[neighbour|none|default].same": 39,
+    "[neighbour|none|default].other": 67,
+    "[random1|none|default].other": 48,
+    "[random2|none|default].other": 49
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "fixed_sensitivities.origin.hits_by_origin",
+   "kind": "json",
+   "verified": true,
+   "note": "Descriptive, all 900 records. A reading from per-cell totals: no per-record transition count is in the artifact. The other-paper hits are judged labels (judge validity below threshold)."
+  },
+  {
+   "id": "growth-vs-base",
+   "section": "5.2",
+   "statement": "Against the base corpus, the neighbour arm lost 7.22 gold points [-9.00, -5.56] and 1.00 judged point [-2.11, 0.00]; the random average lost 5.06 gold [-6.50, -3.72] and 1.06 judged [-1.78, -0.33].",
+   "value": {
+    "neighbour_minus_base.net_points": -1.0,
+    "neighbour_minus_base.ci95.0": -2.1111,
+    "neighbour_minus_base.ci95.1": 0.0,
+    "neighbour_minus_base.gold_only.net_points": -7.2222,
+    "neighbour_minus_base.gold_only.ci95.0": -9.0,
+    "neighbour_minus_base.gold_only.ci95.1": -5.5556,
+    "random_minus_base.net_points": -1.0556,
+    "random_minus_base.ci95.0": -1.7778,
+    "random_minus_base.ci95.1": -0.3333,
+    "random_minus_base.gold_only.net_points": -5.0556,
+    "random_minus_base.gold_only.ci95.0": -6.5,
+    "random_minus_base.gold_only.ci95.1": -3.7222
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Layer 2, descriptive, no test. Growth costs gold-only reach clearly for either kind of added paper and more for neighbours; judged reach moves by about one point."
+  },
+  {
+   "id": "draw-gap",
+   "section": "5.2",
+   "statement": "The two random draws differ by 0.11 points on judged found@10 (7 gained, 6 lost), 95 % CI [-0.67, +0.89].",
+   "value": {
+    "net_points": 0.1111,
+    "ci95.0": -0.6667,
+    "ci95.1": 0.8889,
+    "gained": 7,
+    "lost": 6
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.random1_minus_random2",
+   "kind": "json",
+   "verified": true,
+   "note": "The design's hedge against one unlucky draw; the draws did not disagree."
+  },
+  {
+   "id": "l2-glossary-decision",
+   "section": "5.3",
+   "statement": "The glossary serving decision reads not resolved: the G lift of +1.00 point is below the 2-point action threshold (12 of 600 G records) and the C-cost rule did not fire (delta C -0.33, lower limit -1.00 against -3.6).",
+   "value": {
+    "reading": "not resolved",
+    "g_lift": 1.0,
+    "delta_c": -0.3333,
+    "delta_c_ci95.0": -1.0,
+    "delta_c_ci95.1": 0.0,
+    "thresholds.lift_points": 2.0,
+    "thresholds.c_lower": -3.6,
+    "thresholds.c_point": -1.0,
+    "conditions.lift_ge_2": false,
+    "conditions.lift_lower_gt_0": true,
+    "conditions.harm_L_hi_lt_0": false
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.decisions.attach_merged_glossary",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. DEVIATIONS D-3: the frozen wording table has no row for 'not resolved' beside H1 confirmed; the nearest frozen rule is used and no threshold changed. A C cost smaller than about 3.6 points cannot be ruled out with 300 C records."
+  },
+  {
+   "id": "l2-reranker-decision",
+   "section": "5.3",
+   "statement": "On the neighbour arm without a glossary, the served default beat BM25 by 6.33 points, 95 % CI [+4.67, +8.11], non-inferior by the -3 margin: keep the default.",
+   "value": {
+    "default_minus_bm25": 6.3333,
+    "ci95.0": 4.6667,
+    "ci95.1": 8.1111,
+    "margin": -3.0,
+    "reading": "keep the default (non-inferior to BM25)"
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.decisions.keep_reranker_default",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. 882 against 825 of 900 (62 gained, 5 lost). On found@10-gold +14.44."
+  },
+  {
+   "id": "l2-growth-decision",
+   "section": "5.3",
+   "statement": "Related-paper growth reads not a concern: no effect larger than 1.39 points, beside H2 not confirmed.",
+   "value": {
+    "concern": false,
+    "reading": "not a concern: no effect larger than 1.3863 points",
+    "neighbour_minus_random": 0.0556,
+    "equivalence.delta_points": 1.3863
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.decisions.related_paper_growth_concern",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Judgement-based threshold: a concern if <= -3 with the CI excluding 0."
+  },
+  {
+   "id": "h1-other-retrievers",
+   "section": "5.3",
+   "statement": "The glossary lift on the base corpus is +2.50 points [+1.17, +3.83] without the reranker and +4.17 [+1.83, +6.67] under BM25 (descriptive), against +1.00 under the served path.",
+   "value": {
+    "[H1@base|norerank].net_points": 2.5,
+    "[H1@base|norerank].ci95.0": 1.1667,
+    "[H1@base|norerank].ci95.1": 3.8333,
+    "[H1@base|bm25].net_points": 4.1667,
+    "[H1@base|bm25].ci95.0": 1.8333,
+    "[H1@base|bm25].ci95.1": 6.6667
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.h1_other_cells",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. BASE CORPUS ONLY; Layer 2, descriptive. The pattern does not hold uniformly across corpora: under the served default the expanded arms give +2.00 / +2.17 / +1.50, and under BM25 the neighbour arm gives -1.17 [-4.33, +2.00] (see h1-expanded-arm-cells). Gold-only on base: +8.00 and +13.17."
+  },
+  {
+   "id": "h1-expanded-arm-cells",
+   "section": "5.3",
+   "statement": "On the expanded corpora the glossary lift under the served default is +2.00 (neighbour), +2.17 (random-1) and +1.50 (random-2) points, and under BM25 on the neighbour arm -1.17 [-4.33, +2.00] (descriptive).",
+   "value": {
+    "[H1@neighbour|default].net_points": 2.0,
+    "[H1@neighbour|default].ci95.0": 0.8333,
+    "[H1@neighbour|default].ci95.1": 3.3333,
+    "[H1@random1|default].net_points": 2.1667,
+    "[H1@random2|default].net_points": 1.5,
+    "[H1@neighbour|bm25].net_points": -1.1667,
+    "[H1@neighbour|bm25].ci95.0": -4.3333,
+    "[H1@neighbour|bm25].ci95.1": 2.0,
+    "[H1@random1|bm25].net_points": 1.3333,
+    "[H1@random2|bm25].net_points": 0.3333
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.h1_other_cells",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Layer 2, descriptive, 600 G records each. Shows that the base-corpus pattern (larger lift without the reranker) does not hold uniformly: under BM25 the expanded arms give -1.17 / +1.33 / +0.33."
+  },
+  {
+   "id": "random-draw-chunk-gap",
+   "section": "3",
+   "statement": "The random draws fall 4.51 % and 4.75 % short of the neighbour arm's added chunks (84,762 and 84,552 against 88,765).",
+   "value": 4.51,
+   "source": "docs/plans/results/alias-study-2026-11/prereg/PREREG-alias-study.md",
+   "pointer": "| chunks vs neighbour | — | −4.51 % | −4.75 % |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY (the frozen pre-registration's v4 build table): chunk counts per arm are not in a committed JSON artifact. The ±5 % chunk-volume target was a build target, not a gate (R19); the gap is covered by H2's pre-named chunk-volume covariate re-test."
+  },
+  {
+   "id": "h1-by-alias-kind",
+   "section": "5.3",
+   "statement": "By alias kind (base x default): abbreviations (508 G, 289 papers) +0.98 points, 5 gained / 0 lost; symbols (88 G, 77 papers) +1.14, 1 / 0.",
+   "value": {
+    "abbreviation.n": 508,
+    "abbreviation.papers": 289,
+    "abbreviation.net_points": 0.9843,
+    "abbreviation.gained": 5,
+    "abbreviation.lost": 0,
+    "symbol.n": 88,
+    "symbol.papers": 77,
+    "symbol.net_points": 1.1364,
+    "symbol.gained": 1,
+    "symbol.lost": 0
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.h1_by_alias_kind",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Descriptive. 'Both' (4 G) 0.00, printed and never interpreted. The split by alias collision is absent (no collision annotation supplied)."
+  },
+  {
+   "id": "placebo-g",
+   "section": "5.3",
+   "statement": "The placebo glossary (another paper's entries, own entries removed) changed G found@10 by 0.00 points against none (1 gained, 1 lost) and sits 1.00 point below merged.",
+   "value": {
+    "[base|placebo|default].found": 591,
+    "[base|none|default].found": 591,
+    "[base|merged|default].found": 597
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.placebo.G.found10",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Descriptive control for 'extra text'; it attaches to 817 chunks against merged's 24,749, so it bounds extra text only at that coverage."
+  },
+  {
+   "id": "rr-h1-h2",
+   "section": "5.3",
+   "statement": "Mean reciprocal rank at 10 (points): H1 judged +8.74 [+6.94, +10.66], gold +15.03; H2 judged -0.58 [-1.64, +0.49], gold -3.35 [-4.47, -2.27].",
+   "value": {
+    "H1.judged.net_points": 8.7431,
+    "H1.judged.ci95.0": 6.9366,
+    "H1.judged.ci95.1": 10.6556,
+    "H1.gold_only.net_points": 15.0274,
+    "H2.judged.net_points": -0.5805,
+    "H2.judged.ci95.0": -1.636,
+    "H2.judged.ci95.1": 0.4934,
+    "H2.gold_only.net_points": -3.3511,
+    "H2.gold_only.ci95.0": -4.4673,
+    "H2.gold_only.ci95.1": -2.2702
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.rr",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Layer 2 secondary, rank-based."
+  },
+  {
+   "id": "record-validity",
+   "section": "6",
+   "statement": "Of 40 records drawn by seeded hash and labelled by the owner blind to kind and arm, 37 were valid (0.925), Wilson 95 % [0.801, 0.975]; the 0.85 rule did not fire.",
+   "value": {
+    "valid": 37,
+    "n": 40,
+    "rate": 0.925,
+    "wilson95.0": 0.8013,
+    "wilson95.1": 0.9742,
+    "below_threshold": false
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "spot_checks.record_validity",
+   "kind": "json",
+   "verified": true,
+   "note": "Single rater, the owner (O12). Records are LLM-drafted and LLM-verified; this is the only human check of them."
+  },
+  {
+   "id": "judge-validity-reweighted",
+   "section": "6",
+   "statement": "The owner agreed with the final judge label on 0.872 of pairs re-weighted to the stage-A label shares, below the frozen 0.90 rule, so every judged result carries 'judge validity below threshold'.",
+   "value": {
+    "reweighted_agreement": 0.8724891436007518,
+    "below_threshold": true,
+    "n": 100
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "spot_checks.judge_validity",
+   "kind": "json",
+   "verified": true,
+   "note": "100 non-gold stage-A pairs, stratified by final label (50 answers, 33 not, 17 tiebroken), labelled blind to label, stratum and arm, committed before analysis. Unweighted agreement 0.81."
+  },
+  {
+   "id": "judge-validity-strata",
+   "section": "6",
+   "statement": "By stratum the owner agreed on 41 of 50 answers pairs (0.82), 30 of 33 not pairs (0.909) and 10 of 17 tiebroken pairs (0.588).",
+   "value": {
+    "answers.agree": 41,
+    "answers.n": 50,
+    "answers.rate": 0.82,
+    "not.agree": 30,
+    "not.n": 33,
+    "tiebroken.agree": 10,
+    "tiebroken.n": 17
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "spot_checks.judge_validity.strata",
+   "kind": "json",
+   "verified": true,
+   "note": "The rule fired on both clauses: re-weighted 0.872 < 0.90 and answers stratum 0.82 < 0.90. Wilson 95 %: answers [0.692, 0.903], not [0.764, 0.969], tiebroken [0.360, 0.784]."
+  },
+  {
+   "id": "judge-validity-metrics",
+   "section": "6",
+   "statement": "Against the owner, the final label's precision for answers is 0.783, recall 0.887, specificity 0.723, Cohen's kappa 0.615 (n 100; 47 / 13 / 6 / 34 as tp / fp / fn / tn).",
+   "value": {
+    "precision": 0.7833333333333333,
+    "recall": 0.8867924528301887,
+    "specificity": 0.723404255319149,
+    "kappa": 0.6153846153846155,
+    "n": 100,
+    "table.tp": 47,
+    "table.fp": 13,
+    "table.fn": 6,
+    "table.tn": 34
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "spot_checks.judge_validity.metrics",
+   "kind": "json",
+   "verified": true,
+   "note": "Gwet's AC1 0.626, F1 0.832. The judge says 'answers' more often than the owner (13 false-yes against 6 false-no)."
+  },
+  {
+   "id": "disagreement-tags",
+   "section": "6",
+   "statement": "The owner later tagged the 19 disagreeing pairs: 7 full, 12 partial, 0 none, 0 other answer; all 19 sit on the partial-versus-full line (exploratory, post hoc).",
+   "value": {
+    "n": 19,
+    "tags.full": 7,
+    "tags.partial": 12,
+    "tags.none": 0,
+    "tags.other": 0
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/disagreement-tags.json",
+   "pointer": "counts",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, owner-supplied tags after LLM-assisted deliberation on some items; not an independent annotation; changes no figure and does not lift the flag. 13 judge-answers/owner-not, 6 owner-answers/judge-not."
+  },
+  {
+   "id": "drift-agreement",
+   "section": "6",
+   "statement": "The final label agreed with the Claude Opus drift reference on 0.948 of 407 answered stage-A pairs and 0.960 of 1,169 cumulatively, below the 0.97 reference line in both stages; the arm gap (0.004 stage A, 0.016 cumulative) never reached the 0.05 pause threshold.",
+   "value": {
+    "scopes.overall.agreement": 0.9597946963216424,
+    "scopes.overall.answered": 1169,
+    "scopes.overall.sampled": 1228,
+    "arm_gap.value": 0.016057441253263707,
+    "arm_gap.threshold": 0.05,
+    "alarm": false
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "judge.drift",
+   "kind": "json",
+   "verified": true,
+   "note": "Cumulative figures from the stage-B file; the stage-A figures (0.9484 on 407 of 460 sampled, arm gap 0.0041) are in results-stage-A2.public.json judge.drift. By R29 the reference lines report and never pause. 59 of 1,228 sampled pairs had no Opus reference after one re-issue and are excluded."
+  },
+  {
+   "id": "drift-kappa",
+   "section": "6",
+   "statement": "Against Opus, cumulative precision 0.851, recall 0.931, kappa 0.865 (n 1,169).",
+   "value": {
+    "precision": 0.8513513513513513,
+    "recall": 0.9310344827586207,
+    "kappa": 0.864903010378836,
+    "n": 1169
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "judge.metrics_6_6_drift.overall",
+   "kind": "json",
+   "verified": true,
+   "note": "Opus is a drift reference, never a label and not a validity reference; the owner is the validity reference."
+  },
+  {
+   "id": "judge-pairs-stage-a",
+   "section": "6",
+   "statement": "Stage A labelled 9,205 deduplicated pairs, 8,580 by the two primary judges agreeing and 625 by the tiebreak (6.8 %).",
+   "value": {
+    "agree": 8580,
+    "tiebreak": 625
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "judge.sources",
+   "kind": "json",
+   "verified": true,
+   "note": "Pairs are judged blind to arm, retriever and rank, and deduplicated across cells before labelling."
+  },
+  {
+   "id": "control-flip-rate",
+   "section": "6x",
+   "statement": "Exploratory: re-judging 300 stage-A pairs against a sentence- and section-bounded chunk covering the same text flipped the final label on 40 of 300 (13.3 %, Wilson [9.9, 17.7]).",
+   "value": {
+    "k": 40,
+    "n": 300,
+    "rate": 0.1333,
+    "wilson95.0": 0.0994,
+    "wilson95.1": 0.1765
+   },
+   "source": "docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json",
+   "pointer": "metrics.flip",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, post-freeze, judge-only control (ADDENDUM-2026-11-05); changes no confirmatory figure; no test was run or planned; Wilson 95 % intervals. Control chunk: sentence/512/0 with section cuts, ceiling 640 SFR tokens; each stage-A window mapped to the control chunk of largest character overlap."
+  },
+  {
+   "id": "control-retest-flip-rate",
+   "section": "6x",
+   "statement": "Exploratory: re-judging the identical 300 stage-A windows through the identical judge path flipped 20 of 300 (6.7 %, Wilson [4.4, 10.1]): about half the control's flip rate is the judge's own non-repeatability.",
+   "value": {
+    "k": 20,
+    "n": 300,
+    "rate": 0.0667,
+    "wilson95.0": 0.0435,
+    "wilson95.1": 0.1008
+   },
+   "source": "docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json",
+   "pointer": "metrics.retest.flip",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, post-freeze, judge-only control (ADDENDUM-2026-11-05); changes no confirmatory figure; no test was run or planned; Wilson 95 % intervals. Added after the control's flip rate had been seen, on owner approval. The two overall intervals overlap near 10 %, so the overall rates are not cleanly separated. Gateway temperature is the provider default and unrecorded."
+  },
+  {
+   "id": "control-agreed-answers-stratum",
+   "section": "6x",
+   "statement": "Exploratory: on pairs both Qwen judges had called answers in stage A, the control flipped 28 of 150 to not (18.7 %) against 6 of 150 on the retest (4.0 %); on agreed not pairs 0 of 99 against 1 of 99.",
+   "value": {
+    "by_stratum.answers.k": 28,
+    "by_stratum.answers.n": 150,
+    "by_stratum.answers.rate": 0.1867,
+    "retest.by_stratum.answers.k": 6,
+    "retest.by_stratum.answers.n": 150,
+    "by_stratum.not.k": 0,
+    "by_stratum.not.n": 99,
+    "retest.by_stratum.not.k": 1,
+    "retest.by_stratum.not.n": 99
+   },
+   "source": "docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json",
+   "pointer": "metrics",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, post-freeze, judge-only control (ADDENDUM-2026-11-05); changes no confirmatory figure; no test was run or planned; Wilson 95 % intervals. Stratum and route were pre-specified but read after the overall rate; the agreed-answers contrast is the clearest pattern in this sample and confirming it would need a new pre-registered test."
+  },
+  {
+   "id": "control-tiebroken-stratum",
+   "section": "6x",
+   "statement": "Exploratory: on tiebroken pairs the control (12 of 51, 23.5 %) is indistinguishable from the retest (13 of 51, 25.5 %).",
+   "value": {
+    "by_stratum.tiebroken.k": 12,
+    "by_stratum.tiebroken.n": 51,
+    "retest.by_stratum.tiebroken.k": 13,
+    "retest.by_stratum.tiebroken.n": 51
+   },
+   "source": "docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json",
+   "pointer": "metrics",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, post-freeze, judge-only control (ADDENDUM-2026-11-05); changes no confirmatory figure; no test was run or planned; Wilson 95 % intervals. These pairs carry no boundary evidence in this sample; the stratum resolves nothing below about 10 %."
+  },
+  {
+   "id": "control-recovered-by-other-chunk",
+   "section": "6x",
+   "statement": "Exploratory: for 24 of the 28 agreed-route lost answers (85.7 %, Wilson [68.5, 94.3]) an overlapping control chunk answers on its own: the evidence moved to a neighbouring chunk rather than disappearing.",
+   "value": {
+    "k": 24,
+    "n": 28,
+    "rate": 0.8571,
+    "wilson95.0": 0.6851,
+    "wilson95.1": 0.9431
+   },
+   "source": "docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json",
+   "pointer": "metrics.cover_any.split.by_route.agree.answers_to_not.recovered_by_other_chunk",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, post-freeze, judge-only control (ADDENDUM-2026-11-05); changes no confirmatory figure; no test was run or planned; Wilson 95 % intervals. Cover-any judged every control chunk overlapping a flipped window (85 chunks for 40 pairs). Each 'answers' behind the count is still a judge label."
+  },
+  {
+   "id": "control-tiebreak-replicate",
+   "section": "6x",
+   "statement": "Exploratory: the gateway tiebreaker gave the same verdict on 27 of 34 byte-identical prompts (79.4 %, Wilson [63.2, 89.7]); escalation membership overlapped at Jaccard 0.53 between stage A and the retest.",
+   "value": {
+    "tiebreak_replicate.verdict_agreement.k": 27,
+    "tiebreak_replicate.verdict_agreement.n": 34,
+    "tiebreak_replicate.verdict_agreement.rate": 0.7941,
+    "escalation_overlap.jaccard": 0.5312,
+    "escalation_overlap.both": 34
+   },
+   "source": "docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json",
+   "pointer": "metrics.retest",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, post-freeze, judge-only control (ADDENDUM-2026-11-05); changes no confirmatory figure; no test was run or planned; Wilson 95 % intervals. Verdict agreement, not response identity. The escalation rate is stable (51 vs 47 of 300) while its membership churns."
+  },
+  {
+   "id": "provenance-citable",
+   "section": "7",
+   "statement": "Both results files record prereg_verified, runs_citable and a clean tree; the statistics ran from committed code with the spot checks ingested before any analysis.",
+   "value": {
+    "prereg_verified": true,
+    "runs_citable": true,
+    "gate.spot_checks_waived": false,
+    "gate.allowed": true,
+    "stage_a_commit.verified": true,
+    "stage_b_runs_commit_verified": true
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "study",
+   "kind": "json",
+   "verified": true,
+   "note": "in_image false on every provenance block (no tools image); commit, clean tree and segmentation fingerprint recorded instead. Private inputs are released as sha256 only (prereg §11)."
+  }
+ ]
+}
