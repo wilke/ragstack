@@ -26,6 +26,7 @@ book. If a sentence needs the word *currently*, *still* or *next*, it is in the 
 |---|---|---|---|
 | `paper-a-evidence-localisation` | Reliable but not canonical: LLM judges for passage-level evidence localisation | Judges agree on *whether* a document holds evidence and disagree on *where*; the set of locations never converges; a *graded* per-sentence support score does reproduce itself, across model families; reliability is not validity | drafting — the data exists |
 | `paper-b-chunking` | (not started) How should a retrieval index chunk full-length scientific articles? | Document-level metrics answer a different question; realised chunk size confounds chunking method; reach and containment trade against each other and hybrid retrieval flattens the contrast | blocked on the two-reader human read |
+| `paper-c-alias-glossary` | A glossary makes alias passages findable, and the gain is small: a pre-registered test of glossary attachment and citation-neighbour growth in scientific-paper retrieval | Attaching a paper's own glossary to its chunks gives a confirmed, alias-specific gain of one point under the served cross-encoder path (larger without it); growing the collection with citation neighbours costs no more judged reach than random growth (powered null) but more gold-chunk reach; every judged figure carries the pre-registered judge-validity flag, with the judge-free figure beside it | outline + two sections drafted |
 
 Target for both: **arXiv preprint first**, venue-neutral, venue chosen afterwards.
 
