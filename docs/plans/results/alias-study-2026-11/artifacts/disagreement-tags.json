@@ -1,0 +1,110 @@
+{
+ "citable": true,
+ "counts": {
+  "by_direction": {
+   "judge_answers_owner_not": {
+    "full": 5,
+    "n": 13,
+    "none": 0,
+    "other": 0,
+    "partial": 8
+   },
+   "owner_answers_judge_not": {
+    "full": 2,
+    "n": 6,
+    "none": 0,
+    "other": 0,
+    "partial": 4
+   }
+  },
+  "by_stratum": {
+   "answers": {
+    "full": 5,
+    "judge_answers_owner_not": 9,
+    "n": 9,
+    "none": 0,
+    "other": 0,
+    "owner_answers_judge_not": 0,
+    "partial": 4
+   },
+   "not": {
+    "full": 1,
+    "judge_answers_owner_not": 0,
+    "n": 3,
+    "none": 0,
+    "other": 0,
+    "owner_answers_judge_not": 3,
+    "partial": 2
+   },
+   "tiebroken": {
+    "full": 1,
+    "judge_answers_owner_not": 4,
+    "n": 7,
+    "none": 0,
+    "other": 0,
+    "owner_answers_judge_not": 3,
+    "partial": 6
+   }
+  },
+  "n": 19,
+  "readings": {
+   "partial_is_answers": {
+    "judge_matches": 13,
+    "n": 19,
+    "owner_matches": 6,
+    "undecided_other": 0
+   },
+   "partial_is_not": {
+    "judge_matches": 9,
+    "n": 19,
+    "owner_matches": 10,
+    "undecided_other": 0
+   },
+   "rule": "a tag implies a label: full -> answers; none -> not; partial -> not under partial_is_not, answers under partial_is_answers; other -> undecided. judge_matches (owner_matches) counts the 19 pairs whose judge (owner) label equals the implied label"
+  },
+  "tags": {
+   "full": 7,
+   "none": 0,
+   "other": 0,
+   "partial": 12
+  }
+ },
+ "inputs_sha256": {
+  "disagreement-items-19.json": "d6176dacbe7d7d9cc2d4ff6043b0e9be8b782b35d7bde5024ec110e562958a06",
+  "disagreement-tags-19.json": "825e49898289752134e7017733bfc14630d825e8203c896a7e2bdc80e789514a"
+ },
+ "label": "descriptive; the owner's tags on the 19 spot-check disagreements; changes no figure, enters no rule, not an independent annotation (owner-set, some items after LLM-assisted deliberation)",
+ "provenance": {
+  "citable": true,
+  "commit": "d93eddaaadaf7ed62e3fce78ad0e932dbf1162d5",
+  "describe": "v1.6.23-18-gd93edda",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-05T21:34:40Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.23+d93edda"
+ },
+ "schema": "alias-study-spot-disagreement-tags/1",
+ "tags_exported_at": "2026-11-05T18:59:47.055Z",
+ "tags_schema": "alias-spot-disagreement-tags/1",
+ "who": "the owner set every tag; for some items the owner discussed alternative readings with an LLM before deciding (the owner's account; private provenance note beside the export)"
+}
