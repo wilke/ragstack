@@ -3,8 +3,10 @@
 **Tier: record. Exploratory, post-freeze.** This file changes no confirmatory number, no hypothesis label,
 cell, record, judge, seed or gate of the frozen pre-registration (`prereg/PREREG-alias-study.md`, sha256
 `d54f4201…`). Every number below is exploratory, and every sentence that quotes one says so or sits under a
-heading that does. Route, direction and stratum splits were read after the overall flip rate had been seen,
-so the splits are **selected** comparisons: they describe this sample and confirm nothing.
+heading that does. Direction, stratum, arm, coverage band and token band were pre-specified (plan §5) but
+read after the overall flip rate; the split by stage-A route (C and E agreed vs tiebroken) and the
+test-retest null were added after the control's results had been seen. The splits describe this sample
+and confirm nothing.
 
 **Source.** Every figure comes from [`control/artifacts/control-judge.json`](control/artifacts/control-judge.json)
 (`schema alias-control-report/1`, counts and rates only), written by `alias_control_chunks.py report` at
@@ -31,8 +33,11 @@ window maps to the control chunk of largest character overlap (ties to the earli
 | cover-any (every control chunk overlapping a flipped window) | 85 | 11 / 4 | ~19:05–19:10 | 19:10:35–19:11:01 |
 | test-retest null (the same 300 stage-A windows, unchanged) | 300 | 47 / 15 | 19:47–20:00 | 20:02:18–20:03:29 |
 
-Call counts are `judge_files` in the artifact; the times come from the private run logs. All three steps
-used the frozen judge byte for byte (prompt `alias-judge/2`; C = Qwen3.6-35B-A3B, n = 5, T 0.7, thinking;
+Call counts are `judge_files` in the artifact. The times, the call statuses and the preflight counts come
+from the private run logs and call ledgers, not from a committed artifact. Statements attributed to the
+gateway coordinator are reported messages from its gateway audit, also not committed artifacts. All three
+steps used the frozen judge byte for byte (prompt `alias-judge/2`, Opus on `alias-judge/1` as the prereg
+table states; C = Qwen3.6-35B-A3B, n = 5, T 0.7, thinking;
 E = Qwen3.8-27B, n = 1, T 0.7; Argon tiebreak on any C/E disagreement; Opus 5 % drift reference, which never
 sets a label; `fallback_model ""`, ≤ 4 in flight, chat endpoint). Every gateway call returned `ok`; there
 was no provider notice and no re-issue. The gateway coordinator reconciled all 124 calls exactly against
@@ -41,15 +46,17 @@ the gateway's own audit, per model and per UTC hour.
 **What differs from the plan, and why.**
 - *Owner agreement (plan §5.4) was dropped* by owner decision on 2026-11-05 (the artifact's `note`).
 - *Cover-any ran* as plan §3 and owner answer Q5 specify. It re-judged the primary control chunk as well as
-  its neighbours, so it also yields a same-bytes repeatability measure.
+  its neighbours, so it also yields a repeatability measure on the same bytes (by construction: same pair
+  id, same chunk text).
 - *The test-retest null was added after the control's flip rate had been seen*, on owner approval
   (2026-11-05), because cover-any showed the judge does not repeat itself on identical text. It re-judges
   the 300 stage-A windows through the identical path. Its prompts are byte-identical to stage A's: the
-  Argon replicate pairs match on prompt and system sha256 (34 of 34, `retest.tiebreak_replicate`). It ran
-  about an hour after the control, which matters because the gateway models run at the provider's default
-  temperature (below).
-- *Call caps.* The plan's working caps for the control (40 Argon, 25 Opus) were not enforced: the harness
-  refuses an Argon cap in main mode (prereg R30). Each step's call count equalled its preflight count.
+  Argon replicate pairs match on prompt and system sha256 (34 of 34, `retest.tiebreak_replicate`). Its
+  gateway calls ran about an hour after the control's, which matters because the gateway models run at the
+  provider's default temperature (below).
+- *Call caps.* There is no Argon call cap (prereg R30; the harness refuses one in main mode). Opus is capped
+  at the prereg's 7 % share of the registry (21 of 300 for the control, 15 used). Each step's call count
+  equalled its preflight count.
 
 ## Results (exploratory)
 
@@ -69,19 +76,19 @@ the gateway's own audit, per model and per UTC hour.
 
 Exploratory reading:
 - **About half of the overall 13.3 % is the judge's own non-repeatability.** Re-judging the identical
-  window flips 6.7 %. The two overall intervals touch near 10 %, so the overall rates are not cleanly
+  window flips 6.7 %. The two overall intervals overlap slightly near 10 %, so the overall rates are not cleanly
   separated (`flip_minus_retest` 0.067, display only).
 - **On pairs whose two Qwen judges agreed in stage A, the control only lost answers.** 28 of 150 agreed
   *answers* pairs flipped to *not*, and none of the 99 agreed *not* pairs gained an answer. The null flips
-  4.0 % and 1.0 % of the same strata, and the control's and the null's intervals on agreed pairs do not
-  overlap. The 4 *not → answers* flips of the control are all on tiebroken pairs.
+  4.0 % and 1.0 % of the same strata. On the agreed route pooled (11.2 % vs 2.8 %) and on the agreed
+  *answers* stratum, the control's and the null's intervals do not overlap. The 4 *not → answers* flips of the control are all on tiebroken pairs.
 - **On tiebroken pairs the control is indistinguishable from the null** (23.5 % vs 25.5 %). These pairs
   carry no boundary evidence in this sample. The stratum resolves nothing below about 10 % (plan §4).
 
 ### Where the lost answers went (cover-any, exploratory)
 
 Every control chunk that overlaps a flipped window was judged on its own (85 chunks for 40 pairs, none
-capped). `metrics.cover_any.split.by_route`:
+capped; `control-map.json` `n_overlapping`). `metrics.cover_any.split.by_route`:
 
 | (exploratory) | n | another overlapping chunk answers, primary does not | both | only the re-judged primary answers | none |
 |---|---|---|---|---|---|
@@ -90,7 +97,7 @@ capped). `metrics.cover_any.split.by_route`:
 | tiebroken, not → answers | 4 | 0 | 0 | 2 | 2 |
 
 On agreed pairs, an overlapping neighbour chunk answers for 24 of the 28 lost answers (85.7 %, 68.5–94.3;
-`recovered_by_other_chunk`): the evidence moved to the next chunk rather than disappearing. On tiebroken
+`recovered_by_other_chunk`): the evidence moved to an overlapping chunk rather than disappearing. On tiebroken
 answers → not flips the share is 3 of 8. This count comes from which chunk holds the text, not from a single
 verdict, so the judge noise measured below doesn't produce it on its own, though each "answers" behind it is
 still a judge label. Flips also concentrate where the control chunk covers less of the window: 8 of 149
@@ -131,8 +138,9 @@ says *answers* less often on control chunks (C 148 vs 183 of 300 on the stage-A 
   pre-registered test on a single named endpoint with fresh pairs. None has been run or approved.
 - **Gateway temperature is unrecorded.** The frozen judge sets the Argon tiebreak at "default temperature"
   (prereg §6.3), and the Opus drift reference states none; the requests send no temperature, so the
-  provider's default applies and its value is not recorded. The null ran about an hour after the control,
-  so its floor applies to the control; it may not transfer to re-judges made later.
+  provider's default applies and its value is not recorded. The null's gateway calls ran about an hour
+  after the control's, so it is the best available floor for the control; it may not transfer to
+  re-judges made later.
 - **Opus empty answers** are handled by the frozen topic-filter rule (prereg §6.5): an empty reply is
   re-issued once, then the pair is *no-reference*, filtered from the drift agreement and never a drift
   failure; Opus never sets a label. In these three steps every Opus call returned an answer (34 calls, 34
@@ -143,5 +151,7 @@ says *answers* less often on control chunks (C 148 vs 183 of 300 on the stage-A 
 
 ## What is not reported
 
-Owner agreement on control chunks (dropped); any test of the control against the null (none planned); any
+Flip rates by arm (`metrics.by_arm`), by control-chunk token band (`by_control_token_band`) and for the
+LaTeX-preamble stratum the owner asked for (`by_latex_preamble`) are pre-specified and in the artifact but
+not restated here. Owner agreement on control chunks (dropped); any test of the control against the null (none planned); any
 stage-A study figure (none is restated here); found@10 under the control chunking (option (b), not run).
