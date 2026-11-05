@@ -561,7 +561,40 @@
    "pointer": "layer2.h1_other_cells",
    "kind": "json",
    "verified": true,
-   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Layer 2, descriptive: the glossary matters most where the cross-encoder is not there to recover the passage. Gold-only: +8.00 and +13.17."
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. BASE CORPUS ONLY; Layer 2, descriptive. The pattern does not hold uniformly across corpora: under the served default the expanded arms give +2.00 / +2.17 / +1.50, and under BM25 the neighbour arm gives -1.17 [-4.33, +2.00] (see h1-expanded-arm-cells). Gold-only on base: +8.00 and +13.17."
+  },
+  {
+   "id": "h1-expanded-arm-cells",
+   "section": "5.3",
+   "statement": "On the expanded corpora the glossary lift under the served default is +2.00 (neighbour), +2.17 (random-1) and +1.50 (random-2) points, and under BM25 on the neighbour arm -1.17 [-4.33, +2.00] (descriptive).",
+   "value": {
+    "[H1@neighbour|default].net_points": 2.0,
+    "[H1@neighbour|default].ci95.0": 0.8333,
+    "[H1@neighbour|default].ci95.1": 3.3333,
+    "[H1@random1|default].net_points": 2.1667,
+    "[H1@random2|default].net_points": 1.5,
+    "[H1@neighbour|bm25].net_points": -1.1667,
+    "[H1@neighbour|bm25].ci95.0": -4.3333,
+    "[H1@neighbour|bm25].ci95.1": 2.0,
+    "[H1@random1|bm25].net_points": 1.3333,
+    "[H1@random2|bm25].net_points": 0.3333
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json",
+   "pointer": "layer2.h1_other_cells",
+   "kind": "json",
+   "verified": true,
+   "note": "Judge validity below threshold (prereg §13.5): the owner's spot check agreed with the final judge label on 0.872 re-weighted and 0.82 of the answers stratum, both below the frozen 0.90; found@10-gold is reported beside every judged figure. Layer 2, descriptive, 600 G records each. Shows that the base-corpus pattern (larger lift without the reranker) does not hold uniformly: under BM25 the expanded arms give -1.17 / +1.33 / +0.33."
+  },
+  {
+   "id": "random-draw-chunk-gap",
+   "section": "3",
+   "statement": "The random draws fall 4.51 % and 4.75 % short of the neighbour arm's added chunks (84,762 and 84,552 against 88,765).",
+   "value": 4.51,
+   "source": "docs/plans/results/alias-study-2026-11/prereg/PREREG-alias-study.md",
+   "pointer": "| chunks vs neighbour | — | −4.51 % | −4.75 % |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY (the frozen pre-registration's v4 build table): chunk counts per arm are not in a committed JSON artifact. The ±5 % chunk-volume target was a build target, not a gate (R19); the gap is covered by H2's pre-named chunk-volume covariate re-test."
   },
   {
    "id": "h1-by-alias-kind",

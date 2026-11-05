@@ -55,10 +55,10 @@ and per paper. Cite for the contrast, not for a number. (a)–(e): no.
 ## 2. Abbreviations and symbols in scientific text
 
 ### `yu-2002` — Mapping Abbreviations to Full Forms in Biomedical Articles
-Journal of the American Medical Informatics Association 9(3), 262–272, 2002.
-<https://doi.org/10.1197/jamia.m0913> · **verified (title, venue, year), abstract** — **author list as
-fetched: both OpenAlex and Crossref list a single author ("Yu"); the record's full author list was not
-confirmed by this fetch and must be checked against the journal page before the entry is promoted.**
+Hong Yu, George Hripcsak, Carol Friedman. Journal of the American Medical Informatics Association 9(3),
+262–272, 2002 (May–Jun). <https://doi.org/10.1197/jamia.m0913> · PubMed PMID 11971887 · **verified,
+abstract** (author list from the PubMed esummary record, "Yu H, Hripcsak G, Friedman C"; OpenAlex and
+Crossref both return a single author for this DOI, so the PubMed record is the source for the authors)
 
 Pattern-matching rules (AbbRE) map defined abbreviations to full forms with 0.70 recall and 0.95
 precision on ten articles from the ten most-cited medical and biological journals; **an average of 25 %
@@ -192,8 +192,12 @@ alone; the neighbour-versus-random contrast at matched size is not in it. (d) no
 Christopher Sciavolino, Zexuan Zhong, Jinhyuk Lee, Danqi Chen. EMNLP 2021, 6138–6148.
 <https://aclanthology.org/2021.emnlp-main.496/> · arXiv 2109.08535 · **verified, read (full PDF)**
 
-EntityQuestions, simple questions from Wikidata facts. Top-20 retrieval accuracy: DPR (NQ) 49.7, DPR
-(multi) 56.7, BM25 71.2 on average, with gaps up to 60 points absolute on some question patterns; dense
+EntityQuestions, simple questions from Wikidata facts. Top-20 retrieval accuracy (Table 1 and the full
+Table 5 "Average" row): DPR (NQ) 49.7, DPR (multi) 56.7, BM25 71.2 on average; the authors write that
+the gap reaches "60% absolute" on some patterns, and the largest per-pattern gap in Table 5 is 63.7
+points ("Who is [E]'s child?": DPR-NQ 19.2 vs BM25 82.9). (A review suggested 72.0 and 65.8; those are
+single cells of other tables, not the averages or the largest gap; the figures above were re-read from
+the full text.) Dense
 retrievers generalise to common entities and degrade on rarer ones unless the question pattern was seen
 in training; data augmentation does not fix it; REALM is also below BM25 (19.6 points on average).
 
@@ -255,8 +259,5 @@ any in OpenAlex beyond 2).
 
 ## COULD NOT VERIFY
 
-- The full author list of `yu-2002` (OpenAlex and Crossref both return one author). Query tried:
-  OpenAlex search "Mapping abbreviations to full forms in biomedical articles"; Crossref
-  `works/10.1197/jamia.m0913`. The journal page was not fetched. Do not promote until checked.
 - The full text of `alier-2026` (Elsevier). Only the OpenAlex abstract was read; no baseline numbers.
 - The abstract of `head-2021-scholarphi` (metadata only; a mention-level entry).

@@ -10,19 +10,46 @@ noted in the open questions at the end.
 **Audience.** Anyone who indexes full-length scientific articles for retrieval or RAG and has to decide
 whether to spend index-time text on the paper's own definitions, and whether a collection built from a
 paper's citation neighbourhood is a harder retrieval target than one built from unrelated papers. The
-result is not specific to the served stack: the glossary lift is reported under three retrievers, and
-the growth contrast under both retrievers and both glossary arms.
+result is not specific to the served stack: the glossary lift is reported under all three retrievers
+(default / norerank / BM25) on all four corpus arms, and the growth contrast under the three retrievers
+and both glossary arms.
+
+**The argument.** When a question names a concept by its full term and the answering passage uses only
+the paper's short form (a symbol, or an abbreviation defined once elsewhere), attaching the paper's own
+glossary to its chunks makes the passage findable: a confirmed, alias-specific gain under a frozen
+pre-registration, but one of a single percentage point under the served hybrid-plus-cross-encoder path
+(`h1-net-points`), on a corpus where 591 of 600 such records were already found by some chunk
+(`h1-g-found-counts`; judge validity below threshold, §13.5). On the base corpus the lift is +2.50
+without the reranker and +4.17 under BM25 (Layer 2, descriptive; `h1-other-retrievers`), a pattern that
+does not hold uniformly on the expanded corpora (`h1-expanded-arm-cells`). Growing the collection with
+the papers' citation neighbours against the same number of random same-field papers is *not confirmed*
+as a cost to judged reach: no effect larger than 1.39 points, with power .96 and .90 for the planned
+3.5- and 4.0-point drops (`h2-net-points`, `h2-equivalence`, `h2-power-planning`), while it costs
+2.17 points of gold-chunk reach (`h2-gold-net-points`), a pattern consistent with neighbours
+displacing the gold chunk and supplying an answer in its place. Every judged figure rests on an LLM
+judge whose agreement with the single human reference fell below the pre-registered 0.90 threshold
+(`judge-validity-reweighted`), and the paper reports the judge-free gold-only figure beside every
+judged one rather than treating either as the truth.
+
+**Target population.** Questions that use a glossary entry's primary term, over passages in open-access
+scientific full texts that carry only the short form; a collection of 1,000 papers chunked at 512 tokens
+(`corpus-chunks`) and grown by 2,423 added papers per expanded arm (`added-papers-per-arm`); a served
+path of hybrid BM25 + dense retrieval with a cross-encoder reranker at top 10; records drafted and
+verified by language models with a 40-record human check (`record-validity`). The findings are
+conditional on that population and the paper says so where each one is stated.
 
 **The one-sentence claim.** For questions that use a glossary entry's primary term over passages that
 carry only the short form, attaching the paper's merged glossary (symbols and defined abbreviations) to
 its chunks yields a confirmed, alias-specific gain in judged found@10 of 1.00 point (6 of 600 records,
 `h1-net-points`; 1.33 points over the matched control change, `h1b-net-points`) under a hybrid plus
 cross-encoder path, a gain that is too small to act on by the pre-registered 2-point threshold
-(`l2-glossary-decision`) and that grows to 2.50 and 4.17 points where the cross-encoder is absent
-(`h1-other-retrievers`); growing the collection with citation neighbours rather than random same-field
-papers changes judged found@10 by +0.06 points (powered null, no effect larger than 1.39 points,
-`h2-net-points`, `h2-equivalence`) while costing 2.17 points of gold-chunk reach
-(`h2-gold-net-points`); every judged figure carries *judge validity below threshold*
+(`l2-glossary-decision`) and that, on the base corpus, is +2.50 without the reranker and +4.17 under
+BM25 (Layer 2, descriptive; `h1-other-retrievers`; not uniform on the expanded corpora,
+`h1-expanded-arm-cells`); growing the collection with citation neighbours rather than random
+same-field papers is not confirmed as a cost to judged found@10 (+0.06 points; no effect larger than
+1.39 points by the equivalence bound; power .96 / .90 for the planned 3.5- and 4.0-point drops;
+`h2-net-points`, `h2-equivalence`, `h2-power-planning`) while costing 2.17 points of gold-chunk reach
+(`h2-gold-net-points`); every judged figure carries *judge validity below threshold (§13.5)*
 (`judge-validity-reweighted`).
 
 **The thesis in two numbers, from the same data.** Judged found@10 rose by 1.00 point under the glossary
@@ -53,7 +80,7 @@ art and must be cited as such, not rediscovered:
 | query-side expansion as the classical remedy for vocabulary mismatch | `carpineto-romano-2012` (survey) |
 | that acronym mismatch is a measurable retrieval failure in RAG and that query- and index-time expansion repair it, with large reported gains | `alier-2026` — the nearest prior work, and the one whose magnitudes we must engage (below) |
 | that dense retrieval degrades faster than BM25 as the index grows, through false positives | `reimers-gurevych-2021`, proven and measured on MS MARCO (MRR@10 BM25 79.9 → 17.6 and dense 91.5 → 28.6 from 10 k to 8.8 M passages) |
-| that dense retrievers fail on rare surface forms where BM25 does not | `sciavolino-2021` (EntityQuestions; DPR 49.7 vs BM25 71.2 top-20) |
+| that dense retrievers fail on rare surface forms where BM25 does not | `sciavolino-2021` (EntityQuestions; top-20 average DPR 49.7 vs BM25 71.2, gaps above 60 points on some patterns) |
 | that *related* distractors harm a RAG reader more than unrelated ones | `cuconasu-2024-power-of-noise` — cite precisely: random documents beat *topically related* distractors for the generator; it says nothing about retrieval reach |
 | that LLM relevance judges are reliable without being valid, and that validation against humans is the obligation | `faggioli-2023`, `thomas-2024`, `clarke-dietz-2024`, `soboroff-2025`, `dietz-2025-tropes`, `norman-2026-reliability-without-validity`, `alaofi-2024-cafe` |
 | the powered-null rule and equivalence testing | `webber-2008-statistical-power` (a failure to find significance does not license "no difference"; state how large a difference could have been missed); `lakens-2017-equivalence-tests` (TOST, smallest effect size of interest); `fuhr-2017-common-mistakes` with `sakai-2020-on-fuhrs-guideline` |
@@ -115,7 +142,9 @@ Things the survey looked for and did not find, which is what the contribution re
   course repository and ours 1,000 full-length research articles; their reported gains (45.5 % average,
   Recall@10 more than doubled on acronym queries) are against baselines we could not inspect (abstract
   only; the full text is behind a publisher wall) and without a cross-encoder stage in the abstract's
-  description, which is where our lift grows from 1.00 to 4.17 points (`h1-other-retrievers`).
+  description; on our base corpus the lift is +2.50 without the reranker and +4.17 under BM25 against
+  +1.00 under the cross-encoder (Layer 2, descriptive; `h1-other-retrievers`), though not uniformly so
+  on the expanded corpora (`h1-expanded-arm-cells`).
 - Corpus growth and distractors: `reimers-gurevych-2021` (size), `sciavolino-2021` (rare forms),
   `cuconasu-2024-power-of-noise` (related distractors harm the reader). Say plainly that none varies
   relatedness at matched size, and that the generator-side harm in Cuconasu is a different endpoint from
@@ -126,7 +155,7 @@ Things the survey looked for and did not find, which is what the contribution re
 - Statistical practice: `webber-2008-statistical-power`, `lakens-2017-equivalence-tests`,
   `fuhr-2017-common-mistakes`, `sakai-2020-on-fuhrs-guideline`.
 
-### 3. Design and what was frozen — claims: `records-balanced`, `records-recount`, `records-alias-kind`, `corpus-chunks`, `glossary-field-coverage`, `legs-rows`, `record-validity`, `judge-validity-reweighted`, `h1-power-floor`, `h1b-power-floor`, `h2-power-planning`, `provenance-citable`
+### 3. Design and what was frozen — claims: `records-balanced`, `records-recount`, `records-alias-kind`, `corpus-chunks`, `glossary-field-coverage`, `legs-rows`, `record-validity`, `judge-validity-reweighted`, `h1-c-gate`, `h1-power-floor`, `h1b-power-floor`, `h2-power-planning`, `random-draw-chunk-gap`, `provenance-citable`
 
 - The pre-registration: frozen before any post-freeze retrieval, sha256 verified by every run; two
   families (G: H1 then H1b in fixed sequence; N: H2), one-sided at 0.05, no level passed between
@@ -145,8 +174,9 @@ Things the survey looked for and did not find, which is what the contribution re
   labels; the §13.5 rule: 100 owner-labelled pairs, 0.90 threshold, consequence fixed in the frozen text.
 - Constraints as results: records exist only for papers with usable glossary entries (300 of 1,000);
   the C ceiling (baseline C found@10 100.0 %); neighbour caps (5 most-cited references + 5 most recent
-  citers, open access only, research articles and reviews only) and the random draws 4.5–4.8 % short in
-  chunks; power computed from the realised layout before the freeze; H1b under-powered at both
+  citers, open access only, research articles and reviews only) and the random draws matched per study
+  paper on paper count, article type and chunk-length band, 4.51 / 4.75 % short in chunks
+  (`random-draw-chunk-gap`); power computed from the realised layout before the freeze; H1b under-powered at both
   planning scenarios (.67 / .54) and confirmed anyway.
 - Deviations, stated in the design: D-1 (R6 inputs and tercile cuts built after stage-A outputs were
   read; first re-run binding), D-2 (H1b gold figure computed afterwards, display only), D-3 (wording
@@ -171,7 +201,8 @@ Things the survey looked for and did not find, which is what the contribution re
   unresolved region below 1.39 points are reported as different things. The displacement reading is a
   reading from per-cell totals and is labelled as such.
 - **5.3 Serving decisions and secondaries (Layer 2, descriptive).** `l2-glossary-decision` (D-3),
-  `l2-reranker-decision`, `l2-growth-decision`, `h1-other-retrievers`, `h1-by-alias-kind`,
+  `l2-reranker-decision`, `l2-growth-decision`, `h1-other-retrievers` (base corpus only),
+  `h1-expanded-arm-cells`, `h1-by-alias-kind`,
   `placebo-g`, `rr-h1-h2`. Absent is absent: the collision split was never computed.
 
 ### 6. Threats to validity — claims: `record-validity`, `judge-validity-reweighted`, `judge-validity-strata`, `judge-validity-metrics`, `disagreement-tags`, `drift-agreement`, `drift-kappa`
