@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alias study deck</title>
+<meta name="description" content="Pre-registered alias study (OA-1000): glossary attachment and citation-neighbour growth — the results, generated from the committed artifacts.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:ital,wght@0,400;0,600;0,700;1,400&display=swap">
+<style>
+:root{
+  --page:#e6e9e3; --slide:#f4f5f1; --card:#fbfbf8; --ink:#17202a; --ink2:#46515e; --muted:#69737f;
+  --line:#d3d8d0; --grid:#e1e4dd; --accent:#0e5a6e; --accent-soft:#dbe9ec;
+  --s1:#1f6fb2; --s2:#c4661a; --s3:#1a9a7c; --patline:rgba(255,255,255,.55);
+  --flag:#7a4510; --flag-bg:#f6e7d6; --explo:#2c5d3f; --explo-bg:#dcefe2;
+  --display:"Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --body:"IBM Plex Sans", "Segoe UI", Roboto, system-ui, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --page:#0b0f13; --slide:#141a20; --card:#1a2129; --ink:#e7eaee; --ink2:#b7bfc9; --muted:#8d97a3;
+    --line:#2b343e; --grid:#232b34; --accent:#79bccd; --accent-soft:#1d3138;
+    --s1:#3f86cc; --s2:#cc7530; --s3:#23977a; --patline:rgba(0,0,0,.35);
+    --flag:#f0c08e; --flag-bg:#3a2a1a; --explo:#9fd6b1; --explo-bg:#1c3326; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --page:#0b0f13; --slide:#141a20; --card:#1a2129; --ink:#e7eaee; --ink2:#b7bfc9; --muted:#8d97a3;
+  --line:#2b343e; --grid:#232b34; --accent:#79bccd; --accent-soft:#1d3138;
+  --s1:#3f86cc; --s2:#cc7530; --s3:#23977a; --patline:rgba(0,0,0,.35);
+  --flag:#f0c08e; --flag-bg:#3a2a1a; --explo:#9fd6b1; --explo-bg:#1c3326; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--page);color:var(--ink);font-family:var(--body);-webkit-font-smoothing:antialiased;overflow:hidden}
+.num,code,.tick,.val{font-family:var(--mono);font-variant-numeric:tabular-nums}
+code{font-size:.86em}
+a{color:var(--accent)}
+:focus-visible{outline:3px solid var(--accent);outline-offset:3px;border-radius:4px}
+.stage{height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:12px 16px}
+.frame{container-type:inline-size;width:min(100%, calc((100vh - 80px) * 16 / 9));aspect-ratio:16/9;position:relative}
+.slide{position:absolute;inset:0;display:none;flex-direction:column;background:var(--slide);border:1px solid var(--line);border-radius:14px;
+  padding:2.6em 3.2em 1.4em;font-size:1.35cqw;line-height:1.4;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.06),0 8px 30px rgba(0,0,0,.06)}
+.slide.on{display:flex;animation:fade .25s ease-out}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){.slide.on{animation:none}}
+.sh{margin-bottom:1em}
+.kicker{margin:0 0 .3em;font-size:.82em;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:600}
+h1,h2{font-family:var(--display);font-weight:700;letter-spacing:-.01em;margin:0}
+h2{font-size:2.05em;line-height:1.12;max-width:30em}
+.sb{flex:1;min-height:0;display:flex;flex-direction:column;gap:.8em}
+.sb p{margin:0 0 .55em}
+.sf{display:flex;align-items:flex-end;gap:1.2em;border-top:1px solid var(--line);padding-top:.55em;margin-top:.6em;font-size:.74em;color:var(--muted)}
+.sf p{margin:0}
+.sf .src{flex:1}
+.flag{display:flex;align-items:center;gap:.5em;background:var(--flag-bg);color:var(--flag);padding:.25em .7em .25em .3em;border-radius:999px;font-weight:600;white-space:nowrap}
+.flagmark{display:inline-grid;place-items:center;width:1.45em;height:1.45em;border-radius:50%;background:var(--flag);color:var(--flag-bg);font-weight:800}
+.pg{margin-left:auto;font-family:var(--mono);white-space:nowrap}
+.tag{display:inline-block;font-size:.85em;letter-spacing:.04em;padding:.1em .6em;border-radius:999px;margin-left:.5em;vertical-align:.1em;text-transform:uppercase}
+.tag.explo{background:var(--explo-bg);color:var(--explo);font-weight:700}
+.cols2{display:grid;grid-template-columns:1fr 1fr;gap:1.6em}
+.cols2.wide-left{grid-template-columns:1.45fr 1fr}
+.cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2em}
+.cols-chart{display:grid;grid-template-columns:1.35fr 1fr;gap:1.8em;align-items:start}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1em 1.2em}
+.fam{font-weight:700;color:var(--accent);margin:0 0 .5em!important;font-size:.92em;letter-spacing:.03em;text-transform:uppercase}
+.q{font-family:var(--display);font-size:1.25em;line-height:1.25;font-weight:600}
+.small{font-size:.86em;color:var(--ink2)}
+.center{text-align:center}
+.callout{border-left:4px solid var(--accent);background:var(--accent-soft);padding:.7em 1em;border-radius:0 8px 8px 0}
+.lede{font-size:1.2em;max-width:44em;color:var(--ink2)}
+.big{font-family:var(--mono);font-size:2.4em;font-weight:600;line-height:1.05;margin:0 0 .15em!important;color:var(--ink)}
+.big2{font-size:1.6em;font-weight:600;margin:0!important}
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2em}
+.tiles.two{grid-template-columns:1fr 1fr;margin-bottom:.8em}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1em 1.2em}
+.tile .big{font-size:2.6em}
+.examples p{background:var(--card);border:1px dashed var(--line);border-radius:8px;padding:.7em 1em}
+ul.tight{margin:.2em 0 .5em;padding-left:1.1em}
+ul.tight li{margin:.15em 0}
+.side p{font-size:.98em}
+.verdict{font-family:var(--display);font-size:1.35em;font-weight:700;line-height:1.2}
+.did{display:flex;align-items:center;gap:1em;margin-bottom:.8em}
+.did>div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.6em .9em;flex:1}
+.did .big{font-size:1.8em}
+.did .op{flex:none;background:none;border:0;font-size:2em;font-family:var(--mono);color:var(--muted);padding:0}
+table.scen{border-collapse:collapse;width:100%;font-size:.86em;margin:.3em 0 .4em}
+table.scen caption{text-align:left;font-weight:600;color:var(--ink2);padding-bottom:.3em}
+.scen th,.scen td{border-bottom:1px solid var(--line);padding:.35em .5em;text-align:left;vertical-align:top}
+.scen th{color:var(--muted);font-weight:600}
+.scen tr.hit td{background:var(--accent-soft)}
+.arms{display:grid;grid-template-columns:repeat(4,1fr);gap:1em}
+.arms>div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.7em 1em}
+.arms .small{margin:0}
+.split{display:flex;gap:3px;height:2.1em;margin:.3em 0 .8em;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:.9em}
+.seg{display:flex;align-items:center;padding:0 .7em;color:#fff;font-weight:600;background:var(--s1)}
+.seg.s2{background:var(--s2)}
+.seg.tex{background-image:repeating-linear-gradient(45deg,transparent 0 5px,var(--patline) 5px 6.5px)}
+.lim{margin:0;padding-left:1.1em}
+.lim li{margin:0 0 .8em}
+.srcs{margin:0;padding-left:1.1em;font-size:.92em}
+.srcs li{margin:0 0 .45em}
+.srcs code{color:var(--muted);font-size:.8em}
+/* charts */
+svg.chart{width:100%;height:auto;display:block;overflow:visible}@media (max-width:760px){.cols-chart>div:first-child{overflow-x:auto}svg.chart{min-width:640px}}
+.chart .grid{stroke:var(--grid);stroke-width:1}
+.chart .axis{stroke:var(--muted);stroke-width:1}
+.chart .tick{fill:var(--muted);font-size:13px}
+.chart .axlabel{fill:var(--ink2);font-size:14px;font-family:var(--body)}
+.chart .cat{fill:var(--ink);font-size:15px;font-weight:600;font-family:var(--body)}
+.chart .cat.sub{font-weight:400;fill:var(--ink2);font-size:13px}
+.chart .val{fill:var(--ink);font-size:14px}
+.chart .val.muted{fill:var(--muted);font-family:var(--body);font-style:italic}
+.chart .ref{stroke:var(--flag);stroke-width:2;stroke-dasharray:5 4}
+.chart .reflab{fill:var(--flag);font-size:13px;font-family:var(--body);font-weight:600}
+.chart .whisk{stroke:var(--ink);stroke-width:1.5}
+.bar.s1,.pat-bg.s1{fill:var(--s1)} .bar.s2,.pat-bg.s2{fill:var(--s2)} .bar.s3,.pat-bg.s3{fill:var(--s3)}
+.pat-line{stroke:var(--patline);stroke-width:3}
+.legend{display:flex;gap:1.4em;flex-wrap:wrap;font-size:.86em;color:var(--ink2);margin-bottom:.4em}
+.legend span{display:inline-flex;align-items:center;gap:.45em}
+.sw{display:inline-block;width:1.1em;height:.8em;border-radius:3px;background:var(--s1)}
+.sw.s2{background:var(--s2)} .sw.s3{background:var(--s3)}
+.sw.tex{background-image:repeating-linear-gradient(45deg,transparent 0 3px,var(--patline) 3px 5px)}
+/* diagram */
+svg.diagram{width:100%;max-height:31em;height:auto;display:block}
+.diagram text{font-family:var(--body);fill:var(--ink)}
+.diagram .dlab{font-size:13px;letter-spacing:.12em;fill:var(--muted);font-weight:600}
+.diagram .box{fill:var(--card);stroke:var(--line);stroke-width:1.5}
+.diagram .box.acc{stroke:var(--accent);stroke-width:2}
+.diagram .box.g{stroke:var(--s1);stroke-width:2.5}
+.diagram .box.c{stroke:var(--s3);stroke-width:2.5;stroke-dasharray:7 4}
+.diagram .field{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.5}
+.diagram .dt{font-size:14px;font-weight:700;fill:var(--ink2)}
+.diagram .dq{font-size:17px}
+.diagram .dmono{font-family:var(--mono);font-size:15px;fill:var(--ink)}
+.diagram .dsmall{font-size:13.5px;fill:var(--ink2)}
+.diagram .dwarn{font-size:13px;font-weight:700;letter-spacing:.08em;fill:var(--flag)}
+.diagram .flow{stroke:var(--ink2);stroke-width:2;fill:none}
+.diagram .dash{stroke-dasharray:6 5;stroke:var(--accent)}
+.diagram .ahead{fill:var(--ink2)}
+/* title */
+.slide.title{justify-content:center;background:linear-gradient(160deg,var(--slide) 55%,var(--accent-soft))}
+.titlewrap{flex:1;display:flex;flex-direction:column;justify-content:center}
+.slide.title h1{font-size:4.6em;line-height:1;margin:.1em 0 .3em}
+.meta{display:grid;gap:.5em;margin:1.4em 0 0;max-width:56em}
+.meta div{display:grid;grid-template-columns:10em 1fr;gap:1em}
+.meta dt{color:var(--muted);font-weight:600}
+.meta dd{margin:0}
+.hint{margin-top:2em;color:var(--muted);font-size:.85em}
+/* controls */
+.controls{display:flex;align-items:center;gap:.6em;font-family:var(--mono);font-size:14px;color:var(--ink2)}
+.controls button{font:inherit;color:var(--ink);background:var(--slide);border:1px solid var(--line);border-radius:8px;padding:.35em .8em;cursor:pointer}
+.controls button:hover{border-color:var(--accent)}
+.counter{min-width:5.5em;text-align:center}
+/* phone / narrow: stack, no 16:9 */
+@media (max-width: 760px){
+  body{overflow:auto}
+  .stage{height:auto;display:block;padding:12px 16px}
+  .frame{width:100%;aspect-ratio:auto;container-type:normal}
+  .slide,.slide.on{position:relative;display:flex;font-size:15px;padding:1.3em 1.1em 1em;margin:0 0 16px;animation:none}
+  h2{font-size:1.5em}
+  .cols2,.cols2.wide-left,.cols3,.cols-chart,.tiles,.tiles.two,.arms{grid-template-columns:1fr}
+  .did{flex-wrap:wrap}
+  .sf{flex-wrap:wrap}
+  .flag{white-space:normal}
+  code,.num,.src{overflow-wrap:anywhere}
+  .meta div{grid-template-columns:1fr;gap:0}
+  .slide.title h1{font-size:2.6em}
+  .controls{display:none}
+}
+@media print{
+  @page{size:13.333in 7.5in;margin:0}
+  :root{--page:#fff;--slide:#fff;--card:#fff}
+  body{overflow:visible;background:#fff;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+  .stage{display:block;height:auto;padding:0}
+  .frame{width:13.333in;aspect-ratio:auto}
+  .slide,.slide.on{position:relative;display:flex;width:13.333in;height:7.5in;border:0;border-radius:0;box-shadow:none;break-after:page;page-break-after:always;animation:none;font-size:16px}
+  .controls{display:none}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<pattern id="hatch-s1" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="7" height="7" class="pat-bg s1"/><line x1="0" y1="0" x2="0" y2="7" class="pat-line"/></pattern>
+<pattern id="hatch-s2" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="7" height="7" class="pat-bg s2"/><line x1="0" y1="0" x2="0" y2="7" class="pat-line"/></pattern>
+<pattern id="hatch-s3" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(135)"><rect width="7" height="7" class="pat-bg s3"/><line x1="0" y1="0" x2="0" y2="7" class="pat-line"/></pattern>
+</defs></svg>
+<main class="stage">
+<div class="frame" id="frame" aria-live="polite">
+<section class="slide title" aria-roledescription="slide">
+<div class="titlewrap">
+<p class="kicker">ragstack · pre-registered study · OA-1000</p>
+<h1>The alias study</h1>
+<p class="lede">Does a glossary help a question find a passage that only uses the short form?<br>
+And does growing a collection with a paper's citation neighbours cost more than random growth?</p>
+<dl class="meta">
+<div><dt>Pre-registration</dt><dd>frozen 2026-11-04, sha256 <span class="num">d54f4201a4d1…</span> (verified from the file), signed tag <span class="num">prereg-alias-study-2026-11</span></dd></div>
+<div><dt>Record</dt><dd>RESULTS.md at merge <span class="num">a349629</span> (#954); control addendum <span class="num">95cf2b9</span> (#953)</dd></div>
+<div><dt>Verdicts</dt><dd>H1 <b>confirmed</b> · H1b <b>confirmed</b> · H2 <b>not confirmed</b> — judge validity below threshold (§13.5) on every result</dd></div>
+</dl>
+<p class="hint">Arrow keys, space or click to move · <span class="num">#n</span> links to a slide · print for one slide per page</p>
+</div><footer class="sf"><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Prereg §1 </p><h2>Two questions, two families</h2></header><div class="sb"><div class="cols2">
+<div class="card"><p class="fam">Family G · glossary</p>
+<p>A question names a concept by its <b>full term</b>; the passage that answers it uses only a <b>short form</b> — a symbol, or an abbreviation the paper defines once, elsewhere.</p>
+<p class="q">Does attaching the paper's merged glossary to its chunks make that passage findable?</p>
+<p class="small">H1: merged &gt; none on G records. H1b (only if H1 holds): the G gain exceeds the change on control (C) records.</p></div>
+<div class="card"><p class="fam">Family N · growth</p>
+<p>A real collection holds a paper <b>with</b> its references and citers, which reuse its vocabulary and short forms — often with different meanings.</p>
+<p class="q">Does adding citation neighbours cost more than adding the same number of random same-field papers?</p>
+<p class="small">H2: neighbour &lt; random average. Plus Layer 2: the reranker default vs BM25 in a related-paper collection.</p></div>
+</div>
+<p class="callout">The study <b>informs</b> two serving decisions — ship the merged glossary? keep the reranker default? — it does <b>not make</b> them. Each family is tested one-sided at α = 0.05 on its own; no level passes between them (prereg §3.1).</p></div><footer class="sf"><p class="src">Source: prereg §1, §3.1</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design </p><h2>How it was measured</h2></header><div class="sb"><div class="cols3">
+<div class="card"><p class="fam">Records</p>
+<p class="big num">900</p><p class="small">= <span class="num">300</span> papers × (2 G + 1 C)</p>
+<p><b>G</b> (<span class="num">600</span>): the question uses the full term; the answering passage carries only the paper's short form.</p>
+<p><b>C</b> (<span class="num">300</span>): same machinery, but the passage already carries the term — tells a glossary effect apart from a general shift.</p></div>
+<div class="card"><p class="fam">Outcome · found@10</p>
+<p>A record is <b>found</b> when its gold chunk is in the top 10, <b>or</b> another top-10 chunk, read alone, is judged to state the core of the answer.</p>
+<p>A measure of <b>reach</b>, not answer quality. <b>found@10-gold</b> (gold chunk only, no judge) is printed beside every figure.</p></div>
+<div class="card"><p class="fam">The frozen judge (§6.3)</p>
+<ul class="tight"><li>C: Qwen3.6-35B-A3B (n 5, T 0.7, thinking)</li><li>E: Qwen3.8-27B (n 1)</li><li>tiebreak when C and E disagree: Gemini 4 Argon</li><li>drift reference: Claude Opus 5.5 (5 % of pairs, never sets a label)</li></ul>
+<p class="small">Blind to arm, retriever and rank. <span class="num">24,559</span> pairs judged, <span class="num">1,230</span> by tiebreak, <span class="num">0</span> unjudged.</p></div>
+</div>
+<p class="callout"><b>What a point is:</b> one percentage point of found@10. 1 of 600 G records = <span class="num">0.17</span> pt · 1 of 300 C = <span class="num">0.33</span> pt · 1 of 900 = <span class="num">0.11</span> pt. Every point figure in this deck is also given in records.</p></div><footer class="sf"><p class="src">Source: <code>record_set.balanced</code>, <code>layer1.H1.n</code>, <code>layer2.c_change.n</code>, <code>judge.pairs_finalized</code> (results-stage-B); prereg §4, §6</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Reading the numbers </p><h2>What one point is, in records</h2></header><div class="sb"><p class="lede">A <b>point</b> is one percentage point of found@10. With these sample sizes a point is a handful of records, so every point figure in this deck is translated into records.</p>
+<div class="tiles">
+<div class="tile "><p class="big num">0.17 pt</p><p class="small">= <b>1</b> of the 600 G records</p></div>
+<div class="tile "><p class="big num">0.33 pt</p><p class="small">= <b>1</b> of the 300 C records</p></div>
+<div class="tile "><p class="big num">0.11 pt</p><p class="small">= <b>1</b> of all 900 records</p></div>
+</div>
+<div class="cols3 examples">
+<p>H1's <span class="num">+1.00</span> pt = <b>+6</b> G records</p>
+<p>H1b's C change <span class="num">−0.33</span> pt = <b>−1</b> C record</p>
+<p>H2's <span class="num">+0.06</span> pt = <b>+0.5</b> record (an average of two random draws)</p>
+</div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: 100 / n; <code>layer1.H1.net_points</code>, <code>layer1.H1.c_gate.delta_c_points</code>, <code>layer1.H2.net_points</code></p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">The alias problem </p><h2>An invented example of what the glossary is for</h2></header><div class="sb"><svg class="diagram" viewBox="0 0 1120 430" role="img" aria-labelledby="pdt-t pdt-d">
+<title id="pdt-t">Invented example of the alias problem</title>
+<desc id="pdt-d">A paper defines PDT as photodynamic therapy once. Its results chunk says only PDT reduced tumour volume by 40 percent. The merged glossary renders the line PDT, photodynamic therapy, on that chunk because PDT occurs there. A G question using the full term reaches the results chunk only through that line. A C question reaches a methods chunk that already spells the term out.</desc>
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="ahead"/></marker></defs>
+<text class="dlab" x="20" y="24">QUESTION</text><text class="dlab" x="420" y="24">CHUNKS OF THE PAPER</text><text class="dlab" x="850" y="24">GLOSSARY</text>
+<!-- glossary -->
+<rect class="box" x="850" y="40" width="250" height="96" rx="8"/>
+<text class="dt" x="866" y="66">Introduction, once:</text>
+<text class="dq" x="866" y="92">“… PDT (photodynamic</text><text class="dq" x="866" y="114">therapy) is …”</text>
+<line class="flow" x1="975" y1="136" x2="975" y2="176" marker-end="url(#ah)"/>
+<rect class="box acc" x="850" y="180" width="250" height="78" rx="8"/>
+<text class="dt" x="866" y="204">merged glossary entry</text>
+<text class="dmono" x="866" y="236">PDT — photodynamic therapy</text>
+<text class="dsmall" x="850" y="284">mention rule: rendered only on</text>
+<text class="dsmall" x="850" y="304">chunks where “PDT” occurs,</text>
+<text class="dsmall" x="850" y="324">≤ 12 lines / 1,200 characters (§5.3)</text>
+<!-- chunk A -->
+<rect class="box" x="420" y="40" width="370" height="150" rx="8"/>
+<text class="dt" x="436" y="66">Results chunk</text>
+<text class="dq" x="436" y="96">“PDT reduced tumour volume</text><text class="dq" x="436" y="118">by 40%.”</text>
+<rect class="field" x="430" y="138" width="350" height="40" rx="5"/>
+<text class="dmono" x="442" y="164">field: PDT — photodynamic therapy</text>
+<path class="flow dash" d="M850 219 C 820 219, 820 158, 784 158" marker-end="url(#ah)"/>
+<!-- chunk B -->
+<rect class="box" x="420" y="250" width="370" height="120" rx="8"/>
+<text class="dt" x="436" y="276">Methods chunk</text>
+<text class="dq" x="436" y="306">“Photodynamic therapy used</text><text class="dq" x="436" y="328">635 nm red light.”</text>
+<text class="dsmall" x="436" y="356">no “PDT” here → no field rendered</text>
+<!-- questions -->
+<rect class="box g" x="20" y="60" width="330" height="110" rx="8"/>
+<text class="dt" x="36" y="86">G question (full term)</text>
+<text class="dq" x="36" y="114">“By how much did photodynamic</text><text class="dq" x="36" y="136">therapy reduce tumour volume?”</text>
+<path class="flow" d="M350 115 L 414 115" marker-end="url(#ah)"/>
+<text class="dsmall" x="20" y="194">the only lexical bridge is the field</text>
+<rect class="box c" x="20" y="260" width="330" height="110" rx="8"/>
+<text class="dt" x="36" y="286">C question (term in passage)</text>
+<text class="dq" x="36" y="314">“Which light wavelength was used</text><text class="dq" x="36" y="336">for photodynamic therapy?”</text>
+<path class="flow" d="M350 315 L 414 315" marker-end="url(#ah)"/>
+<text class="dsmall" x="20" y="394">answerable with or without a glossary</text>
+<text class="dwarn" x="1100" y="418" text-anchor="end">INVENTED EXAMPLE — not a study record</text>
+</svg>
+<p class="small center">This example is <b>invented</b> for illustration; no record, paper or passage of the study is shown. The rendered line follows the served format <span class="num">alias — term</span> (prereg §5.3, R27).</p></div><footer class="sf"><p class="src">Source: prereg §1, §5.3 (mention rule, caps, rendering conventions)</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Family G · H1 · confirmatory </p><h2>H1 confirmed: the merged glossary rescued 6 of the 9 missed G records</h2></header><div class="sb"><div class="cols-chart"><div><div class="legend" aria-hidden="true"><span><i class="sw s1"></i>missed (judged)</span><span><i class="sw s2 tex"></i>missed (gold chunk)</span></div><svg class="chart" viewBox="0 0 760 346" role="img" aria-labelledby="chart1t chart1d"><title id="chart1t">G records not found, by glossary arm</title><desc id="chart1d">Judged misses: none 9, merged 3, placebo 9. Gold-only misses: none 50, merged 17; placebo gold-only not in the artifacts.</desc><line class="grid" x1="190.0" y1="8" x2="190.0" y2="302"/><text class="tick" x="190.0" y="320" text-anchor="middle">0</text><line class="grid" x1="265.0" y1="8" x2="265.0" y2="302"/><text class="tick" x="265.0" y="320" text-anchor="middle">10</text><line class="grid" x1="340.0" y1="8" x2="340.0" y2="302"/><text class="tick" x="340.0" y="320" text-anchor="middle">20</text><line class="grid" x1="415.0" y1="8" x2="415.0" y2="302"/><text class="tick" x="415.0" y="320" text-anchor="middle">30</text><line class="grid" x1="490.0" y1="8" x2="490.0" y2="302"/><text class="tick" x="490.0" y="320" text-anchor="middle">40</text><line class="grid" x1="565.0" y1="8" x2="565.0" y2="302"/><text class="tick" x="565.0" y="320" text-anchor="middle">50</text><line class="grid" x1="640.0" y1="8" x2="640.0" y2="302"/><text class="tick" x="640.0" y="320" text-anchor="middle">60</text><line class="axis" x1="190" y1="8" x2="190" y2="302"/><text class="axlabel" x="415.0" y="340" text-anchor="middle">G questions MISSED, of 600: no top-10 chunk answers (judged) / gold chunk not in top 10 — fewer is better</text><text class="cat" x="178" y="62.0" text-anchor="end">no glossary</text><rect class="bar s1" x="190" y="23.0" width="67.5" height="30" rx="3"><title>no glossary, missed (judged): 9</title></rect><text class="val" x="264.5" y="43.0">9  missed (judged)</text><rect class="bar s2" x="190" y="61.0" width="375.0" height="30" rx="3" style="fill:url(#hatch-s2)"><title>no glossary, missed (gold chunk): 50</title></rect><text class="val" x="572.0" y="81.0">50  missed (gold chunk)</text><text class="cat" x="178" y="160.0" text-anchor="end">merged glossary</text><rect class="bar s1" x="190" y="121.0" width="22.5" height="30" rx="3"><title>merged glossary, missed (judged): 3</title></rect><text class="val" x="219.5" y="141.0">3</text><rect class="bar s2" x="190" y="159.0" width="127.5" height="30" rx="3" style="fill:url(#hatch-s2)"><title>merged glossary, missed (gold chunk): 17</title></rect><text class="val" x="324.5" y="179.0">17</text><text class="cat" x="178" y="250.0" text-anchor="end">placebo glossary</text><text class="cat sub" x="178" y="267.0" text-anchor="end">(another paper&#x27;s)</text><rect class="bar s1" x="190" y="219.0" width="67.5" height="30" rx="3"><title>placebo glossary, missed (judged): 9</title></rect><text class="val" x="264.5" y="239.0">9</text><text class="val muted" x="198" y="277.0">missed (gold chunk): absent (no G-only gold count in the artifacts)</text></svg></div>
+<div class="side">
+<p>The bars count <b>misses</b>: questions where no top-10 chunk answers (judged), or where the record's own gold chunk is not in the top 10. Misses fell from <b>9 to 3</b> judged and from <b>50 to 17</b> by gold chunk.</p>
+<p><b>591 → 597</b> of 600 G records found (judged): <span class="num">+1.00</span> pt, 95 % CI <span class="num">[+0.33, +1.83]</span>; 6 gained, 0 lost, in 6 papers; exact sign-flip p = <span class="num">0.015625</span> (its minimum attainable p).</p>
+<p>Gold-only: 550 → 583 (<span class="num">+5.50</span> pt = +33 records; 37 gained, 4 lost).</p>
+<p><b>Placebo</b> — another paper's glossary, same rule: 591 of 600, the same as none (1 gained, 1 lost): placebo − none <span class="num">0.00</span> pt, no effect larger than 0.6562 points. That bounds foreign glossary text only at a far weaker dose: it renders on only 817 chunks vs 24,749 for merged, so it rules out little about extra text in general (prereg §5.3 reads it with field coverage).</p>
+<p class="small">The gain is at the ceiling: 98.5 % of G records were already found before any glossary.</p>
+</div></div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>layer2.placebo.G.found10</code>, <code>layer2.placebo.field_coverage</code>, <code>layer2.g_lift</code> (stage-B); <code>layer1.H1</code>, <code>fixed_sensitivities.origin.hits_by_origin</code> (stage-A2)</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Family G · H1b · confirmatory </p><h2>H1b confirmed: the gain is alias-specific — read with the C ceiling</h2></header><div class="sb"><div class="cols2 wide-left">
+<div>
+<div class="did">
+<div><p class="small">G change (merged − none)</p><p class="big num">+1.00 pt</p><p class="small">+6 of 600 G records</p></div>
+<div class="op">−</div>
+<div><p class="small">C change</p><p class="big num">−0.33 pt</p><p class="small">−1 of 300 C records (300 → 299)</p></div>
+<div class="op">=</div>
+<div><p class="small">difference-in-differences</p><p class="big num">+1.33 pt</p><p class="small">95 % CI <span class="num">[+0.50, +2.50]</span></p></div>
+</div>
+<p>7 papers non-zero, all positive (7 / 0); label-randomization p = <span class="num">0.0293</span>, its minimum attainable p. Gold-only display (D-2): <span class="num">+5.50</span> pt <span class="num">[+3.17, +7.83]</span>.</p>
+<table class="scen"><caption>How to read G against C (invented PDT example)</caption>
+<thead><tr><th>scenario</th><th>G (PDT results question)</th><th>C (wavelength question)</th><th>DiD</th></tr></thead>
+<tbody>
+<tr class="hit"><td><b>alias bridging</b></td><td>rises: the field supplies “photodynamic therapy”</td><td>flat: term already there</td><td>positive</td></tr>
+<tr><td><b>general boost</b></td><td>rises</td><td>rises as much: any extra text helps</td><td>≈ 0</td></tr>
+<tr><td><b>clutter</b></td><td>flat or falls</td><td>falls: added lines crowd chunks</td><td>≤ 0 or C cost</td></tr>
+</tbody></table>
+<p class="small">Observed: G +6, C −1 — the alias-bridging pattern.</p>
+</div>
+<div class="side">
+<p class="callout"><b>The C ceiling.</b> Baseline C was 300 of 300 found (headroom 0 records), so C could only fall or stay. The C gate fires only if ΔC &gt; 0, |ΔC| ≥ ½|ΔG| and its CI excludes 0; the record reads <b>C gate ceiling-limited</b>: it could not have fired however much C “wanted” to rise.</p>
+<p>So the evidence <b>against a general boost is one-sided</b>: a general upward shift was not observable on C. The <b>placebo</b> supports the reading: glossary text without the paper's own entries moved G by 0.00 pt (1 / 1).</p>
+</div></div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>layer1.H1b</code>, <code>layer1.H1.c_gate</code> (stage-A2); <code>layer2.placebo</code> (stage-B); <code>h1b_gold</code> (h1b-gold); prereg §3.1, §3.2</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Family N · the problem </p><h2>Neighbours vs matched random papers</h2></header><div class="sb"><div class="cols2">
+<div class="card"><p class="fam">Why neighbours might hurt</p>
+<p>OA-1000 is a sample of unrelated papers. A real collection holds each paper beside its references and citers: the same vocabulary, the same short forms, often meaning something else — about half of the abbreviations shared between papers collide (prereg §1).</p>
+<p>More look-alike chunks can push the gold chunk out of the top 10.</p></div>
+<div class="card"><p class="fam">Why neighbours might not</p>
+<p>A neighbour is also more likely than a random paper to <b>answer</b> the question, and an answer from another paper counts as found. Judged H2 asks whether neighbours displace more than they add; the gold-only gate checks the displacement itself (§3.1).</p></div>
+</div>
+<div class="arms">
+<div><p class="small">base</p><p class="num big2">32,765</p><p class="small">chunks</p></div>
+<div><p class="small">+ neighbour arm</p><p class="num big2">121,530</p><p class="small">chunks · 2,423 added papers</p></div>
+<div><p class="small">+ random-1</p><p class="num big2">117,527</p><p class="small">chunks · same count, same field</p></div>
+<div><p class="small">+ random-2</p><p class="num big2">117,317</p><p class="small">chunks · a second draw</p></div>
+</div>
+<p class="small">H2 compares the neighbour arm with the average of the two random draws, default retriever, no glossary, on all 900 records. Every study paper's neighbours are added at once; the study makes no claim about one paper's neighbours alone (R11).</p></div><footer class="sf"><p class="src">Source: <code>runs.&lt;arm&gt;/merged.field_coverage.chunks</code> (stage-B); <code>assumptions.neighbour_counts</code> (power-v4); prereg §1, §3.1, §5.1</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Family N · H2 · confirmatory </p><h2>H2 not confirmed: neighbours displaced gold chunks; judged reach: no effect larger than 1.39 pt</h2></header><div class="sb"><div class="cols-chart"><div><div class="legend" aria-hidden="true"><span><i class="sw s1"></i>missed (judged)</span><span><i class="sw s2 tex"></i>missed (gold chunk)</span></div><svg class="chart" viewBox="0 0 760 444" role="img" aria-labelledby="chart2t chart2d"><title id="chart2t">Records not found, by corpus arm</title><desc id="chart2d">base (OA-1000): judged 9, gold-only 59; neighbour: judged 18, gold-only 124; random-1: judged 18, gold-only 102; random-2: judged 19, gold-only 107</desc><line class="grid" x1="190.0" y1="8" x2="190.0" y2="400"/><text class="tick" x="190.0" y="418" text-anchor="middle">0</text><line class="grid" x1="254.3" y1="8" x2="254.3" y2="400"/><text class="tick" x="254.3" y="418" text-anchor="middle">20</text><line class="grid" x1="318.6" y1="8" x2="318.6" y2="400"/><text class="tick" x="318.6" y="418" text-anchor="middle">40</text><line class="grid" x1="382.9" y1="8" x2="382.9" y2="400"/><text class="tick" x="382.9" y="418" text-anchor="middle">60</text><line class="grid" x1="447.1" y1="8" x2="447.1" y2="400"/><text class="tick" x="447.1" y="418" text-anchor="middle">80</text><line class="grid" x1="511.4" y1="8" x2="511.4" y2="400"/><text class="tick" x="511.4" y="418" text-anchor="middle">100</text><line class="grid" x1="575.7" y1="8" x2="575.7" y2="400"/><text class="tick" x="575.7" y="418" text-anchor="middle">120</text><line class="grid" x1="640.0" y1="8" x2="640.0" y2="400"/><text class="tick" x="640.0" y="418" text-anchor="middle">140</text><line class="axis" x1="190" y1="8" x2="190" y2="400"/><text class="axlabel" x="415.0" y="438" text-anchor="middle">questions MISSED, of 900: no top-10 chunk answers (judged) / gold chunk not in top 10 — fewer is better</text><text class="cat" x="178" y="62.0" text-anchor="end">base (OA-1000)</text><rect class="bar s1" x="190" y="23.0" width="28.9" height="30" rx="3"><title>base (OA-1000), missed (judged): 9</title></rect><text class="val" x="225.9" y="43.0">9  missed (judged)</text><rect class="bar s2" x="190" y="61.0" width="189.6" height="30" rx="3" style="fill:url(#hatch-s2)"><title>base (OA-1000), missed (gold chunk): 59</title></rect><text class="val" x="386.6" y="81.0">59  missed (gold chunk)</text><text class="cat" x="178" y="160.0" text-anchor="end">neighbour</text><rect class="bar s1" x="190" y="121.0" width="57.9" height="30" rx="3"><title>neighbour, missed (judged): 18</title></rect><text class="val" x="254.9" y="141.0">18</text><rect class="bar s2" x="190" y="159.0" width="398.6" height="30" rx="3" style="fill:url(#hatch-s2)"><title>neighbour, missed (gold chunk): 124</title></rect><text class="val" x="595.6" y="179.0">124</text><text class="cat" x="178" y="258.0" text-anchor="end">random-1</text><rect class="bar s1" x="190" y="219.0" width="57.9" height="30" rx="3"><title>random-1, missed (judged): 18</title></rect><text class="val" x="254.9" y="239.0">18</text><rect class="bar s2" x="190" y="257.0" width="327.9" height="30" rx="3" style="fill:url(#hatch-s2)"><title>random-1, missed (gold chunk): 102</title></rect><text class="val" x="524.9" y="277.0">102</text><text class="cat" x="178" y="356.0" text-anchor="end">random-2</text><rect class="bar s1" x="190" y="317.0" width="61.1" height="30" rx="3"><title>random-2, missed (judged): 19</title></rect><text class="val" x="258.1" y="337.0">19</text><rect class="bar s2" x="190" y="355.0" width="343.9" height="30" rx="3" style="fill:url(#hatch-s2)"><title>random-2, missed (gold chunk): 107</title></rect><text class="val" x="540.9" y="375.0">107</text></svg></div>
+<div class="side">
+<p><b>Gold-only</b> (the direction gate, quoted first): neighbour 776 vs random average 795.5 of 900 — <span class="num">−2.17</span> pt (−19.5 records), CI <span class="num">[−3.50, −0.94]</span>. Gate passes.</p>
+<p><b>Judged</b>: 882 vs 881.5 — <span class="num">+0.06</span> pt (+0.5 record); 11 gained, 9 lost; p = <span class="num">0.615</span>. <b>Not confirmed</b>, with power <span class="num">0.96</span> and <span class="num">0.90</span> to confirm at the planning scenarios.</p>
+<p><b>Equivalence</b> (two-sided, 90 % CI <span class="num">[−0.56, +0.67]</span> inside ±<span class="num">1.39</span>): no effect larger than 1.39 pt ≈ ±12.5 of 900 records, in either direction.</p>
+<p class="small"><b>A reading, not a measurement:</b> other-paper judged hits were 67 in the neighbour arm vs 48 and 49 in the random draws — consistent with neighbours displacing gold chunks and answering in their place. It comes from per-cell totals; no per-record transition count exists.</p>
+</div></div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>layer2.cells.&lt;arm&gt;|none|default.found10 / .found10_gold</code>, <code>layer2.neighbour_minus_random</code> (stage-B); <code>layer1.H2</code>, <code>fixed_sensitivities.origin</code> (stage-A2); <code>simulation.H2.rho1</code> (power-v4)</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Layer 2 · descriptive </p><h2>The three serving reads</h2></header><div class="sb"><div class="cols3">
+<div class="card"><p class="fam">Attach the merged glossary?</p>
+<p class="verdict">not resolved</p>
+<p>Lift <span class="num">+1.00</span> pt = <b>+6 of 600</b> G records, against an action bar of <span class="num">2</span> pt = <b>12 of 600</b>.</p>
+<p class="small">C cost rule did not fire: ΔC <span class="num">−0.33</span>, C_lo <span class="num">−1.00</span> vs limits <span class="num">−1.00</span> / <span class="num">−3.6</span>. Quoted beside H1 and H1b confirmed (D-3).</p></div>
+<div class="card"><p class="fam">Keep the reranker default?</p>
+<p class="verdict">keep the default (non-inferior to BM25)</p>
+<p>Default − BM25 on the neighbour arm: <span class="num">+6.33</span> pt = <b>+57 of 900</b> records (62 gained, 5 lost), CI <span class="num">[+4.67, +8.11]</span>.</p>
+<p class="small">Non-inferiority rule: keep if CI low &gt; <span class="num">−3</span> pt. Not merely non-inferior — better.</p></div>
+<div class="card"><p class="fam">Is related-paper growth a concern?</p>
+<p class="verdict">not a concern</p>
+<p>Neighbour − random <span class="num">+0.06</span> pt; no effect larger than <span class="num">1.39</span> pt (≈ 12.5 of 900).</p>
+<p class="small">A concern only at ≤ <span class="num">−3</span> pt with the CI excluding 0. Beside H2 not confirmed.</p></div>
+</div>
+<p class="small">Layer 2 has no p values and no gates; its thresholds are the owner's judgement of what is worth acting on, fixed before the data (prereg §3.3).</p></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>layer2.decisions</code>, <code>layer2.default_minus_bm25_neighbour</code>, <code>layer2.serving_statements</code> (stage-B); DEVIATIONS D-3</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Layer 2 · reranker </p><h2>The reranker default holds in every corpus arm</h2></header><div class="sb"><div class="cols-chart"><div><div class="legend" aria-hidden="true"><span><i class="sw s1"></i>missed, served default (reranker)</span><span><i class="sw s3 tex"></i>missed, BM25 alone</span></div><svg class="chart" viewBox="0 0 760 444" role="img" aria-labelledby="chart3t chart3d"><title id="chart3t">Records not found, default vs BM25, by corpus arm</title><desc id="chart3d">base (OA-1000): default 9, BM25 55; neighbour: default 18, BM25 75; random-1: default 18, BM25 68; random-2: default 19, BM25 73</desc><line class="grid" x1="190.0" y1="8" x2="190.0" y2="400"/><text class="tick" x="190.0" y="418" text-anchor="middle">0</text><line class="grid" x1="302.5" y1="8" x2="302.5" y2="400"/><text class="tick" x="302.5" y="418" text-anchor="middle">20</text><line class="grid" x1="415.0" y1="8" x2="415.0" y2="400"/><text class="tick" x="415.0" y="418" text-anchor="middle">40</text><line class="grid" x1="527.5" y1="8" x2="527.5" y2="400"/><text class="tick" x="527.5" y="418" text-anchor="middle">60</text><line class="grid" x1="640.0" y1="8" x2="640.0" y2="400"/><text class="tick" x="640.0" y="418" text-anchor="middle">80</text><line class="axis" x1="190" y1="8" x2="190" y2="400"/><text class="axlabel" x="415.0" y="438" text-anchor="middle">questions MISSED, of 900 (judged: no top-10 chunk answers) — fewer is better</text><text class="cat" x="178" y="62.0" text-anchor="end">base (OA-1000)</text><rect class="bar s1" x="190" y="23.0" width="50.6" height="30" rx="3"><title>base (OA-1000), missed, served default (reranker): 9</title></rect><text class="val" x="247.6" y="43.0">9  missed, served default (reranker)</text><rect class="bar s3" x="190" y="61.0" width="309.4" height="30" rx="3" style="fill:url(#hatch-s3)"><title>base (OA-1000), missed, BM25 alone: 55</title></rect><text class="val" x="506.4" y="81.0">55  missed, BM25 alone</text><text class="cat" x="178" y="160.0" text-anchor="end">neighbour</text><rect class="bar s1" x="190" y="121.0" width="101.2" height="30" rx="3"><title>neighbour, missed, served default (reranker): 18</title></rect><text class="val" x="298.2" y="141.0">18</text><rect class="bar s3" x="190" y="159.0" width="421.9" height="30" rx="3" style="fill:url(#hatch-s3)"><title>neighbour, missed, BM25 alone: 75</title></rect><text class="val" x="618.9" y="179.0">75</text><text class="cat" x="178" y="258.0" text-anchor="end">random-1</text><rect class="bar s1" x="190" y="219.0" width="101.2" height="30" rx="3"><title>random-1, missed, served default (reranker): 18</title></rect><text class="val" x="298.2" y="239.0">18</text><rect class="bar s3" x="190" y="257.0" width="382.5" height="30" rx="3" style="fill:url(#hatch-s3)"><title>random-1, missed, BM25 alone: 68</title></rect><text class="val" x="579.5" y="277.0">68</text><text class="cat" x="178" y="356.0" text-anchor="end">random-2</text><rect class="bar s1" x="190" y="317.0" width="106.9" height="30" rx="3"><title>random-2, missed, served default (reranker): 19</title></rect><text class="val" x="303.9" y="337.0">19</text><rect class="bar s3" x="190" y="355.0" width="410.6" height="30" rx="3" style="fill:url(#hatch-s3)"><title>random-2, missed, BM25 alone: 73</title></rect><text class="val" x="607.6" y="375.0">73</text></svg></div>
+<div class="side">
+<p>On the neighbour arm (the decision's figure) the default missed 18 records and BM25 75: a <b>57-record</b> margin, CI <span class="num">42–73</span> records.</p>
+<p>Gold-only the gap is wider: <span class="num">+14.44</span> pt (+130 records).</p>
+<p class="small">The papers-OC reading that motivated the question (BM25 ahead of the default, exploratory, 7 papers; prereg §2 item 2) does not repeat here. Glossary <i>none</i> throughout.</p>
+</div></div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>layer2.cells.&lt;arm&gt;|none|default</code> and <code>|none|bm25</code> <code>.found10</code>, <code>layer2.default_minus_bm25_neighbour</code> (stage-B)</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Judge validity · §13.5 </p><h2>The judge-validity flag fired — and what the disagreements were</h2></header><div class="sb"><div class="cols2">
+<div>
+<div class="tiles two">
+<div class="tile "><p class="big num">0.872</p><p class="small">owner–judge agreement, re-weighted, on 100 pairs · rule ≥ 0.90</p></div>
+<div class="tile "><p class="big num">41/50</p><p class="small">agreement on the judge's <i>answers</i> stratum (0.82) · rule ≥ 0.90</p></div>
+</div>
+<p>Both clauses fired, so every result carries the flag and found@10-gold is printed beside every figure. Nothing was re-labelled.</p>
+<svg class="chart" viewBox="0 0 700 220" role="img" aria-labelledby="chart4t chart4d"><title id="chart4t">Owner–judge agreement by spot-check stratum</title><desc id="chart4d">answers: 41 of 50; not: 30 of 33; tiebroken: 10 of 17</desc><line class="grid" x1="170.0" y1="8" x2="170.0" y2="176"/><text class="tick" x="170.0" y="194" text-anchor="middle">0%</text><line class="grid" x1="272.5" y1="8" x2="272.5" y2="176"/><text class="tick" x="272.5" y="194" text-anchor="middle">25%</text><line class="grid" x1="375.0" y1="8" x2="375.0" y2="176"/><text class="tick" x="375.0" y="194" text-anchor="middle">50%</text><line class="grid" x1="477.5" y1="8" x2="477.5" y2="176"/><text class="tick" x="477.5" y="194" text-anchor="middle">75%</text><line class="grid" x1="580.0" y1="8" x2="580.0" y2="176"/><text class="tick" x="580.0" y="194" text-anchor="middle">100%</text><line class="ref" x1="539.0" y1="8" x2="539.0" y2="176"/><text class="reflab" x="544.0" y="20">rule 0.90</text><line class="axis" x1="170" y1="8" x2="170" y2="176"/><text class="axlabel" x="375.0" y="214" text-anchor="middle">owner–judge agreement, % of spot-check pairs (Wilson 95 % whiskers)</text><text class="cat" x="158" y="33.0" text-anchor="end">answers</text><text class="cat sub" x="158" y="50.0" text-anchor="end">(C and E agreed)</text><rect class="bar s1" x="170" y="23.0" width="336.2" height="26" rx="3"><title>answers, owner agrees with the final label: 82%</title></rect><line class="whisk" x1="453.7" y1="36.0" x2="539.9" y2="36.0"/><line class="whisk" x1="453.7" y1="30.0" x2="453.7" y2="42.0"/><line class="whisk" x1="539.9" y1="30.0" x2="539.9" y2="42.0"/><text class="val" x="546.9" y="41.0">82%</text><text class="cat" x="158" y="89.0" text-anchor="end">not</text><text class="cat sub" x="158" y="106.0" text-anchor="end">(C and E agreed)</text><rect class="bar s1" x="170" y="79.0" width="372.7" height="26" rx="3"><title>not, owner agrees with the final label: 91%</title></rect><line class="whisk" x1="483.3" y1="92.0" x2="567.1" y2="92.0"/><line class="whisk" x1="483.3" y1="86.0" x2="483.3" y2="98.0"/><line class="whisk" x1="567.1" y1="86.0" x2="567.1" y2="98.0"/><text class="val" x="574.1" y="97.0">91%</text><text class="cat" x="158" y="145.0" text-anchor="end">tiebroken</text><text class="cat sub" x="158" y="162.0" text-anchor="end">(Argon final)</text><rect class="bar s1" x="170" y="135.0" width="241.2" height="26" rx="3"><title>tiebroken, owner agrees with the final label: 59%</title></rect><line class="whisk" x1="317.6" y1="148.0" x2="491.4" y2="148.0"/><line class="whisk" x1="317.6" y1="142.0" x2="317.6" y2="154.0"/><line class="whisk" x1="491.4" y1="142.0" x2="491.4" y2="154.0"/><text class="val" x="498.4" y="153.0">59%</text></svg>
+</div>
+<div class="card"><p class="fam">The 19 disagreements <span class="tag explo">Exploratory · post hoc</span></p>
+<div class="split" role="img" aria-label="7 full, 12 partial, 0 none, 0 other answer">
+<span class="seg s1" style="flex:7">7 full</span><span class="seg s2 tex" style="flex:12">12 partial</span></div>
+<p>The owner tagged each: <b>7</b> the passage answers in full, <b>12</b> in part, <b>0</b> no answer, <b>0</b> another answer. None is a misreading of a passage with no answer; all sit on the partial-versus-full line.</p>
+<p class="small">Read <i>partial = not</i>: judge matches 9, owner 10 of 19; read <i>partial = answers</i>: judge 13, owner 6. The owner set every tag and discussed some items with an LLM before deciding; the tags are descriptive, not an independent annotation, and do not lift the flag.</p></div>
+</div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>spot_checks.judge_validity</code> (stage-A2); <code>counts</code> (disagreement-tags); prereg §13.5</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Addendum · chunk-boundary control <span class="tag explo">Exploratory</span></p><h2>Boundary-respecting chunks lost some answers — next door</h2></header><div class="sb"><div class="cols-chart"><div><div class="legend" aria-hidden="true"><span><i class="sw s1"></i>control chunk vs stage-A window</span><span><i class="sw s2 tex"></i>null: same window re-judged</span></div><svg class="chart" viewBox="0 0 760 248" role="img" aria-labelledby="chart5t chart5d"><title id="chart5t">Flip rate by stage-A route, control vs test-retest null</title><desc id="chart5d">Agreed route: control 28 of 249, null 7 of 249. Tiebroken: control 12 of 51, null 13 of 51.</desc><line class="grid" x1="190.0" y1="8" x2="190.0" y2="204"/><text class="tick" x="190.0" y="222" text-anchor="middle">0%</text><line class="grid" x1="302.5" y1="8" x2="302.5" y2="204"/><text class="tick" x="302.5" y="222" text-anchor="middle">10%</text><line class="grid" x1="415.0" y1="8" x2="415.0" y2="204"/><text class="tick" x="415.0" y="222" text-anchor="middle">20%</text><line class="grid" x1="527.5" y1="8" x2="527.5" y2="204"/><text class="tick" x="527.5" y="222" text-anchor="middle">30%</text><line class="grid" x1="640.0" y1="8" x2="640.0" y2="204"/><text class="tick" x="640.0" y="222" text-anchor="middle">40%</text><line class="axis" x1="190" y1="8" x2="190" y2="204"/><text class="axlabel" x="415.0" y="242" text-anchor="middle">judge label flips, % of pairs (Wilson 95 % whiskers)</text><text class="cat" x="178" y="54.0" text-anchor="end">C and E agreed</text><text class="cat sub" x="178" y="71.0" text-anchor="end">(n 249)</text><rect class="bar s1" x="190" y="23.0" width="126.4" height="30" rx="3"><title>C and E agreed, control chunk vs stage-A window: 11.2%</title></rect><line class="whisk" x1="278.8" y1="38.0" x2="367.5" y2="38.0"/><line class="whisk" x1="278.8" y1="32.0" x2="278.8" y2="44.0"/><line class="whisk" x1="367.5" y1="32.0" x2="367.5" y2="44.0"/><text class="val" x="374.5" y="43.0">11.2%  control chunk vs stage-A window</text><rect class="bar s2" x="190" y="61.0" width="31.6" height="30" rx="3" style="fill:url(#hatch-s2)"><title>C and E agreed, null: same window re-judged: 2.8%</title></rect><line class="whisk" x1="205.3" y1="76.0" x2="254.0" y2="76.0"/><line class="whisk" x1="205.3" y1="70.0" x2="205.3" y2="82.0"/><line class="whisk" x1="254.0" y1="70.0" x2="254.0" y2="82.0"/><text class="val" x="261.0" y="81.0">2.8%  null: same window re-judged</text><text class="cat" x="178" y="152.0" text-anchor="end">tiebroken</text><text class="cat sub" x="178" y="169.0" text-anchor="end">(n 51)</text><rect class="bar s1" x="190" y="121.0" width="264.7" height="30" rx="3"><title>tiebroken, control chunk vs stage-A window: 23.5%</title></rect><line class="whisk" x1="347.5" y1="136.0" x2="603.7" y2="136.0"/><line class="whisk" x1="347.5" y1="130.0" x2="347.5" y2="142.0"/><line class="whisk" x1="603.7" y1="130.0" x2="603.7" y2="142.0"/><text class="val" x="610.7" y="141.0">23.5%</text><rect class="bar s2" x="190" y="159.0" width="286.8" height="30" rx="3" style="fill:url(#hatch-s2)"><title>tiebroken, null: same window re-judged: 25.5%</title></rect><line class="whisk" x1="364.8" y1="174.0" x2="627.3" y2="174.0"/><line class="whisk" x1="364.8" y1="168.0" x2="364.8" y2="180.0"/><line class="whisk" x1="627.3" y1="168.0" x2="627.3" y2="180.0"/><text class="val" x="634.3" y="179.0">25.5%</text></svg></div>
+<div class="side">
+<p>300 stage-A pairs re-judged against a chunk that respects sentence and section boundaries and covers the same text; beside it, the same windows re-judged unchanged (the null).</p>
+<p><b>Agreed pairs:</b> 28 of 249 flipped vs 7 of 249 in the null; every agreed flip lost an answer. <b>Tiebroken:</b> 12 of 51 vs 13 of 51 — indistinguishable from the judge's own noise.</p>
+<p><b>24 of 28</b> lost answers were found in an overlapping control chunk: the evidence moved, it did not vanish.</p>
+<p class="small">Exploratory, post-freeze, judge-only. The split by route and the null were added after the overall flip rate (40/300 vs 20/300) had been seen; no test was run. It changes no confirmatory figure.</p>
+</div></div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>metrics.by_route</code>, <code>metrics.retest.by_route</code>, <code>metrics.cover_any.split.by_route</code> (control-judge.json); ADDENDUM-2026-11-05</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Limitations </p><h2>What this does not show</h2></header><div class="sb"><div class="cols2">
+<ul class="lim">
+<li><b>A judged reach metric.</b> found@10 counts one chunk that, read alone, states the answer — not answer quality, not rank. The judge is below its validity threshold; gold-only, which needs no judge, agrees in direction on H1/H1b and points the hypothesised way on H2.</li>
+<li><b>A single-chunk binary rubric.</b> Two chunks that together answer, or one that answers in part, score as not found. On the owner's tags (exploratory, post hoc), all 19 owner–judge disagreements sit on that partial-versus-full line.</li>
+<li><b>The ceiling.</b> 98.5 % of G and 100 % of C records were found before any glossary. H1 rests on 6 records in 6 papers; a general upward shift on C was unobservable.</li>
+</ul>
+<ul class="lim">
+<li><b>Selected splits in the control.</b> Route, direction and stratum were read after the overall rate; the null was added after seeing it. Confirming the agreed-pair pattern needs a fresh, pre-registered test.</li>
+<li><b>One corpus, one population.</b> OA-1000 only; records LLM-drafted and LLM-verified, plus the owner's check of 40 (37 valid); questions use the glossary's primary term.</li>
+<li><b>Two families, no joint error control.</b> No sentence here combines “the glossary helps” with a growth claim.</li>
+</ul></div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: RESULTS.md § Limitations; ADDENDUM § Limitations; <code>layer2.placebo.*.found10</code>, <code>layer1.H1</code></p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Sources </p><h2>Where every number comes from</h2></header><div class="sb"><div class="cols2">
+<ul class="srcs"><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/prereg/PREREG-alias-study.md">Pre-registration (frozen)</a><br><code>docs/plans/results/alias-study-2026-11/prereg/PREREG-alias-study.md</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/RESULTS.md">The record: RESULTS.md</a><br><code>docs/plans/results/alias-study-2026-11/RESULTS.md</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/DEVIATIONS.md">Deviations D-1 to D-3</a><br><code>docs/plans/results/alias-study-2026-11/DEVIATIONS.md</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/ADDENDUM-2026-11-05-chunk-boundary-control.md">Chunk-boundary control addendum</a><br><code>docs/plans/results/alias-study-2026-11/ADDENDUM-2026-11-05-chunk-boundary-control.md</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/LABBOOK.md">Lab book</a><br><code>docs/plans/results/alias-study-2026-11/LABBOOK.md</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json">Layer 1 artifact</a><br><code>docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json">Layer 2 artifact</a><br><code>docs/plans/results/alias-study-2026-11/artifacts/results-stage-B.public.json</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json">Control artifact</a><br><code>docs/plans/results/alias-study-2026-11/control/artifacts/control-judge.json</code></li><li><a href="https://github.com/wilke/ragstack/blob/main/docs/plans/results/alias-study-2026-11/presentation/make_deck.py">This deck&#x27;s generator</a><br><code>docs/plans/results/alias-study-2026-11/presentation/make_deck.py</code></li></ul>
+<div class="card"><p class="fam">Commits</p>
+<ul class="tight">
+<li>prereg frozen at <span class="num">e6ecfa6</span>, sha256 <span class="num">d54f4201a4d1281d…</span></li>
+<li>retrieval runs: stage A <span class="num">d0d3555</span>, stage B <span class="num">812fea0</span></li>
+<li>statistics <span class="num">15ee347</span>; H1b-gold display <span class="num">a179383</span>; disagreement tags <span class="num">d93edda</span>; control report <span class="num">aeafaeb</span></li>
+<li>record merged at <span class="num">a349629</span> (#954); addendum <span class="num">95cf2b9</span> (#953)</li>
+</ul>
+<p class="small">The deck is generated by <code>make_deck.py</code> from the committed JSON; the only typed values are prereg constants and the commit pointers above. Public artifacts hold counts, rates and hashes only — no record, paper or passage text.</p></div>
+</div></div><footer class="sf"><p class="src">Source: git history; artifact <code>provenance.commit</code> fields</p><span class="pg"></span></footer></section>
+</div>
+<nav class="controls" aria-label="Slide navigation">
+<button id="prev" type="button" aria-label="Previous slide">&larr;</button>
+<span class="counter" id="counter" aria-live="polite">1 / 15</span>
+<button id="next" type="button" aria-label="Next slide">&rarr;</button>
+<button id="theme" type="button" aria-label="Toggle light or dark theme">theme</button>
+</nav>
+</main>
+<script>
+(function(){
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  var n=slides.length, i=0, counter=document.getElementById('counter');
+  var stacked=window.matchMedia('(max-width: 760px)');
+  slides.forEach(function(s,k){ s.id='s'+(k+1); s.setAttribute('aria-label',(k+1)+' of '+n);
+    var pg=s.querySelector('.pg'); if(pg) pg.textContent=(k+1)+' / '+n; });
+  function fromHash(){ var m=/^#(?:s)?(\d+)$/.exec(location.hash); return m?Math.min(Math.max(parseInt(m[1],10)-1,0),n-1):0; }
+  function show(k,push){
+    i=Math.min(Math.max(k,0),n-1);
+    slides.forEach(function(s,j){ s.classList.toggle('on',j===i); s.setAttribute('aria-hidden', (!stacked.matches && j!==i)?'true':'false'); });
+    counter.textContent=(i+1)+' / '+n;
+    var h='#'+(i+1); if(push && location.hash!==h) history.replaceState(null,'',h);
+    if(stacked.matches && push) slides[i].scrollIntoView({block:'start'});
+  }
+  document.addEventListener('keydown',function(e){
+    if(e.altKey||e.ctrlKey||e.metaKey) return;
+    var t=e.target; if(t && /INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
+    var k=e.key;
+    if(k==='ArrowRight'||k==='ArrowDown'||k==='PageDown'||(k===' '&&!e.shiftKey)){ e.preventDefault(); show(i+1,true); }
+    else if(k==='ArrowLeft'||k==='ArrowUp'||k==='PageUp'||(k===' '&&e.shiftKey)){ e.preventDefault(); show(i-1,true); }
+    else if(k==='Home'){ e.preventDefault(); show(0,true); }
+    else if(k==='End'){ e.preventDefault(); show(n-1,true); }
+  });
+  document.getElementById('frame').addEventListener('click',function(e){
+    if(stacked.matches) return;
+    if(e.target.closest('a,button,summary,input')) return;
+    var sel=window.getSelection&&String(window.getSelection()); if(sel) return;
+    var r=this.getBoundingClientRect(); show(e.clientX-r.left<r.width/2?i-1:i+1,true);
+  });
+  document.getElementById('prev').onclick=function(){ show(i-1,true); };
+  document.getElementById('next').onclick=function(){ show(i+1,true); };
+  document.getElementById('theme').onclick=function(){
+    var d=document.documentElement, cur=d.getAttribute('data-theme');
+    var dark=cur?cur==='dark':window.matchMedia('(prefers-color-scheme: dark)').matches;
+    d.setAttribute('data-theme',dark?'light':'dark');
+  };
+  window.addEventListener('hashchange',function(){ show(fromHash(),false); });
+  show(fromHash(),false);
+  if(stacked.matches && location.hash) slides[i].scrollIntoView({block:'start'});
+})();
+</script>
+</body>
+</html>

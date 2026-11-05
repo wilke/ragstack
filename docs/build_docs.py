@@ -357,7 +357,16 @@ STATIC_PAGES = [
         card="Episodes as Experiments",
         blurb="Whether OpenChia's Episode control framework can plan and run the chunking study's experiments — read against upstream at 98d74fb and the asm-next Duet export, with every gap sized.",
     ),
+    dict(
+        src="presentations/alias-study-2026-11.html",
+        out="presentations/alias-study-2026-11.html", label="Presentation",
+        card="Alias study (OA-1000)",
+        blurb="The pre-registered alias study in 15 slides: glossary attachment (H1, H1b confirmed) and citation-neighbour growth (H2 not confirmed), every number generated from the committed artifacts. Judge validity below threshold on every result.",
+    ),
 ]
+# A doc linking to a standalone page (e.g. an experiment README linking its deck) should land on
+# the published copy, not on GitHub. Render time reads _LINK_MAP, so extending it here is enough.
+_LINK_MAP.update({p["src"]: p["out"] for p in STATIC_PAGES})
 
 
 def build_index() -> None:
