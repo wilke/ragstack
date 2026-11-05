@@ -10,7 +10,9 @@
     PYTHONPATH=python alias_control_chunks.py map    --judge-config MAIN.json --sample DIR/sample.jsonl \\
                                                      --control-dir DIR [--cover-any --pairs FLIPPED]
     PYTHONPATH=python alias_control_chunks.py report --judge-config MAIN.json --control-config CONTROL.json \\
-                                                     --control-dir DIR [--cover-config COVER.json] --out REPORT.json
+                                                     --control-dir DIR [--cover-config COVER.json] \\
+                                                     [--retest-config RETEST.json --retest-dir RDIR] --out REPORT.json
+    PYTHONPATH=python alias_control_chunks.py retest-seed --judge-config MAIN.json --control-dir DIR --out-dir RDIR
 
 **Record texts for the main run** (read-only; every source is needed, or documents are excluded
 as ``no_text``): the base arm's extractor output (the round-1 ``oa.jsonl`` record file), and for the
@@ -99,10 +101,34 @@ are more (ties to the earlier; capped windows counted), one seed row each, in
 preamble stratum, window-coverage band and control-chunk token band, with Wilson 95 % intervals;
 the 2 x 2 table with kappa and Gwet's AC1 (``alias_study_stats.agreement_metrics``); C alone, E
 alone and the escalation share under each chunking; ``cover-any`` attribution of the flips; the
-boundary diagnostics of the windows and the control chunks. Owner agreement (§5.4) is not
+boundary diagnostics of the windows and the control chunks. With ``--cover-config``,
+``cover_any.split`` divides the flipped pairs of each direction four ways by whether a NON-primary
+overlapping chunk answers and whether the re-judged primary chunk answers (``other_only`` /
+``both`` / ``primary_only`` / ``none``; the primary is the ``pairs-seed.jsonl`` chunk of that
+``control_of``), with ``recovered_by_other_chunk`` (answers -> not only) and
+``primary_rejudge_agreement_selected``: the cover run re-judged the primary chunk itself, the same
+bytes, so its label against the control run's label is a judge-repeatability count, on selected
+(flipped, hence borderline) pairs only. Owner agreement (§5.4) is not
 computed (owner, 2026-11-05: dropped). The output is public: counts, rates, versions and shas
 only, checked by ``alias_study_common.public_problems`` (no id, no text, no host) before it is
 written; the provenance's ``host`` and ``warnings`` are dropped from every public file.
+
+**retest (the test-retest null, exploratory).** How often does the frozen pipeline change a label
+when the identical stage-A window is judged again? ``retest-seed`` reads the control's
+``pairs-seed.jsonl``, requires each row's ``stage_a_chunk_id`` and ``record_id`` to be its stage-A
+pair's (the main registry, read-only), and writes into ``RDIR``: ``chunks-retest.jsonl`` (PRIVATE:
+the stage-A export rows of those windows, one per distinct window, each original line kept byte for
+byte when pure ASCII, else re-serialized ASCII-escaped), ``pairs-seed-retest.jsonl`` (PRIVATE:
+``control_of``, ``record_id``, ``chunk_id`` = the stage-A window, ``stratum``, ``arm``) and
+``retest-seed.json`` (counts and sha256s). A missing window is refused. A control config whose
+``control`` export is ``chunks-retest.jsonl`` then runs ``alias_study_judge.py build-control`` /
+``preflight`` / ``label`` / ``finalize`` unchanged in its own out dir (duplicate chunk ids with
+identical content are accepted, and the retest pair ids are the stage-A pair ids).
+``report --retest-config RETEST.json --retest-dir RDIR`` adds ``metrics.retest`` (flip of the
+retest final label against the committed stage-A label, unjudged = *not*, by direction, stratum,
+arm, stage-A route ``agree`` / ``tiebreak_or_other`` and the retest's own route, and the 2 x 2
+agreement table) and ``metrics.flip_minus_retest`` (the control flip rate minus the retest flip
+rate, for display; no test is made of it).
 
 Every artifact embeds ``experiment_provenance()`` with span fingerprints: sentences over the
 documents' texts, and the adapter's sections and the control chunks where the documents are known.
@@ -132,7 +158,8 @@ import alias_study_common as asc  # noqa: E402
 REPO = _HERE.parents[2]
 
 SCHEMA = {"check": "alias-control-check/1", "draw": "alias-control-draw/1", "chunk": "alias-control-chunk/1",
-          "map": "alias-control-map/1", "report": "alias-control-report/1"}
+          "map": "alias-control-map/1", "report": "alias-control-report/1",
+          "retest": "alias-control-retest-seed/1"}
 #: §2: the control chunking as collection markers (``chunk_params``), read by THE readers
 CONTROL_METHOD = "sentence"
 CONTROL_SIZE = 512
@@ -933,6 +960,99 @@ def band(x: float, bands: Sequence[tuple[float, float, str]]) -> str:
     return "none"
 
 
+# ------------------------------------------------------------------ retest-seed (the test-retest null)
+
+def stage_a_window_rows(chunk_exports: Mapping[str, str], want: set[str]) -> dict[str, tuple[str, dict[str, Any]]]:
+    """``chunk_id -> (line, row)``: the stage-A export rows of the wanted chunk ids, verbatim (the
+    original line without its newline, and the parsed object), first export in corpus-arm order;
+    a chunk id seen again with other content is refused."""
+    import _glossbench_r2 as g
+
+    out: dict[str, tuple[str, dict[str, Any]]] = {}
+    for arm in asc.CORPUS_ARMS:
+        path = chunk_exports.get(arm)
+        if not path:
+            continue
+        with g._open_text(path) as fh:
+            for i, line in enumerate(fh, 1):
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                row = g.parse_chunk(obj, f"{Path(path).name}:{i}")
+                if row.chunk_id not in want:
+                    continue
+                prev = out.get(row.chunk_id)
+                if prev is not None:
+                    p = g.parse_chunk(prev[1], "prev")
+                    if (p.content, p.start_char, p.end_char) != (row.content, row.start_char, row.end_char):
+                        raise SystemExit(f"{Path(path).name}:{i}: chunk {row.chunk_id[:8]}… seen with other content")
+                    continue
+                out[row.chunk_id] = (line.rstrip("\r\n"), obj)
+    return out
+
+
+def retest_export_bytes(rows: Iterable[tuple[str, Mapping[str, Any]]]) -> tuple[bytes, int]:
+    """The retest export: each original line kept byte for byte when it is pure ASCII (so no
+    ``str.splitlines`` separator can hide in it), else the same object re-serialized ASCII-escaped
+    with its key order kept (:func:`jsonl_bytes`' reason). Returns the bytes and the re-escaped count."""
+    parts, escaped = [], 0
+    for line, obj in rows:
+        if line.isascii():
+            parts.append(line + "\n")
+        else:
+            parts.append(json.dumps(obj, ensure_ascii=True) + "\n")
+            escaped += 1
+    return "".join(parts).encode("utf-8"), escaped
+
+
+def run_retest_seed(judge_config: Path, control_dir: Path, out_dir: Path) -> dict[str, Any]:
+    """``retest-seed`` (module docstring, *retest*): the control's seed pairs re-pointed at their own
+    stage-A windows, and those windows as a control-shaped export."""
+    import _glossbench_r2 as g
+    import alias_study_judge as aj
+    import alias_study_spot as asp
+
+    env = require_env()
+    asp.refuse_in_repo(out_dir, "--out-dir")
+    cfg = judge_cfg(judge_config)
+    seeds = asc.read_jsonl(control_dir / "pairs-seed.jsonl")
+    mout = Path(cfg["out_dir"])
+    main_pairs = {p["pair_id"]: p for p in asc.read_jsonl(mout / "pairs.jsonl")}
+    for i, s in enumerate(seeds, 1):
+        a = main_pairs.get(s["control_of"])
+        if a is None or a.get("stage", "A") != "A":
+            raise SystemExit(f"REFUSED: seed row {i}: control_of is not a stage-A pair of the main registry")
+        if a["record_id"] != s["record_id"] or a["chunk_id"] != s["stage_a_chunk_id"]:
+            raise SystemExit(f"REFUSED: seed row {i}: its stage_a_chunk_id/record_id is not that stage-A pair's")
+        if aj.pair_id(s["record_id"], s["stage_a_chunk_id"]) != s["control_of"]:
+            raise SystemExit(f"REFUSED: seed row {i}: (record, stage-A chunk) does not give the stage-A pair id")
+    want = {s["stage_a_chunk_id"] for s in seeds}
+    found = stage_a_window_rows(cfg["chunk_exports"], want)
+    missing = want - set(found)
+    if missing:
+        raise SystemExit(f"REFUSED: {len(missing)} stage-A window(s) are in no chunk export of the judge config")
+    order = sorted(want)
+    data, escaped = retest_export_bytes(found[c] for c in order)
+    csha = write_private(out_dir / "chunks-retest.jsonl", data, "the retest windows")
+    rseeds = [{"control_of": s["control_of"], "record_id": s["record_id"], "chunk_id": s["stage_a_chunk_id"],
+               "stage_a_chunk_id": s["stage_a_chunk_id"], "stratum": s["stratum"], "arm": s["arm"],
+               "in_spot_sheet": s.get("in_spot_sheet")} for s in seeds]
+    ssha = write_private(out_dir / "pairs-seed-retest.jsonl", jsonl_bytes(rseeds), "the retest seed pairs")
+    rec = {"schema": SCHEMA["retest"], "exploratory": True, "seed_rows": len(rseeds),
+           "stage_a_pairs": len({s["control_of"] for s in rseeds}), "windows": len(order),
+           "windows_reescaped": escaped, "per_stratum": dict(Counter(s["stratum"] for s in rseeds)),
+           "per_arm": dict(Counter(s["arm"] for s in rseeds)),
+           "chunks_sha256": csha, "seed_sha256": ssha,
+           "control_seed_sha256": asc.sha256_file(control_dir / "pairs-seed.jsonl"),
+           "chunk_exports_sha256": {a: asc.sha256_file(p) for a, p in sorted(cfg["chunk_exports"].items())},
+           "environment": env, "provenance": public_provenance(provenance())}
+    doc_ids = {g.parse_chunk(found[c][1], c).doc_id for c in order}
+    forbidden = {s["control_of"] for s in rseeds} | {s["record_id"] for s in rseeds} | want | doc_ids
+    write_summary(out_dir / "retest-seed.json", rec, "retest-seed.json", forbidden)
+    return {k: rec[k] for k in ("seed_rows", "stage_a_pairs", "windows", "windows_reescaped", "chunks_sha256",
+                                "seed_sha256")}
+
+
 # ------------------------------------------------------------------ report (§5)
 
 def label_of(f: Mapping[str, Any] | None) -> int | None:
@@ -959,6 +1079,80 @@ def starts_capital_or_digit(text: str) -> bool:
 
 def holds_heading_line(text: str) -> bool:
     return text.startswith("## ") or "\n## " in text
+
+
+COVER_SPLIT = ("other_only", "both", "primary_only", "none")
+
+
+def cover_split(covered: Sequence[Mapping[str, Any]], direction: Any) -> dict[str, Any]:
+    """The ``cover-any`` split of the flipped pairs (module docstring, *report*): per direction, whether
+    a NON-primary overlapping chunk answers and whether the re-judged primary chunk answers (a primary
+    without a cover label counts as not answering, and is counted); and the same-bytes re-judge of
+    the primary chunk against the control run's label, on these selected (flipped) pairs only."""
+    def one(pool: Sequence[Mapping[str, Any]], recovery: bool) -> dict[str, Any]:
+        c: Counter[str] = Counter()
+        for r in pool:
+            o = any(x == 1 for x in r.get("cover_other") or [])
+            p = r.get("cover_primary") == 1
+            c["both" if o and p else "other_only" if o else "primary_only" if p else "none"] += 1
+        out: dict[str, Any] = {"n": len(pool), **{k: c[k] for k in COVER_SPLIT},
+                               "primary_without_cover_label": sum(r.get("cover_primary") is None for r in pool),
+                               "primary_rejudge_agreement_selected": rejudge(pool)}
+        if recovery:
+            out["recovered_by_other_chunk"] = wilson(c["other_only"] + c["both"], len(pool))
+        return out
+
+    def rejudge(pool: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        have = [r for r in pool if r.get("cover_primary") is not None]
+        return wilson(sum(r["cover_primary"] == label_of(r["control"]) for r in have), len(have))
+
+    pool = [r for r in covered if "cover_other" in r]
+    return {"answers_to_not": one([r for r in pool if direction(r) == "answers_to_not"], True),
+            "not_to_answers": one([r for r in pool if direction(r) == "not_to_answers"], False),
+            "primary_rejudge_agreement_selected": rejudge(pool)}
+
+
+def route(f: Mapping[str, Any] | None) -> str:
+    """A final row's route: ``agree`` (both Qwen stages agreed) or ``tiebreak_or_other``."""
+    return "agree" if (f or {}).get("source") == "agree" else "tiebreak_or_other"
+
+
+def compute_retest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """The test-retest null (module docstring, *retest*) from one row per retest seed row:
+    ``stage_a`` / ``retest`` (the final rows, or None), ``stratum``, ``arm``. Counts and rates only."""
+    import alias_study_stats as ast
+
+    judged = [r for r in rows if r["retest"] is not None and r["stage_a"] is not None]
+
+    def flipped(r: Mapping[str, Any]) -> bool:
+        return label_of(r["retest"]) != label_of(r["stage_a"])
+
+    def by(key: Any) -> dict[str, Any]:
+        groups: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for r in judged:
+            groups[str(key(r))].append(r)
+        return {g: wilson(sum(map(flipped, v)), len(v)) for g, v in sorted(groups.items())}
+
+    flips = [r for r in judged if flipped(r)]
+    c = Counter((label_of(r["retest"]), label_of(r["stage_a"])) for r in judged)
+    return {
+        "n_seed": len(rows), "n_judged_both": len(judged),
+        "n_without_retest_label": sum(r["retest"] is None for r in rows),
+        "flip": wilson(len(flips), len(judged)),
+        "by_direction": {"answers_to_not": sum(label_of(r["stage_a"]) == 1 for r in flips),
+                         "not_to_answers": sum(label_of(r["stage_a"]) == 0 for r in flips)},
+        "direction_rates": {
+            "answers_to_not": wilson(sum(label_of(r["stage_a"]) == 1 for r in flips),
+                                     sum(label_of(r["stage_a"]) == 1 for r in judged)),
+            "not_to_answers": wilson(sum(label_of(r["stage_a"]) == 0 for r in flips),
+                                     sum(label_of(r["stage_a"]) == 0 for r in judged))},
+        "by_stratum": by(lambda r: r["stratum"]), "by_arm": by(lambda r: r["arm"]),
+        "by_route": by(lambda r: route(r["stage_a"])),
+        "by_route_retest": by(lambda r: route(r["retest"])),
+        "sources": {"stage_a": dict(Counter(str(r["stage_a"].get("source")) for r in judged)),
+                    "retest": dict(Counter(str(r["retest"].get("source")) for r in judged))},
+        "agreement_retest_vs_stage_a": ast.agreement_metrics(c[(1, 1)], c[(1, 0)], c[(0, 1)], c[(0, 0)]),
+    }
 
 
 def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1010,6 +1204,14 @@ def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     windows = [r["window"] for r in rows]
     controls = [r["control_text"] for r in rows]
+    cover_any_block: dict[str, Any] = {
+        "flipped": len(flips), "flipped_with_cover_any": len(covered),
+        "answers_to_not": {"with_cover_any": len(a2n), "recovered": wilson(
+            sum(any(x == 1 for x in r["cover"]) for r in a2n), len(a2n))},
+        "not_to_answers": {"with_cover_any": len(n2a), "cover_any_answers": wilson(
+            sum(any(x == 1 for x in r["cover"]) for r in n2a), len(n2a))}}
+    if any("cover_other" in r for r in covered):
+        cover_any_block["split"] = cover_split(covered, direction)
     return {
         "n_mapped": len(rows), "n_judged_both": len(judged),
         "n_without_control_label": sum(r["control"] is None for r in rows),
@@ -1032,11 +1234,7 @@ def compute_report(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                                  "windows_on_shared_control_pairs": sum(v for v in shared.values() if v > 1)},
         "agreement_control_vs_stage_a": table,
         "judge_stage": {"stage_a": stage_detail("stage_a"), "control": stage_detail("control")},
-        "cover_any": {"flipped": len(flips), "flipped_with_cover_any": len(covered),
-                      "answers_to_not": {"with_cover_any": len(a2n), "recovered": wilson(
-                          sum(any(x == 1 for x in r["cover"]) for r in a2n), len(a2n))},
-                      "not_to_answers": {"with_cover_any": len(n2a), "cover_any_answers": wilson(
-                          sum(any(x == 1 for x in r["cover"]) for r in n2a), len(n2a))}},
+        "cover_any": cover_any_block,
         "boundary": {
             "windows": diag(windows), "control": diag(controls),
             "control_section_crossing": wilson(sum(bool(r.get("section_crossing")) for r in rows), len(rows)),
@@ -1069,11 +1267,49 @@ def judge_files(out_dir: Path) -> dict[str, Any]:
     return out
 
 
+def cover_labels(vreg: Iterable[Mapping[str, Any]], vfin: Mapping[str, Mapping[str, Any]],
+                 primary: Mapping[str, str]) -> tuple[dict[str, list[int]], dict[str, int], dict[str, list[int]]]:
+    """The cover-any final labels per stage-A pair id: all of them, the primary chunk's (the
+    ``pairs-seed.jsonl`` chunk of that ``control_of``) and the others'. Unjudged = *not*."""
+    every: dict[str, list[int]] = defaultdict(list)
+    prim: dict[str, int] = {}
+    other: dict[str, list[int]] = defaultdict(list)
+    for p in vreg:
+        if p["pair_id"] not in vfin:
+            continue
+        lab = int(bool(vfin[p["pair_id"]].get("label")))
+        for sid in p["control_of"]:
+            every[sid].append(lab)
+            if p["chunk_id"] == primary.get(sid):
+                prim[sid] = lab
+            else:
+                other[sid].append(lab)
+    return dict(every), prim, dict(other)
+
+
+def retest_rows(rseeds: Sequence[Mapping[str, Any]], stage_a: Mapping[str, Mapping[str, Any]],
+                rfinal: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One :func:`compute_retest` row per retest seed row. The retest pair id must be the stage-A
+    pair id (same record, same window); anything else is refused."""
+    import alias_study_judge as aj
+
+    rows = []
+    for i, s in enumerate(rseeds, 1):
+        if aj.pair_id(s["record_id"], s["chunk_id"]) != s["control_of"]:
+            raise SystemExit(f"retest seed row {i}: its (record, chunk) pair is not the stage-A pair it retests")
+        rows.append({"stage_a": stage_a.get(s["control_of"]), "retest": rfinal.get(s["control_of"]),
+                     "stratum": s["stratum"], "arm": s["arm"]})
+    return rows
+
+
 def run_report(judge_config: Path, control_config: Path, control_dir: Path, out: Path,
-               cover_config: Path | None = None) -> dict[str, Any]:
+               cover_config: Path | None = None, retest_config: Path | None = None,
+               retest_dir: Path | None = None) -> dict[str, Any]:
     import alias_study_judge as aj
     import alias_study_spot as asp
 
+    if (retest_config is None) != (retest_dir is None):
+        raise SystemExit("--retest-config and --retest-dir go together")
     env = require_env()
     cfg = judge_cfg(judge_config)
     ccfg = aj.load_config(control_config)
@@ -1085,15 +1321,14 @@ def run_report(judge_config: Path, control_config: Path, control_dir: Path, out:
     dinfo = {r["doc_id"]: r for r in asc.read_jsonl(control_dir / "docs.jsonl")}
     cchunk = {c["chunk_id"]: c for rows in cdocs.values() for c in rows}
     cfinal = final_pairs(Path(ccfg["out_dir"]))
-    cover: dict[str, list[int]] = defaultdict(list)
+    cover: dict[str, list[int]] = {}
+    cover_prim: dict[str, int] = {}
+    cover_other: dict[str, list[int]] = {}
     if cover_config is not None:
         vcfg = aj.load_config(cover_config)
-        vreg = asc.read_jsonl(Path(vcfg["out_dir"]) / "pairs.jsonl")
-        vfin = final_pairs(Path(vcfg["out_dir"]))
-        for p in vreg:
-            if p["pair_id"] in vfin:
-                for sid in p["control_of"]:
-                    cover[sid].append(int(bool(vfin[p["pair_id"]].get("label"))))
+        cover, cover_prim, cover_other = cover_labels(
+            asc.read_jsonl(Path(vcfg["out_dir"]) / "pairs.jsonl"), final_pairs(Path(vcfg["out_dir"])),
+            {s["control_of"]: s["chunk_id"] for s in seeds})
     cc = control_chunker()
     rows = []
     excluded: Counter[str] = Counter()
@@ -1105,15 +1340,19 @@ def run_report(judge_config: Path, control_config: Path, control_dir: Path, out:
             continue
         di = dinfo.get(s["doc_id"]) or {}
         cpid = aj.pair_id(s["record_id"], s["chunk_id"])
-        rows.append({"stage_a": stage_a.get(s["control_of"]), "control": cfinal.get(cpid), "control_pair": cpid,
-                     "stratum": s["stratum"], "arm": s["arm"], "coverage": s["coverage"],
-                     "control_tokens": s["control_tokens"], "latex_preamble": s["latex_preamble"],
-                     "in_spot_sheet": s["in_spot_sheet"], "cover": cover.get(s["control_of"]) if cover_config else None,
-                     "window": w.content, "control_text": k["content"],
-                     "window_tokens": cc.counter.count(w.content),
-                     "section_crossing": k["metadata"].get("section_crossing"),
-                     "split_sentence": k["metadata"].get("split_sentence"),
-                     "one_untitled_section": di.get("n_sections", 0) <= 1 and di.get("untitled_only", False)})
+        row = {"stage_a": stage_a.get(s["control_of"]), "control": cfinal.get(cpid), "control_pair": cpid,
+               "stratum": s["stratum"], "arm": s["arm"], "coverage": s["coverage"],
+               "control_tokens": s["control_tokens"], "latex_preamble": s["latex_preamble"],
+               "in_spot_sheet": s["in_spot_sheet"], "cover": cover.get(s["control_of"]) if cover_config else None,
+               "window": w.content, "control_text": k["content"],
+               "window_tokens": cc.counter.count(w.content),
+               "section_crossing": k["metadata"].get("section_crossing"),
+               "split_sentence": k["metadata"].get("split_sentence"),
+               "one_untitled_section": di.get("n_sections", 0) <= 1 and di.get("untitled_only", False)}
+        if cover_config is not None and s["control_of"] in cover:
+            row["cover_primary"] = cover_prim.get(s["control_of"])
+            row["cover_other"] = cover_other.get(s["control_of"], [])
+        rows.append(row)
     docs = sorted({s["doc_id"] for s in seeds if s["doc_id"] in cdocs})
     texts = [doc_text(cdocs[d]) or "" for d in docs]
     rec: dict[str, Any] = {"schema": SCHEMA["report"], "exploratory": True,
@@ -1133,6 +1372,26 @@ def run_report(judge_config: Path, control_config: Path, control_dir: Path, out:
         rec["judge_files"]["cover_any"] = judge_files(Path(aj.load_config(cover_config)["out_dir"]))
     forbidden = set(docs) | set(stage_a) | set(cfinal) | {s["record_id"] for s in seeds} | \
         {s["chunk_id"] for s in seeds} | {s["stage_a_chunk_id"] for s in seeds}
+    if retest_config is not None and retest_dir is not None:
+        rcfg = aj.load_config(retest_config)
+        rexp = rcfg["chunk_exports"].get(aj.CONTROL_EXPORT)
+        rchunks = retest_dir / "chunks-retest.jsonl"
+        if not rexp or asc.sha256_file(rexp) != asc.sha256_file(rchunks):
+            raise SystemExit(f"REFUSED: the retest config's {aj.CONTROL_EXPORT!r} export is not "
+                             f"{rchunks} (sha256 differs)")
+        rseeds = asc.read_jsonl(retest_dir / "pairs-seed-retest.jsonl")
+        rfinal = final_pairs(Path(rcfg["out_dir"]))
+        rmetrics = compute_retest(retest_rows(rseeds, stage_a, rfinal))
+        rec["metrics"]["retest"] = rmetrics
+        cflip, rflip = rec["metrics"]["flip"]["rate"], rmetrics["flip"]["rate"]
+        rec["metrics"]["flip_minus_retest"] = {
+            "control_flip_rate": cflip, "retest_flip_rate": rflip,
+            "difference": round(cflip - rflip, 4) if cflip is not None and rflip is not None else None,
+            "note": "display only, exploratory: no test; the retest re-judges the identical stage-A window"}
+        rec["judge_files"]["retest"] = judge_files(Path(rcfg["out_dir"]))
+        rec["inputs"]["retest_seed_sha256"] = asc.sha256_file(retest_dir / "pairs-seed-retest.jsonl")
+        rec["inputs"]["retest_chunks_sha256"] = asc.sha256_file(rchunks)
+        forbidden |= set(rfinal) | {s["record_id"] for s in rseeds} | {s["chunk_id"] for s in rseeds}
     passages = [r["window"] for r in rows] + [r["control_text"] for r in rows]
     return write_public(out, rec, forbidden, passages)
 
@@ -1169,7 +1428,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     rp.add_argument("--control-config", required=True, type=Path)
     rp.add_argument("--control-dir", required=True, type=Path)
     rp.add_argument("--cover-config", type=Path, default=None)
+    rp.add_argument("--retest-config", type=Path, default=None)
+    rp.add_argument("--retest-dir", type=Path, default=None)
     rp.add_argument("--out", required=True, type=Path)
+    rt = sub.add_parser("retest-seed")
+    rt.add_argument("--judge-config", required=True, type=Path)
+    rt.add_argument("--control-dir", required=True, type=Path)
+    rt.add_argument("--out-dir", required=True, type=Path)
     a = ap.parse_args(argv)
     os.umask(0o077)
     if a.cmd == "check":
@@ -1182,9 +1447,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif a.cmd == "map":
         res = run_map(judge_cfg(a.judge_config)["chunk_exports"], a.sample, a.control_dir, cover=a.cover_any,
                       pairs=a.pairs)
+    elif a.cmd == "retest-seed":
+        res = run_retest_seed(a.judge_config, a.control_dir, a.out_dir)
     else:
-        res = run_report(a.judge_config, a.control_config, a.control_dir, a.out, a.cover_config)
-        res = {"n_mapped": res["metrics"]["n_mapped"], "flip": res["metrics"]["flip"]}
+        res = run_report(a.judge_config, a.control_config, a.control_dir, a.out, a.cover_config,
+                         a.retest_config, a.retest_dir)
+        res = {"n_mapped": res["metrics"]["n_mapped"], "flip": res["metrics"]["flip"],
+               **({"retest_flip": res["metrics"]["retest"]["flip"]} if "retest" in res["metrics"] else {})}
     print(json.dumps(res, indent=1, sort_keys=True))
     return 0
 
