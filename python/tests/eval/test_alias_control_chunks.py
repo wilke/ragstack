@@ -620,3 +620,12 @@ def test_report_writer_refuses_text_ids_and_host_fields(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="REFUSED"):
         ctl.write_public(tmp_path / "i.json", {**rec, "worst_pair": "pair-id-0001"}, {"pair-id-0001"})
     assert not any((tmp_path / n).exists() for n in ("h.json", "t.json", "i.json"))
+
+
+def test_jsonl_rows_survive_unicode_line_separators(tmp_path: Path) -> None:
+    """Record text with U+2028/U+2029/U+0085/U+001C must round-trip through the shared reader."""
+    rows = [{"content": "a b c\x85d\x1ce", "i": 0}, {"content": "plain", "i": 1}]
+    p = tmp_path / "rows.jsonl"
+    p.write_bytes(ctl.jsonl_bytes(rows))
+    assert p.read_bytes().count(b"\n") == 2
+    assert asc.read_jsonl(p) == rows

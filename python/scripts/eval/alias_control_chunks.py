@@ -521,7 +521,11 @@ def write_public(path: Path, obj: Mapping[str, Any], forbidden: Iterable[str] = 
 
 
 def jsonl_bytes(rows: Iterable[Mapping[str, Any]]) -> bytes:
-    return "".join(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in rows).encode("utf-8")
+    """One JSON object per line, **ASCII-escaped**: the readers (``alias_study_common.read_jsonl`` and
+    the judge's) split on ``str.splitlines``, which also breaks at U+2028/U+2029, U+0085 and
+    U+001C-U+001E. Record text carries such characters (two U+2029 in the main run's control
+    chunks), so an unescaped row would be read as two broken lines."""
+    return "".join(json.dumps(r, sort_keys=True, ensure_ascii=True) + "\n" for r in rows).encode("utf-8")
 
 
 def write_private(path: Path, data: bytes, what: str) -> str:
