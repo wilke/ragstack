@@ -1,0 +1,241 @@
+{
+ "alpha_one_sided": 0.05,
+ "mde": {
+  "at_chosen_n": {
+   "excess_points": 5.86,
+   "phi": 0.0,
+   "power": 0.8,
+   "px": 0.1186,
+   "py": 0.06
+  },
+  "at_n80": {
+   "excess_points": 6.99,
+   "phi": 0.0,
+   "power": 0.8,
+   "px": 0.1299,
+   "py": 0.06
+  }
+ },
+ "mde_px_by_realised_n": {
+  "237": 0.1299,
+  "247": 0.1282,
+  "257": 0.1266,
+  "267": 0.1251,
+  "277": 0.1237,
+  "287": 0.1223,
+  "297": 0.1211,
+  "307": 0.1198,
+  "317": 0.1187,
+  "327": 0.1176
+ },
+ "n_80": 237,
+ "n_chosen": 318,
+ "n_draw": 334,
+ "oversample": 0.05,
+ "provenance": {
+  "commit": "a349629c07a161f9592a9f7d54787f823348bba3",
+  "dirty": true,
+  "python": "3.8.5",
+  "script_sha256": "142950eb70c239dd8237b1c9c5341ee83649e2cbf1a66dcd5722722c7415f09b"
+ },
+ "scenarios": [
+  {
+   "discordant_share": 0.1744,
+   "label": "primary: 13 % vs 6 %, independent",
+   "n_exact": {
+    "0.80": 237,
+    "0.90": 318
+   },
+   "n_normal": {
+    "0.80": 218,
+    "0.90": 302
+   },
+   "p01": 0.0522,
+   "p10": 0.1222,
+   "p11": 0.0078,
+   "phi": 0.0,
+   "power_at_chosen_n": 0.9001,
+   "power_at_n80": 0.8011,
+   "px_control_flip": 0.13,
+   "py_retest_flip": 0.06,
+   "share_in_direction": 0.700688
+  },
+  {
+   "discordant_share": 0.142453,
+   "label": "primary marginals, phi 0.2",
+   "n_exact": {
+    "0.80": 194,
+    "0.90": 258
+   },
+   "n_normal": {
+    "0.80": 178,
+    "0.90": 246
+   },
+   "p01": 0.036226,
+   "p10": 0.106226,
+   "p11": 0.023774,
+   "phi": 0.2,
+   "power_at_chosen_n": 0.9493,
+   "power_at_n80": 0.8749,
+   "px_control_flip": 0.13,
+   "py_retest_flip": 0.06,
+   "share_in_direction": 0.745695
+  },
+  {
+   "discordant_share": 0.110506,
+   "label": "primary marginals, phi 0.4",
+   "n_exact": {
+    "0.80": 150,
+    "0.90": 197
+   },
+   "n_normal": {
+    "0.80": 138,
+    "0.90": 190
+   },
+   "p01": 0.020253,
+   "p10": 0.090253,
+   "p11": 0.039747,
+   "phi": 0.4,
+   "power_at_chosen_n": 0.986,
+   "power_at_n80": 0.9465,
+   "px_control_flip": 0.13,
+   "py_retest_flip": 0.06,
+   "share_in_direction": 0.816725
+  },
+  {
+   "discordant_share": 0.1568,
+   "label": "smaller effect: 11 % vs 6 %, independent",
+   "n_exact": {
+    "0.80": 417,
+    "0.90": 564
+   },
+   "n_normal": {
+    "0.80": 386,
+    "0.90": 534
+   },
+   "p01": 0.0534,
+   "p10": 0.1034,
+   "p11": 0.0066,
+   "phi": 0.0,
+   "power_at_chosen_n": 0.6908,
+   "power_at_n80": 0.568,
+   "px_control_flip": 0.11,
+   "py_retest_flip": 0.06,
+   "share_in_direction": 0.659439
+  },
+  {
+   "discordant_share": 0.127077,
+   "label": "smaller effect: 11 % vs 6 %, phi 0.2",
+   "n_exact": {
+    "0.80": 339,
+    "0.90": 455
+   },
+   "n_normal": {
+    "0.80": 313,
+    "0.90": 432
+   },
+   "p01": 0.038539,
+   "p10": 0.088539,
+   "p11": 0.021461,
+   "phi": 0.2,
+   "power_at_chosen_n": 0.7763,
+   "power_at_n80": 0.6502,
+   "px_control_flip": 0.11,
+   "py_retest_flip": 0.06,
+   "share_in_direction": 0.696731
+  },
+  {
+   "discordant_share": 0.1892,
+   "label": "noisier null: 13 % vs 8 %, independent",
+   "n_exact": {
+    "0.80": 501,
+    "0.90": 676
+   },
+   "n_normal": {
+    "0.80": 466,
+    "0.90": 645
+   },
+   "p01": 0.0696,
+   "p10": 0.1196,
+   "p11": 0.0104,
+   "phi": 0.0,
+   "power_at_chosen_n": 0.6166,
+   "power_at_n80": 0.4979,
+   "px_control_flip": 0.13,
+   "py_retest_flip": 0.08,
+   "share_in_direction": 0.632135
+  },
+  {
+   "discordant_share": 0.152705,
+   "label": "noisier null: 13 % vs 8 %, phi 0.2",
+   "n_exact": {
+    "0.80": 406,
+    "0.90": 549
+   },
+   "n_normal": {
+    "0.80": 376,
+    "0.90": 520
+   },
+   "p01": 0.051353,
+   "p10": 0.101353,
+   "p11": 0.028647,
+   "phi": 0.2,
+   "power_at_chosen_n": 0.7014,
+   "power_at_n80": 0.5783,
+   "px_control_flip": 0.13,
+   "py_retest_flip": 0.08,
+   "share_in_direction": 0.663714
+  },
+  {
+   "discordant_share": 0.148,
+   "label": "10 % vs 6 %, independent",
+   "n_exact": {
+    "0.80": 613,
+    "0.90": 827
+   },
+   "n_normal": {
+    "0.80": 570,
+    "0.90": 789
+   },
+   "p01": 0.054,
+   "p10": 0.094,
+   "p11": 0.006,
+   "phi": 0.0,
+   "power_at_chosen_n": 0.5333,
+   "power_at_n80": 0.4262,
+   "px_control_flip": 0.1,
+   "py_retest_flip": 0.06,
+   "share_in_direction": 0.635135
+  },
+  {
+   "discordant_share": 0.21204,
+   "label": "reference only (selected, not for sizing): 18.7 % vs 4.0 %, independent",
+   "n_exact": {
+    "0.80": 66,
+    "0.90": 84
+   },
+   "n_normal": {
+    "0.80": 59,
+    "0.90": 81
+   },
+   "p01": 0.03252,
+   "p10": 0.17952,
+   "p11": 0.00748,
+   "phi": 0.0,
+   "power_at_chosen_n": 1.0,
+   "power_at_n80": 0.9998,
+   "px_control_flip": 0.187,
+   "py_retest_flip": 0.04,
+   "share_in_direction": 0.846633
+  }
+ ],
+ "schema": "alias-boundary-confirm-power/1",
+ "sizing_scenario": "primary: 13 % vs 6 %, independent",
+ "sizing_target": 0.9,
+ "stable_window": 25,
+ "targets": [
+  0.8,
+  0.9
+ ],
+ "test": "exact McNemar on discordant pairs, one-sided (control > retest)"
+}
