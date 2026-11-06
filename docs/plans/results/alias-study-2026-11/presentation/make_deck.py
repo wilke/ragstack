@@ -14,6 +14,8 @@ Every measured number on a slide is read here from a committed JSON artifact of 
   artifacts/disagreement-tags.json         the owner's tags on the 19 spot-check disagreements
   artifacts/power-v4.json                  H2 power, added-paper count
   control/artifacts/control-judge.json     the exploratory chunk-boundary control
+  artifacts/record-recount.json            corpus, pool, waves, record set, drafter and verifier counts
+  control/artifacts/control-check.json     the stage-A windows re-cut from the record text (provenance slide)
 
 The only typed values are pre-registration constants (thresholds, the judge line-up, rendering caps),
 each cited to its prereg section, and the provenance pointers in RECORD below (git commits of the
@@ -57,6 +59,16 @@ PREREG = dict(
     judge_tiebreak="Gemini 4 Argon",                     # §6.3
     judge_drift="Claude Opus 5.5 (5 % of pairs, never sets a label)",  # §6.3
 )
+# Corpus-build constants of the v4 build, typed from the prereg's §5.1 table (no public artifact carries them).
+BUILD = dict(
+    pdf_share={"neighbour": "8.34 %", "random1": "9.45 %", "random2": "9.41 %"},   # §5.1 v4 table
+    art_rev={"neighbour": (1845, 578), "random1": (1930, 493), "random2": (1927, 496)},  # §5.1 v4 table
+    added_chunks={"neighbour": 88765, "random1": 84762, "random2": 84552},         # §5.1 v4 table (checked below)
+    draw_overlap=201,                # §5.1 v4 table, papers in both random draws
+    rep_screen_excluded=9,           # §5.1 R18, papers of the v3 arms
+    snapshot="2026-10-14",           # §5.1 build facts: OpenAlex snapshot the random pools come from
+    total_points=811043,             # §15 item 5 (checked below against the artifact's chunk counts)
+)
 FLAG = "judge validity below threshold (§13.5)"
 
 
@@ -73,6 +85,8 @@ HG = load("artifacts/h1b-gold.public.json")
 TAGS = load("artifacts/disagreement-tags.json")
 POW = load("artifacts/power-v4.json")
 CJ = load("control/artifacts/control-judge.json")
+RC = load("artifacts/record-recount.json")
+CK = load("control/artifacts/control-check.json")
 
 prereg_sha = hashlib.sha256((STUDY / "prereg" / "PREREG-alias-study.md").read_bytes()).hexdigest()
 if prereg_sha != RECORD["prereg_sha256"]:
@@ -280,6 +294,8 @@ pw = POW["simulation"]["H2"]["rho1"]
 pw_a = pw["p0.85_q0.05"]["0.05"]["confirm_a0.7"]
 pw_b = pw["p0.7_q0.1"]["0.05"]["confirm_a0.7"]
 added = int(re.search(r"total (\d+)", POW["assumptions"]["neighbour_counts"]).group(1))
+PAPERS_PER_ARM = 2423  # prereg §5.1 v4 table: every added arm holds 2,423 papers (shortfall 0)
+assert added == PAPERS_PER_ARM, "neighbour total != the §5.1 v4 per-arm paper count"
 chunks = {a: B["runs"][f"{a}/merged"]["field_coverage"]["chunks"] for a, _ in ARMS}
 fc_m = PLAC["field_coverage"]["merged"]
 fc_p = PLAC["field_coverage"]["placebo"]
@@ -348,6 +364,131 @@ slide("Design", "How it was measured",
 </div>
 <p class="callout"><b>What a point is:</b> one percentage point of found@10. 1 of {N_G} G records = <span class="num">{100 / N_G:.2f}</span> pt · 1 of {N_C} C = <span class="num">{100 / N_C:.2f}</span> pt · 1 of {N_ALL} = <span class="num">{100 / N_ALL:.2f}</span> pt. Every point figure in this deck is also given in records.</p>""",
       source="<code>record_set.balanced</code>, <code>layer1.H1.n</code>, <code>layer2.c_change.n</code>, <code>judge.pairs_finalized</code> (results-stage-B); prereg §4, §6")
+
+# --------------------------------------------------------------------------- #
+# 3p. Data provenance: papers and text (owner request, 2026-11-05)
+# --------------------------------------------------------------------------- #
+COR, POOL, WAV, RSET = RC["corpus"], RC["pool"], RC["waves"], RC["record_set"]
+VMOD = RC["verdict_source"]["all"]["verifier_model"]
+assert RSET["accepted"]["records"] == B["record_set"]["records"] and RSET["balanced"]["records"] == N_ALL
+assert RSET["balanced"]["layout"] == {"2G+1C": PAPERS}
+COLL = {a: B["runs"][f"{a}/merged"]["field_coverage"] for a, _ in ARMS}
+assert COLL["base"]["chunks"] == COR["chunks"] and COLL["base"]["glossary_file_counts"]["documents"] == COR["documents"]
+ADDC = {a: COLL[a]["chunks"] - COLL["base"]["chunks"] for a, _ in ARMS[1:]}
+assert ADDC == BUILD["added_chunks"], "artifact chunk counts differ from prereg §5.1"
+NBC = re.search(r"realised mean ([\d.]+), min (\d+), max (\d+), total (\d+)", POW["assumptions"]["neighbour_counts"])
+nb_mean, nb_min, nb_max = NBC.group(1), NBC.group(2), NBC.group(3)
+DRAFT_MODEL = next(iter(RC["drafter"]["served_models_draft_rows"]))
+arm_rows = "".join(
+    f'<tr><td><b>{esc(lab)}</b></td><td class="num">{added:,}</td><td class="num">{ADDC[a]:,}</td>'
+    f'<td class="num">{"—" if a == "neighbour" else sgn(100 * (ADDC[a] - ADDC["neighbour"]) / ADDC["neighbour"]) + " %"}</td>'
+    f'<td class="num">{BUILD["pdf_share"][a]}</td><td class="num">{BUILD["art_rev"][a][0]:,} / {BUILD["art_rev"][a][1]:,}</td></tr>'
+    for a, lab in ARMS[1:])
+slide("Design · provenance", "Where the papers and the text come from",
+      f"""<div class="cols3 dense">
+<div class="card"><p class="fam">Base corpus · OA-1000</p>
+<p>{COR['papers']:,} open-access articles, JATS XML from PubMed Central: {n_(f"{COR['documents']:,}")} documents (articles plus their table and figure units), {n_(f"{COR['chunks']:,}")} chunks.</p>
+<p class="small"><i>How the {COR['papers']:,} were drawn is not stated in the study record.</i></p>
+<p class="fam">Records</p>
+<p>Seeded pool of {n_(POOL['eval_papers'])} eligible papers, {n_(WAV['activated_final'])} activated in waves; drafted by {esc(DRAFT_MODEL)}, checked mechanically, verified by Claude Opus 5.5 (Codex on {n_(VMOD['gpt-6-astra'])}): {n_(f"{RSET['accepted']['records']:,}")} accepted on {n_(RSET['accepted']['papers'])} papers. The {n_(PAPERS)} with exactly 2 G + 1 C give the {n_(N_ALL)} balanced records. Built blind to retrieval.</p></div>
+<div class="card"><p class="fam">Text extraction</p>
+<ul class="tight">
+<li><b>JATS article:</b> abstract + body, titled sections as markdown heading lines (<code>## Title</code> at top level, deeper for nested; untitled ones leave none); no reference list.</li>
+<li><b>Tables, figures:</b> lifted out as unit records (label, caption, grid; long tables split by row, header repeated).</li>
+<li><b>Added papers:</b> PMC JATS where a copy exists, else the licensed open-access PDF: no headings, reference list kept (a known difference).</li>
+<li><b>Screens</b> on added papers: control characters (PDF out above 0.5 % of chunks), repetition (distinct-chunk ratio &lt; 0.90; {BUILD['rep_screen_excluded']} out).</li>
+</ul></div>
+<div class="card"><p class="fam">Added papers · OpenAlex metadata only</p>
+<p><b>Neighbours</b> per study paper: the 5 most-cited references and 5 most recent citers with open-access text, not in OA-1000; unfetchable ones walked past; articles and reviews only; shared ones added once. Realised {n_(nb_mean)} per paper ({nb_min}–{nb_max}).</p>
+<p><b>Random, two draws</b> (snapshot of {BUILD['snapshot']}): same primary topic, year ±3, open access, no citation link to a study paper; matched per study paper on count, article type, chunk-length band and PDF share; ±5 % chunk volume a target, not a gate. {BUILD['draw_overlap']} papers in both draws.</p></div>
+</div>
+<table class="scen tight-t"><thead><tr><th>added arm</th><th>papers</th><th>chunks</th><th>vs neighbour</th><th>PDF share</th><th>article / review</th></tr></thead>
+<tbody>{arm_rows}</tbody></table>""",
+      source="<code>corpus</code>, <code>pool</code>, <code>waves</code>, <code>record_set</code>, <code>drafter</code>, <code>verdict_source</code> (record-recount); <code>runs.&lt;arm&gt;/merged.field_coverage</code> (results-stage-B); <code>assumptions.neighbour_counts</code> (power-v4); <code>jats.py</code> (extractor); <code>control/CONTROL-PLAN.md</code> §2 (PDF text has no headings); prereg §4.1, §4.3, §5.1 (selection rules, screens, PDF share, article types)")
+
+# --------------------------------------------------------------------------- #
+# 3q. Data provenance: collections (owner request, 2026-11-05)
+# --------------------------------------------------------------------------- #
+COLL_KEYS = sorted({k.split("#")[0] for k in B["runs"]})
+assert len(COLL_KEYS) == 9, COLL_KEYS
+pts = sum(COLL[k.split("/")[0]]["chunks"] for k in COLL_KEYS)
+assert pts == BUILD["total_points"], pts
+assert all(v["census_source"] == "load_receipt+live" for v in B["runs"].values())
+CKG = CK["gate"]
+assert CK["gate_passes"] and CKG["v_stage_a_offsets_reproduce"]
+ck_docs, ck_mis = CK["counts"]["docs"], CK["counts"]["content_mismatch"]
+TOK = CK["chunker"]["tokenizer"]
+assert CK["chunker"]["stage_a_descriptor"] == "fixed_token/512/0"
+n_legs, n_rows = len(B["legs_read"]), B["record_set"]["records"]
+assert set(B["legs_read"].values()) == {n_rows}
+coll_rows = "".join(
+    f'<tr><td><b>{esc(lab)}</b></td><td class="num">{COLL[a]["chunks"]:,}</td><td class="num">{COLL[a]["glossary_file_counts"]["documents"]:,}</td>'
+    f'<td>{" · ".join(k.split("/")[1] for k in COLL_KEYS if k.split("/")[0] == a)}</td></tr>' for a, lab in ARMS)
+slide("Design · provenance", "How the collections were built",
+      f"""<div class="cols2 dense">
+<div>
+<div class="card"><p class="fam">Chunks and embeddings</p>
+<ul class="tight">
+<li><b>Chunker</b> <code>tok512o0</code> = <code>{esc(CK['chunker']['stage_a_descriptor'])}</code>: a fixed 512-token window, no overlap, blind to sentences and sections; tokens counted in the <code>{esc(TOK)}</code> tokenizer.</li>
+<li><b>Embedding:</b> SFR dense; each corpus embedded once, base shared by all four arms with identical chunk ids and text; added papers through the same chunker, embedder and tools image <i>(its version: not stated in the public record)</i>.</li>
+<li><b>Checked later</b> (control): on {n_(f"{ck_docs:,}")} sampled documents every stage-A chunk equals the record text at its offsets ({ck_mis} mismatches).</li>
+</ul></div>
+<div class="card"><p class="fam">Retrievers · top 10</p>
+<ul class="tight">
+<li><b>default</b> (served path): hybrid BM25 + SFR dense (RRF k 60), top 50 rescored by <code>BAAI/bge-reranker-v2-m3</code> on text + glossary field.</li>
+<li><b>norerank:</b> the same hybrid. <b>BM25:</b> alone.</li>
+<li>No graph, no rewriting; glossary boost probed active on the glossary arms (declared on <i>none</i>); the reranker reads the field (declared). {n_legs} legs × {n_rows:,} records = {n_(f"{n_legs * n_rows:,}")} calls.</li>
+</ul></div>
+</div>
+<div>
+<div class="card"><p class="fam">{len(COLL_KEYS)} bench collections, each written once</p>
+<table class="scen tight-t"><thead><tr><th>corpus arm</th><th>chunks</th><th>documents</th><th>glossary arms</th></tr></thead><tbody>{coll_rows}</tbody></table>
+<p>{n_(f"{pts:,}")} points. Shards loaded once per glossary arm through the workflow engine; each load's receipt is pinned by the signed prereg tag, and every leg checked chunk count and glossary stamps against it.</p></div>
+<div class="card"><p class="fam">Glossary field</p>
+<p><b>merged:</b> the paper's symbols and defined abbreviations (plus plural entries), rendered on every chunk where the alias occurs as a token, at most {PREREG['glossary_line_cap']} lines / {PREREG['glossary_char_cap']:,} characters: {n_(f"{fc_m['chunks_with_field']:,}")} of {fc_m['chunks']:,} base chunks. <b>placebo:</b> another paper's entries, own entries removed: {n_(fc_p['chunks_with_field'])} chunks. <b>none:</b> an explicit empty file. Added papers' glossaries come from the same pipeline, run locally.</p></div>
+</div>
+</div>""",
+      source="<code>runs.*.field_coverage</code>, <code>runs.*.census_source</code>, <code>legs_read</code>, <code>layer2.placebo.field_coverage</code> (results-stage-B); <code>chunker</code>, <code>gate</code>, <code>groups.*.counts</code> (control-check); prereg §5.1–§5.4, §9.3, §15 item 5; <code>prereg/README.md</code> (freeze record: the tag pins the load receipts)")
+
+# --------------------------------------------------------------------------- #
+# 3o. Why judge at all (owner request, 2026-11-05)
+# --------------------------------------------------------------------------- #
+HBO = ORIGIN["hits_by_origin"]
+assert HBO["base|none|default"]["records"] == "G" and HBO["neighbour|none|default"]["records"] == "all"
+
+
+def origin_bar(cell: str, n: int, label: str) -> str:
+    h = HBO[cell]
+    tot = h["gold"] + h["same"] + h["other"]
+    miss = n - tot
+    return (f'<p class="small"><b>{esc(label)}</b>: {tot} of {n} found</p>'
+            f'<div class="split" role="img" aria-label="{esc(label)}: gold chunk in top 10 {h["gold"]}, another passage of the same paper {h["same"]}, another paper {h["other"]}, not found {miss}">'
+            f'<span class="seg s1" style="flex:{h["gold"]}">{h["gold"]} gold</span>'
+            f'<span class="seg s2 tex" style="flex:{max(h["same"], 1)}">{h["same"]}</span>'
+            f'<span class="seg s3" style="flex:{max(h["other"], 1)}">{h["other"]}</span>'
+            f'<span class="seg miss" style="flex:{max(miss, 1)}">{miss}</span></div>')
+
+
+base_g, nb = HBO["base|none|default"], HBO["neighbour|none|default"]
+slide("Design · the outcome", "Why judge at all?",
+      f"""<div class="cols2 dense">
+<div>
+<p class="lede">Each question asks for a <b>fact</b>, not a passage. It was written from one gold chunk, but the fact can be stated elsewhere too: in another passage of the same paper, or in another paper. A reader who retrieves any of those has the answer.</p>
+<p><b>Counting only the gold chunk would score those as misses.</b> Without a glossary, {base_g['gold'] + base_g['same'] + base_g['other']} of {N_G} G questions were found: {base_g['gold']} had the gold chunk in the top 10; of the {N_G - base_g['gold']} where it was not, {base_g['same']} were answered by another passage of the same paper and {base_g['other']} by another paper (a lower bound on answers found elsewhere, since chunks beside a gold hit were not judged).</p>
+<p><b>For H2 it changes what is asked.</b> A citation neighbour is more likely than a random paper to <i>answer</i>. Gold-only would count every gold chunk a neighbour pushes out as a loss, even when the neighbour supplies the answer. With neighbours added, {nb['other']} questions were answered by another paper, against {HBO['random1|none|default']['other']} and {HBO['random2|none|default']['other']} in the random draws: consistent with neighbours supplying answers where they displaced the gold (a per-cell reading; “another paper” is any other paper, and there is no per-record count). Judged H2 asks whether neighbours displace more than they add (prereg §3.1).</p>
+<p class="small"><b>So judged found@10 is the outcome</b> (what a reader gets), with found@10-gold beside every figure as a judge-free check and as H2's direction gate. The price: the judge has to be right (next two slides).</p>
+</div>
+<div class="card"><p class="fam">Who answered: gold chunk in top 10 / same paper / another paper / not found</p>
+<div class="legend-row small"><span class="li"><span class="key s1"></span> gold chunk in top 10</span><span class="li"><span class="key s2 tex"></span> another passage, same paper</span><span class="li"><span class="key s3"></span> another paper</span><span class="li"><span class="key miss"></span> not found</span></div>
+{origin_bar("base|none|default", N_G, "G questions, base corpus, no glossary")}
+{origin_bar("neighbour|none|default", N_ALL, "all questions, neighbours added")}
+{origin_bar("random1|none|default", N_ALL, "all questions, random draw 1 added")}
+{origin_bar("random2|none|default", N_ALL, "all questions, random draw 2 added")}
+<p class="small">Counts are exact; small segments are widened to fit their labels, so widths are approximate.</p>
+</div>
+</div>""",
+      flag=True,
+      source="<code>fixed_sensitivities.origin.hits_by_origin</code> (stage-A2); <code>layer1.H1.n</code>, <code>record_set.balanced</code>; prereg §3.1, §6.1")
 
 # --------------------------------------------------------------------------- #
 # 3a. What "judged" means (owner request, 2026-11-05)
@@ -775,6 +916,11 @@ h2{font-size:2.05em;line-height:1.12;max-width:30em}
 .cols2{display:grid;grid-template-columns:1fr 1fr;gap:1.6em}
 .cols2.wide-left{grid-template-columns:1.45fr 1fr}
 .cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2em}
+.dense{font-size:.9em}
+.dense .card{padding:.8em 1em}
+.dense .card p{margin:0 0 .45em}
+table.tight-t{font-size:.84em;margin:0 0 .3em}
+table.tight-t td,table.tight-t th{padding:.22em .5em}
 .cols-chart{display:grid;grid-template-columns:1.35fr 1fr;gap:1.8em;align-items:start}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1em 1.2em}
 .fam{font-weight:700;color:var(--accent);margin:0 0 .5em!important;font-size:.92em;letter-spacing:.03em;text-transform:uppercase}
@@ -809,6 +955,15 @@ table.scen caption{text-align:left;font-weight:600;color:var(--ink2);padding-bot
 .split{display:flex;gap:3px;height:2.1em;margin:.3em 0 .8em;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:.9em}
 .seg{display:flex;align-items:center;padding:0 .7em;color:#fff;font-weight:600;background:var(--s1)}
 .seg.s2{background:var(--s2)}
+.seg.s3{background:var(--s3)}
+.seg.miss{background:var(--muted,#8a8f8c)}
+.legend-row{display:flex;flex-wrap:wrap;align-items:center;gap:.35em .9em;margin:.2em 0 .6em}
+.legend-row .li{white-space:nowrap;display:inline-flex;align-items:center;gap:.3em}
+.key{display:inline-block;width:1.1em;height:.8em;border-radius:2px;background:var(--s1)}
+.key.s2{background:var(--s2)}
+.key.s3{background:var(--s3)}
+.key.miss{background:var(--muted,#8a8f8c)}
+.key.tex{background-image:repeating-linear-gradient(45deg,transparent 0 3px,var(--patline) 3px 4.5px)}
 .seg.tex{background-image:repeating-linear-gradient(45deg,transparent 0 5px,var(--patline) 5px 6.5px)}
 .lim{margin:0;padding-left:1.1em}
 .lim li{margin:0 0 .8em}

@@ -146,3 +146,30 @@ never sets a label; agreement with Opus 0.948 in stage A and 0.960 cumulative ag
 report-only under R29; the arm gap never fired; 59 pairs ended as *no reference*; all from `judge.drift`
 and `judge.opus_no_reference`). The deck now has 17 slides; the "15 slides" in the status above refers to
 the first version.
+
+### Addition, 2026-11-05 (later still): why judge at all
+
+The deck gains a slide before the two judge slides, at the owner's request: why the outcome is judged at
+all. A question asks for a fact that is often stated in more than one place; counting only the gold chunk
+would score answers from other passages as misses (without a glossary, 591 of 600 G questions were
+answered, 550 by the gold chunk, 23 by another passage of the same paper, 18 by another paper), and for
+H2 it would count every displaced gold chunk as a loss even where a neighbour supplies the answer
+(other-paper answers 67 with neighbours, 48 and 49 with the random draws). All from
+`fixed_sensitivities.origin.hits_by_origin`. The deck now has 18 slides.
+
+### Addition, 2026-11-05 (later still): data-provenance slides
+
+At the owner's request the deck gains two slides after "How it was measured" (slides 4 and 5): where the
+papers and the text come from, and how the collections were built. Every count is read from a committed
+artifact (`record-recount.json` for the corpus, pool, waves, record set, drafter and verifier;
+`results-stage-B.public.json` for the chunks and documents of each collection, field coverage and
+`legs_read`; `power-v4.json` for the realised neighbours per study paper; `control-check.json` for the
+tokenizer, the stage-A chunk descriptor and the check that every stage-A chunk equals the record text at
+its offsets on 4,265 sampled documents). The selection rules, screens, PDF shares, article types, snapshot
+date and draw overlap are prereg §5.1 constants, typed with their section; the arm chunk counts and the
+811,043 points of §15 item 5 are checked against the artifacts by the generator. The text-extraction lines
+follow `python/ragstack/ingestion/jats.py`. Two facts are not stated in the record and the slides say so:
+how the 1,000 OA-1000 articles were drawn, and the embedder version and tools image of the load. The
+"Why judge at all?" slide was reworded on review: the gold count is "gold chunk in the top 10", and the
+other-passage counts are a lower bound because chunks beside a gold hit were not judged (§6.2). The deck now
+has 20 slides.

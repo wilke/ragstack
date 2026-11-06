@@ -361,7 +361,7 @@ STATIC_PAGES = [
         src="presentations/alias-study-2026-11.html",
         out="presentations/alias-study-2026-11.html", label="Presentation",
         card="Alias study (OA-1000)",
-        blurb="The pre-registered alias study in 17 slides: glossary attachment (H1, H1b confirmed) and citation-neighbour growth (H2 not confirmed), every number generated from the committed artifacts. Judge validity below threshold on every result.",
+        blurb="The pre-registered alias study in 20 slides: glossary attachment (H1, H1b confirmed) and citation-neighbour growth (H2 not confirmed), every number generated from the committed artifacts. Judge validity below threshold on every result.",
     ),
 ]
 # A doc linking to a standalone page (e.g. an experiment README linking its deck) should land on

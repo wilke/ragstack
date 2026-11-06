@@ -64,6 +64,11 @@ h2{font-size:2.05em;line-height:1.12;max-width:30em}
 .cols2{display:grid;grid-template-columns:1fr 1fr;gap:1.6em}
 .cols2.wide-left{grid-template-columns:1.45fr 1fr}
 .cols3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.2em}
+.dense{font-size:.9em}
+.dense .card{padding:.8em 1em}
+.dense .card p{margin:0 0 .45em}
+table.tight-t{font-size:.84em;margin:0 0 .3em}
+table.tight-t td,table.tight-t th{padding:.22em .5em}
 .cols-chart{display:grid;grid-template-columns:1.35fr 1fr;gap:1.8em;align-items:start}
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1em 1.2em}
 .fam{font-weight:700;color:var(--accent);margin:0 0 .5em!important;font-size:.92em;letter-spacing:.03em;text-transform:uppercase}
@@ -98,6 +103,15 @@ table.scen caption{text-align:left;font-weight:600;color:var(--ink2);padding-bot
 .split{display:flex;gap:3px;height:2.1em;margin:.3em 0 .8em;border-radius:6px;overflow:hidden;font-family:var(--mono);font-size:.9em}
 .seg{display:flex;align-items:center;padding:0 .7em;color:#fff;font-weight:600;background:var(--s1)}
 .seg.s2{background:var(--s2)}
+.seg.s3{background:var(--s3)}
+.seg.miss{background:var(--muted,#8a8f8c)}
+.legend-row{display:flex;flex-wrap:wrap;align-items:center;gap:.35em .9em;margin:.2em 0 .6em}
+.legend-row .li{white-space:nowrap;display:inline-flex;align-items:center;gap:.3em}
+.key{display:inline-block;width:1.1em;height:.8em;border-radius:2px;background:var(--s1)}
+.key.s2{background:var(--s2)}
+.key.s3{background:var(--s3)}
+.key.miss{background:var(--muted,#8a8f8c)}
+.key.tex{background-image:repeating-linear-gradient(45deg,transparent 0 3px,var(--patline) 3px 4.5px)}
 .seg.tex{background-image:repeating-linear-gradient(45deg,transparent 0 5px,var(--patline) 5px 6.5px)}
 .lim{margin:0;padding-left:1.1em}
 .lim li{margin:0 0 .8em}
@@ -227,6 +241,64 @@ And does growing a collection with a paper's citation neighbours cost more than 
 <p class="small">Blind to arm, retriever and rank. <span class="num">24,559</span> pairs judged, <span class="num">1,230</span> by tiebreak, <span class="num">0</span> unjudged.</p></div>
 </div>
 <p class="callout"><b>What a point is:</b> one percentage point of found@10. 1 of 600 G records = <span class="num">0.17</span> pt · 1 of 300 C = <span class="num">0.33</span> pt · 1 of 900 = <span class="num">0.11</span> pt. Every point figure in this deck is also given in records.</p></div><footer class="sf"><p class="src">Source: <code>record_set.balanced</code>, <code>layer1.H1.n</code>, <code>layer2.c_change.n</code>, <code>judge.pairs_finalized</code> (results-stage-B); prereg §4, §6</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · provenance </p><h2>Where the papers and the text come from</h2></header><div class="sb"><div class="cols3 dense">
+<div class="card"><p class="fam">Base corpus · OA-1000</p>
+<p>1,000 open-access articles, JATS XML from PubMed Central: <span class="num">12,560</span> documents (articles plus their table and figure units), <span class="num">32,765</span> chunks.</p>
+<p class="small"><i>How the 1,000 were drawn is not stated in the study record.</i></p>
+<p class="fam">Records</p>
+<p>Seeded pool of <span class="num">857</span> eligible papers, <span class="num">532</span> activated in waves; drafted by Gemini 2.5 Pro, checked mechanically, verified by Claude Opus 5.5 (Codex on <span class="num">54</span>): <span class="num">1,091</span> accepted on <span class="num">408</span> papers. The <span class="num">300</span> with exactly 2 G + 1 C give the <span class="num">900</span> balanced records. Built blind to retrieval.</p></div>
+<div class="card"><p class="fam">Text extraction</p>
+<ul class="tight">
+<li><b>JATS article:</b> abstract + body, titled sections as markdown heading lines (<code>## Title</code> at top level, deeper for nested; untitled ones leave none); no reference list.</li>
+<li><b>Tables, figures:</b> lifted out as unit records (label, caption, grid; long tables split by row, header repeated).</li>
+<li><b>Added papers:</b> PMC JATS where a copy exists, else the licensed open-access PDF: no headings, reference list kept (a known difference).</li>
+<li><b>Screens</b> on added papers: control characters (PDF out above 0.5 % of chunks), repetition (distinct-chunk ratio &lt; 0.90; 9 out).</li>
+</ul></div>
+<div class="card"><p class="fam">Added papers · OpenAlex metadata only</p>
+<p><b>Neighbours</b> per study paper: the 5 most-cited references and 5 most recent citers with open-access text, not in OA-1000; unfetchable ones walked past; articles and reviews only; shared ones added once. Realised <span class="num">8.08</span> per paper (0–10).</p>
+<p><b>Random, two draws</b> (snapshot of 2026-10-14): same primary topic, year ±3, open access, no citation link to a study paper; matched per study paper on count, article type, chunk-length band and PDF share; ±5 % chunk volume a target, not a gate. 201 papers in both draws.</p></div>
+</div>
+<table class="scen tight-t"><thead><tr><th>added arm</th><th>papers</th><th>chunks</th><th>vs neighbour</th><th>PDF share</th><th>article / review</th></tr></thead>
+<tbody><tr><td><b>neighbour</b></td><td class="num">2,423</td><td class="num">88,765</td><td class="num">—</td><td class="num">8.34 %</td><td class="num">1,845 / 578</td></tr><tr><td><b>random-1</b></td><td class="num">2,423</td><td class="num">84,762</td><td class="num">−4.51 %</td><td class="num">9.45 %</td><td class="num">1,930 / 493</td></tr><tr><td><b>random-2</b></td><td class="num">2,423</td><td class="num">84,552</td><td class="num">−4.75 %</td><td class="num">9.41 %</td><td class="num">1,927 / 496</td></tr></tbody></table></div><footer class="sf"><p class="src">Source: <code>corpus</code>, <code>pool</code>, <code>waves</code>, <code>record_set</code>, <code>drafter</code>, <code>verdict_source</code> (record-recount); <code>runs.&lt;arm&gt;/merged.field_coverage</code> (results-stage-B); <code>assumptions.neighbour_counts</code> (power-v4); <code>jats.py</code> (extractor); <code>control/CONTROL-PLAN.md</code> §2 (PDF text has no headings); prereg §4.1, §4.3, §5.1 (selection rules, screens, PDF share, article types)</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · provenance </p><h2>How the collections were built</h2></header><div class="sb"><div class="cols2 dense">
+<div>
+<div class="card"><p class="fam">Chunks and embeddings</p>
+<ul class="tight">
+<li><b>Chunker</b> <code>tok512o0</code> = <code>fixed_token/512/0</code>: a fixed 512-token window, no overlap, blind to sentences and sections; tokens counted in the <code>Salesforce/SFR-Embedding-Mistral</code> tokenizer.</li>
+<li><b>Embedding:</b> SFR dense; each corpus embedded once, base shared by all four arms with identical chunk ids and text; added papers through the same chunker, embedder and tools image <i>(its version: not stated in the public record)</i>.</li>
+<li><b>Checked later</b> (control): on <span class="num">4,265</span> sampled documents every stage-A chunk equals the record text at its offsets (0 mismatches).</li>
+</ul></div>
+<div class="card"><p class="fam">Retrievers · top 10</p>
+<ul class="tight">
+<li><b>default</b> (served path): hybrid BM25 + SFR dense (RRF k 60), top 50 rescored by <code>BAAI/bge-reranker-v2-m3</code> on text + glossary field.</li>
+<li><b>norerank:</b> the same hybrid. <b>BM25:</b> alone.</li>
+<li>No graph, no rewriting; glossary boost probed active on the glossary arms (declared on <i>none</i>); the reranker reads the field (declared). 29 legs × 1,091 records = <span class="num">31,639</span> calls.</li>
+</ul></div>
+</div>
+<div>
+<div class="card"><p class="fam">9 bench collections, each written once</p>
+<table class="scen tight-t"><thead><tr><th>corpus arm</th><th>chunks</th><th>documents</th><th>glossary arms</th></tr></thead><tbody><tr><td><b>base (OA-1000)</b></td><td class="num">32,765</td><td class="num">12,560</td><td>merged · none · placebo</td></tr><tr><td><b>neighbour</b></td><td class="num">121,530</td><td class="num">42,968</td><td>merged · none</td></tr><tr><td><b>random-1</b></td><td class="num">117,527</td><td class="num">45,231</td><td>merged · none</td></tr><tr><td><b>random-2</b></td><td class="num">117,317</td><td class="num">45,969</td><td>merged · none</td></tr></tbody></table>
+<p><span class="num">811,043</span> points. Shards loaded once per glossary arm through the workflow engine; each load's receipt is pinned by the signed prereg tag, and every leg checked chunk count and glossary stamps against it.</p></div>
+<div class="card"><p class="fam">Glossary field</p>
+<p><b>merged:</b> the paper's symbols and defined abbreviations (plus plural entries), rendered on every chunk where the alias occurs as a token, at most 12 lines / 1,200 characters: <span class="num">24,749</span> of 32,765 base chunks. <b>placebo:</b> another paper's entries, own entries removed: <span class="num">817</span> chunks. <b>none:</b> an explicit empty file. Added papers' glossaries come from the same pipeline, run locally.</p></div>
+</div>
+</div></div><footer class="sf"><p class="src">Source: <code>runs.*.field_coverage</code>, <code>runs.*.census_source</code>, <code>legs_read</code>, <code>layer2.placebo.field_coverage</code> (results-stage-B); <code>chunker</code>, <code>gate</code>, <code>groups.*.counts</code> (control-check); prereg §5.1–§5.4, §9.3, §15 item 5; <code>prereg/README.md</code> (freeze record: the tag pins the load receipts)</p><span class="pg"></span></footer></section>
+<section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · the outcome </p><h2>Why judge at all?</h2></header><div class="sb"><div class="cols2 dense">
+<div>
+<p class="lede">Each question asks for a <b>fact</b>, not a passage. It was written from one gold chunk, but the fact can be stated elsewhere too: in another passage of the same paper, or in another paper. A reader who retrieves any of those has the answer.</p>
+<p><b>Counting only the gold chunk would score those as misses.</b> Without a glossary, 591 of 600 G questions were found: 550 had the gold chunk in the top 10; of the 50 where it was not, 23 were answered by another passage of the same paper and 18 by another paper (a lower bound on answers found elsewhere, since chunks beside a gold hit were not judged).</p>
+<p><b>For H2 it changes what is asked.</b> A citation neighbour is more likely than a random paper to <i>answer</i>. Gold-only would count every gold chunk a neighbour pushes out as a loss, even when the neighbour supplies the answer. With neighbours added, 67 questions were answered by another paper, against 48 and 49 in the random draws: consistent with neighbours supplying answers where they displaced the gold (a per-cell reading; “another paper” is any other paper, and there is no per-record count). Judged H2 asks whether neighbours displace more than they add (prereg §3.1).</p>
+<p class="small"><b>So judged found@10 is the outcome</b> (what a reader gets), with found@10-gold beside every figure as a judge-free check and as H2's direction gate. The price: the judge has to be right (next two slides).</p>
+</div>
+<div class="card"><p class="fam">Who answered: gold chunk in top 10 / same paper / another paper / not found</p>
+<div class="legend-row small"><span class="li"><span class="key s1"></span> gold chunk in top 10</span><span class="li"><span class="key s2 tex"></span> another passage, same paper</span><span class="li"><span class="key s3"></span> another paper</span><span class="li"><span class="key miss"></span> not found</span></div>
+<p class="small"><b>G questions, base corpus, no glossary</b>: 591 of 600 found</p><div class="split" role="img" aria-label="G questions, base corpus, no glossary: gold chunk in top 10 550, another passage of the same paper 23, another paper 18, not found 9"><span class="seg s1" style="flex:550">550 gold</span><span class="seg s2 tex" style="flex:23">23</span><span class="seg s3" style="flex:18">18</span><span class="seg miss" style="flex:9">9</span></div>
+<p class="small"><b>all questions, neighbours added</b>: 882 of 900 found</p><div class="split" role="img" aria-label="all questions, neighbours added: gold chunk in top 10 776, another passage of the same paper 39, another paper 67, not found 18"><span class="seg s1" style="flex:776">776 gold</span><span class="seg s2 tex" style="flex:39">39</span><span class="seg s3" style="flex:67">67</span><span class="seg miss" style="flex:18">18</span></div>
+<p class="small"><b>all questions, random draw 1 added</b>: 882 of 900 found</p><div class="split" role="img" aria-label="all questions, random draw 1 added: gold chunk in top 10 798, another passage of the same paper 36, another paper 48, not found 18"><span class="seg s1" style="flex:798">798 gold</span><span class="seg s2 tex" style="flex:36">36</span><span class="seg s3" style="flex:48">48</span><span class="seg miss" style="flex:18">18</span></div>
+<p class="small"><b>all questions, random draw 2 added</b>: 881 of 900 found</p><div class="split" role="img" aria-label="all questions, random draw 2 added: gold chunk in top 10 793, another passage of the same paper 39, another paper 49, not found 19"><span class="seg s1" style="flex:793">793 gold</span><span class="seg s2 tex" style="flex:39">39</span><span class="seg s3" style="flex:49">49</span><span class="seg miss" style="flex:19">19</span></div>
+<p class="small">Counts are exact; small segments are widened to fit their labels, so widths are approximate.</p>
+</div>
+</div></div><footer class="sf"><p class="flag"><span class="flagmark" aria-hidden="true">!</span>Every result on this slide: judge validity below threshold (§13.5).</p><p class="src">Source: <code>fixed_sensitivities.origin.hits_by_origin</code> (stage-A2); <code>layer1.H1.n</code>, <code>record_set.balanced</code>; prereg §3.1, §6.1</p><span class="pg"></span></footer></section>
 <section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · the judge </p><h2>What “judged” means</h2></header><div class="sb"><div class="cols2">
 <div>
 <p class="lede">An LLM judge decides whether a chunk answers the question. The alternative, found@10-gold, only checks whether the one known source chunk was retrieved.</p>
@@ -440,7 +512,7 @@ And does growing a collection with a paper's citation neighbours cost more than 
 </div>
 <nav class="controls" aria-label="Slide navigation">
 <button id="prev" type="button" aria-label="Previous slide">&larr;</button>
-<span class="counter" id="counter" aria-live="polite">1 / 17</span>
+<span class="counter" id="counter" aria-live="polite">1 / 20</span>
 <button id="next" type="button" aria-label="Next slide">&rarr;</button>
 <button id="theme" type="button" aria-label="Toggle light or dark theme">theme</button>
 </nav>
