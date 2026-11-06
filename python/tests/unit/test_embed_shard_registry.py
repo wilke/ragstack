@@ -625,3 +625,34 @@ def test_every_shipped_embed_step_binds_collection_id_since_the_image_repin() ->
         assert len(positions) == len(set(positions)), (path.name, sorted(positions))
         seen += 1
     assert seen == len(EMBED_WORKFLOWS)
+
+
+def test_embed_bulk_chunk_size_unit_is_optional_and_binds_through_to_the_tool() -> None:
+    """``embed-bulk.cwl`` takes an OPTIONAL ``chunk_size_unit`` (no default)
+    that reaches ``embed_shard.py --chunk-size-unit``, so a run against an entry
+    recording ``size_unit=tokens`` can pass ``refuse_size_unit_mismatch``.
+    Absent, the tool input is null and the flag is omitted (the tool's
+    ``chars`` default applies), so every existing inputs file behaves as before.
+
+    MUTATION: give the workflow input a default, drop it from the step's
+    ``in:``, make the tool input non-nullable, or change its prefix → fails."""
+    path = CWL_DIR / "embed-bulk.cwl"
+    if not path.is_file():
+        pytest.skip("no cwl/embed-bulk.cwl in this checkout")
+    import yaml
+
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    wf_input = doc["inputs"]["chunk_size_unit"]
+    assert wf_input["type"] == ["null", "string"]
+    assert "default" not in wf_input
+    step = doc["steps"]["embed_shard"]
+    assert step["in"]["chunk_size_unit"] == "chunk_size_unit"
+    tool = step["run"]
+    assert tool["baseCommand"][-1].endswith("/embed_shard.py")
+    tool_input = tool["inputs"]["chunk_size_unit"]
+    assert tool_input["type"] == ["null", "string"]
+    assert "default" not in tool_input
+    assert tool_input["inputBinding"]["prefix"] == "--chunk-size-unit"
+    # The flag the binding names is one the tool actually takes.
+    args = embed_cli.parse_args(["s.jsonl", "--chunk-size-unit", "tokens"])
+    assert args.chunk_size_unit == "tokens"
