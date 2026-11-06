@@ -78,6 +78,7 @@ __all__ = [
     "ids_from_filename",
     "ids_from_text",
     "is_duplicate_refusal",
+    "same_record_family",
     "normalize_doi",
     "normalize_pmcid",
     "normalize_pmid",
@@ -235,6 +236,30 @@ def ids_from_text(text: str, limit: int = HEADER_SCAN_CHARS) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # The refusal
 # --------------------------------------------------------------------------- #
+
+
+def _record_root(source: str) -> str:
+    """The record a JATS unit record was split from: ``"PMC1#table-1"`` →
+    ``"PMC1"``. Only an opaque record id (a ``#`` and no ``/``) is split; a
+    file path is its own root."""
+    if "#" in source and "/" not in source:
+        return source.split("#", 1)[0]
+    return source
+
+
+def same_record_family(a: str, b: str) -> bool:
+    """Whether two document sources are records of ONE source file: a JATS
+    article ``PMC1`` and its table/figure records ``PMC1#table-1`` (#828 PR
+    5a; ``JatsLoader`` and ``jats_extract`` both emit them, and every one
+    carries the article's ``doi``/``pmcid``/``pmid``). They are one work, not
+    duplicates of each other: the guard must neither refuse the units of a
+    fresh ingest against their own article nor a re-ingest against the units
+    indexed last time. At least one side must be a unit record (``#``), so a
+    plain source — and two path-less records — never match by this rule."""
+    if "#" not in a and "#" not in b:
+        return False
+    root = _record_root(a)
+    return bool(root) and root == _record_root(b)
 
 
 def format_refusal(key: tuple[str, str], existing_doc_id: str) -> str:
@@ -414,10 +439,11 @@ class WorkIdentityStage:
             )
             found = {}
         seen_here = seen if seen is not None else {}
+        sources = {doc.id: doc.source for doc in documents}
         admitted: list[Document] = []
         # No await from here on: check-and-set on ``seen`` is atomic in the loop.
         for doc, keys in per_doc:
-            match = _first_match(doc, keys, found, seen_here)
+            match = _first_match(doc, keys, found, seen_here, sources)
             if match is None or policy == POLICY_ALLOW:
                 for k in keys:
                     seen_here.setdefault(k, doc.id)
@@ -442,13 +468,18 @@ def _first_match(
     keys: list[tuple[str, str]],
     found: dict[tuple[str, str], list[DocumentSummary]],
     seen_here: dict[tuple[str, str], str],
+    sources: dict[str, str] | None = None,
 ) -> _Match | None:
+    """``sources`` maps the doc ids of THIS call to their sources, so a sibling
+    record of the same file (:func:`same_record_family`) is not a match."""
+    sources = sources or {}
     for k in keys:  # KEY_KINDS order: a DOI match is named before a PMCID one
         for s in found.get(k, []):
-            if s.doc_id != doc.id:
+            if s.doc_id != doc.id and not same_record_family(s.source, doc.source):
                 return _Match(k, s.doc_id)
         other = seen_here.get(k)
-        if other is not None and other != doc.id:
+        if (other is not None and other != doc.id
+                and not same_record_family(sources.get(other, ""), doc.source)):
             return _Match(k, other)
     return None
 

@@ -377,12 +377,34 @@ async def test_path_reingest_of_a_jats_file_is_not_refused_as_its_own_duplicate(
 
     r = await client.post("/v1/ingest", json={"source": str(src)})  # refuse (default)
     assert r.status_code == 200, r.text
-    await _poll(client, r.json()["job_id"])
+    body = await _poll(client, r.json()["job_id"])
+    assert body["status"] == "completed"
+    assert body["items"] == {"total": 1, "completed": 1, "failed": 0, "pending": 0}
     assert _doc_ids() == first
+    assert all("duplicate_of" not in c.metadata for c in app.state.text_index._chunks)
 
-    # The same article under another stem is still a duplicate at admission.
-    copy = tmp_path / "b" / "PMC8092463.v2.xml"
-    copy.parent.mkdir()
-    copy.write_text(_jats_article("8092463"), encoding="utf-8")
-    r = await client.post("/v1/ingest", json={"source": str(copy)})
-    assert r.status_code == 200 or r.status_code == 409, r.text
+
+async def test_a_fresh_jats_ingest_keeps_its_tables_and_figures_under_refuse(
+    client, tmp_path
+) -> None:
+    """Every record of one JATS file carries the article's doi/pmcid, so the
+    job-time guard used to refuse the table and figure records as duplicates
+    of their own article: under the deployment default (``refuse``) a JATS
+    file indexed ONE document of three, with the item ``completed``. They are
+    one work (``same_record_family``). MUTATION: drop the sibling rule from
+    ``_first_match`` → 1 document."""
+    src = tmp_path / "PMC8092463.xml"
+    src.write_text(_jats_article("8092463"), encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(src)})  # refuse (default)
+    assert r.status_code == 200, r.text
+    body = await _poll(client, r.json()["job_id"])
+    assert body["status"] == "completed"
+    sources = {c.metadata.get("source_path") for c in app.state.text_index._chunks}
+    assert sources == {"PMC8092463", "PMC8092463#table-1", "PMC8092463#figure-1"}
+    # …while another file carrying the same work is still refused.
+    other = tmp_path / "copy.md"
+    other.write_text(f"DOI: 10.1234/synth.8092463\n\n{BODY}", encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(other)})
+    body = await _poll(client, r.json()["job_id"])
+    assert body["status"] == "failed"
+    assert _item(r.json()["job_id"]).error.startswith("duplicate_work: key=doi:10.1234/synth.8092463")

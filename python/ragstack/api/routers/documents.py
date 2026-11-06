@@ -103,6 +103,7 @@ from ragstack.ingestion.work_identity import (
     POLICY_REFUSE,
     DuplicateCheck,
     ids_from_filename,
+    same_record_family,
     work_keys,
 )
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
@@ -633,7 +634,7 @@ async def _precheck_duplicate(
                 # A JATS table/figure record ("PMC1#table-1") is part of the
                 # article record "PMC1" it was split from (#828 PR 5a): a
                 # re-ingest of PMC1.xml replaces it too.
-                if "#" in existing.source and existing.source.split("#", 1)[0] in skip:
+                if any(same_record_family(existing.source, own) for own in skip):
                     continue
                 raise _conflict(key, existing.doc_id, (
                     f"{name!r} is {key[0]} {key[1]}, which is already indexed in "
