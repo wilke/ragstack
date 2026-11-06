@@ -864,3 +864,126 @@ def test_run_status_needs_the_study_block_with_mode_and_stage(tmp_path: Path, dr
     st = ar.run_status(w.runs)
     assert {st[f"neighbour|none|{r}"] for r in asc.RETRIEVERS} == {"incomplete"}
     assert sum(v == "complete" for v in st.values()) == 29 - 3
+
+
+# ------------------------------------------------------------------ the rechunk mode (exploratory)
+
+def rechunk_setup(tmp: Path, monkeypatch: pytest.MonkeyPatch, missing: str | None = None
+                  ) -> tuple[fx.World, dict[str, Any]]:
+    """A rechunk config: the four none collections only, no gold hashes, and a label table whose
+    pairs sit in base (two records), neighbour (one, also in base) and random1; none in random2."""
+    import rechunk_fixture as rfx
+
+    monkeypatch.setattr(asc, "verify_record_set", lambda path, recs: {"accepted_sha256": "x", "records": len(recs)})
+    w, cfg = setup(tmp, dry_run=False, census={"es_url": ES})
+    cfg.pop("gold_hashes")
+    cfg["collections"] = {c: {"none": cfg["collections"][c]["none"]} for c in asc.CORPUS_ARMS}
+    cfg["arms"] = {"none": cfg["arms"]["none"]}
+    r = [x["record_id"] for x in w.records]
+    pairs = [rfx.pair_row(r[0], "base", fx.chunk_id("P00", 1), tag="1", covers=[fx.chunk_id("P00", 1),
+                                                                              fx.chunk_id("P00", 3)]),
+             rfx.pair_row(r[1], "base", fx.chunk_id("P00", 2), tag="2"),
+             rfx.pair_row(r[0], "neighbour", missing or fx.chunk_id("N00", 1), tag="3"),
+             rfx.pair_row(r[3], "random1", fx.chunk_id("R01", 0), tag="4")]
+    labels = [rfx.label_row(r[0], fx.chunk_id("P00", 1), "answers")]
+    cfg["rechunk"] = {"label_table": str(rfx.write_label_table(tmp / "labels.jsonl", pairs, labels))}
+    return w, cfg
+
+
+def test_rechunk_runs_the_arm_s_pair_records_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    w, cfg = rechunk_setup(tmp_path, monkeypatch)
+    api = API(w)
+    assert run(cfg, api, census=Census()) == 0
+    asked = {api.q2rec[b["query"]]["record_id"] for b in api.bodies}
+    assert asked == {w.records[0]["record_id"], w.records[1]["record_id"]} and len(api.bodies) == 3 * 2
+    assert {b["top_k"] for b in api.bodies} == {50} and {b["collection"] for b in api.bodies} == {
+        collection("base", "none")}
+    s = summary(cfg, "base", "none")
+    assert s["status"] == "complete" and s["exploratory"] is True and s["mode"] == "rechunk"
+    st = s["study"]
+    assert st["mode"] == "rechunk" and st["exploratory"] is True and st["stage"] == "A"
+    assert "gold_presence" not in st and st["record_set"]["rechunk_records"] == 3
+    rp_ = st["rechunk_presence"]
+    assert rp_["pairs"] == 2 and rp_["mapped_chunks"] == 3 and rp_["present"] == 3
+    assert rp_["label_table_sha256"] == asc.sha256_file(cfg["rechunk"]["label_table"])
+    assert set(s["conditions"]) == {"base", "bm25", "norerank"}
+    for c in s["conditions"].values():
+        assert not set(ar.PILOT_WITHHELD_CONDITION_KEYS) & set(c) and c["outcomes"] == ar.RECHUNK_OUTCOMES_NOTE
+        assert "gate" in c
+    assert (Path(cfg["out_dir"]) / ar.MODE_MARKER).read_text().strip() == "rechunk"
+    rows = asc.read_jsonl(Path(cfg["out_dir"]) / "base" / "none.jsonl")
+    assert len(rows) == 6 and all(len(x["ranked_chunk_ids"]) == 50 for x in rows)
+    # neighbour: the record of the neighbour pair only; random2 has no pair
+    api2 = API(w)
+    assert run(cfg, api2, corpus="neighbour", census=Census()) == 0
+    assert {api2.q2rec[b["query"]]["record_id"] for b in api2.bodies} == {w.records[0]["record_id"]}
+    with pytest.raises(f10.Refused, match="no label-table pair"):
+        run(cfg, API(w), corpus="random2", census=Census())
+
+
+def test_rechunk_refuses_a_mapped_chunk_absent_from_the_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+                                                               ) -> None:
+    w, cfg = rechunk_setup(tmp_path, monkeypatch, missing="not-in-any-export-c9")
+    api = API(w)
+    with pytest.raises(f10.Refused, match="rechunk presence: 1 of the 1"):
+        run(cfg, api, corpus="neighbour", census=Census())
+    assert api.bodies == [] and api.config_reads == 0
+
+
+def test_rechunk_config_refusals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    w, cfg = rechunk_setup(tmp_path, monkeypatch)
+    ar.validate_config(cfg)
+
+    def bad(mut: Any, msg: str) -> None:
+        c = json.loads(json.dumps(cfg))
+        mut(c)
+        with pytest.raises(f10.Refused, match=msg):
+            ar.validate_config(c)
+
+    bad(lambda c: c.update(pilot=True), "excludes dry_run and pilot")
+    bad(lambda c: c.update(dry_run=True), "excludes dry_run and pilot")
+    bad(lambda c: c.update(rechunk={"label_table": ""}), "label_table")
+    bad(lambda c: c.update(rechunk="x.jsonl"), "label_table")
+    bad(lambda c: c["arms"].pop("none"), "rechunk: arms")
+    bad(lambda c: c["collections"]["base"].update(merged={"collection": "bench-t-base-merged", "index": "ix_m",
+                                                          "load_receipt": "r.json"}), "exactly the attachments")
+    bad(lambda c: c["collections"]["random2"].pop("none"), "exactly the attachments")
+    # a merged arm configured for the collections it does not run is not a reason to run it
+    c = json.loads(json.dumps(cfg))
+    c["arms"]["merged"] = {"stamps": ["t-merged"]}
+    cv = ar.validate_config(c)
+    recs, ident = ar.load_study_records(cv)
+    with pytest.raises(f10.Refused, match="none collections only"):
+        ar.build_runner(cv, recs, ident, "base", "merged", stage="A")
+    # a label-table record outside the accepted file
+    t = Path(cfg["rechunk"]["label_table"])
+    t.write_text(t.read_text().replace(w.records[3]["record_id"], "alias-O-ZZ99-g0"))
+    with pytest.raises(f10.Refused, match="not in the accepted file"):
+        ar.load_study_records(ar.validate_config(cfg))
+    t.write_text("{}\n")
+    with pytest.raises(f10.Refused, match="rechunk.label_table"):
+        ar.load_study_records(ar.validate_config(cfg))
+
+
+def test_rechunk_and_main_dirs_never_mix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    w, cfg = rechunk_setup(tmp_path, monkeypatch)
+    assert ar.config_mode(cfg) == "rechunk"
+    (Path(cfg["out_dir"])).mkdir(parents=True)
+    (Path(cfg["out_dir"]) / ar.MODE_MARKER).write_text("main\n")
+    with pytest.raises(f10.Refused, match="STUDY-MODE"):
+        run(cfg, API(w), census=Census())
+
+
+def test_rechunk_runs_feed_the_stage1_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The report reads what the runner writes in the rechunk mode (summaries and rows)."""
+    import rechunk_stage1 as rs
+
+    w, cfg = rechunk_setup(tmp_path, monkeypatch)
+    for c in ("base", "neighbour", "random1"):
+        assert run(cfg, API(w), corpus=c, census=Census()) == 0
+    out = tmp_path / "stage1.json"
+    rec = rs.run(Path(cfg["out_dir"]), Path(cfg["rechunk"]["label_table"]), out)
+    assert rec["pairs"] == 4 and set(rec["runs"]) == {"base", "neighbour", "random1"}
+    d = rec["q2_all_pairs"]["all_pairs"]["all"]["by_retriever"]["default"]
+    assert d["n"] == 4 and d["failed"] == 0 and d["M"]["k"] == 0
+    assert rec["runs"]["base"]["collection_build"]["n_chunks"] == 100

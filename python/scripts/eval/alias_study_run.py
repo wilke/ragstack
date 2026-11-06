@@ -63,6 +63,20 @@ by the main run or the reverse (the pilot's labels are not carried over, §5.6).
 summary carries no found@10 level per condition (:data:`PILOT_WITHHELD_CONDITION_KEYS`; R28,
 owner 2026-11-03: the pilot stays blind to outcomes); the rows keep every rank, privately.
 
+``rechunk: {label_table: PATH}`` is the **exploratory rechunk stage 1** (never with ``dry_run``
+or ``pilot``; the prereg is optional): the four corpus arms re-chunked under the confirmatory
+control's chunker, one none collection each (``collections.<arm>.none`` only; ``arms`` needs
+only ``none``; no ``gold_hashes``). The record set is verified as in the main run, then only the
+records of the label table's pairs (``rechunk_prep.py gold-map``) are kept, and each run of a
+corpus arm asks the records with a pair in that arm. Gold presence is replaced by
+``rechunk_prep.check_rechunk_presence``: every chunk id the table maps for the arm's pairs (the
+max-overlap chunk and the cover-any chunks) must be in the arm's new export. Retriever settings,
+``top_k`` 50, ``rerank_candidates`` 50, the load-receipt and census checks and the provenance are
+the main run's. Run it with ``--stage A`` in a fresh out dir (every ``<arm> x none`` leg is a
+retrieval stage-A leg). The summaries carry ``mode: rechunk`` and ``exploratory: true`` (and the
+``study`` block the same); found10's gold-id levels are left out of them (the gold ids are stage-A
+chunk ids); outcomes come from ``rechunk_stage1.py``.
+
 **Gates kept from round 3** (found10): the live census before and after (here against the load
 receipt, above, in place of round 3's swap record); the depth read-back on every call, with the BM25
 exhaustion verifier (``exhausted_verified`` scored, ``clamp`` / ``query_mismatch`` hard
@@ -165,7 +179,12 @@ STAGE_A_LEGS = RETRIEVAL_A_LEGS
 PILOT_WITHHELD_CONDITION_KEYS = ("found10", "found10_gold", "rr10", "mrr10")
 COMMIT_MARKER = "STAGE-A-COMMITTED"
 MODE_MARKER = "STUDY-MODE"
-MODES = ("main", "pilot", "dry_run")
+MODES = ("main", "pilot", "dry_run", "rechunk")
+#: the exploratory rechunk stage 1 (``rechunk: {label_table: PATH}``; module docstring, *Modes*)
+RECHUNK = "rechunk"
+#: the rechunk mode's leg-summary note in place of found10's gold-id outcome levels
+RECHUNK_OUTCOMES_NOTE = ("not scored here: the records' gold ids are stage-A chunk ids, absent under the new "
+                         "chunking; rechunk outcomes come from the label table (rechunk_stage1.py)")
 
 
 def canonical_sha(obj: Any) -> str:
@@ -263,7 +282,9 @@ def read_commit_marker(out: Path) -> dict[str, Any] | None:
 def config_mode(cfg: Mapping[str, Any]) -> str:
     if cfg.get("dry_run"):
         return "dry_run"
-    return "pilot" if cfg.get("pilot") else "main"
+    if cfg.get("pilot"):
+        return "pilot"
+    return RECHUNK if cfg.get(RECHUNK) else "main"
 
 
 def ensure_mode(d: Path, mode: str) -> None:
@@ -311,8 +332,14 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     cfg = f10.normalise_config(dict(raw))
     if set(cfg["corpora"]) != set(asc.CORPUS_ARMS):
         raise f10.Refused(f"corpora must be exactly {list(asc.CORPUS_ARMS)}, got {sorted(cfg['corpora'])}")
+    rechunk = bool(cfg.get(RECHUNK))
+    if rechunk:
+        check_rechunk_config(cfg)
     arms = set(cfg["arms"])
-    if not set(asc.GLOSSARY_ARMS) <= arms <= set(STUDY_GLOSSARY_ARMS):
+    if rechunk and not {asc.REPEAT_GLOSSARY} <= arms <= set(STUDY_GLOSSARY_ARMS):
+        raise f10.Refused(f"rechunk: arms must hold {asc.REPEAT_GLOSSARY!r} (the only glossary arm it runs), got "
+                          f"{sorted(arms)}")
+    if not rechunk and not set(asc.GLOSSARY_ARMS) <= arms <= set(STUDY_GLOSSARY_ARMS):
         raise f10.Refused(f"arms must be {list(asc.GLOSSARY_ARMS)} (and {PLACEBO!r} for the placebo leg), "
                           f"got {sorted(arms)}")
     names = sorted(arms)
@@ -372,7 +399,7 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
             if key in seen:
                 raise f10.Refused(f"collections.{c}.{g} shares its {k} with {seen[key]}: one collection per attachment")
             seen[key] = (c, g)
-    if not cfg.get("dry_run") and not cfg.get("gold_hashes"):
+    if not cfg.get("dry_run") and not rechunk and not cfg.get("gold_hashes"):
         raise f10.Refused("config has no 'gold_hashes' (the base export's gold-chunk content hashes)")
     if config_mode(cfg) != "dry_run" and not (cfg.get("census") or {}).get("es_url"):
         raise f10.Refused("census.es_url is required: every leg reads its collection's census before and after (§9.2)")
@@ -381,9 +408,32 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
     return cfg
 
 
+def check_rechunk_config(cfg: Mapping[str, Any]) -> None:
+    """The rechunk mode's own shape: ``rechunk: {label_table: PATH}``, never with ``dry_run`` or
+    ``pilot``. Raises :class:`found10.Refused`."""
+    rc = cfg.get(RECHUNK)
+    if cfg.get("dry_run") or cfg.get("pilot"):
+        raise f10.Refused("rechunk excludes dry_run and pilot")
+    if not isinstance(rc, Mapping) or not rc.get("label_table"):
+        raise f10.Refused("rechunk needs {label_table: PATH} (rechunk_prep.py gold-map)")
+
+
+def rechunk_table(cfg: Mapping[str, Any]) -> Any:
+    """The rechunk mode's label table (``rechunk_prep.LabelTable``); SystemExit -> Refused."""
+    import rechunk_prep as rp
+
+    try:
+        return rp.read_label_table(cfg[RECHUNK]["label_table"])
+    except SystemExit as e:
+        raise f10.Refused(f"rechunk.label_table: {e}") from e
+
+
 def required_attachments(cfg: Mapping[str, Any]) -> list[tuple[str, str]]:
     """Every (corpus arm, glossary arm) with its own collection: the 8 of the 24 cells, and
-    base x placebo when the placebo arm is configured."""
+    base x placebo when the placebo arm is configured. The rechunk mode: the four none
+    collections only."""
+    if config_mode(cfg) == RECHUNK:
+        return [(c, asc.REPEAT_GLOSSARY) for c in asc.CORPUS_ARMS]
     out = [(c, g) for c in asc.CORPUS_ARMS for g in asc.GLOSSARY_ARMS]
     return out + [("base", PLACEBO)] if PLACEBO in cfg["arms"] else out
 
@@ -459,6 +509,15 @@ def load_study_records(cfg: Mapping[str, Any]) -> tuple[list[dict[str, Any]], di
         keep = {r["record_id"] for r in desc}
         recs = [r for r in recs if r["record_id"] in keep]
         ident = {**ident, "pilot": True, "pilot_records": len(recs)}
+    elif config_mode(cfg) == RECHUNK:
+        # the full accepted file is verified above, unchanged; then only the records of the
+        # label table's pairs (each is run once per corpus arm of its pairs, build_runner)
+        keep = rechunk_table(cfg).records()
+        have = {r["record_id"] for r in recs}
+        if keep - have:
+            raise f10.Refused(f"rechunk: {len(keep - have)} label-table record(s) are not in the accepted file")
+        recs = [r for r in recs if r["record_id"] in keep]
+        ident = {**ident, RECHUNK: True, "rechunk_records": len(recs)}
     return recs, ident
 
 
@@ -619,6 +678,15 @@ class AliasRunner(f10.Runner):
         cen.update({"swap_record_sha256": None, "collection_build": self.study.get("collection_build"),
                     "source": "load_receipt+live" if live_before is not None else "load_receipt"})
         summary["census"] = cen
+        if self.study.get("mode") == RECHUNK:
+            # exploratory: found10's found@10 is gold-id based, and the gold ids are stage-A chunk
+            # ids that the new chunking does not have; the levels are left out, not reported as 0
+            summary["exploratory"] = True
+            summary["mode"] = RECHUNK
+            for c in (summary.get("conditions") or {}).values():
+                for k in PILOT_WITHHELD_CONDITION_KEYS:
+                    c.pop(k, None)
+                c["outcomes"] = RECHUNK_OUTCOMES_NOTE
         if self.study.get("mode") == "pilot":
             # R28 (owner, 2026-11-03): the pilot stays blind to outcomes; its leg summaries carry
             # no found@10 level (the rows keep every rank, privately; the pilot report reads rows
@@ -697,7 +765,19 @@ def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: 
             raise f10.Refused(f"stage-A commit does not verify: {e}") from e
     ccfg = cfg["corpora"][corpus_arm]
     extra: dict[str, Any] = {}
-    if not cfg.get("dry_run") or ccfg.get("chunk_export"):
+    if mode == RECHUNK:
+        if glossary != asc.REPEAT_GLOSSARY:
+            raise f10.Refused(f"rechunk runs the {asc.REPEAT_GLOSSARY} collections only")
+        import rechunk_prep as rp
+
+        table = rechunk_table(cfg)
+        extra["rechunk_presence"] = rp.check_rechunk_presence(table, export_paths(ccfg["chunk_export"]), corpus_arm)
+        extra["exploratory"] = True
+        arm_records = table.records(corpus_arm)
+        recs = [r for r in recs if r["record_id"] in arm_records]
+        if not recs:
+            raise f10.Refused(f"rechunk: no label-table pair is run in {corpus_arm}")
+    elif not cfg.get("dry_run") or ccfg.get("chunk_export"):
         hashes = json.loads(Path(cfg["gold_hashes"]).read_text(encoding="utf-8")) if cfg.get("gold_hashes") else {}
         extra["gold_presence"] = check_gold_presence(recs, export_paths(ccfg["chunk_export"]), hashes)
     build = check_load_receipt(cfg, corpus_arm, glossary)
