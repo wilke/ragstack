@@ -1,4 +1,4 @@
-# Pre-registration: does a boundary-respecting chunk lose *answers* labels beyond judge noise? (alias study follow-up) — DRAFT v3.1, 2026-11-05
+# Pre-registration: does a boundary-respecting chunk lose *answers* labels beyond judge noise? (alias study follow-up) — DRAFT v3.2, 2026-11-05
 
 **Status: DRAFT — not frozen; owner review pending.** Nothing in this text binds a run until it is frozen
 by the procedure in §9. At freeze the text is frozen **as written**, draft status line included; its sha256
@@ -23,6 +23,20 @@ flag rests on `reasoning_sample` identity alone, with the exploratory retest's m
 (§6.9, §10.10); the floor's rounding (315.9 → 316, up); the §6 numbering; stale figures (null sizes, ρ = 1,
 the by-ρ grid, the non-zero-record expectation, cover-any costs, the Opus overlap); and the freeze
 sequencing after the §11 code PR (§9.1–9.2). No design element changed.
+
+**v3.2 (2026-11-05): pins from the code review, no design change.** The two independent reviews of the
+§11 code PR (Fable and an argo-agent read) confirmed the statistics, the directions, the bounds, the Tango
+fixtures and every §4.1 count, and listed the points where this text left the code a choice. v3.2 writes
+down the choice the code makes, each in the section it belongs to and collected in §11.1: the draw is
+pinned at `--n 351` and refuses any other value, and `draw-confirm` refuses unless every §4.1 count
+reproduces; every subcommand of steps 1–2 takes `--confirmatory <sha>` **and** `--prereg PREREG.md` and
+checks one against the other, so a wrong sha stops step 1; gate 6 compares the run copies of the four
+public files with their committed copies; the record order of the scores and the bootstrap; the full
+control-sample sha; exclusion 2's scope (all 300 control windows); the shortfall rule; gates 2–6 as the
+code reads them; the cache check's *not evaluable* reading; P(n) over all 16 points; the §6.4, §6.5 and
+§6.7 conventions; a re-run of `draw-confirm` that reproduces the same sample is not a re-draw. The
+endpoint, test, α, n, pool, seeds, gates' substance and wording of §7 are unchanged; `power.json` is
+untouched.
 
 **Tier: record** (study-writeup skill). This is a **confirmatory** follow-up to the **exploratory**
 chunk-boundary control of the alias study
@@ -152,10 +166,14 @@ percentile interval of d, **90 % two-sided**, whose upper end is the one-sided 9
 wording of §7 quotes. Its statistic is the ratio form of `chunktrial_stats._bootstrap_net_shares` /
 `page_bootstrap_ci` with records as the clusters: each resample draws r records with replacement and
 computes **d\* = Σ_j S_j / Σ_j n_j** over the resampled records (n_j = the record's pairs), 10,000
-resamples, `numpy.random.default_rng(seed_int("261105|alias|confirm|boot"))`, the 5th and 95th percentiles
-(numpy's default linear interpolation). Beside the McNemar sensitivity: the **Tango (1998) asymptotic
+resamples, `numpy.random.default_rng(seed_int("261105|alias|confirm|boot"))` (`seed_int` is
+`alias_study_common.seed_int`), the 5th and 95th percentiles (numpy's default linear interpolation). **Order
+(v3.2):** before the record scores and the bootstrap, the analysed pairs are ordered by (record id, stage-A
+pair id), and the records enter `page_bootstrap_ci` in that order (the resample indices refer to positions,
+so the interval depends on it). The sign-flip test's descriptive Monte-Carlo p uses `chunktrial_stats`'
+defaults (10,000 flips, seed 0). Beside the McNemar sensitivity: the **Tango (1998) asymptotic
 score interval** for δ = p10 − p01 (Statistics in Medicine 17:891–908), 90 % two-sided: the set of δ with
-|b − c − nδ| / √(n(2 p̃21 + δ(1 − δ))) ≤ z₀.₉₅ = 1.6449, where p̃21 is the restricted MLE of p01 under δ,
+|b − c − nδ| / √(n(2 p̃21 + δ(1 − δ))) ≤ z₀.₉₅ = Φ⁻¹(0.95) = 1.644854 (printed 1.6449 elsewhere), where p̃21 is the restricted MLE of p01 under δ,
 p̃21 = (−B + √(B² − 4AC)) / (2A) with A = 2n, B = −b − c + (2n − b + c) δ, C = −c δ (1 − δ), solved for the
 two ends by bisection on either side of δ̂ = (b − c) / n. The Wald form of v1 is withdrawn. Each arm's rate
 with its Wilson 95 % interval; the 2 × 2 table (both *not*, control only, retest only, neither); the
@@ -262,7 +280,9 @@ Every stage-A judged pair of the alias study's **committed** registry (stage-A c
 `f53ca9d0b18fb66753ae3fbe219b7b63e2163aee44f8dfe0e9ce386b04d266cd`, the one `control-draw.json` and
 `control-judge.json` name) whose final row has `source = agree` **and** label *answers* (the C and E
 primaries agreed on *answers*; no tiebreak), **minus** every pair of the exploratory control's 300-pair
-sample (private `sample.jsonl`, sha256 `64a8bbc1…` as committed in `control-draw.json`).
+sample (private `sample.jsonl`, sha256 `64a8bbc1adc5c22db1f0a3fee447bc3f691d3ee6f7fae7bf1948bfd8a118d39e` as
+committed in `control-draw.json`). **`draw-confirm` refuses unless every count of the table below reproduces
+(v3.2)**, and unless no window carries pairs of more than one arm.
 
 | count (drafting session's read-only pass; reproduced by `draw-confirm` at the draw) | n |
 |---|---|
@@ -271,7 +291,7 @@ sample (private `sample.jsonl`, sha256 `64a8bbc1…` as committed in `control-dr
 | … agreed **answers** | **2,064** (base 816 / neighbour 542 / random 706: `control-draw.json` `counts.available.answers`) |
 | in the exploratory control (its *answers* stratum) | 150 (50 per arm) |
 | **eligible pool** | **1,914** (base 766 / neighbour 492 / random 656) |
-| … whose window is also a control pair's window (same chunk, another record) | 43 → excluded (§4.2); pool **1,871** (748 / 481 / 642) |
+| … whose window is also a control pair's window (same chunk, another record; any of the 300 control pairs, all strata) | 43 (18 / 11 / 14) → excluded (§4.2); pool **1,871** (748 / 481 / 642) |
 | distinct records (questions) in the 1,871 | **262**; in 1 / 2 / 3 arms: 118 / 80 / 64; up to 51 pairs in one record |
 | (record, arm) cells, the draw's availability | **470** = 198 base / 154 neighbour / 118 random |
 | distinct passage papers | **1,050**; the largest holds 15 pairs |
@@ -284,7 +304,9 @@ committed registry's final rows; no retrieval, no new stage-A label.
 ### 4.2 Exclusions fixed before the draw
 
 1. The 300 control pairs (all strata), by pair id.
-2. The 43 pool pairs whose stage-A window is a control pair's window under another record. Their control
+2. The 43 pool pairs whose stage-A window is a control pair's window under another record: every pool pair
+   whose stage-A window is the window of **any of the 300 control pairs, all three strata** (43 = 18 base /
+   11 neighbour / 14 random; v3.2 pin, checked by count in review). Their control
    chunk already exists and was judged against another question; excluding them makes "fresh" hold for the
    passage as well as the pair, at 2 % of the pool. (Owner answer Q1, §13.)
 3. Nothing else. In particular, pairs whose **record** has a control pair (136 of 262 records) stay: the
@@ -310,7 +332,12 @@ committed registry's final rows; no retrieval, no new stage-A label.
   **Shortfall:** the quotas are first set from the cell counts; after each arm's walk, the count
   **achieved** (not the cell count) is compared with its quota, and any shortfall is reallocated equally to
   the other arms in a second pass that continues their walks (remainder to base, then neighbour, as
-  `drift_allocation`); `draw.json` reports availability per arm both as cells and as achieved. **This does
+  `drift_allocation`); `draw.json` reports availability per arm both as cells and as achieved. **Precisely
+  (v3.2):** the shortfall n − Σ achieved is split equally over the arms whose walk is not exhausted
+  (remainder to base, then neighbour); their walks continue, and this repeats until n is reached or every
+  walk is exhausted; an exhausted arm receives nothing. `draw.json` also reports each arm's `walk_capacity`
+  (its walk run to exhaustion on its own). The greedy walk need not reach the matching maximum: it may take
+  116 rather than 118 in the random arm, in which case the one pair short goes to base by this rule. **This does
   not remove within-question dependence** — the simulation expects ≈ 94 of ≈ 207 drawn records in two or three arms — which is why the
   primary test is clustered by record (§3.1); the realised number of records drawn in ≥ 2 arms is reported
   (§6). Because the first pair of a record to appear in an arm's order is the minimum of its pairs' hashes,
@@ -322,7 +349,9 @@ committed registry's final rows; no retrieval, no new stage-A label.
   up: **17** at the expected registry of ≈ 333 mapped pairs, split 6 / 6 / 5, or 18 = 6 / 6 / 6 if all 351
   map; the remainder to base then neighbour), because the judge configuration is the frozen one.
 - **Run by committed code before any judging** (`draw-confirm`, §11), after the freeze, from a clean
-  checkout: it refuses unless the stage-A commit sha256 and the control sample's sha256 are the two above.
+  checkout: it refuses unless the stage-A commit sha256 and the control sample's sha256 are the two above,
+  unless `--n` is 351, unless every §4.1 count reproduces, and unless `--prereg PREREG.md` hashes to its
+  `--confirmatory` sha (v3.2).
   Its private output `sample.jsonl` (pair, record, window ids; arm; stratum *answers*) stays off the
   repository; its public `draw.json` (the counts of the table above as recounted, the per-arm availability
   and quotas, records drawn in 1 / 2 / 3 arms, the seed, the sha256 of the private sample and of the
@@ -335,7 +364,9 @@ committed registry's final rows; no retrieval, no new stage-A label.
    `citable true` in every artifact's provenance), with `PYTHONPATH=<checkout>/python`, the Punkt
    segmenter (`punkt-abbrev-v1`), the `[markdown]` extra and the SFR tokenizer present
    (`alias_control_chunks.require_env` refuses otherwise). Every subcommand of steps 1–2 runs with
-   `--confirmatory <this prereg's sha256>` (§11), so no public file of this test carries `exploratory: true`.
+   `--confirmatory <this prereg's sha256>` **and** `--prereg PREREG.md` (§11; each refuses unless the file
+   hashes to the sha, so a wrong sha stops step 1, not step 6), so no public file of this test carries
+   `exploratory: true`.
 1. **`draw-confirm`** (§4.3) → private `sample.jsonl`, public `draw.json`. *Gate:* the two input shas verify;
    no drawn pair is a control pair; no two drawn pairs share a window; counts as expected; `draw.json`
    committed.
@@ -376,7 +407,8 @@ committed registry's final rows; no retrieval, no new stage-A label.
    report, read from the label rows' `t` (and `duration_s`) in `labels-qwen-C.jsonl` / `labels-qwen-E.jsonl`
    for the Qwen backends and from the calls logs' `t`, `step` and `status` in `calls-gw-argon.jsonl` /
    `calls-gw-opus.jsonl` for the gateway backends. The exploratory took these from private logs; here they
-   are an artifact field.
+   are an artifact field. (v3.2: a Qwen call starts at `t − duration_s`, `t` being written when the reply is
+   in; the gateway times come from `calls-gw-argon.jsonl` / `calls-gw-opus.jsonl` only.)
    **No one inspects labels between `label` and `confirm-report`.** `LOG` and `judge-summary.json` print
    per-arm counts as labelling proceeds, and `final.jsonl` is readable; the operator reads none of
    `final.jsonl`, `labels-*.jsonl`, `judge-summary.json` or the per-arm counts in `LOG` of either arm until
@@ -390,7 +422,10 @@ committed registry's final rows; no retrieval, no new stage-A label.
    matches.
 7. **Cover-any** (descriptive, §6): only after step 6 is committed, `map --cover-any` over the control-arm
    *not* pairs, a third registry, the same gates, a second gateway notice; then `confirm-report` again with
-   `--cover-config` adding the `cover_any` block. The primary numbers of step 6 are not recomputed.
+   `--cover-config` adding the `cover_any` block. The primary numbers of step 6 are not recomputed. (v3.2:
+   the control *not* pairs are those whose control final label is *not* and not unjudged, written by
+   `--write-flipped`; step 6 refuses an existing `--out`, and the step-7 re-run recomputes the primary table
+   and refuses unless it equals the committed report's.)
 8. `RESULTS.md` in this directory, with the decision sentence of §7 verbatim.
 
 ## 6. Secondary and descriptive quantities (reported, **not tested**)
@@ -412,10 +447,14 @@ pre-specified McNemar sensitivity's is computed, and no quantity below decides a
    stage A never called Argon on it; `tiebreak_replicate` has n = 0 by construction and is not reported), and
    the Opus drift samples of stage A and the retest arm overlap on about 1 pair (102 of the 1,871 pool pairs
    were drift-sampled in stage A, so a 17-pair sample expects ≈ 0.9 of them); neither gateway model is where
-   a replay could hide (§10.10).
+   a replay could hide (§10.10). (v3.2: the per-arm
+   rates are over pairs with a final row in that arm, escalated meaning source ≠ agree, so an unjudged pair
+   counts as escalated; the overlap is over pairs with a final row in both arms; the Argon agreement is read
+   from the final rows' `tiebreak_label`.)
 5. **Opus drift reference:** agreement between each arm's final label and Opus on the 5 % sample, overall
    and per arm, the *no-reference* count. The arm-gap pause of §6.3 cannot trigger (it needs ≥ 100
-   Opus-answered pairs per arm); the reference lines are printed, not gated.
+   Opus-answered pairs per arm); the reference lines are printed, not gated. (v3.2: the
+   agreement is over drift-sampled pairs that Opus answered and whose final label is judged.)
 6. **Boundary diagnostics** of the sampled windows and control chunks, as the exploratory artifact's
    `metrics.boundary`; X and Y by window-coverage band and control-chunk token band; the LaTeX-preamble and
    one-untitled-section strata.
@@ -423,6 +462,9 @@ pre-specified McNemar sensitivity's is computed, and no quantity below decides a
    per backend; and **discordance by time block**: b and c with each arm's pairs split into halves by their
    position in the (seeded) labelling order, and by whether the pair's C call fell in the first or second
    half of C's calls for that arm — a check that the arm effect is not a drift of the judge over the run.
+   (v3.2: four splits are reported, by the control and the retest arm's registry order and by the control
+   and the retest arm's C calls; a half is the first ⌈N/2⌉ of the arm's N registry pairs or N C calls, the
+   calls ordered by `t` to the second, ties by file order.)
 8. **Sensitivities of the primary to unjudged pairs** (the same test, recomputed, printed beside, deciding
    nothing). A pair is **unjudged** in an arm when its final row has `source == "unjudged"` (equivalently
    `label` is `None`; `finalize` writes a row for every pair, and `label_of` maps such a row to 0). The
@@ -445,6 +487,11 @@ pre-specified McNemar sensitivity's is computed, and no quantity below decides a
    sampling), `ct` equal (exploratory: 1 / 300 for E), the verdict agreement per backend, and the number of
    retest pairs whose `prompt_sha256` or `system_sha256` differs from stage A's (exploratory: 0 / 300; a
    non-zero count means the retest prompt was not byte-identical and is reported as such).
+   **As the code reads it (v3.2):** `reasoning_sample` is a one-element list on both backends; a pair is
+   eligible when every element on both sides has ≥ 200 characters, and identity is list equality. A pair id
+   repeated in a label file is read as the harness reads it (the last row wins) and the duplicates are
+   counted. On a backend with compared rows but no eligible pair, the check reads ***not evaluable***, not
+   clean, and the caveat carries that value.
 
 **Explicitly not done:** any test by arm, route, band, block or stratum; any test of the cover-any share;
 any comparison with the exploratory 300; any *not → answers* figure (none can exist in this pool); any
@@ -456,7 +503,8 @@ Let n be the pairs with a final label in both arms, b and c as in §3.1, p the p
 d the per-pair difference, U the one-sided 95 % upper bound on d from the record-cluster bootstrap, pX̂ and
 pŶ the arm rates, **P(n)** the simulated power of the primary for the planning effect at the realised n
 (linear interpolation of `power.json` `power_by_realised_n` between the two grid points around n; below
-290 or above 355 the nearest end, flagged), and **E** the design's minimum detectable excess at the draw
+290 or above 355 the nearest end, flagged; v3.2: between the two nearest of all 16 points of
+`power_by_realised_n`, an exact hit taken as is, the §3.2 list being a subset), and **E** the design's minimum detectable excess at the draw
 of 351 (`power.json` `mde`: **7.5 points**, a control rate of 13.5 % against 6 %, 80 % power, φ 0, ρ 0.5,
 on a 0.5-point grid). E is a property of the design, not of the realised n; P(n) is what the realised n
 gave.
@@ -483,18 +531,30 @@ report, not by a person:
    simulated realised n at 351 is 333 on average (5th–95th percentile 327–340, minimum 317 over 5,000
    studies; `owner_cell.realised_n`), so none of the simulated studies fell below it. The sizing power at
    exactly 316 realised pairs is **.772** (`power_at_floor`).
-2. **Unjudged > 5 %** of mapped pairs in either arm (1–5 %: the *judge incomplete* caveat, not a gate).
+2. **Unjudged > 5 %** of mapped pairs in either arm (1–5 %: the *judge incomplete* caveat, not a gate). The
+   denominator is the mapped pairs (the rows of `pairs-seed.jsonl`); a missing final row is counted under
+   gate 5, not as unjudged (v3.2).
 3. **The two registries do not hold the same `control_of` set**, or a drawn pair is a control pair, or two
-   drawn pairs share a window, or the stage-A commit sha256 or the control sample sha256 differs from §4.1.
+   drawn pairs share a window, or the stage-A commit sha256 or the control sample sha256 differs from §4.1,
+   or `draw.json`'s `n_draw` is not 351 or its quotas are not 117 / 117 / 117 (v3.2). "A drawn pair is a
+   control pair" is read from `draw.json` `drawn_control_pairs` together with its verified control-sample
+   sha.
 4. **The chunker gate fails** (`chunk.json` `p2_gate` false) or the environment check fails (segmenter ≠
-   `punkt-abbrev-v1`, adapter ≠ `markdown/1`, `[markdown]` absent, SFR tokenizer absent).
+   `punkt-abbrev-v1`, adapter ≠ `markdown/1`, `[markdown]` absent, or the token counter `chunk` loaded,
+   recorded in `chunk.json` `environment.token_counter`, is not `HFTokenCounter` with the model
+   `Salesforce/SFR-Embedding-Mistral`).
 5. **An arm is incomplete after a hard stop** (§5 step 5) and the owner did not resume under the same
-   frozen design; a served-model mismatch stored no reply, by the harness's rule.
+   frozen design; a served-model mismatch stored no reply, by the harness's rule. As the code reads it
+   (v3.2): every mapped pair has a final row in both registries, or the gate fails.
 6. **The report's input shas** (both registries' `pairs-manifest.json` `inputs_sha256`, the seed files, the
    chunk exports) do not match the committed `draw.json` / `chunk.json` / `map.json` / `retest-seed.json`,
    or any of those public artifacts' `confirmatory.prereg_sha256` differs from the frozen sha of this file.
+   (v3.2: `confirm-report` reads `draw.json`, `chunk.json` and `map.json` from the control run directory and
+   `retest-seed.json` from the retest run directory, and compares each with its committed copy in
+   `artifacts/` (`--artifacts-dir`), equal but for `provenance`.)
 
-A gate that fails is named with its count; *absent* is written *absent*, never left blank.
+A gate that fails is named with its count; *absent* is written *absent*, never left blank. A gate whose
+input is missing reads *absent* and fails (v3.2).
 
 ## 9. What is frozen, how, and the deviations policy
 
@@ -537,7 +597,9 @@ setting, mapping, judge setting, step order, arm order, gate or wording is a dat
 in this directory, stating what changed, why, when, what had been seen at that time and which result it
 touches; a result whose computation depends on it says so in its sentence. A resume after a hard stop under
 the same design is recorded in the report (`run_segments`), not a deviation; any change made while stopped
-is one. Re-running the draw, for any reason, is a deviation with a new seed string.
+is one. Re-running the draw, for any reason, is a deviation with a new seed string. An identical re-run of
+`draw-confirm` (same inputs, same code) that reproduces the same `sample.jsonl` byte for byte is not a
+re-draw: the private sample is write-once and accepts only identical bytes (v3.2).
 
 ## 10. Threats to validity and limitations
 
@@ -610,13 +672,53 @@ existing subcommand's default behaviour.
 | `python/scripts/eval/alias_control_chunks.py` | constants `CONFIRM_SEED = "261105\|alias\|confirm\|draw"`, `CONFIRM_BOOT_SEED = "261105\|alias\|confirm\|boot"`; `SCHEMA` entries `"draw-confirm": "alias-confirm-draw/1"`, `"confirm-report": "alias-confirm-report/1"`. |
 | — `--confirmatory PREREG_SHA256` on `chunk`, `map`, `retest-seed` | `run_chunk`, `run_map` and `run_retest_seed` hard-code `"exploratory": True` and the `alias-control-*/1` schemas; the switch writes `"exploratory": false` and a `"confirmatory": {"prereg": "alias-boundary-confirm-2026-11", "prereg_sha256": …}` block into their public files (the schema strings stay: they name the file's shape, which is unchanged). `draw-confirm` and `confirm-report` write the block always. |
 | — `draw_confirm(final, *, exclude_pairs, exclude_windows, n, seed) -> (picked, counts)` | the §4.1 filter (`stage == "A"`, `source == "agree"`, `label_of(f) == 1`), the §4.2 exclusions, availability per arm as cells (distinct records with a pair in the arm), quotas by `alias_study_judge.drift_allocation(n, cells)`, the seeded walk per arm taking a pair when its (record, arm) is free **and** its window is untaken; then the **achieved** count per arm (not the cell count) against its quota, the shortfall reallocated equally to the other arms (remainder base, then neighbour) in a second pass that continues their walks, repeated until no arm can give more; counts as §4.1's table plus availability as cells and as achieved, records drawn in 1 / 2 / 3 arms and distinct windows. |
-| — `run_draw_confirm(judge_config, control_draw_json, control_sample, n, out_dir)` | `asp.committed_stage_a(cfg)` (the committed final rows); refuses unless `sha256_file(control_sample) == control_draw_json["sample_sha256"]` and the stage-A commit sha256 matches; reads the control sample's pair and chunk ids; `asp.refuse_in_repo(out_dir)`; writes private `sample.jsonl` in the control's row shape (`pair_id, record_id, chunk_id, stratum = "answers", arm, in_spot_sheet = false`, so `chunk`, `map` and `retest-seed` run unchanged) and public `draw.json` by `write_summary` with the ids forbidden. |
+| — `run_draw_confirm(judge_config, control_draw_json, control_sample, n, out_dir, confirmatory, prereg)` (v3.2: `n` must be 351; the prereg file must hash to `confirmatory`; every §4.1 count must reproduce) | `asp.committed_stage_a(cfg)` (the committed final rows); refuses unless `sha256_file(control_sample) == control_draw_json["sample_sha256"]` and the stage-A commit sha256 matches; reads the control sample's pair and chunk ids; `asp.refuse_in_repo(out_dir)`; writes private `sample.jsonl` in the control's row shape (`pair_id, record_id, chunk_id, stratum = "answers", arm, in_spot_sheet = false`, so `chunk`, `map` and `retest-seed` run unchanged) and public `draw.json` by `write_summary` with the ids forbidden. |
 | — `confirm_table(rows, *, boot_seed)` | from one row per `control_of` with the two final rows (or `None` when a registry holds no row): **unjudged** = `source == "unjudged"` (or `label is None`); pairwise deletion with unjudged counts by arm; the record scores S_j; `cs.sign_flip_test_exact(sums, alternative="greater")`; `cs.mcnemar_exact(b, c, "greater")`; d, the record-cluster bootstrap 90 % interval by `cs.page_bootstrap_ci(records, x, y, n_boot=10_000, seed=seed_int(CONFIRM_BOOT_SEED), level=0.90)` (records as the pages; its statistic is Σ_j S_j / Σ_j n_j per resample) and its upper end; the Tango score 90 % interval by a new `tango_score_ci(b, c, n, level)` implementing the §3.1 formula; per-arm Wilson; the three unjudged re-computations of §6.8 (the *unjudged = not* one through `label_of`); the Qwen cache check of §6.9 from the two arms' `labels-qwen-*.jsonl` rows; the cluster counts; the §8 gates with their counts. The private `pairs-manifest.json` of each registry carries `control: {"exploratory": true}` written by `build-control`; `confirm-report` ignores that field (the registry builder is unchanged) and stamps the public report from `--prereg-sha256`. |
-| — `run_confirm_report(judge_config, control_config, retest_config, control_dir, retest_dir, prereg, prereg_sha256, out, cover_config=None, write_flipped=None)` | joins the control arm by `aj.pair_id(record_id, control chunk id)` and the retest arm by the stage-A pair id; the §6 descriptives by reusing `compute_report`-style helpers, `compute_retest`'s escalation overlap and `cover_split` (not `tiebreak_replicate`: n = 0 on this pool, §6.4); the time-block split of §6.7; per-backend, per-arm first/last call UTC from the sources named in §5 step 5; the cache flag of §10.10; input shas against the committed `draw.json` / `chunk.json` / `map.json` / `retest-seed.json`; `experiment_provenance()` without host; `write_public`. `--write-flipped` writes the private control-arm *not* pair ids for `map --cover-any --pairs`. |
-| — `main` | two subparsers: `draw-confirm --judge-config --control-draw --control-sample --n --out-dir`; `confirm-report --judge-config --control-config --retest-config --control-dir --retest-dir --prereg --prereg-sha256 --out [--cover-config] [--write-flipped]`; the `--confirmatory` option on `chunk`, `map`, `retest-seed`. |
+| — `run_confirm_report(judge_config, control_config, retest_config, control_dir, retest_dir, prereg, prereg_sha256, out, cover_config=None, write_flipped=None, artifacts_dir)` (v3.2: `artifacts_dir`, the committed `artifacts/`, for gate 6) | joins the control arm by `aj.pair_id(record_id, control chunk id)` and the retest arm by the stage-A pair id; the §6 descriptives by reusing `compute_report`-style helpers, `compute_retest`'s escalation overlap and `cover_split` (not `tiebreak_replicate`: n = 0 on this pool, §6.4); the time-block split of §6.7; per-backend, per-arm first/last call UTC from the sources named in §5 step 5; the cache flag of §10.10; input shas against the committed `draw.json` / `chunk.json` / `map.json` / `retest-seed.json`; `experiment_provenance()` without host; `write_public`. `--write-flipped` writes the private control-arm *not* pair ids for `map --cover-any --pairs`. |
+| — `main` | two subparsers: `draw-confirm --judge-config --control-draw --control-sample --n 351 --out-dir --confirmatory PREREG_SHA256 --prereg PREREG.md`; `confirm-report --judge-config --control-config --retest-config --control-dir --retest-dir --prereg --prereg-sha256 --out --artifacts-dir [--cover-config] [--write-flipped]`; the `--confirmatory PREREG_SHA256 --prereg PREREG.md` options on `chunk`, `map`, `retest-seed` (v3.2). |
 | `python/scripts/eval/alias_study_judge.py`, `python/scripts/eval/glossbench_alias_judge.py` | **no change** (owner, 2026-11-05): `build-control`, `preflight`, `label`, `finalize` ran both arm shapes in the exploratory (the retest export under the control key, duplicate chunk ids with identical content accepted); the judge harness is the frozen study's and is not touched. |
 | `python/tests/eval/test_alias_control_chunks.py` | `draw_confirm` is deterministic, excludes the control pairs and windows, honours the (record, arm) cap, the one-pair-per-window rule and the arm quotas with a shortfall on a fixture; `run_draw_confirm` refuses a control sample whose sha differs from `control-draw.json`; `confirm_table` on hand-checkable tables (every record one pair with b = 10, c = 2 → sign-flip p = McNemar p = 79 / 4096; a two-pair record with scores (+2) vs singletons; b = c → p > 0.5); `tango_score_ci` fixtures from the §3.1 formula: b = 10, c = 2, n = 100 → 90 % interval **[0.0260, 0.1437]** (95 %: [0.0143, 0.1580]); b = 5, c = 5, n = 100 → [−0.0571, 0.0571] (symmetric about 0); b = c = 0, n = 50 → [−0.0513, 0.0513]; and the structural identity p̃21(δ̂) = c / n; the bootstrap reproduces `page_bootstrap_ci` on a fixture with records as pages; **a real unjudged final row** (`label: None, source: "unjudged"`) is dropped pairwise and counted, and the three re-computations of §6.8 move as specified; every gate trips on a forged input; `confirm-report` refuses ids, text and host fields and a prereg sha mismatch; `--confirmatory` sets the flag and block. |
 | `docs/plans/results/alias-boundary-confirm-2026-11/power.py`, `power.json` | this commit, from a clean tree (`README.md`). |
+
+### 11.1 Pins from the code review (v3.2, no design change)
+
+Where v3.1 left the §11 code a choice, the code makes the one below; each is also written in its section.
+
+1. `draw-confirm` takes `--confirmatory PREREG_SHA256` and `--prereg PREREG.md` (both required) and stamps
+   `draw.json`; `chunk`, `map` and `retest-seed` take the same pair. Each refuses unless
+   `sha256(PREREG.md)` is the given sha. `confirm-report` requires `--prereg` to be that file.
+2. `draw-confirm` runs with `--n 351` and refuses any other value; gate 3 also checks `draw.json`'s `n_draw`
+   and its quotas (117 / 117 / 117, `power.json` `quotas_at_owner_draw`). Tango's z is Φ⁻¹(0.95) = 1.644854.
+3. Before the record scores and the bootstrap the analysed pairs are ordered by (record id, stage-A pair
+   id); records enter `page_bootstrap_ci` in that order. The descriptive Monte-Carlo p uses
+   `chunktrial_stats`' defaults (10,000 flips, seed 0). `seed_int` is `alias_study_common.seed_int`.
+4. The control sample's full sha256 is `64a8bbc1adc5c22db1f0a3fee447bc3f691d3ee6f7fae7bf1948bfd8a118d39e`.
+5. Exclusion 2 removes every pool pair whose stage-A window is the window of any of the 300 control pairs,
+   all three strata (43 = 18 / 11 / 14). `draw-confirm` refuses unless every §4.1 count reproduces.
+6. The shortfall n − Σ achieved is split equally over the arms whose walk is not exhausted (remainder base,
+   then neighbour); their walks continue; this repeats until n is reached or every walk is exhausted. An
+   exhausted arm receives nothing. `draw.json` reports `walk_capacity` per arm.
+7. `confirm-report` reads `draw.json` / `chunk.json` / `map.json` from the control run directory and
+   `retest-seed.json` from the retest run directory and compares each with its committed copy in
+   `artifacts/` (provenance aside). Gate 3's "a drawn pair is a control pair" reads `draw.json`
+   `drawn_control_pairs` together with the verified control-sample sha.
+8. Gate 5: every mapped pair has a final row in both registries. A missing final row counts under gate 5,
+   not as unjudged; a missing input reads *absent* and fails its gate. Gate 2's denominator is the mapped
+   pairs (`pairs-seed.jsonl` rows).
+9. Control *not* pairs (for `--write-flipped` and cover-any): control final label *not* and not unjudged.
+10. The §6.7 halves are the first ⌈N/2⌉ pairs of an arm's registry (labelling) order and of its C-call order
+    (by `t` to the second, ties by file order). A Qwen call's start is `t − duration_s`; the gateway times
+    come from `calls-gw-argon.jsonl` / `calls-gw-opus.jsonl` only.
+11. The cache check as written in §6.9 (one-element lists, ≥ 200 characters on every element on both sides,
+    list equality, last row wins with duplicates counted, *not evaluable* when a backend with compared rows
+    has no eligible pair).
+12. P(n) interpolates linearly between the two nearest of all 16 `power_by_realised_n` points; an exact hit
+    is taken as is; the §3.2 list is a subset.
+13. Gate 4 checks the token counter `chunk` recorded (`HFTokenCounter`, `Salesforce/SFR-Embedding-Mistral`).
+14. Opus agreement (§6.5) is over drift-sampled pairs that Opus answered and that are judged. Per-arm
+    escalation (§6.4) is over pairs with a final row in that arm with source ≠ agree, an unjudged pair
+    counting as escalated; the escalation overlap is over pairs with a final row in both arms.
+15. An identical re-run of `draw-confirm` that reproduces the same sample is not a re-draw (§9.3).
 
 ## 12. Cost (rates from the alias prereg §6.5 and the exploratory control; planning only, at n_draw = 351)
 

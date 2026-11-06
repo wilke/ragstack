@@ -1,6 +1,6 @@
 # Alias study follow-up: confirmatory test of the chunk-boundary effect on judged labels
 
-**Status: DRAFT pre-registration (v3.1), not frozen, not run.** No draw, no chunk, no judge call has been
+**Status: DRAFT pre-registration (v3.2), not frozen, not run.** No draw, no chunk, no judge call has been
 made for this test. There is no experiment marker in this folder until the run exists.
 
 The exploratory chunk-boundary control of the alias study
@@ -41,7 +41,18 @@ second round of both reviews and the owner's draw-size decision (351); the floor
 curve, the Qwen cache check, quotas and shared-window structure restated. v3.1 (`0bbe2d9` and this commit):
 after the third round of both reviews (agreeing); the cache flag on `reasoning_sample` identity only with
 the exploratory base rates, the floor's rounding, the §6 numbering, stale figures, and the freeze
-sequencing after the §11 code PR; no design element changed.
+sequencing after the §11 code PR; no design element changed. v3.2 (with the §11 code PR, #969): pins from
+the two code reviews, no design change (PREREG §11.1): the draw pinned at 351 and refused unless every
+§4.1 count reproduces; `--confirmatory` checked against `--prereg` from step 1; gate 6 against the
+committed `artifacts/`; the record order of the scores and the bootstrap; the full control-sample sha;
+exclusion 2 over all 300 control windows; the shortfall rule; the cache check's *not evaluable*; the §6
+conventions. `power.json` is untouched.
+
+**Draw note (v3.2).** The draw's greedy walk need not reach the matching maximum of PREREG §4.3: it may take
+116 rather than 118 cells in the random arm, below its quota of 117. The shortfall rule then gives the one
+pair to base (remainder base, then neighbour), and `draw.json` reports each arm's `walk_capacity` and
+achieved count, so this is visible in the committed artifact. An identical re-run of `draw-confirm` that
+reproduces the same `sample.jsonl` is not a re-draw (PREREG §9.3).
 
 **Blindness of the draft.** The drafting session read the exploratory addendum, its public artifact and
 the control plan in full, and from the private stage-A registry only the fields that define the eligible
