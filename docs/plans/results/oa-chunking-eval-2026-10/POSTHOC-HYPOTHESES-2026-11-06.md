@@ -8,6 +8,42 @@ were made, so single cells are hints, not findings.
 Only aggregates are given here. Questions, quotes, passages and per-question files are kept in the
 private experiments repository.
 
+## Overview
+
+**What was tested.** Ten ways of chunking were compared on 22,593 open-access PMC articles on bacteria and viruses:
+- fixed-size token windows, with and without overlap;
+- sentence-aware chunks;
+- semantic chunks;
+- sentence and fixed chunks cut at the articles' section boundaries.
+
+There were 2,035 questions, each with an exact answer quote taken from one article. A question
+counts as answered when the top 5 retrieved chunks contain at least 90% of the quote (hit@5).
+Retrieval ran in six settings, from production (hybrid text + vector search with a reranker) to
+single sources. Under the frozen decision rule, **fixed_token 512/64 cut at section boundaries
+(ft512o64s) replaces the current fixed_token 512/64**: +3.5 hit@5 points, with 14% less context.
+
+**Hypotheses and conclusions:**
+
+| Question / hypothesis | Conclusion |
+|---|---|
+| Do section cuts help retrieval? | **Yes, for any retrieval that uses vectors.** +2.5 to +8 points; no effect on keyword (BM25) search. Real section boundaries beat the same number of random cuts. |
+| Does overlap have no advantage over no overlap? | **No: overlap helps, by about 2 points.** It only matters for the ~6% of answers that a plain fixed-size cut splits in two. |
+| Is semantic chunking better than fixed or sentence chunking with sections? | **No.** It is worse or tied in every setting, and it costs more to compute. |
+| **A.** Chunk size matters, and the effect depends on question type and how dense the text is | **Mostly supported.** Larger chunks hurt vector search (-5.8) and help keyword search (+5.3). Methods, results and number-heavy answers suffer most. In production the effect evens out. |
+| **B.** Overlap wins because it makes chunks larger | **Rejected.** Chunks are the same size with and without overlap. The gain comes entirely from answers that would otherwise be split. |
+| **C1.** The reranker evens out chunking differences in hybrid search | **Not supported as stated.** Combining text and vector search already evens them out. The reranker adds a near-uniform +14 to +18 points to every method. |
+| **C2.** The reranker evens out chunking differences whatever the retrieval source | **Partly supported.** With a single source, the reranker narrows the gaps by 25-40% but keeps the order. It adds nothing on top of hybrid fusion. |
+| **D.** Overlap's advantage is an artifact of how the questions were built | **Partly supported.** The mechanism is real (overlap stops answers being cut in half). Its measured size is set by the benchmark's short, single-sentence answers. |
+
+**In short:**
+- Cut chunks at section boundaries.
+- Keep 512-token chunks.
+- Keep the overlap, or cut on sentence boundaries.
+- Don't adopt semantic chunking.
+- The reranker and hybrid search shrink the differences between methods but don't erase them.
+- The benchmark mainly tests "don't split the answer". Longer, multi-part answers are needed to test
+  chunk size and overlap properly.
+
 ## Setup in brief
 
 - Corpus: 22,593 PMC OA bacteria/virus articles. Each article is extracted once with `jats_extract.py`,
