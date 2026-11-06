@@ -189,11 +189,24 @@ def driver(tmp_path, monkeypatch):
     return run
 
 
-def _shipped(name: str) -> str:
+#: The first tools image that applies the markers, and one before it.
+CAPABLE = "ragstack-tools-v1.6.23-b1.sif"
+OLD_IMAGE = "ragstack-tools-v1.6.20-b1.sif"
+
+
+def _shipped(name: str, image: str | None = CAPABLE) -> str:
+    """The shipped text, restamped in memory to ``image`` (default: a
+    marker-capable one, so the wiring tests read the same before and after the
+    branch's restamp); ``None`` = exactly as shipped."""
+    from ragstack.tool_image import tool_image_of
+
     path = CWL_DIR / name
     if not path.is_file():
         pytest.skip("no cwl/ in this checkout")
-    return path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    # A plain rewrite of the one name (stamp_tool_image refuses an unstamped
+    # target such as ragstack-worker.sif).
+    return text if image is None else text.replace(str(tool_image_of(text)), image)
 
 
 @pytest.mark.parametrize("name", EMBED_WORKFLOWS)
@@ -381,3 +394,24 @@ def test_ingest_chunks_accepts_an_unmarked_entry(registry) -> None:  # noqa: F81
 
     registry(_spec())
     ingest_chunks.refuse_marked_entry(it.resolve(CID, registry="scratch828"))
+
+
+@pytest.mark.parametrize("name", [*EMBED_WORKFLOWS, "ingest-bulk.cwl"])
+@pytest.mark.parametrize("image", [OLD_IMAGE, "ragstack-worker.sif"],
+                         ids=["v1.6.20", "unstamped"])
+def test_a_marked_entry_on_a_text_naming_an_older_or_unstamped_image_is_refused(
+    driver, capsys, name, image
+) -> None:
+    """#828 step R review F1: the tools before v1.6.23 chunk a marked
+    collection UNMARKED with no error — on ``ingest-bulk.cwl`` too, which has no
+    embed step to be unwired. MUTATION: drop the image check from
+    ``refuse_marked_on_unwired_workflow`` → a submission is built → fails."""
+    rc, submitted = driver(_shipped(name, image), dict(CUTS))
+    assert rc == 2 and submitted == []
+    err = capsys.readouterr().err
+    assert "v1.6.23" in err and image in err
+
+
+def test_an_unmarked_entry_on_an_older_image_is_not_refused(driver) -> None:
+    rc, submitted = driver(_shipped("ingest-bulk.cwl", OLD_IMAGE), {})
+    assert rc == "submitted" and len(submitted) == 1

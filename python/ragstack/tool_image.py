@@ -514,6 +514,48 @@ def names_stamped_image(cwl: str) -> bool:
     return name is not None and STAMPED_IMAGE_RE.match(name) is not None
 
 
+#: The first tools tag whose shard tools apply the document-structure markers
+#: (#828): ``ingest_shard.py``/``embed_shard.py`` read them from the registry
+#: entry (PR 4, PR 7), ``embed_shard.py`` takes ``--collection-id`` (PR 3) and
+#: both take ``--structure-metadata`` (PR 1). The image the repin step R names
+#: (ragstack-tools-v1.6.23-b1). An older image chunks a marked collection
+#: UNMARKED, with no error.
+FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS: tuple[int, int, int] = (1, 6, 23)
+
+
+def tools_tag_of(name: str | None) -> tuple[int, ...] | None:
+    """The ``(major, minor, patch)`` of a stamped tools image name
+    (``ragstack-tools-v1.6.23-b1.sif`` → ``(1, 6, 23)``; a ``+<sha>`` dev
+    suffix is dropped), or ``None`` for anything else — an unstamped
+    ``ragstack-worker.sif``, a malformed name, a version that is not three
+    integers."""
+    if not name:
+        return None
+    m = STAMPED_IMAGE_RE.match(name)
+    if m is None:
+        return None
+    core = m.group("version").lstrip("v").split("+", 1)[0]
+    parts = core.split(".")
+    if len(parts) < 3:
+        return None
+    try:
+        return tuple(int(p) for p in parts[:3])
+    except ValueError:
+        return None
+
+
+def names_marker_capable_image(cwl: str) -> bool:
+    """Whether ``cwl`` names ONE stamped tools image at or after
+    :data:`FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS`, the only case in which a
+    collection's document-structure markers are known to be applied by the
+    workers. Fails closed: an unstamped text (``ragstack-worker.sif``, which a
+    worker's ``--image-dir`` may resolve to any build), a mixed text and an
+    older stamped image are all ``False``. Shared by the API's create and
+    dispatch gates and ``gowe_batch_ingest.py`` (#828 step R review F1)."""
+    tag = tools_tag_of(tool_image_of(cwl))
+    return tag is not None and tag >= FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS
+
+
 def provenance_inputs(
     cwl: str, cwl_path: str | os.PathLike[str] | None, workflow_id: str,
 ) -> dict[str, str | None]:

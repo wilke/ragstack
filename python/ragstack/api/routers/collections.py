@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, NoReturn, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -115,6 +116,7 @@ from ragstack.ops.evict import drop_stores
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
 from ragstack.tenancy import readable_tenants
+from ragstack.tool_image import names_marker_capable_image, tool_image_of
 from ragstack.user_store import RESERVED_SERVICE_SUBJECTS, UserRecord
 
 log = logging.getLogger(__name__)
@@ -717,25 +719,59 @@ def _refuse_chunk_this_deployment_cannot_ingest(method: str) -> None:
         raise HTTPException(422, refusal)
 
 
+def _registered_workflow_text() -> str:
+    """The text of ``GOWE_WORKFLOW_CWL``, or ``""`` when unset, unreadable or
+    empty — which the marker gate below reads as "not marker-capable" (fail
+    closed)."""
+    path = settings.gowe_workflow_cwl
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        log.warning("collection create: cannot read GOWE_WORKFLOW_CWL %r (%s); "
+                    "refusing structure markers", path, e)
+        return ""
+
+
 def _refuse_markers_before_the_repin(params: dict[str, Any]) -> None:
     """400 when a new collection records any document-structure marker on a
-    GoWe deployment before the step-R tools image (#828 PR 4 review). EVERY
-    marker key (:data:`STRUCTURE_MARKER_PARAMS`): ``text_render``, and since
-    #828 PR 7 ``structure_cuts`` and ``embed_heading_path`` — the workers'
-    image would ingest any of them unmarked. The ``sentence`` tolerance keys
-    are accepted only under ``structure_cuts``, so they are refused with it.
-    The in-process backend applies the markers itself, so it is unaffected."""
-    if chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED or ingest_backend_name(settings) != "gowe":
+    GoWe deployment whose workers would not apply it (#828 PR 4 review, step R
+    review F1). EVERY marker key (:data:`STRUCTURE_MARKER_PARAMS`):
+    ``text_render``, and since #828 PR 7 ``structure_cuts`` and
+    ``embed_heading_path``. The ``sentence`` tolerance keys are accepted only
+    under ``structure_cuts``, so they are refused with it.
+
+    Refused when ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`` is
+    ``False`` (the kill switch), OR when the workflow text this deployment
+    registers (``GOWE_WORKFLOW_CWL``) does not name a stamped tools image at
+    or after v1.6.23 (``tool_image.names_marker_capable_image``): an older
+    image chunks a marked collection UNMARKED with no error, an unstamped
+    ``ragstack-worker.sif`` may resolve to any build, and an unreadable or
+    empty file proves nothing (fail closed). The server tree's constant
+    cannot know the text: dev and hackathon point ``GOWE_WORKFLOW_CWL`` at a
+    checkout. The in-process backend applies the markers itself, so it is
+    unaffected."""
+    if ingest_backend_name(settings) != "gowe":
         return
     marked = [k for k in STRUCTURE_MARKER_PARAMS if (params or {}).get(k) is not None]
-    if marked:
-        raise HTTPException(
-            400,
-            f"chunk param {marked[0]!r} needs the tools image of #828's repin step R, "
-            f"and this deployment ingests through GoWe workers whose image predates it: "
-            f"they would ingest the collection without the marker. Create it on an "
-            f"in-process deployment, or after the repin.",
-        )
+    if not marked:
+        return
+    if chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED:
+        text = _registered_workflow_text()
+        if text and names_marker_capable_image(text):
+            return
+        named = (tool_image_of(text) if text else None) or "no single stamped tools image"
+    else:
+        named = "a tools image this server release does not support markers with"
+    raise HTTPException(
+        400,
+        f"chunk param {marked[0]!r} needs the tools image of #828's repin step R "
+        f"(ragstack-tools-v1.6.23 or later), and this deployment ingests through GoWe "
+        f"workers whose workflow names {named}: they would ingest the collection "
+        f"without the marker. Create it on an in-process deployment, or after the "
+        f"repin.",
+    )
 
 
 class CollectionCreateRequest(BaseModel):

@@ -111,7 +111,9 @@ from ragstack.tenancy import allowed_collection_ids, readable_tenants
 from ragstack.tool_image import (
     declared_workflow_inputs,
     embed_shard_step_wiring,
+    names_marker_capable_image,
     names_stamped_image,
+    tool_image_of,
     uses_glossary_file,
 )
 from ragstack.workspace import (
@@ -735,12 +737,18 @@ def _refuse_marked_on_unwired_workflow(entry: CollectionEntry, workflow_cwl: str
     marker needs a resolving embed step. Before any write or version
     reservation, like every gate here.
 
-    Two more refusals come first (#828 PR 4 review): any recorded marker while
-    ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`` is ``False`` (it was,
-    before the repin step R; ``True`` since — create refuses the same, but an
-    entry can arrive by another route), and ``text_render`` on a workflow that builds and applies a
-    glossary file (``tool_image.uses_glossary_file``), which every shipped
-    ingest workflow does."""
+    Two more refusals come first (#828 PR 4 review, step R review F1): any
+    recorded marker while ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED``
+    is ``False`` (the kill switch; ``True`` since the repin step R) OR the
+    registered text does not name a stamped tools image at or after v1.6.23
+    (``tool_image.names_marker_capable_image``: an older image chunks the
+    collection UNMARKED with no error, and an unstamped
+    ``ragstack-worker.sif`` may resolve to any build — create refuses the
+    same, but an entry can arrive by another route, and ``GOWE_WORKFLOW_CWL``
+    can point at a checkout older than the server); and ``text_render`` on a
+    workflow that builds and applies a glossary file
+    (``tool_image.uses_glossary_file``), which every shipped ingest workflow
+    does."""
     try:
         markers = structure_from_params(
             entry.chunk_method, entry.chunk_params, unapplied=()).applied()
@@ -749,16 +757,20 @@ def _refuse_marked_on_unwired_workflow(entry: CollectionEntry, workflow_cwl: str
     if not markers:
         return
     listed = ", ".join(f"{k}={v!r}" for k, v in markers.items())
-    if not chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED:
+    if (not chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED
+            or not names_marker_capable_image(workflow_cwl)):
         # The same rule collection create applies, here for an entry that did
         # not come through create (seed_from_json, a collections file, a
-        # registry shared with an in-process deployment) — #828 PR 4 review.
+        # registry shared with an in-process deployment) — #828 PR 4 review —
+        # and for a registered text older than the server (step R review F1).
         raise HTTPException(
             status_code=422,
             detail=(
                 f"collection {entry.id!r} records document-structure markers ({listed}), "
-                f"which need the tools image of #828's repin step R; this deployment's "
-                f"GoWe workers predate it and would ingest the collection without them."
+                f"which need the tools image of #828's repin step R "
+                f"(ragstack-tools-v1.6.23 or later); this deployment's ingest workflow "
+                f"names {tool_image_of(workflow_cwl) or 'no single stamped tools image'}, "
+                f"whose workers would ingest the collection without them."
             ),
         )
     if "text_render" in markers and uses_glossary_file(workflow_cwl):

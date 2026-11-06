@@ -216,6 +216,10 @@ steps:
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
+      # Exit 2 is a refusal before any embed (argparse, the registry entry,
+      # a chunk input that contradicts it, a size_unit mismatch): deterministic,
+      # so a retry cannot succeed.
+      permanentFailCodes: [2]
       inputs:
         shard:
           type: File

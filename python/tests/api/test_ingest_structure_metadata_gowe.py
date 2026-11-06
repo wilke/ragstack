@@ -12,6 +12,7 @@ conftest's in-memory doubles and a fake engine; no live store, no GoWe server.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,12 @@ import yaml
 
 from ragstack.api.routers.documents import gowe_structure_metadata
 from ragstack.ingestion.structure import structure_metadata_enabled
-from ragstack.tool_image import declared_workflow_inputs, names_stamped_image
+from ragstack.tool_image import (
+    FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS,
+    declared_workflow_inputs,
+    names_stamped_image,
+    tools_tag_of,
+)
 from tests.api.test_chunk_cap_status import (  # noqa: F401 — fixtures
     _cleanup,
     principals,
@@ -180,3 +186,34 @@ def test_every_shipped_shard_tool_workflow_declares_it_since_the_image_repin() -
                       if isinstance(a, dict) and "position" in a]
         assert positions.count(tool_in["inputBinding"]["position"]) == 1, path.name
     assert seen == set(SHARD_TOOL_WORKFLOWS)
+
+
+def test_the_tree_names_a_tools_image_that_takes_the_new_flags() -> None:
+    """ADR-0010 decision 4: a CWL binds a flag only once the image it NAMES
+    carries it. The texts above bind ``--structure-metadata`` and (in the
+    embed steps) ``--collection-id``/``--registry``, which a tools image
+    older than tag v1.6.23 rejects at argparse on every task. So a STAMPED
+    tree must name that image or a later one (an unstamped tree names
+    ragstack-worker.sif, which the worker's ``--image-dir`` resolves, and to
+    which the API sends no ``structure_metadata``).
+
+    The repin step R stamped the tree to ragstack-tools-v1.6.24-b1; this
+    guard keeps a later restamp from naming an image older than v1.6.23
+    while the wiring stays. Uses the same ``tool_image.tools_tag_of`` /
+    ``FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS`` the API's marker gate reads."""
+    from ragstack.tool_image import check_tree_state
+
+    if not CWL_DIR.is_dir():
+        pytest.skip("no cwl/ in this checkout")
+    docs = {p.name: p.read_text(encoding="utf-8") for p in sorted(CWL_DIR.glob("*.cwl"))}
+    state, name, problems = check_tree_state(docs)
+    assert not problems, problems
+    if state == "unstamped":
+        return
+    assert name is not None
+    tag = tools_tag_of(name)
+    assert tag is not None and tag >= FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS, (
+        f"the tree names {name}, older than ragstack-tools-v1.6.23: it would refuse "
+        "--structure-metadata/--collection-id. Restamp (scripts/stamp_tool_image.py).")
+    receipt = json.loads((CWL_DIR / "tool-image.receipt.json").read_text(encoding="utf-8"))
+    assert receipt["name"] == name

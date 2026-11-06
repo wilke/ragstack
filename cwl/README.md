@@ -673,6 +673,21 @@ The two step tools live in the ragstack package's script tree:
   (and `workflow_id` with `--workflow-id`), and records the load's glossary counts per
   batch in its ledger.
 
+### Document structure: the repin step R (tools v1.6.24, #828)
+
+- **A marked collection needs a text naming tools v1.6.23 or later.** The API's create
+  and dispatch gates and `gowe_batch_ingest.py` refuse a marked collection (one whose
+  `chunk_params` record `structure_cuts` or `embed_heading_path`) when the workflow
+  text names an older or an unstamped tools image
+  (`tool_image.names_marker_capable_image`): those tools would chunk it unmarked, with
+  no error. The shipped texts are stamped to v1.6.24.
+- **`size_unit` is now refused at embed, not at load.** The operator embed workflows
+  (`pdf-ingest`, `jats-ingest`, `embed-bulk`) bind no `--chunk-size-unit`, so now that the
+  embed step resolves the entry, a `sentence`/`words` entry recording `size_unit=tokens`
+  is refused at the embed step (exit 2, before any GPU work; the three embed steps declare
+  `permanentFailCodes: [2]`, so the refusal is not retried). Before R the same run was
+  refused at `load_embeddings.py`, after the GPU work.
+
 ## Running it
 
 Each step stages `python/scripts/eval/` into its job sandbox via

@@ -288,17 +288,29 @@ async def test_a_marked_in_process_ingest_is_503_without_the_extra_whatever_the_
 # the GoWe dispatch backstop (§7 item 3)
 # --------------------------------------------------------------------------- #
 
+#: Tools images (step R review F1): the first that applies the markers, the
+#: one the fleet's texts named before R, and the unstamped name.
+CAPABLE = "ragstack-tools-v1.6.23-b1.sif"
+OLD_IMAGE = "ragstack-tools-v1.6.20-b1.sif"
+UNSTAMPED = "ragstack-worker.sif"
+
 _EMBED_STEP = (
     "cwlVersion: v1.2\nclass: Workflow\ninputs:\n  pdfs: File[]\n"
     "  collection_id: ['null', string]\noutputs: {{}}\nsteps:\n  embed:\n"
     "    in: {in_}\n    out: []\n    run:\n      class: CommandLineTool\n"
+    "      requirements:\n        DockerRequirement:\n"
+    "          dockerPull: {image}\n          dockerImageId: {image}\n"
     "      baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]\n"
     "      inputs:\n        shard: File\n        collection_id:\n"
     "          type: ['null', string]\n          inputBinding: {{prefix: --collection-id}}\n"
     "      outputs: {{}}\n"
 )
-UNWIRED = _EMBED_STEP.format(in_="{shard: pdfs}")
-WIRED = _EMBED_STEP.format(in_="{shard: pdfs, collection_id: collection_id}")
+UNWIRED = _EMBED_STEP.format(in_="{shard: pdfs}", image=CAPABLE)
+WIRED = _EMBED_STEP.format(in_="{shard: pdfs, collection_id: collection_id}", image=CAPABLE)
+
+
+def _wired_naming(image: str) -> str:
+    return _EMBED_STEP.format(in_="{shard: pdfs, collection_id: collection_id}", image=image)
 
 
 def _mark(monkeypatch, params) -> None:
@@ -317,9 +329,11 @@ async def _ingest(client, endpoint: str):
 
 
 def _before_the_repin(monkeypatch) -> None:
-    """A tree whose shipped CWLs name a tools image older than the repin step R
-    (the flag's value before R). The shipped default is ``True`` since R (pinned
-    below); the refusals it controls stay in place for such a tree."""
+    """The kill switch off: the flag's value before the repin step R. The
+    shipped default is ``True`` since R (pinned below); nothing sets it back
+    automatically, but the refusals it controls stay in place when it is
+    edited to ``False``. (A registered text naming an older image is refused
+    by ``tool_image.names_marker_capable_image``, step R review F1.)"""
     from ragstack.ingestion import chunker_config
 
     monkeypatch.setattr(chunker_config, "GOWE_STRUCTURE_MARKERS_SUPPORTED", False)
@@ -340,11 +354,19 @@ def test_the_shipped_tree_supports_markers_on_gowe_since_the_repin() -> None:
     assert chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED is True
 
 
-def _shipped_scatter() -> str:
+def _shipped_scatter(image: str | None = CAPABLE) -> str:
+    """The shipped scatter text, restamped in memory to ``image`` (default: a
+    marker-capable one, so these tests read the same before and after the
+    branch's restamp); ``None`` = exactly as shipped."""
+    from ragstack.tool_image import tool_image_of
+
     path = CWL_DIR / "pdf-ingest-scatter.cwl"
     if not path.exists():
         pytest.skip("no cwl/ in this checkout")
-    return path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    # A plain rewrite of the one name (stamp_tool_image refuses an unstamped
+    # target such as ragstack-worker.sif).
+    return text if image is None else text.replace(str(tool_image_of(text)), image)
 
 
 #: A wired embed workflow that also builds and applies a glossary file.
@@ -463,10 +485,79 @@ async def test_the_refusals_name_their_reason(client, gowe, monkeypatch) -> None
     assert r.status_code == 422 and "glossary file" in r.json()["detail"]
 
 
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+@pytest.mark.parametrize("image", [OLD_IMAGE, UNSTAMPED], ids=["v1.6.20", "unstamped"])
+async def test_after_the_repin_a_text_naming_an_older_or_unstamped_image_is_refused(
+    client, gowe, monkeypatch, endpoint, image  # noqa: F811
+) -> None:
+    """Step R review F1: the gate constant is a property of the SERVER tree;
+    whether the markers are applied depends on the tools image the registered
+    TEXT names (``GOWE_WORKFLOW_CWL`` can point at an older checkout). An
+    image before v1.6.23 chunks the collection unmarked with no error, and an
+    unstamped name may resolve to any build. MUTATION: drop the image check
+    from the dispatch gate → submitted → fails."""
+    _the_shipped_flag(monkeypatch)
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", _wired_naming(image))
+    _mark(monkeypatch, {"structure_cuts": "sections/1"})
+    status, _ok = await _ingest(client, endpoint)
+    assert status == 422
+    assert not gowe["engine"].submissions
+
+
+async def test_the_old_image_refusal_names_the_image(client, gowe, monkeypatch) -> None:  # noqa: F811
+    _the_shipped_flag(monkeypatch)
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", _shipped_scatter(OLD_IMAGE))
+    _mark(monkeypatch, {"embed_heading_path": "prefix/1"})
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 422 and OLD_IMAGE in r.json()["detail"]
+    assert not gowe["engine"].submissions
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+@pytest.mark.parametrize("image", [CAPABLE, "ragstack-tools-v1.6.24-b2.sif",
+                                   "ragstack-tools-v1.7.0+abc1234-b1.sif"])
+async def test_after_the_repin_a_text_naming_a_capable_image_is_dispatched(
+    client, gowe, monkeypatch, endpoint, image  # noqa: F811
+) -> None:
+    """MUTATION: raise ``FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS`` past 1.6.23
+    → the v1.6.23 case is refused → fails."""
+    _the_shipped_flag(monkeypatch)
+    monkeypatch.setattr(gowe["backend"], "workflow_cwl", _wired_naming(image))
+    _mark(monkeypatch, {"structure_cuts": "sections/1"})
+    status, ok = await _ingest(client, endpoint)
+    assert status == ok and gowe["engine"].submissions
+
+
+def test_tools_tag_of_reads_stamped_names_only() -> None:
+    from ragstack.tool_image import names_marker_capable_image, tools_tag_of
+
+    assert tools_tag_of(CAPABLE) == (1, 6, 23)
+    assert tools_tag_of("ragstack-tools-v1.7.0+abc1234-b3.sif") == (1, 7, 0)
+    assert tools_tag_of(UNSTAMPED) is None and tools_tag_of(None) is None
+    assert tools_tag_of("ragstack-tools-v1.6-b1.sif") is None
+    assert tools_tag_of("ragstack-tools-v1.6.x-b1.sif") is None
+    assert names_marker_capable_image(WIRED)
+    assert not names_marker_capable_image(_wired_naming(OLD_IMAGE))
+    assert not names_marker_capable_image(_wired_naming(UNSTAMPED))
+    assert not names_marker_capable_image("")
+
+
 # --------------------------------------------------------------------------- #
-# GoWe deployments refused markers at create until the repin step R; a tree
-# whose CWLs name an older image (the flag set back to False) still does
+# GoWe deployments refused markers at create until the repin step R; the
+# kill switch set to False, or a registered text naming an older or unstamped
+# image (step R review F1), still does
 # --------------------------------------------------------------------------- #
+
+
+def _registered(monkeypatch, tmp_path, image: str | None) -> Path:
+    """Point ``GOWE_WORKFLOW_CWL`` at a scratch text naming ``image``
+    (``None``: a path that does not exist)."""
+    path = tmp_path / "registered.cwl"
+    if image is not None:
+        path.write_text(_wired_naming(image), encoding="utf-8")
+    monkeypatch.setattr(settings, "gowe_workflow_cwl", str(path))
+    return path
+
 
 async def test_a_gowe_deployment_accepts_a_marker_at_create_since_the_repin(
     client, _admin, monkeypatch, tmp_path
@@ -481,6 +572,7 @@ async def test_a_gowe_deployment_accepts_a_marker_at_create_since_the_repin(
 
     assert chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED is True
     monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    _registered(monkeypatch, tmp_path, CAPABLE)
     _before_the_repin(monkeypatch)
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(PLAIN), cid="gowe-marked")
     assert r.status_code == 400, r.text
@@ -512,6 +604,7 @@ async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
 
     assert cc.GOWE_STRUCTURE_MARKERS_SUPPORTED is True
     monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    _registered(monkeypatch, tmp_path, CAPABLE)
     _before_the_repin(monkeypatch)
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7",
                                 method=method, overlap=overlap)
@@ -524,3 +617,52 @@ async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
     r, _ = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7-r",
                          method=method, overlap=overlap)
     assert (r.status_code == 400) is ("structure_infer" in params), r.text
+
+
+@pytest.mark.parametrize("image", [OLD_IMAGE, UNSTAMPED, None, ""],
+                         ids=["v1.6.20", "unstamped", "unreadable", "empty"])
+async def test_create_refuses_a_marker_when_the_registered_text_cannot_apply_it(
+    client, _admin, monkeypatch, tmp_path, image
+) -> None:
+    """Step R review F1, at create: the registered ``GOWE_WORKFLOW_CWL`` names
+    an image before v1.6.23 or an unstamped one, or cannot be read, or is
+    empty → 400 (fail closed); an unmarked collection is still created.
+    MUTATION: drop the image check from the create gate → 201 → fails."""
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    _the_shipped_flag(monkeypatch)
+    path = _registered(monkeypatch, tmp_path, image if image else None)
+    if image == "":
+        path.write_text("", encoding="utf-8")
+    r, recorded = await _create(client, monkeypatch, tmp_path,
+                                {"structure_cuts": "sections/1"}, cid="gowe-old")
+    assert r.status_code == 400, r.text
+    assert recorded is None and "v1.6.23" in r.json()["detail"]
+    if image:
+        assert image in r.json()["detail"]
+    plain, _ = await _create(client, monkeypatch, tmp_path, {}, cid="gowe-old-plain")
+    assert plain.status_code == 201, plain.text
+
+
+async def test_create_accepts_a_marker_when_the_registered_text_names_v1_6_23(
+    client, _admin, monkeypatch, tmp_path
+) -> None:
+    """MUTATION: raise ``FIRST_TOOLS_TAG_WITH_STRUCTURE_MARKERS`` past 1.6.23
+    → 400 → fails."""
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    _the_shipped_flag(monkeypatch)
+    _registered(monkeypatch, tmp_path, CAPABLE)
+    r, recorded = await _create(client, monkeypatch, tmp_path,
+                                {"structure_cuts": "sections/1"}, cid="gowe-capable")
+    assert r.status_code == 201, r.text
+    assert recorded == {"structure_cuts": "sections/1"}
+
+
+async def test_the_kill_switch_refuses_even_a_capable_registered_text(
+    client, _admin, monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    _before_the_repin(monkeypatch)
+    _registered(monkeypatch, tmp_path, CAPABLE)
+    r, _ = await _create(client, monkeypatch, tmp_path, {"structure_cuts": "sections/1"},
+                         cid="gowe-killed")
+    assert r.status_code == 400 and "repin" in r.json()["detail"]
