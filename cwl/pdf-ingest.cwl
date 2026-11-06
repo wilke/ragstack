@@ -156,6 +156,11 @@ inputs:
     doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure stamping passed to embed_shard --structure-metadata
+      (off|on; #828 §6). Not identity: chunk metadata only. Null = the tool's
+      default (off)."
 
 steps:
   extract:
@@ -172,8 +177,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
       inputs:
         pdfs:
@@ -212,16 +217,26 @@ steps:
       doi_mailto: doi_mailto
       doi_cache_dir: doi_cache_dir
       symbol_glossary: symbol_glossary
+      # #828 §7 (repin step R): the embed step resolves the SAME registry entry
+      # as the load step, so it chunks from the collection's spec and records
+      # the resolved id in the embedding-file header.
+      collection_id: collection_id
+      registry: registry
+      structure_metadata: structure_metadata
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
+      # Exit 2 is a refusal before any embed (argparse, the registry entry,
+      # a chunk input that contradicts it, a size_unit mismatch): deterministic,
+      # so a retry cannot succeed.
+      permanentFailCodes: [2]
       inputs:
         shard: {type: File, inputBinding: {position: 2}}
         tenant: {type: string, inputBinding: {prefix: --tenant, position: 3}}
@@ -255,6 +270,15 @@ steps:
           type: string
           default: "rules"
           inputBinding: {prefix: --symbol-glossary, position: 15}
+        collection_id:
+          type: string
+          inputBinding: {prefix: --collection-id, position: 16}
+        registry:
+          type: ["null", string]
+          inputBinding: {prefix: --registry, position: 17}
+        structure_metadata:
+          type: ["null", string]
+          inputBinding: {prefix: --structure-metadata, position: 18}
       arguments:
         - {position: 10, prefix: --out, valueFrom: $(inputs.shard.nameroot).emb.jsonl}
         - {position: 11, prefix: --receipt, valueFrom: $(inputs.shard.nameroot).receipt.json}
@@ -282,8 +306,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/load_embeddings.py]
@@ -343,8 +367,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
       inputs:
         version: {type: string, inputBinding: {prefix: --version, position: 1}}

@@ -246,8 +246,16 @@ def refuse_marked_on_unwired_workflow(cwl_path: str, collection_id: str,
     ``ingest_shard.py``, which resolves the entry itself) is not refused, nor
     is an unmarked collection. The markers are read by the one reader, with
     ``unapplied=()``: this asks whether ANY marker is recorded, not whether
-    this checkout can apply it."""
+    this checkout can apply it.
+
+    First (#828 step R review F1): a marked collection is refused on ANY
+    workflow — ``ingest-bulk.cwl`` included, which has no embed step — whose
+    text does not name a stamped tools image at or after v1.6.23
+    (``tool_image.names_marker_capable_image``). An older image chunks the
+    collection unmarked with no error; an unstamped ``ragstack-worker.sif``
+    may resolve to any build."""
     from ragstack.ingestion.chunker_config import structure_from_params
+    from ragstack.tool_image import names_marker_capable_image, tool_image_of
 
     try:
         markers = structure_from_params(method, params, unapplied=()).applied()
@@ -256,6 +264,17 @@ def refuse_marked_on_unwired_workflow(cwl_path: str, collection_id: str,
         raise SystemExit(2) from None
     if not markers:
         return
+    text = Path(cwl_path).read_text(encoding="utf-8")
+    if not names_marker_capable_image(text):
+        print(
+            f"error: refusing to submit {cwl_path}: collection {collection_id!r} records "
+            f"document-structure markers ({', '.join(f'{k}={v!r}' for k, v in markers.items())}), "
+            f"but the workflow names {tool_image_of(text) or 'no single stamped tools image'}, "
+            "not ragstack-tools-v1.6.23 or later: its tools would chunk the collection "
+            "without the markers, with no error. Submit the workflow text of the "
+            "deployed, stamped server release (#828 repin step R).",
+            file=sys.stderr, flush=True)
+        raise SystemExit(2)
     wiring = embed_step_wiring(cwl_path)
     unwired = sorted(step for step, wired in wiring.items() if wired is not True)
     if unwired:

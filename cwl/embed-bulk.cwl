@@ -67,6 +67,32 @@ inputs:
     doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  # #828 §7 (repin step R): registry resolution in the embed step. Optional, so
+  # every existing inputs file still validates; without collection_id the tool
+  # embeds unresolved, exactly as before, and load_embeddings.py refuses such a
+  # file for a collection that records a structure marker.
+  collection_id:
+    type: ["null", string]
+    doc: "Registry collection id (#263) the embed step RESOLVES through the
+      registry, so it chunks from the collection's build spec (a contradicting
+      chunk_method/chunk_size/chunk_overlap/embedding_model exits 2 before any
+      embed) and records the id in the embedding-file header, which
+      load-embeddings.cwl then checks against the same entry. Give the same id
+      to both halves. Null = unresolved (no collection_id in the header)."
+  registry:
+    type: ["null", string]
+    doc: "WHICH collection registry to resolve `collection_id` against, by NAME
+      (#563) — e.g. `hackathon`. A name, never coordinates and never a
+      credential: the worker reads COLLECTION_STORE_BACKEND_<NAME> and
+      COLLECTION_STORE_{PATH,DSN}_<NAME> from its own environment. Omitted = the
+      worker's unsuffixed COLLECTION_STORE_* variables; a name the worker has
+      nothing configured for is REFUSED rather than silently fallen back from.
+      Requires collection_id (embed_shard refuses --registry alone)."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure stamping passed to embed_shard --structure-metadata
+      (off|on; #828 §6). Not identity: chunk metadata only. Null = the tool's
+      default (off)."
   # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
   # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
   # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
@@ -177,16 +203,23 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      collection_id: collection_id
+      registry: registry
+      structure_metadata: structure_metadata
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
+      # Exit 2 is a refusal before any embed (argparse, the registry entry,
+      # a chunk input that contradicts it, a size_unit mismatch): deterministic,
+      # so a retry cannot succeed.
+      permanentFailCodes: [2]
       inputs:
         shard:
           type: File
@@ -250,6 +283,21 @@ steps:
           inputBinding:
             prefix: --tool-image-digest
             position: 15
+        collection_id:
+          type: ["null", string]
+          inputBinding:
+            prefix: --collection-id
+            position: 16
+        registry:
+          type: ["null", string]
+          inputBinding:
+            prefix: --registry
+            position: 17
+        structure_metadata:
+          type: ["null", string]
+          inputBinding:
+            prefix: --structure-metadata
+            position: 18
       arguments:
         - position: 10
           prefix: --out
@@ -299,8 +347,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/glossary_step.py]
@@ -362,8 +410,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/glossary_file.py, merge]
       permanentFailCodes: [2]
       inputs:
@@ -389,8 +437,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
         receipts:

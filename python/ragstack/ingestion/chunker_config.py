@@ -440,15 +440,18 @@ class StructureMarkers:
 
 
 #: Whether a document-structure marker may be ingested through GoWe workers
-#: from this source tree. ``False`` until the repin step R of #828 (§12): the
-#: shipped workflows name a tools image that predates the markers, so
-#: ``ingest_shard.py`` there would ingest a ``text_render`` collection as RAW
-#: Markdown under a name that claims the render, with no error. Read at
-#: collection create AND at the API's GoWe dispatch (an entry can arrive by
-#: ``seed_from_json``, a collections file or a registry shared with an
-#: in-process deployment). R flips it, and its pin tests, in the commit that
-#: repins the tools image.
-GOWE_STRUCTURE_MARKERS_SUPPORTED = False
+#: from this source tree. ``True`` since the repin step R of #828 (§12): the
+#: shipped workflows name a tools image whose ``ingest_shard.py`` /
+#: ``embed_shard.py`` apply the markers, and the operator workflows' embed
+#: steps bind ``collection_id``. It was ``False`` before R, when the image
+#: predated the markers and ``ingest_shard.py`` there would have ingested a
+#: ``text_render`` collection as RAW Markdown under a name that claims the
+#: render, with no error. Read at collection create AND at the API's GoWe
+#: dispatch (an entry can arrive by ``seed_from_json``, a collections file or a
+#: registry shared with an in-process deployment); the refusals stay in place
+#: for a tree whose shipped CWLs name an older image — set it back to ``False``
+#: there.
+GOWE_STRUCTURE_MARKERS_SUPPORTED = True
 
 #: No marker: today's behaviour on every path.
 NO_STRUCTURE_MARKERS = StructureMarkers()

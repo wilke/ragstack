@@ -8,8 +8,8 @@ gains a ``chunking`` object, and ``load_embeddings.py`` refuses, before any
 write, a header that names another ``collection_id`` or whose applied chunking
 contradicts the entry (``size_unit`` read method-conditionally, which
 ``check_build`` never compared). The workflow-wiring reader and the pin on the
-shipped CWLs (no embed step binds ``collection_id`` until the repin step R) are
-at the bottom.
+shipped CWLs (since the repin step R every embed step binds ``collection_id``)
+are at the bottom.
 
 Offline throughout. The registry is a scratch sqlite file selected by NAME
 (``--registry``), so no ambient ``COLLECTION_STORE_*`` setting is read; the
@@ -529,14 +529,15 @@ def test_a_comment_naming_the_script_is_not_a_mention():
 
 
 @pytest.mark.parametrize("name", EMBED_WORKFLOWS)
-def test_the_reader_sees_each_shipped_embed_workflow_as_unwired(name):
-    """Through the driver's own entry point, on the real texts."""
+def test_the_reader_sees_each_shipped_embed_workflow_as_wired(name):
+    """Through the driver's own entry point, on the real texts (wired since the
+    repin step R)."""
     path = CWL_DIR / name
     if not path.is_file():
         pytest.skip("no cwl/ in this checkout")
     wiring = gbi.embed_step_wiring(str(path))
     assert len(wiring) == 1, wiring
-    assert list(wiring.values()) == [False], wiring
+    assert list(wiring.values()) == [True], wiring
 
 
 def test_every_other_shipped_workflow_reads_as_no_embed_step():
@@ -551,19 +552,31 @@ def test_every_other_shipped_workflow_reads_as_no_embed_step():
 
 
 # --------------------------------------------------------------------------- #
-# the pin: no shipped embed step binds collection_id until the repin step R
+# the pin: since the repin step R every shipped embed step binds collection_id
 # --------------------------------------------------------------------------- #
 
+#: Per embed workflow: how the step reaches WHICH registry — the ``registry``
+#: name as ``--registry`` (pdf-ingest, embed-bulk), or the sqlite ``registry_db``
+#: file through the load step's ``EnvVarRequirement`` (jats-ingest).
+_REGISTRY_WIRING = {
+    "embed-bulk.cwl": "registry",
+    "jats-ingest.cwl": "registry_db",
+    "pdf-ingest.cwl": "registry",
+}
 
-def test_no_shipped_embed_step_binds_collection_id_until_the_image_repin() -> None:
+
+def test_every_shipped_embed_step_binds_collection_id_since_the_image_repin() -> None:
     """ADR-0010 decision 4: a CWL binds a tool flag only once the image it NAMES
-    carries it. Every shipped workflow names a tools image older than #828 PR 3,
-    whose ``embed_shard.py`` has no ``--collection-id`` — binding it now would
-    fail every embed task at argparse. Flip this pin on the repin branch (step R
-    of docs/plans/828-document-structure.md §12), which wires ``collection_id``
-    (and ``registry`` / ``registry_db``) into the embed steps of
-    ``pdf-ingest.cwl`` and ``jats-ingest.cwl`` and gives ``embed-bulk.cwl`` its
-    two optional inputs."""
+    carries it. The repin step R (docs/plans/828-document-structure.md §12)
+    moved every shipped workflow to a tools image whose ``embed_shard.py`` takes
+    ``--collection-id``/``--registry``, and wired them: ``pdf-ingest.cwl`` and
+    ``jats-ingest.cwl`` bind their existing ``collection_id`` (and ``registry``,
+    or ``registry_db`` through the load step's ``EnvVarRequirement``) into the
+    embed step; ``embed-bulk.cwl`` gained two OPTIONAL inputs, so every existing
+    inputs file still validates.
+
+    MUTATION: drop ``collection_id`` from any embed step's ``in:`` or tool
+    inputs, or its ``--collection-id`` binding → fails."""
     if not CWL_DIR.is_dir():
         pytest.skip("no cwl/ in this checkout")
     import yaml
@@ -572,11 +585,43 @@ def test_no_shipped_embed_step_binds_collection_id_until_the_image_repin() -> No
     for path in sorted(CWL_DIR.glob("*.cwl")):
         text = path.read_text(encoding="utf-8")
         wiring = embed_shard_step_wiring(text)
-        assert not any(wiring.values()), (path.name, wiring)
-        steps = (yaml.safe_load(text) or {}).get("steps") or {}
-        for sid in wiring:
-            tool_inputs = steps[sid]["run"].get("inputs") or {}
-            assert "collection_id" not in tool_inputs, (path.name, sid)
-            assert "--collection-id" not in json.dumps(steps[sid]["run"]), (path.name, sid)
-            seen += 1
+        if path.name not in EMBED_WORKFLOWS:
+            assert wiring == {}, (path.name, wiring)
+            continue
+        assert list(wiring.values()) == [True], (path.name, wiring)
+        doc = yaml.safe_load(text) or {}
+        (sid,) = wiring
+        step = doc["steps"][sid]
+        tool = step["run"]
+        tool_inputs = tool.get("inputs") or {}
+        assert step["in"]["collection_id"] == "collection_id", path.name
+        assert tool_inputs["collection_id"]["inputBinding"]["prefix"] == "--collection-id"
+        reg = _REGISTRY_WIRING[path.name]
+        assert step["in"][reg] == reg, (path.name, reg)
+        if reg == "registry":
+            assert tool_inputs["registry"]["type"] == ["null", "string"], path.name
+            assert tool_inputs["registry"]["inputBinding"]["prefix"] == "--registry"
+        else:
+            # Identical to the load step's: the same store, the same way.
+            env = next(r for k, r in (tool.get("requirements") or {}).items()
+                       if k == "EnvVarRequirement")
+            load_env = doc["steps"]["load"]["run"]["requirements"]["EnvVarRequirement"]
+            assert env == load_env, path.name
+            assert env["envDef"]["COLLECTION_STORE_PATH"] == "$(inputs.registry_db.path)"
+            assert tool_inputs["registry_db"]["type"] == "File", path.name
+            assert "inputBinding" not in tool_inputs["registry_db"], path.name
+        if path.name == "embed-bulk.cwl":
+            # A workflow contract change, so OPTIONAL: no inputs file breaks.
+            for name in ("collection_id", "registry"):
+                assert doc["inputs"][name]["type"] == ["null", "string"], name
+                assert "default" not in doc["inputs"][name], name
+        else:
+            # Already a workflow input (REQUIRED there): the load step's id.
+            assert doc["steps"]["load"]["in"]["collection_id"] == "collection_id"
+        positions = [i["inputBinding"]["position"] for i in tool_inputs.values()
+                     if isinstance(i, dict) and "position" in (i.get("inputBinding") or {})]
+        positions += [a["position"] for a in tool.get("arguments") or []
+                      if isinstance(a, dict) and "position" in a]
+        assert len(positions) == len(set(positions)), (path.name, sorted(positions))
+        seen += 1
     assert seen == len(EMBED_WORKFLOWS)
