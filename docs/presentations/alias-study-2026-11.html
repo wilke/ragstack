@@ -249,7 +249,7 @@ And does growing a collection with a paper's citation neighbours cost more than 
 <p>Seeded pool of <span class="num">857</span> eligible papers, <span class="num">532</span> activated in waves; drafted by Gemini 2.5 Pro, checked mechanically, verified by Claude Opus 5.5 (Codex on <span class="num">54</span>): <span class="num">1,091</span> accepted on <span class="num">408</span> papers. The <span class="num">300</span> with exactly 2 G + 1 C give the <span class="num">900</span> balanced records. Built blind to retrieval.</p></div>
 <div class="card"><p class="fam">Text extraction</p>
 <ul class="tight">
-<li><b>JATS article:</b> abstract + body, titled sections as <code>## Title</code> lines (untitled ones leave none); no reference list.</li>
+<li><b>JATS article:</b> abstract + body, titled sections as markdown heading lines (<code>## Title</code> at top level, deeper for nested; untitled ones leave none); no reference list.</li>
 <li><b>Tables, figures:</b> lifted out as unit records (label, caption, grid; long tables split by row, header repeated).</li>
 <li><b>Added papers:</b> PMC JATS where a copy exists, else the licensed open-access PDF: no headings, reference list kept (a known difference).</li>
 <li><b>Screens</b> on added papers: control characters (PDF out above 0.5 % of chunks), repetition (distinct-chunk ratio &lt; 0.90; 9 out).</li>
@@ -259,12 +259,12 @@ And does growing a collection with a paper's citation neighbours cost more than 
 <p><b>Random, two draws</b> (snapshot of 2026-10-14): same primary topic, year ±3, open access, no citation link to a study paper; matched per study paper on count, article type, chunk-length band and PDF share; ±5 % chunk volume a target, not a gate. 201 papers in both draws.</p></div>
 </div>
 <table class="scen tight-t"><thead><tr><th>added arm</th><th>papers</th><th>chunks</th><th>vs neighbour</th><th>PDF share</th><th>article / review</th></tr></thead>
-<tbody><tr><td><b>neighbour</b></td><td class="num">2,423</td><td class="num">88,765</td><td class="num">—</td><td class="num">8.34 %</td><td class="num">1,845 / 578</td></tr><tr><td><b>random-1</b></td><td class="num">2,423</td><td class="num">84,762</td><td class="num">−4.51 %</td><td class="num">9.45 %</td><td class="num">1,930 / 493</td></tr><tr><td><b>random-2</b></td><td class="num">2,423</td><td class="num">84,552</td><td class="num">−4.75 %</td><td class="num">9.41 %</td><td class="num">1,927 / 496</td></tr></tbody></table></div><footer class="sf"><p class="src">Source: <code>corpus</code>, <code>pool</code>, <code>waves</code>, <code>record_set</code>, <code>drafter</code>, <code>verdict_source</code> (record-recount); <code>runs.&lt;arm&gt;/merged.field_coverage</code> (results-stage-B); <code>assumptions.neighbour_counts</code> (power-v4); <code>jats.py</code> (extractor); prereg §4.1, §4.3, §5.1 (selection rules, screens, PDF share, article types)</p><span class="pg"></span></footer></section>
+<tbody><tr><td><b>neighbour</b></td><td class="num">2,423</td><td class="num">88,765</td><td class="num">—</td><td class="num">8.34 %</td><td class="num">1,845 / 578</td></tr><tr><td><b>random-1</b></td><td class="num">2,423</td><td class="num">84,762</td><td class="num">−4.51 %</td><td class="num">9.45 %</td><td class="num">1,930 / 493</td></tr><tr><td><b>random-2</b></td><td class="num">2,423</td><td class="num">84,552</td><td class="num">−4.75 %</td><td class="num">9.41 %</td><td class="num">1,927 / 496</td></tr></tbody></table></div><footer class="sf"><p class="src">Source: <code>corpus</code>, <code>pool</code>, <code>waves</code>, <code>record_set</code>, <code>drafter</code>, <code>verdict_source</code> (record-recount); <code>runs.&lt;arm&gt;/merged.field_coverage</code> (results-stage-B); <code>assumptions.neighbour_counts</code> (power-v4); <code>jats.py</code> (extractor); <code>control/CONTROL-PLAN.md</code> §2 (PDF text has no headings); prereg §4.1, §4.3, §5.1 (selection rules, screens, PDF share, article types)</p><span class="pg"></span></footer></section>
 <section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · provenance </p><h2>How the collections were built</h2></header><div class="sb"><div class="cols2 dense">
 <div>
 <div class="card"><p class="fam">Chunks and embeddings</p>
 <ul class="tight">
-<li><b>Chunker</b> <code>tok512o0</code> = <code>fixed_token/512/0</code>: a sliding 512-token window, no overlap, blind to sentences and sections; tokens counted in the <code>Salesforce/SFR-Embedding-Mistral</code> tokenizer.</li>
+<li><b>Chunker</b> <code>tok512o0</code> = <code>fixed_token/512/0</code>: a fixed 512-token window, no overlap, blind to sentences and sections; tokens counted in the <code>Salesforce/SFR-Embedding-Mistral</code> tokenizer.</li>
 <li><b>Embedding:</b> SFR dense; each corpus embedded once, base shared by all four arms with identical chunk ids and text; added papers through the same chunker, embedder and tools image <i>(its version: not stated in the public record)</i>.</li>
 <li><b>Checked later</b> (control): on <span class="num">4,265</span> sampled documents every stage-A chunk equals the record text at its offsets (0 mismatches).</li>
 </ul></div>
@@ -272,7 +272,7 @@ And does growing a collection with a paper's citation neighbours cost more than 
 <ul class="tight">
 <li><b>default</b> (served path): hybrid BM25 + SFR dense (RRF k 60), top 50 rescored by <code>BAAI/bge-reranker-v2-m3</code> on text + glossary field.</li>
 <li><b>norerank:</b> the same hybrid. <b>BM25:</b> alone.</li>
-<li>No graph, no rewriting; glossary boost on (declared). 29 legs × 1,091 records = <span class="num">31,639</span> calls.</li>
+<li>No graph, no rewriting; glossary boost probed active on the glossary arms (declared on <i>none</i>); the reranker reads the field (declared). 29 legs × 1,091 records = <span class="num">31,639</span> calls.</li>
 </ul></div>
 </div>
 <div>
@@ -282,7 +282,7 @@ And does growing a collection with a paper's citation neighbours cost more than 
 <div class="card"><p class="fam">Glossary field</p>
 <p><b>merged:</b> the paper's symbols and defined abbreviations (plus plural entries), rendered on every chunk where the alias occurs as a token, at most 12 lines / 1,200 characters: <span class="num">24,749</span> of 32,765 base chunks. <b>placebo:</b> another paper's entries, own entries removed: <span class="num">817</span> chunks. <b>none:</b> an explicit empty file. Added papers' glossaries come from the same pipeline, run locally.</p></div>
 </div>
-</div></div><footer class="sf"><p class="src">Source: <code>runs.*.field_coverage</code>, <code>runs.*.census_source</code>, <code>legs_read</code>, <code>layer2.placebo.field_coverage</code> (results-stage-B); <code>chunker</code>, <code>gate</code>, <code>groups.*.counts</code> (control-check); prereg §5.1–§5.4, §9.3, §15 item 5</p><span class="pg"></span></footer></section>
+</div></div><footer class="sf"><p class="src">Source: <code>runs.*.field_coverage</code>, <code>runs.*.census_source</code>, <code>legs_read</code>, <code>layer2.placebo.field_coverage</code> (results-stage-B); <code>chunker</code>, <code>gate</code>, <code>groups.*.counts</code> (control-check); prereg §5.1–§5.4, §9.3, §15 item 5; <code>prereg/README.md</code> (freeze record: the tag pins the load receipts)</p><span class="pg"></span></footer></section>
 <section class="slide " aria-roledescription="slide"><header class="sh"><p class="kicker">Design · the outcome </p><h2>Why judge at all?</h2></header><div class="sb"><div class="cols2 dense">
 <div>
 <p class="lede">Each question asks for a <b>fact</b>, not a passage. It was written from one gold chunk, but the fact can be stated elsewhere too: in another passage of the same paper, or in another paper. A reader who retrieves any of those has the answer.</p>

@@ -294,6 +294,8 @@ pw = POW["simulation"]["H2"]["rho1"]
 pw_a = pw["p0.85_q0.05"]["0.05"]["confirm_a0.7"]
 pw_b = pw["p0.7_q0.1"]["0.05"]["confirm_a0.7"]
 added = int(re.search(r"total (\d+)", POW["assumptions"]["neighbour_counts"]).group(1))
+PAPERS_PER_ARM = 2423  # prereg §5.1 v4 table: every added arm holds 2,423 papers (shortfall 0)
+assert added == PAPERS_PER_ARM, "neighbour total != the §5.1 v4 per-arm paper count"
 chunks = {a: B["runs"][f"{a}/merged"]["field_coverage"]["chunks"] for a, _ in ARMS}
 fc_m = PLAC["field_coverage"]["merged"]
 fc_p = PLAC["field_coverage"]["placebo"]
@@ -391,7 +393,7 @@ slide("Design · provenance", "Where the papers and the text come from",
 <p>Seeded pool of {n_(POOL['eval_papers'])} eligible papers, {n_(WAV['activated_final'])} activated in waves; drafted by {esc(DRAFT_MODEL)}, checked mechanically, verified by Claude Opus 5.5 (Codex on {n_(VMOD['gpt-6-astra'])}): {n_(f"{RSET['accepted']['records']:,}")} accepted on {n_(RSET['accepted']['papers'])} papers. The {n_(PAPERS)} with exactly 2 G + 1 C give the {n_(N_ALL)} balanced records. Built blind to retrieval.</p></div>
 <div class="card"><p class="fam">Text extraction</p>
 <ul class="tight">
-<li><b>JATS article:</b> abstract + body, titled sections as <code>## Title</code> lines (untitled ones leave none); no reference list.</li>
+<li><b>JATS article:</b> abstract + body, titled sections as markdown heading lines (<code>## Title</code> at top level, deeper for nested; untitled ones leave none); no reference list.</li>
 <li><b>Tables, figures:</b> lifted out as unit records (label, caption, grid; long tables split by row, header repeated).</li>
 <li><b>Added papers:</b> PMC JATS where a copy exists, else the licensed open-access PDF: no headings, reference list kept (a known difference).</li>
 <li><b>Screens</b> on added papers: control characters (PDF out above 0.5 % of chunks), repetition (distinct-chunk ratio &lt; 0.90; {BUILD['rep_screen_excluded']} out).</li>
@@ -402,7 +404,7 @@ slide("Design · provenance", "Where the papers and the text come from",
 </div>
 <table class="scen tight-t"><thead><tr><th>added arm</th><th>papers</th><th>chunks</th><th>vs neighbour</th><th>PDF share</th><th>article / review</th></tr></thead>
 <tbody>{arm_rows}</tbody></table>""",
-      source="<code>corpus</code>, <code>pool</code>, <code>waves</code>, <code>record_set</code>, <code>drafter</code>, <code>verdict_source</code> (record-recount); <code>runs.&lt;arm&gt;/merged.field_coverage</code> (results-stage-B); <code>assumptions.neighbour_counts</code> (power-v4); <code>jats.py</code> (extractor); prereg §4.1, §4.3, §5.1 (selection rules, screens, PDF share, article types)")
+      source="<code>corpus</code>, <code>pool</code>, <code>waves</code>, <code>record_set</code>, <code>drafter</code>, <code>verdict_source</code> (record-recount); <code>runs.&lt;arm&gt;/merged.field_coverage</code> (results-stage-B); <code>assumptions.neighbour_counts</code> (power-v4); <code>jats.py</code> (extractor); <code>control/CONTROL-PLAN.md</code> §2 (PDF text has no headings); prereg §4.1, §4.3, §5.1 (selection rules, screens, PDF share, article types)")
 
 # --------------------------------------------------------------------------- #
 # 3q. Data provenance: collections (owner request, 2026-11-05)
@@ -427,7 +429,7 @@ slide("Design · provenance", "How the collections were built",
 <div>
 <div class="card"><p class="fam">Chunks and embeddings</p>
 <ul class="tight">
-<li><b>Chunker</b> <code>tok512o0</code> = <code>{esc(CK['chunker']['stage_a_descriptor'])}</code>: a sliding 512-token window, no overlap, blind to sentences and sections; tokens counted in the <code>{esc(TOK)}</code> tokenizer.</li>
+<li><b>Chunker</b> <code>tok512o0</code> = <code>{esc(CK['chunker']['stage_a_descriptor'])}</code>: a fixed 512-token window, no overlap, blind to sentences and sections; tokens counted in the <code>{esc(TOK)}</code> tokenizer.</li>
 <li><b>Embedding:</b> SFR dense; each corpus embedded once, base shared by all four arms with identical chunk ids and text; added papers through the same chunker, embedder and tools image <i>(its version: not stated in the public record)</i>.</li>
 <li><b>Checked later</b> (control): on {n_(f"{ck_docs:,}")} sampled documents every stage-A chunk equals the record text at its offsets ({ck_mis} mismatches).</li>
 </ul></div>
@@ -435,7 +437,7 @@ slide("Design · provenance", "How the collections were built",
 <ul class="tight">
 <li><b>default</b> (served path): hybrid BM25 + SFR dense (RRF k 60), top 50 rescored by <code>BAAI/bge-reranker-v2-m3</code> on text + glossary field.</li>
 <li><b>norerank:</b> the same hybrid. <b>BM25:</b> alone.</li>
-<li>No graph, no rewriting; glossary boost on (declared). {n_legs} legs × {n_rows:,} records = {n_(f"{n_legs * n_rows:,}")} calls.</li>
+<li>No graph, no rewriting; glossary boost probed active on the glossary arms (declared on <i>none</i>); the reranker reads the field (declared). {n_legs} legs × {n_rows:,} records = {n_(f"{n_legs * n_rows:,}")} calls.</li>
 </ul></div>
 </div>
 <div>
@@ -446,7 +448,7 @@ slide("Design · provenance", "How the collections were built",
 <p><b>merged:</b> the paper's symbols and defined abbreviations (plus plural entries), rendered on every chunk where the alias occurs as a token, at most {PREREG['glossary_line_cap']} lines / {PREREG['glossary_char_cap']:,} characters: {n_(f"{fc_m['chunks_with_field']:,}")} of {fc_m['chunks']:,} base chunks. <b>placebo:</b> another paper's entries, own entries removed: {n_(fc_p['chunks_with_field'])} chunks. <b>none:</b> an explicit empty file. Added papers' glossaries come from the same pipeline, run locally.</p></div>
 </div>
 </div>""",
-      source="<code>runs.*.field_coverage</code>, <code>runs.*.census_source</code>, <code>legs_read</code>, <code>layer2.placebo.field_coverage</code> (results-stage-B); <code>chunker</code>, <code>gate</code>, <code>groups.*.counts</code> (control-check); prereg §5.1–§5.4, §9.3, §15 item 5")
+      source="<code>runs.*.field_coverage</code>, <code>runs.*.census_source</code>, <code>legs_read</code>, <code>layer2.placebo.field_coverage</code> (results-stage-B); <code>chunker</code>, <code>gate</code>, <code>groups.*.counts</code> (control-check); prereg §5.1–§5.4, §9.3, §15 item 5; <code>prereg/README.md</code> (freeze record: the tag pins the load receipts)")
 
 # --------------------------------------------------------------------------- #
 # 3o. Why judge at all (owner request, 2026-11-05)
