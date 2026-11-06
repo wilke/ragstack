@@ -235,8 +235,8 @@ CONFIRM_PREREG = "alias-boundary-confirm-2026-11"
 CONFIRM_SEED = "261105|alias|confirm|draw"
 CONFIRM_BOOT_SEED = "261105|alias|confirm|boot"
 #: §4.1: the committed stage-A commit and the exploratory control's private sample (the latter's
-#: full sha256 is the committed public ``control/artifacts/control-draw.json``'s ``sample_sha256``;
-#: the prereg quotes its first 8 digits)
+#: full sha256, quoted in full in the prereg's §4.1, is the committed public
+#: ``control/artifacts/control-draw.json``'s ``sample_sha256``)
 CONFIRM_STAGE_A_COMMIT_SHA256 = "f53ca9d0b18fb66753ae3fbe219b7b63e2163aee44f8dfe0e9ce386b04d266cd"
 CONFIRM_CONTROL_SAMPLE_SHA256 = "64a8bbc1adc5c22db1f0a3fee447bc3f691d3ee6f7fae7bf1948bfd8a118d39e"
 CONFIRM_STRATUM = "answers"
@@ -256,7 +256,8 @@ CONFIRM_DIR = REPO / "docs" / "plans" / "results" / CONFIRM_PREREG
 #: §9.1: ``power.json`` is in the freeze set; its sha256 is the one this directory's README records
 CONFIRM_POWER_JSON = CONFIRM_DIR / "power.json"
 CONFIRM_POWER_JSON_SHA256 = "13afd2ba3e31f06455972cf001ae2b566dc4e428941bf48a0f4b8298020bc685"
-#: §8 gate names, in the prereg's order
+#: §11.1 (1) / §9.2: the frozen sha must be the committed PREREG.md's own (read at call time)
+CONFIRM_PREREG_FILE = CONFIRM_DIR / "PREREG.md"
 #: §3.3 / §4.3: the owner's draw size and its quotas (``power.json`` ``n_draw_owner``,
 #: ``quotas_at_owner_draw``); draw-confirm refuses any other ``--n``
 CONFIRM_N_DRAW = 351
@@ -274,6 +275,7 @@ CONFIRM_POOL_COUNTS: dict[str, Any] = {
     "cells": {"base": 198, "neighbour": 154, "random": 118, "total": 470},
     "pool_papers": 1050, "pool_largest_paper_cluster": 15, "pool_windows": 1734,
     "pool_windows_multi_record": 123, "pool_pairs_on_multi_record_windows": 260, "pool_windows_cross_arm": 0}
+#: §8 gate names, in the prereg's order
 CONFIRM_GATES = ("g1_realised_n", "g2_unjudged", "g3_draw_and_registries", "g4_chunker_and_environment",
                  "g5_arms_complete", "g6_input_shas")
 
@@ -673,7 +675,16 @@ def check_prereg(prereg_sha256: str, prereg: Path | None) -> dict[str, Any]:
         raise SystemExit("REFUSED: --confirmatory needs --prereg PREREG.md (its sha256 is checked against it)")
     if asc.sha256_file(prereg) != prereg_sha256:
         raise SystemExit("REFUSED: the prereg file's sha256 is not --confirmatory (the frozen sha)")
+    require_committed_prereg(prereg_sha256)
     return block
+
+
+def require_committed_prereg(prereg_sha256: str) -> None:
+    """The sha must be the committed ``PREREG.md``'s (:data:`CONFIRM_PREREG_FILE`): another file
+    with its own matching sha is refused."""
+    if asc.sha256_file(CONFIRM_PREREG_FILE) != prereg_sha256:
+        raise SystemExit("REFUSED: the sha is not the committed PREREG.md's (another file was given, or the "
+                         "committed prereg changed)")
 
 
 def stamp_confirmatory(rec: dict[str, Any], prereg_sha256: str | None) -> dict[str, Any]:
@@ -2374,6 +2385,7 @@ def run_confirm_report(judge_config: Path, control_config: Path, retest_config: 
     block = confirmatory_block(prereg_sha256)
     if asc.sha256_file(prereg) != prereg_sha256:
         raise SystemExit("REFUSED: the prereg file's sha256 is not --prereg-sha256 (the frozen sha)")
+    require_committed_prereg(prereg_sha256)
     old = _json_or_none(out)
     if cover_config is None and old is not None:
         raise SystemExit("REFUSED: --out exists; confirm-report runs once (§5 step 6); the cover-any re-run takes "

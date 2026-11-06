@@ -49,9 +49,11 @@ exclusion 2 over all 300 control windows; the shortfall rule; the cache check's 
 conventions. `power.json` is untouched.
 
 **Draw note (v3.2).** The draw's greedy walk need not reach the matching maximum of PREREG §4.3: it may take
-116 rather than 118 cells in the random arm, below its quota of 117. The shortfall rule then gives the one
-pair to base (remainder base, then neighbour), and `draw.json` reports each arm's `walk_capacity` and
-achieved count, so this is visible in the committed artifact. An identical re-run of `draw-confirm` that
+fewer than 118 cells in the random arm, and fewer than its quota of 117. This is a reviewer's structural
+expectation, not a measured result (no real draw has been run): the random arm has one spare cell above its
+quota, and 2 of its records have every pair on a shared window. If it happens, the shortfall rule gives
+the pairs short to base, then neighbour, and `draw.json` reports each arm's `walk_capacity` and achieved
+count, so it is visible in the committed artifact. An identical re-run of `draw-confirm` that
 reproduces the same `sample.jsonl` is not a re-draw (PREREG §9.3).
 
 **Blindness of the draft.** The drafting session read the exploratory addendum, its public artifact and

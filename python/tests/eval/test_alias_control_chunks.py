@@ -1024,6 +1024,7 @@ def confirm_inputs(judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(ctl, "CONFIRM_POOL_COUNTS", fixture_pool_counts(sa, ctl_rows, n_draw))
     pre = tmp_path / "PREREG.md"
     pre.write_text("frozen text\n")
+    monkeypatch.setattr(ctl, "CONFIRM_PREREG_FILE", pre)      # the "committed" prereg of this fixture
     sa = {**sa, "prereg": pre, "psha": asc.sha256_file(pre)}
     return cfgp, cd_p, cs_p, sa
 
@@ -1418,11 +1419,12 @@ def test_confirm_checks_pass_on_consistent_inputs_and_trip_on_each_forgery() -> 
 # ---- --confirmatory on chunk / map / retest-seed
 
 def test_confirmatory_switch_sets_the_flag_and_block(words: WordCounter, files: dict[str, Any], judged: Path,
-                                                     tmp_path: Path) -> None:
+                                                     tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     out = files["out"]
     pre = tmp_path / "PREREG.md"
     pre.write_text("frozen\n")
     psha = asc.sha256_file(pre)
+    monkeypatch.setattr(ctl, "CONFIRM_PREREG_FILE", pre)
     with pytest.raises(SystemExit, match="64 lower-case hex"):
         ctl.run_chunk(files["exports"], files["texts"], files["sample"], out, confirmatory="ABC", prereg=pre)
     with pytest.raises(SystemExit, match="prereg file's sha256 is not --confirmatory"):
@@ -1891,3 +1893,30 @@ def test_label_rows_reads_as_the_harness_does(tmp_path: Path) -> None:
     rows, dup, order = ctl.label_rows(tmp_path, "C")
     assert rows["p1"]["v"] == 3 and dup == 1 and order == ["p1", "p2"]       # the last row wins, counted
     assert ctl.label_rows(tmp_path, "E") == ({}, 0, [])
+
+
+def test_the_frozen_sha_must_be_the_committed_prereg(words: WordCounter, judged: Path, tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    assert ctl.CONFIRM_PREREG_FILE == ctl.REPO / "docs/plans/results/alias-boundary-confirm-2026-11/PREREG.md"
+    cfgp, cd_p, cs_p, sa = confirm_inputs(judged, tmp_path, monkeypatch)
+    other = tmp_path / "other" / "PREREG.md"
+    other.parent.mkdir()
+    other.write_text("another text, with its own sha\n")
+    osha = asc.sha256_file(other)
+    # the file and the sha agree, but it is not the committed prereg: refused at step 1
+    with pytest.raises(SystemExit, match="not the committed PREREG.md's"):
+        ctl.check_prereg(osha, other)
+    with pytest.raises(SystemExit, match="not the committed PREREG.md's"):
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "o1", osha, other)
+    assert not (tmp_path / "o1" / "sample.jsonl").exists()
+    assert ctl.check_prereg(sa["psha"], sa["prereg"])["prereg_sha256"] == sa["psha"]
+    # and at step 6
+    with pytest.raises(SystemExit, match="not the committed PREREG.md's"):
+        ctl.run_confirm_report(cfgp, cfgp, cfgp, tmp_path, tmp_path, other, osha, tmp_path / "r.json",
+                               artifacts_dir=tmp_path)
+    # with the real constant, a tmp file is refused even when its own sha is given
+    monkeypatch.setattr(ctl, "CONFIRM_PREREG_FILE", ctl.CONFIRM_DIR / "PREREG.md")
+    with pytest.raises(SystemExit, match="not the committed PREREG.md's"):
+        ctl.check_prereg(sa["psha"], sa["prereg"])
+    real = ctl.CONFIRM_DIR / "PREREG.md"
+    assert ctl.check_prereg(asc.sha256_file(real), real)["prereg_sha256"] == asc.sha256_file(real)

@@ -337,7 +337,10 @@ committed registry's final rows; no retrieval, no new stage-A label.
   (remainder to base, then neighbour); their walks continue, and this repeats until n is reached or every
   walk is exhausted; an exhausted arm receives nothing. `draw.json` also reports each arm's `walk_capacity`
   (its walk run to exhaustion on its own). The greedy walk need not reach the matching maximum: it may take
-  116 rather than 118 in the random arm, in which case the one pair short goes to base by this rule. **This does
+  fewer than 118 cells in the random arm, and fewer than its quota of 117. This is a reviewer's structural
+  expectation, not a measured walk result: no real draw has been run, and the random arm has one spare
+  cell above its quota while 2 of its records have every pair on a shared window. If it happens, the
+  pairs short go to base, then neighbour, by this rule. **This does
   not remove within-question dependence** — the simulation expects ≈ 94 of ≈ 207 drawn records in two or three arms — which is why the
   primary test is clustered by record (§3.1); the realised number of records drawn in ≥ 2 arms is reported
   (§6). Because the first pair of a record to appear in an arm's order is the minimum of its pairs' hashes,
@@ -365,7 +368,8 @@ committed registry's final rows; no retrieval, no new stage-A label.
    segmenter (`punkt-abbrev-v1`), the `[markdown]` extra and the SFR tokenizer present
    (`alias_control_chunks.require_env` refuses otherwise). Every subcommand of steps 1–2 runs with
    `--confirmatory <this prereg's sha256>` **and** `--prereg PREREG.md` (§11; each refuses unless the file
-   hashes to the sha, so a wrong sha stops step 1, not step 6), so no public file of this test carries
+   hashes to the sha **and** the sha is the committed `PREREG.md`'s in this directory, so a wrong sha or
+   another file stops step 1, not step 6), so no public file of this test carries
    `exploratory: true`.
 1. **`draw-confirm`** (§4.3) → private `sample.jsonl`, public `draw.json`. *Gate:* the two input shas verify;
    no drawn pair is a control pair; no two drawn pairs share a window; counts as expected; `draw.json`
@@ -518,7 +522,8 @@ gave.
 The sentence always carries: the realised n and r, b and c, p, both arm rates, U or the interval, P(n) and E
 with their assumptions, the word *exploratory* for any figure quoted from the earlier control,
 *judge incomplete* when unjudged pairs exceed 1 % of mapped pairs in either arm (alias prereg §6.3's rule,
-carried over), and *cache suspected* when the check of §10.10 fires.
+carried over), *cache suspected* when the check of §10.10 fires, and *cache check not evaluable* when §6.9
+reads *not evaluable*.
 
 ## 8. Gates (a third answer, preserved in every table)
 
@@ -686,7 +691,9 @@ Where v3.1 left the §11 code a choice, the code makes the one below; each is al
 
 1. `draw-confirm` takes `--confirmatory PREREG_SHA256` and `--prereg PREREG.md` (both required) and stamps
    `draw.json`; `chunk`, `map` and `retest-seed` take the same pair. Each refuses unless
-   `sha256(PREREG.md)` is the given sha. `confirm-report` requires `--prereg` to be that file.
+   `sha256(PREREG.md)` is the given sha and the file is the committed `PREREG.md` of this directory (the sha
+   must equal that file's); another file with its own matching sha is refused. `confirm-report` requires
+   `--prereg` to be that file, under the same check.
 2. `draw-confirm` runs with `--n 351` and refuses any other value; gate 3 also checks `draw.json`'s `n_draw`
    and its quotas (117 / 117 / 117, `power.json` `quotas_at_owner_draw`). Tango's z is Φ⁻¹(0.95) = 1.644854.
 3. Before the record scores and the bootstrap the analysed pairs are ordered by (record id, stage-A pair
