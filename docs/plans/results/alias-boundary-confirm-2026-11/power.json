@@ -55,7 +55,7 @@
  ],
  "n_draw_owner": 351,
  "n_floor": 316,
- "n_floor_rule": "0.90 x n_draw, rounded down",
+ "n_floor_rule": "0.90 x n_draw, rounded up",
  "owner_cell": {
   "exclusion": 0.05,
   "mc_se_at_0.8": 0.0057,
@@ -168,12 +168,12 @@
  },
  "primary_test": "exact one-sided sign-flip over records on S_j = sum(x_i - y_i), p = P(T* >= T)",
  "provenance": {
-  "commit": "9867f9d6cdc680227a3100a91efa28d3a14e63e0",
+  "commit": "0bbe2d98124bd7d0737d718f8d00d2ef8c99489a",
   "dirty": false,
   "implementation": "cpython",
   "python": "3.8.5",
   "python_full": "3.8.5 (default, Sep  4 2020, 07:30:14) \n[GCC 7.3.0]",
-  "script_sha256": "d79fcd3fe12d90b111f7c53a3c800cfb73b4910add259fbcfc29a4cda1da3953"
+  "script_sha256": "a5df6c1b109a5256cf31c263b046453b7d5adbb1a8041d2fbd219cc4578c7990"
  },
  "quotas_at_owner_draw": {
   "base": 117,
