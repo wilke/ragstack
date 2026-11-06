@@ -1223,6 +1223,28 @@ check real. PR 7 is the chunking change. PR 8 is the only one that can be wrong 
 document, and it lands after the thing that measures it. (The draft numbered these 1–9 with
 PR 3 absent; old PR 3 is now 4, 4a/4b are 5a/5b, and 5–9 are 6–10.)
 
+**Status of row 5a: landed** (branch `feat/828-pr5a-jats-parity`). The three-path
+parity test is `python/tests/ingestion/test_jats_parity.py`. Deviations from the row
+as written:
+
+- **The duplicate guard needed a family rule.** Every record of one JATS file
+  carries the article's DOI/PMCID, so under `duplicate_policy=refuse` a fresh
+  in-process ingest indexed only the article and refused its table and figure
+  records as duplicates of it. `work_identity.same_record_family` treats `PMC1` and
+  `PMC1#table-1` as one work.
+- **The refusal message carries a label.** `NoLoader`'s message is
+  `no loader for .rst [no_loader]` so the per-item log line is countable; the
+  item's `job_error`, the string the API and the receipt carry, is exactly
+  `no loader for .rst`.
+- **The JATS conformance case checks retrieval by `content_type=table`**, on the
+  Python keyed boot only (Go has no ingest): the table being its own document is
+  what only the JATS loader produces, so a regression to reading the XML as text
+  cannot pass it. The unknown-suffix request-level case runs on both
+  implementations.
+- **`.xml` on path B waits for the next tools-image repin** (ADR-0010); until then
+  path A ingests an `.xml` that path B refuses as `no loader for .xml`. The GoWe
+  receipt rows for a JATS file are keyed by record, not by file name (#974).
+
 ---
 
 ## 13. Compatibility, stated plainly

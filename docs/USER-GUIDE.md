@@ -286,8 +286,11 @@ poll the job and resubmit once it is `completed` or `failed` (a job that has
 not moved for 6 hours stops counting; an `admin` principal is exempt from this
 rule, as from the hourly buckets). A scanned (image-only) PDF is accepted
 but its item fails with `no extractable text (scanned PDF?)`; there is no OCR
-yet. A JATS XML file is accepted but there is no loader for it yet — its item
-fails with `no loader for .xml` rather than vanishing. Large pre-extracted
+yet. A JATS XML file is ingested in process as several documents (the article,
+and one per table and figure); on a GoWe deployment its item fails with
+`no loader for .xml` until the worker image is updated. A by-reference file
+whose suffix has no loader (`.rst`, `.csv`, no suffix) is a failed item
+`no loader for <suffix>`, never read as text. Large pre-extracted
 corpora do not go through the API at all — see the
 [new-org cookbook](cookbook-new-org-ingest.md).
 

@@ -205,9 +205,11 @@ the endpoint never confirms a foreign job exists.
 |---|---|
 | **415** | Not an accepted type. Defaults: PDF, plain text, Markdown, XML. A file claiming to be a PDF must actually start with `%PDF`. |
 
-> **XML is accepted by the upload guard but has no loader on the local ingest path** — the
-> job returns 202 and the item then fails with `no loader for .xml`. Only the GoWe path
-> handles JATS. Accepted is not the same as ingestible.
+> **XML must be a JATS article.** The local ingest path loads it (`JatsLoader`: the
+> article plus one document per table and figure). A well-formed XML file that is not
+> JATS fails its item with `no JATS article content (not a JATS article?)`. The GoWe
+> path fails the item with `no loader for .xml` until its worker image is repinned to a
+> tools release that carries the loader. Accepted is not the same as ingestible.
 | **413** | Too big: 50 files, 500 MB per request, 50 MB per document — or the whole body exceeded the cap before a byte was read. |
 | **411** | No `Content-Length`. Chunked uploads are not accepted. |
 | **429** | You already have an ingest job in flight. Poll it; `Retry-After` is a hint, not a promise. |
