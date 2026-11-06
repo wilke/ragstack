@@ -276,10 +276,21 @@ paths:
       summary: Ingest a document or directory
       description: >
         Accepts a file or directory for ingestion and processes it in the
-        background. A directory is ingested recursively (.pdf/.txt/.md), one
-        document per item. Returns immediately with a job_id and status
-        "accepted"; poll /v1/ingest/{job_id} for progress, including per-document
-        item counts.
+        background. Returns immediately with a job_id and status "accepted";
+        poll /v1/ingest/{job_id} for progress, including per-document item
+        counts.
+
+
+        A file is dispatched to a loader by its suffix: `.pdf`, `.txt`, `.md`,
+        `.jsonl` (a batch file: one file, many documents) and `.xml` (a JATS
+        article: one file, several documents — the article and its tables and
+        figures). A directory is ingested recursively and enqueues only files
+        with those suffixes. **A file whose suffix has no loader is still
+        accepted (200) and becomes a failed item with the constant error
+        `no loader for <suffix>` (for example `no loader for .rst`); its bytes
+        are never read as text.** Per-item errors are not returned by this API;
+        `items.failed` counts them and the server log carries the `no_loader`
+        label.
 
 
         Re-ingesting the same source replaces that document's existing chunks
@@ -439,6 +450,11 @@ paths:
         nowhere confined to land and every request returns 503 (matching
         POST /v1/ingest); under ingest_backend=gowe the files go to the caller's
         Workspace and INGEST_ROOT is not used.
+
+
+        Each staged file is dispatched to a loader by its suffix exactly as for
+        POST /v1/ingest: a file whose suffix has no loader becomes a failed item
+        with the constant error `no loader for <suffix>`, never text.
 
 
         Omitting `collection` targets the caller's **writable** default, exactly
