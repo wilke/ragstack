@@ -1003,7 +1003,7 @@ def test_draw_confirm_refuses_an_unknown_arm_and_a_duplicate_pair() -> None:
 
 # ---- run_draw_confirm on the dry run's committed stage A
 
-def confirm_inputs(judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n_ctl: int = 4
+def confirm_inputs(judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n_ctl: int = 4, n_draw: int = 9
                    ) -> tuple[Path, Path, Path, dict[str, Any]]:
     """A forged exploratory control sample (four stage-A pairs) with its control-draw.json, and the
     §4.1 constants pointed at this fixture's stage A and sample."""
@@ -1019,13 +1019,29 @@ def confirm_inputs(judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     cd_p.write_text(json.dumps({"sample_sha256": asc.sha256_file(cs_p), "stage_a_commit_sha256": sa["commit_sha256"]}))
     monkeypatch.setattr(ctl, "CONFIRM_STAGE_A_COMMIT_SHA256", sa["commit_sha256"])
     monkeypatch.setattr(ctl, "CONFIRM_CONTROL_SAMPLE_SHA256", asc.sha256_file(cs_p))
+    # the draw size and the §4.1 counts pinned to this fixture (the real ones are asserted elsewhere)
+    monkeypatch.setattr(ctl, "CONFIRM_N_DRAW", n_draw)
+    monkeypatch.setattr(ctl, "CONFIRM_POOL_COUNTS", fixture_pool_counts(sa, ctl_rows, n_draw))
+    pre = tmp_path / "PREREG.md"
+    pre.write_text("frozen text\n")
+    sa = {**sa, "prereg": pre, "psha": asc.sha256_file(pre)}
     return cfgp, cd_p, cs_p, sa
+
+
+def fixture_pool_counts(sa: dict[str, Any], ctl_rows: list[dict[str, Any]], n: int) -> dict[str, Any]:
+    """The fixture's own recount, in the shape of :data:`ctl.CONFIRM_POOL_COUNTS`."""
+    _, c = ctl.draw_confirm(sa["final"], exclude_pairs={r["pair_id"] for r in ctl_rows},
+                            exclude_windows={r["chunk_id"] for r in ctl_rows}, n=n,
+                            paper_of={p["pair_id"]: str(p["c_paper"]) for p in sa["pairs"]})
+    exp = {k: c[k] for k in ctl.CONFIRM_POOL_COUNTS if k != "cells"}
+    exp["cells"] = {**c["availability"]["cells"], "total": sum(c["availability"]["cells"].values())}
+    return exp
 
 
 def test_run_draw_confirm_writes_the_control_row_shape_and_a_public_draw(judged: Path, tmp_path: Path,
                                                                          monkeypatch: pytest.MonkeyPatch) -> None:
     cfgp, cd_p, cs_p, sa = confirm_inputs(judged, tmp_path, monkeypatch)
-    r = ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "c", PSHA)
+    r = ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "c", sa["psha"], sa["prereg"])
     sample = asc.read_jsonl(tmp_path / "c" / "sample.jsonl")
     assert r["n"] == len(sample) == 9
     assert all(set(x) == {"pair_id", "record_id", "chunk_id", "stratum", "arm", "in_spot_sheet"} for x in sample)
@@ -1037,14 +1053,14 @@ def test_run_draw_confirm_writes_the_control_row_shape_and_a_public_draw(judged:
     assert all(by_id[x["pair_id"]]["source"] == "agree" and by_id[x["pair_id"]]["label"] == 1 for x in sample)
     d = json.loads((tmp_path / "c" / "draw.json").read_text())
     assert d["schema"] == "alias-confirm-draw/1" and d["exploratory"] is False
-    assert d["confirmatory"] == {"prereg": "alias-boundary-confirm-2026-11", "prereg_sha256": PSHA}
+    assert d["confirmatory"] == {"prereg": "alias-boundary-confirm-2026-11", "prereg_sha256": sa["psha"]}
     assert d["sample_sha256"] == asc.sha256_file(tmp_path / "c" / "sample.jsonl") == r["sample_sha256"]
     assert d["control_sample_sha256"] == asc.sha256_file(cs_p) and d["seed"] == ctl.CONFIRM_SEED
     assert "host" not in d["provenance"] and d["counts"]["availability"]["cells"]
     text = json.dumps(d)
     assert not any(f["pair_id"] in text or f["chunk_id"] in text for f in sa["final"])
     # a second run writes the same sample (write-once accepts identical bytes)
-    assert ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "c", PSHA)["sample_sha256"] == r["sample_sha256"]
+    assert ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "c", sa["psha"], sa["prereg"])["sample_sha256"] == r["sample_sha256"]
 
 
 def test_run_draw_confirm_refuses_sha_mismatches(judged: Path, tmp_path: Path,
@@ -1054,27 +1070,48 @@ def test_run_draw_confirm_refuses_sha_mismatches(judged: Path, tmp_path: Path,
     # a control sample whose sha differs from control-draw.json's
     cs_p.write_text(good + "\n")
     with pytest.raises(SystemExit, match="not control-draw.json's sample_sha256"):
-        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x1", PSHA)
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x1", sa["psha"], sa["prereg"])
     cs_p.write_text(good)
     # control-draw.json and the sample agree, but neither is §4.1's
     monkeypatch.setattr(ctl, "CONFIRM_CONTROL_SAMPLE_SHA256", "0" * 64)
     with pytest.raises(SystemExit, match="not the one PREREG §4.1 names"):
-        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x2", PSHA)
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x2", sa["psha"], sa["prereg"])
     monkeypatch.setattr(ctl, "CONFIRM_CONTROL_SAMPLE_SHA256", asc.sha256_file(cs_p))
     # the committed stage A is not §4.1's
     monkeypatch.setattr(ctl, "CONFIRM_STAGE_A_COMMIT_SHA256", "1" * 64)
     with pytest.raises(SystemExit, match="stage-A commit is not the one PREREG"):
-        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x3", PSHA)
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x3", sa["psha"], sa["prereg"])
     monkeypatch.setattr(ctl, "CONFIRM_STAGE_A_COMMIT_SHA256", sa["commit_sha256"])
     # control-draw.json names another stage-A commit
     cd = json.loads(cd_p.read_text())
     cd_p.write_text(json.dumps({**cd, "stage_a_commit_sha256": "2" * 64}))
     with pytest.raises(SystemExit, match="names another stage-A commit"):
-        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x4", PSHA)
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x4", sa["psha"], sa["prereg"])
     cd_p.write_text(json.dumps(cd))
     with pytest.raises(SystemExit, match="64 lower-case hex"):
-        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x5", "not-a-sha")
-    assert not any((tmp_path / f"x{i}" / "sample.jsonl").exists() for i in range(1, 6))
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x5", "not-a-sha", sa["prereg"])
+    # the prereg file must be the sha's (a wrong sha stops step 1), and it is required
+    with pytest.raises(SystemExit, match="prereg file's sha256 is not --confirmatory"):
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x6", PSHA, sa["prereg"])
+    with pytest.raises(SystemExit, match="needs --prereg"):
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x7", sa["psha"], None)
+    # the draw size is pinned
+    with pytest.raises(SystemExit, match="fixes the draw at 9"):
+        ctl.run_draw_confirm(cfgp, cd_p, cs_p, 10, tmp_path / "x8", sa["psha"], sa["prereg"])
+    # a recount that does not reproduce §4.1 is refused, naming the figure
+    pinned = json.loads(json.dumps(ctl.CONFIRM_POOL_COUNTS))
+    for edit, name in ((lambda c: c["shared_window_excluded"].update(total=c["shared_window_excluded"]["total"] + 1),
+                        "shared_window_excluded.total"),
+                       (lambda c: c["cells"].update(random=c["cells"]["random"] - 1), "cells.random"),
+                       (lambda c: c.update(pool_windows_cross_arm=1), "pool_windows_cross_arm"),
+                       (lambda c: c.update(stage_a_pairs=c["stage_a_pairs"] + 1), "stage_a_pairs")):
+        bad = json.loads(json.dumps(pinned))
+        edit(bad)
+        monkeypatch.setattr(ctl, "CONFIRM_POOL_COUNTS", bad)
+        with pytest.raises(SystemExit, match=f"does not reproduce PREREG §4.1.*{name}"):
+            ctl.run_draw_confirm(cfgp, cd_p, cs_p, 9, tmp_path / "x9", sa["psha"], sa["prereg"])
+    monkeypatch.setattr(ctl, "CONFIRM_POOL_COUNTS", pinned)
+    assert not any((tmp_path / f"x{i}" / "sample.jsonl").exists() for i in range(1, 10))
 
 
 # ---- confirm_table on hand-checkable tables
@@ -1201,7 +1238,7 @@ def test_confirm_table_gates_and_outcomes() -> None:
     ok = ctl.confirm_table(rows, checks=all_pass_checks(), n_floor=20, n_boot=200)
     assert ok["outcome"] == "Confirmed" and ok["gates_failed"] == []
     null = ctl.confirm_table(singletons(3, 3, neither=14), checks=all_pass_checks(), n_floor=20, n_boot=200)
-    assert null["outcome"] == "Not confirmed"
+    assert null["outcome"] == "Not confirmed (powered null)"
     # g1: one pair below the floor
     t = ctl.confirm_table(rows, checks=all_pass_checks(), n_floor=21, n_boot=200)
     assert t["outcome"] == "GATE-NOT-EVALUABLE" and t["gates_failed"] == ["g1_realised_n"]
@@ -1282,7 +1319,15 @@ def test_cache_check_rests_on_nonempty_reasoning_identity_only() -> None:
     m = ctl.cache_check(["p"], {"C": {"p": qrow(["x" * 200])}}, {"C": {"p": qrow(["x" * 200])}})
     assert m["flag"] is True
     m = ctl.cache_check(["p"], {"C": {"p": qrow(["x" * 199])}}, {"C": {"p": qrow(["x" * 199])}})
-    assert m["flag"] is False and m["C"]["reasoning_eligible"] == 0
+    # no eligible pair on a backend with compared rows: not evaluable, never "clean"
+    assert m["flag"] == "not_evaluable" and m["C"]["reasoning_eligible"] == 0 and m["C"]["evaluable"] is False
+    # a backend with no compared rows at all (E here) does not make the check unevaluable
+    m = ctl.cache_check(["p"], {"C": {"p": qrow(["x" * 300])}}, {"C": {"p": qrow(["y" * 300])}})
+    assert m["flag"] is False and m["E"]["compared"] == 0 and m["E"]["evaluable"] is True
+    # an identical pair still flags when the other backend is not evaluable
+    m = ctl.cache_check(["p"], {"C": {"p": qrow(["x" * 300])}, "E": {"p": qrow([""])}},
+                        {"C": {"p": qrow(["x" * 300])}, "E": {"p": qrow([""])}})
+    assert m["flag"] is True
 
 
 def test_cache_check_descriptives_verdicts_and_prompt_shas() -> None:
@@ -1305,11 +1350,14 @@ def checks_world() -> dict[str, Any]:
     arts = {"draw": {"exploratory": False, "confirmatory": block, "sample_sha256": good["sample"],
                      "stage_a_commit_sha256": ctl.CONFIRM_STAGE_A_COMMIT_SHA256,
                      "control_sample_sha256": ctl.CONFIRM_CONTROL_SAMPLE_SHA256,
-                     "counts": {"drawn_control_pairs": 0}},
+                     "counts": {"drawn_control_pairs": 0, "n_draw": 351,
+                                "quotas": {"base": 117, "neighbour": 117, "random": 117}}},
             "chunk": {"exploratory": False, "confirmatory": block, "sample_sha256": good["sample"],
                       "chunks_sha256": good["chunks"], "p2_gate": {"i": True, "ii": True},
                       "environment": {"segmenter_version": "punkt-abbrev-v1", "adapter": "markdown/1",
-                                      "markdown_backend": "markdown-it-py 3"}},
+                                      "markdown_backend": "markdown-it-py 3",
+                                      "token_counter": {"class": "HFTokenCounter",
+                                                        "model": "Salesforce/SFR-Embedding-Mistral"}}},
             "map": {"exploratory": False, "confirmatory": block, "sample_sha256": good["sample"],
                     "seed_sha256": good["seed"], "chunks_sha256": good["chunks"]},
             "retest_seed": {"exploratory": False, "confirmatory": block, "control_seed_sha256": good["seed"],
@@ -1319,13 +1367,14 @@ def checks_world() -> dict[str, Any]:
     return {"prereg_sha256": PSHA, "stage_a_commit_sha256": ctl.CONFIRM_STAGE_A_COMMIT_SHA256, "artifacts": arts,
             "sample_rows": [{"chunk_id": "w1"}, {"chunk_id": "w2"}],
             "control_registry": [{"control_of": ["a"]}, {"control_of": ["b"]}],
-            "retest_registry": [{"control_of": ["a"]}, {"control_of": ["b"]}], "manifests": man, "files": good}
+            "retest_registry": [{"control_of": ["a"]}, {"control_of": ["b"]}], "manifests": man, "files": good,
+            "committed": {k: {**v, "provenance": {"commit": "other"}} for k, v in arts.items()}}
 
 
 def test_confirm_checks_pass_on_consistent_inputs_and_trip_on_each_forgery() -> None:
     w = checks_world()
     ok = ctl.confirm_checks(**w)
-    assert all(v["pass"] for v in ok.values()) and ok["g6_input_shas"]["checked"] == 23
+    assert all(v["pass"] for v in ok.values()) and ok["g6_input_shas"]["checked"] == 27
 
     def forged(edit: Any) -> dict[str, Any]:
         x = json.loads(json.dumps(w))
@@ -1371,17 +1420,29 @@ def test_confirm_checks_pass_on_consistent_inputs_and_trip_on_each_forgery() -> 
 def test_confirmatory_switch_sets_the_flag_and_block(words: WordCounter, files: dict[str, Any], judged: Path,
                                                      tmp_path: Path) -> None:
     out = files["out"]
+    pre = tmp_path / "PREREG.md"
+    pre.write_text("frozen\n")
+    psha = asc.sha256_file(pre)
     with pytest.raises(SystemExit, match="64 lower-case hex"):
-        ctl.run_chunk(files["exports"], files["texts"], files["sample"], out, confirmatory="ABC")
+        ctl.run_chunk(files["exports"], files["texts"], files["sample"], out, confirmatory="ABC", prereg=pre)
+    with pytest.raises(SystemExit, match="prereg file's sha256 is not --confirmatory"):
+        ctl.run_chunk(files["exports"], files["texts"], files["sample"], out, confirmatory=PSHA, prereg=pre)
+    with pytest.raises(SystemExit, match="needs --prereg"):
+        ctl.run_map(files["exports"], files["sample"], out, confirmatory=psha)
     assert not (out / "chunks-control.jsonl").exists()      # refused before any file is written
-    ctl.run_chunk(files["exports"], files["texts"], files["sample"], out, confirmatory=PSHA)
-    ctl.run_map(files["exports"], files["sample"], out, confirmatory=PSHA)
-    block = {"prereg": "alias-boundary-confirm-2026-11", "prereg_sha256": PSHA}
+    ctl.run_chunk(files["exports"], files["texts"], files["sample"], out, confirmatory=psha, prereg=pre)
+    ctl.run_map(files["exports"], files["sample"], out, confirmatory=psha, prereg=pre)
+    block = {"prereg": "alias-boundary-confirm-2026-11", "prereg_sha256": psha}
+    env = json.loads((out / "chunk.json").read_text())["environment"]
+    assert env["token_counter"] == {"class": "WordCounter", "model": None}   # the counter the chunker loaded
     for name, schema in (("chunk.json", "alias-control-chunk/1"), ("map.json", "alias-control-map/1")):
         d = json.loads((out / name).read_text())
         assert d["exploratory"] is False and d["confirmatory"] == block and d["schema"] == schema
     main, cdir, _ = retest_world(judged, tmp_path)
-    ctl.run_retest_seed(main, cdir, tmp_path / "rt", confirmatory=PSHA)
+    with pytest.raises(SystemExit, match="prereg file's sha256 is not --confirmatory"):
+        ctl.run_retest_seed(main, cdir, tmp_path / "rtx", confirmatory=PSHA, prereg=pre)
+    assert not (tmp_path / "rtx" / "chunks-retest.jsonl").exists()
+    ctl.run_retest_seed(main, cdir, tmp_path / "rt", confirmatory=psha, prereg=pre)
     d = json.loads((tmp_path / "rt" / "retest-seed.json").read_text())
     assert d["exploratory"] is False and d["confirmatory"] == block
     # the default is unchanged
@@ -1397,11 +1458,14 @@ def test_main_wires_the_confirmatory_subcommands(monkeypatch: pytest.MonkeyPatch
     p = tmp_path
     assert ctl.main(["draw-confirm", "--judge-config", str(p / "j"), "--control-draw", str(p / "d"),
                      "--control-sample", str(p / "s"), "--n", "351", "--out-dir", str(p / "o"),
-                     "--confirmatory", PSHA]) == 0
-    assert seen["draw"] == (p / "j", p / "d", p / "s", 351, p / "o", PSHA)
+                     "--confirmatory", PSHA, "--prereg", str(p / "P.md")]) == 0
+    assert seen["draw"] == (p / "j", p / "d", p / "s", 351, p / "o", PSHA, p / "P.md")
     assert ctl.main(["retest-seed", "--judge-config", str(p / "j"), "--control-dir", str(p / "c"), "--out-dir",
-                     str(p / "o"), "--confirmatory", PSHA]) == 0
-    assert seen["retest"][1] == {"confirmatory": PSHA}
+                     str(p / "o"), "--confirmatory", PSHA, "--prereg", str(p / "P.md")]) == 0
+    assert seen["retest"][1] == {"confirmatory": PSHA, "prereg": p / "P.md"}
+    with pytest.raises(SystemExit):                                       # --prereg is required
+        ctl.main(["draw-confirm", "--judge-config", "j", "--control-draw", "d", "--control-sample", "s", "--n", "3",
+                  "--out-dir", "o", "--confirmatory", PSHA])
     with pytest.raises(SystemExit):
         ctl.main(["draw-confirm", "--judge-config", "j", "--control-draw", "d", "--control-sample", "s", "--n", "3",
                   "--out-dir", "o"])                                      # --confirmatory is required
@@ -1438,12 +1502,10 @@ def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def confirm_world(judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, n: int = 9) -> dict[str, Any]:
-    cfgp, cd_p, cs_p, sa = confirm_inputs(judged, tmp_path, monkeypatch)
+    cfgp, cd_p, cs_p, sa = confirm_inputs(judged, tmp_path, monkeypatch, n_draw=n)
     cdir, rdir = tmp_path / "c", tmp_path / "rt"
-    prereg = tmp_path / "PREREG.md"
-    prereg.write_text("frozen text\n")
-    psha = asc.sha256_file(prereg)
-    ctl.run_draw_confirm(cfgp, cd_p, cs_p, n, cdir, psha)
+    prereg, psha = sa["prereg"], sa["psha"]
+    ctl.run_draw_confirm(cfgp, cd_p, cs_p, n, cdir, psha, prereg)
     sample = asc.read_jsonl(cdir / "sample.jsonl")
     raw = json.loads(cfgp.read_text())
     src = asc.read_chunk_exports(list(raw["chunk_exports"].values()))
@@ -1471,14 +1533,15 @@ def confirm_world(judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     block = {"prereg": ctl.CONFIRM_PREREG, "prereg_sha256": psha}
     sha = asc.sha256_file
     (cdir / "chunk.json").write_text(json.dumps({
-        "schema": ctl.SCHEMA["chunk"], "exploratory": False, "confirmatory": block, "environment": ctl.require_env(),
+        "schema": ctl.SCHEMA["chunk"], "exploratory": False, "confirmatory": block,
+        "environment": {**ctl.require_env(), "token_counter": {"class": "HFTokenCounter", "model": ctl.TOKENIZER}},
         "p2_gate": {"i": True, "ii": True}, "chunks_sha256": sha(cdir / "chunks-control.jsonl"),
         "sample_sha256": sha(cdir / "sample.jsonl")}))
     (cdir / "map.json").write_text(json.dumps({
         "schema": ctl.SCHEMA["map"], "exploratory": False, "confirmatory": block,
         "seed_sha256": sha(cdir / "pairs-seed.jsonl"), "sample_sha256": sha(cdir / "sample.jsonl"),
         "chunks_sha256": sha(cdir / "chunks-control.jsonl")}))
-    ctl.run_retest_seed(cfgp, cdir, rdir, confirmatory=psha)
+    ctl.run_retest_seed(cfgp, cdir, rdir, confirmatory=psha, prereg=prereg)
     cfgs = {}
     for side, out, export, seed in (("control", "cj", cdir / "chunks-control.jsonl", cdir / "pairs-seed.jsonl"),
                                     ("retest", "rj", rdir / "chunks-retest.jsonl", rdir / "pairs-seed-retest.jsonl")):
@@ -1490,9 +1553,15 @@ def confirm_world(judged: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                        prov={"commit": "c" * 40}) == aj.EXIT_OK
         cfgs[side] = cp
     monkeypatch.setattr(ctl, "CONFIRM_N_FLOOR", n)
+    monkeypatch.setattr(ctl, "CONFIRM_QUOTAS", json.loads((cdir / "draw.json").read_text())["counts"]["quotas"])
+    # the committed copies of the four public files (§8 gate 6 compares them with the run copies)
+    arts = tmp_path / "artifacts"
+    arts.mkdir()
+    for src_ in (cdir / "draw.json", cdir / "chunk.json", cdir / "map.json", rdir / "retest-seed.json"):
+        shutil.copy(src_, arts / src_.name)
     return {"main": cfgp, "cdir": cdir, "rdir": rdir, "cfgs": cfgs, "seeds": seeds, "sample": sample,
             "prereg": prereg, "psha": psha, "sa": sa, "cout": tmp_path / "cj",
-            "rout": tmp_path / "rj"}
+            "rout": tmp_path / "rj", "artifacts": arts}
 
 
 def label_world(w: dict[str, Any], xy: dict[str, tuple[int | None, int | None]]) -> None:
@@ -1525,7 +1594,8 @@ def label_world(w: dict[str, Any], xy: dict[str, tuple[int | None, int | None]])
 
 def run_cr(w: dict[str, Any], out: Path, **kw: Any) -> dict[str, Any]:
     return ctl.run_confirm_report(w["main"], w["cfgs"]["control"], w["cfgs"]["retest"], w["cdir"], w["rdir"],
-                                  w["prereg"], kw.pop("psha", w["psha"]), out, **kw)
+                                  w["prereg"], kw.pop("psha", w["psha"]), out,
+                                  artifacts_dir=kw.pop("artifacts_dir", w["artifacts"]), **kw)
 
 
 def exact_sign_flip(sums: list[int]) -> float:
@@ -1559,7 +1629,9 @@ def test_confirm_report_end_to_end(words: WordCounter, judged: Path, tmp_path: P
     assert t["gates"]["g6_input_shas"]["mismatches"] == []
     assert t["gates_failed"] == [] and t["outcome"] == "Confirmed" == rep["outcome"]
     assert t["clusters"]["passage_papers"] >= 1 and t["clusters"]["documents"] >= 1
-    assert rep["cache_check"]["flag"] is False and rep["cache_check"]["C"]["compared"] == 9
+    # stage A's dry-run rows carry empty reasoning: the check cannot evaluate, and says so
+    assert rep["cache_check"]["flag"] == "not_evaluable" and rep["cache_check"]["C"]["compared"] == 9
+    assert t["caveats"]["cache_suspected"] == "not_evaluable"
     assert rep["cache_check"]["C"]["prompt_sha256_differs"] == 0       # joined by the stage-A pair id
     assert rep["times"]["C"]["first_arm"] == "control" and rep["times"]["argon"]["control"]["rows"] == 1
     assert rep["times"]["argon"]["retest"]["first_utc"] == "absent"
@@ -1585,6 +1657,10 @@ def test_confirm_report_end_to_end(words: WordCounter, judged: Path, tmp_path: P
     assert bad["outcome"] == "GATE-NOT-EVALUABLE" and bad["gates_failed"] == ["g6_input_shas"]
     assert "map.json confirmatory.prereg_sha256 = the frozen sha" in bad["gates"]["g6_input_shas"]["mismatches"]
     mp.write_text(good)
+    # committed copies absent: gate 6 reads absent and fails
+    (tmp_path / "empty").mkdir()
+    gone = run_cr(w, tmp_path / "pub" / "noart.json", artifacts_dir=tmp_path / "empty")["primary"]
+    assert gone["gates_failed"] == ["g6_input_shas"] and gone["gates"]["g6_input_shas"]["mismatched"] == 4
 
 
 def test_confirm_report_unjudged_row_and_the_cover_rerun(words: WordCounter, judged: Path, tmp_path: Path,
@@ -1637,3 +1713,181 @@ def test_confirm_report_writer_refuses_ids_text_and_host() -> None:
                                   ({**rec, "provenance": {"host": "x"}}, (), ())):
         with pytest.raises(SystemExit, match="REFUSED"):
             ctl.write_public(Path("/nonexistent/never.json"), bad, forbidden, texts)
+
+
+# ---- the review fixes (PR #969)
+
+def test_confirm_pins_match_power_json_and_the_prereg_table() -> None:
+    power = ctl.load_power()
+    assert ctl.CONFIRM_N_DRAW == power["n_draw_owner"] == 351
+    assert ctl.CONFIRM_QUOTAS == power["quotas_at_owner_draw"]
+    pc = ctl.CONFIRM_POOL_COUNTS
+    for k in ("agreed_answers", "eligible", "shared_window_excluded", "pool", "cells"):
+        assert sum(pc[k][a] for a in asc.ARM_GROUPS) == pc[k]["total"], k
+    for a in asc.ARM_GROUPS:   # 50 per arm in the control's answers stratum; exclusion 2 the rest
+        assert pc["agreed_answers"][a] - pc["eligible"][a] == 50
+        assert pc["eligible"][a] - pc["pool"][a] == pc["shared_window_excluded"][a]
+    assert pc["in_control_sample"]["total"] == 150 and pc["shared_window_excluded"]["total"] == 43
+    assert sum(pc["pool_records_by_arms"].values()) == pc["pool_records"] == 262
+    assert sum(int(k) * v for k, v in pc["pool_records_by_arms"].items()) == pc["cells"]["total"] == 470
+    assert aj.drift_allocation(351, {a: pc["cells"][a] for a in asc.ARM_GROUPS}) == ctl.CONFIRM_QUOTAS
+
+
+def test_load_power_refuses_a_changed_file(tmp_path: Path) -> None:
+    p = tmp_path / "power.json"
+    p.write_bytes(ctl.CONFIRM_POWER_JSON.read_bytes().replace(b'"n_floor": 316', b'"n_floor": 300'))
+    with pytest.raises(SystemExit, match="not the frozen file"):
+        ctl.load_power(p)
+
+
+def test_draw_reports_walk_capacity() -> None:
+    rows = []
+    for a in ("base", "neighbour"):
+        rows += [cfin(f"{a}{r}-{k}", f"r{r}", f"{a}w{r}-{k}", a) for r in range(6) for k in range(2)]
+    rows += [cfin(f"rnd{r}-{k}", f"r{r}", f"rndw{k}", "random") for r in range(4) for k in range(2)]
+    _, c = ctl.draw_confirm(rows, exclude_pairs=(), exclude_windows=(), n=3)
+    # capacity is the walk run to exhaustion, whatever n asks for: random's 4 cells reach 2
+    assert c["walk_capacity"] == {"base": 6, "neighbour": 6, "random": 2} and c["n_drawn"] == 3
+
+
+def test_run_draw_confirm_quotas_are_by_cells_not_by_pool_pairs(judged: Path, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+    cfgp, cd_p, cs_p, sa = confirm_inputs(judged, tmp_path, monkeypatch)
+    pc = ctl.CONFIRM_POOL_COUNTS
+    cells = {a: pc["cells"][a] for a in asc.ARM_GROUPS}
+    pairs = {a: pc["pool"][a] for a in asc.ARM_GROUPS}
+    n = sum(cells.values())
+    by_cells, by_pairs = aj.drift_allocation(n, cells), aj.drift_allocation(n, pairs)
+    assert by_cells != by_pairs                                       # the fixture tells the two apart
+    monkeypatch.setattr(ctl, "CONFIRM_N_DRAW", n)
+    ctl.run_draw_confirm(cfgp, cd_p, cs_p, n, tmp_path / "q", sa["psha"], sa["prereg"])
+    c = json.loads((tmp_path / "q" / "draw.json").read_text())["counts"]
+    assert c["quotas"] == by_cells == cells
+    assert c["achieved_first_pass"] == {a: min(by_cells[a], c["walk_capacity"][a]) for a in asc.ARM_GROUPS}
+
+
+def test_confirm_checks_n_draw_quotas_token_counter_and_committed_copies() -> None:
+    w = checks_world()
+
+    def forged(edit: Any) -> dict[str, Any]:
+        x = json.loads(json.dumps(w))
+        edit(x)
+        return ctl.confirm_checks(**x)
+
+    g3, g4, g6 = "g3_draw_and_registries", "g4_chunker_and_environment", "g6_input_shas"
+    r = forged(lambda x: x["artifacts"]["draw"]["counts"].update(n_draw=350))[g3]
+    assert not r["pass"] and r["n_draw_is_prereg"] is False
+    r = forged(lambda x: x["artifacts"]["draw"]["counts"].update(quotas={"base": 118, "neighbour": 117,
+                                                                         "random": 116}))[g3]
+    assert not r["pass"] and r["quotas_are_prereg"] is False
+    for tc in ({"class": "WordCounter", "model": None}, {"class": "HFTokenCounter", "model": "other/model"}, None):
+        r = forged(lambda x, tc=tc: x["artifacts"]["chunk"]["environment"].update(token_counter=tc))[g4]
+        assert not r["pass"] and r["token_counter_is_sfr"] is False
+    # a committed copy that differs from its run copy, or is absent
+    r = forged(lambda x: x["committed"]["map"].update(seed_rows=1))[g6]
+    assert not r["pass"] and r["mismatches"] == ["map.json = its committed copy in artifacts/ (provenance aside)"]
+    r = forged(lambda x: x["committed"].update(retest_seed=None))[g6]
+    assert r["mismatches"] == ["retest-seed.json = its committed copy in artifacts/ (provenance aside)"]
+    x = json.loads(json.dumps(w))
+    x.pop("committed")
+    assert ctl.confirm_checks(**x)[g6]["mismatched"] == 4
+    # only provenance may differ
+    assert forged(lambda x: x["committed"]["draw"].update(provenance={"commit": "x" * 40}))[g6]["pass"]
+
+
+def test_gate_and_caveat_boundaries() -> None:
+    base = singletons(10, 2, neither=7)                      # 19 judged pairs
+    # g2 at exactly 5 %: 1 unjudged of 20 mapped passes
+    t = ctl.confirm_table(base + [crow(400, "u", 0, 0, cu=True)], checks=all_pass_checks(), n_floor=19, n_boot=10)
+    assert t["arms"]["control"]["unjudged_share"] == 0.05 and t["gates"]["g2_unjudged"]["pass"] is True
+    # judge incomplete at exactly 1 %: 1 unjudged of 100 mapped is not incomplete; 2 of 100 is
+    big = singletons(10, 2, neither=87)
+    one = ctl.confirm_table(big + [crow(500, "u", 0, 0, ru=True)], n_boot=10)
+    assert one["arms"]["retest"]["unjudged_share"] == 0.01 and one["caveats"]["judge_incomplete"] is False
+    two = ctl.confirm_table(big[:-1] + [crow(500, "u", 0, 0, ru=True), crow(501, "v", 0, 0, ru=True)], n_boot=10)
+    assert two["caveats"]["judge_incomplete"] is True
+    # the outcome at p == alpha is Confirmed (p <= alpha)
+    t = ctl.confirm_table(singletons(10, 2), checks=all_pass_checks(), n_floor=12, n_boot=10, alpha=79 / 4096)
+    assert t["primary"]["p"] == 79 / 4096 and t["outcome"] == "Confirmed"
+    t = ctl.confirm_table(singletons(10, 2), checks=all_pass_checks(), n_floor=12, n_boot=10, alpha=78 / 4096)
+    assert t["outcome"] == "Not confirmed (powered null)"
+
+
+def test_halves_with_even_and_odd_n() -> None:
+    assert ctl.halves(["a", "b", "c", "d"]) == {"a": "first", "b": "first", "c": "second", "d": "second"}
+    assert ctl.halves(["a"]) == {"a": "first"} and ctl.halves([]) == {}
+
+
+def bootstrap_rows(n_records: int, seed: int = 5) -> list[dict[str, Any]]:
+    """Records of 1-3 pairs with mixed outcomes."""
+    import random
+
+    rnd = random.Random(seed)
+    rows, i = [], 0
+    for j in range(n_records):
+        for k in range(rnd.randint(1, 3)):
+            x, y = rnd.choice([(1, 0), (0, 1), (0, 0), (1, 1), (0, 0)])
+            rows.append(crow(i, f"rec{j:04d}", x, y, asc.ARM_GROUPS[k]))
+            i += 1
+    return rows
+
+
+def test_bootstrap_and_test_are_invariant_to_the_input_order() -> None:
+    import random
+
+    rows = bootstrap_rows(40)
+    a = ctl.confirm_table(rows, n_boot=2000)
+    shuffled = list(rows)
+    random.Random(7).shuffle(shuffled)
+    b = ctl.confirm_table(shuffled, n_boot=2000)
+    assert shuffled != rows and a["bootstrap"]["ci"] == b["bootstrap"]["ci"] and a["primary"] == b["primary"]
+
+
+def test_bootstrap_at_210_records_equals_a_single_block_numpy_reproduction() -> None:
+    rows = bootstrap_rows(210, seed=11)
+    t = ctl.confirm_table(rows, n_boot=10_000)
+    recs = sorted({r["record_id"] for r in rows})
+    s = np.array([sum(ctl.confirm_xy(r)[0] - ctl.confirm_xy(r)[1] for r in rows if r["record_id"] == k)
+                  for k in recs], dtype=float)
+    nn = np.array([sum(r["record_id"] == k for r in rows) for k in recs], dtype=float)
+    idx = np.random.default_rng(asc.seed_int("261105|alias|confirm|boot")).integers(0, 210, size=(10_000, 210))
+    want = np.percentile(s[idx].sum(axis=1) / nn[idx].sum(axis=1), [5, 95])
+    assert 2_000_000 // 210 < 10_000                    # page_bootstrap_ci draws this in two blocks
+    assert t["bootstrap"]["ci"] == pytest.approx(list(want), abs=0)
+
+
+def test_confirm_report_sets_the_cache_flag_end_to_end(words: WordCounter, judged: Path, tmp_path: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    w = confirm_world(judged, tmp_path, monkeypatch)
+    ids = [s["control_of"] for s in w["seeds"]]
+    label_world(w, dict(zip(ids, [(1, 0)] * 6 + [(0, 0)] * 3, strict=True)))
+    # the committed stage A cannot be edited or appended to (the commit pins its label files), so
+    # its E rows are given long reasoning as they are read: every retest pair eligible, and on one
+    # of them the retest row's own text
+    main_out = Path(json.loads(w["main"].read_text())["out_dir"]).resolve()
+    rrows = {r["pair_id"]: r for r in asc.read_jsonl(w["rout"] / aj.LABEL_FILES["E"])}
+    real = ctl.label_rows
+    first = sorted(rrows)[0]
+
+    def patched(out_dir: Path, backend: str) -> tuple[dict[str, dict[str, Any]], int, list[str]]:
+        rows, dup, order = real(out_dir, backend)
+        if Path(out_dir).resolve() == main_out and backend == "E":
+            rows = {p: {**r, "reasoning_sample": rrows[p]["reasoning_sample"] if p == first
+                        else [f"stage A reasoning {p} " * 20]} if p in rrows else r for p, r in rows.items()}
+        return rows, dup, order
+
+    monkeypatch.setattr(ctl, "label_rows", patched)
+    rep = run_cr(w, tmp_path / "pub" / "cache.json")
+    cc = rep["cache_check"]
+    assert cc["flag"] is True and cc["E"]["reasoning_identical"] == 1 and cc["E"]["reasoning_eligible"] == 9
+    assert cc["C"]["reasoning_identical"] == 0 and cc["C"]["evaluable"] is False
+    assert rep["primary"]["caveats"]["cache_suspected"] is True
+
+
+def test_label_rows_reads_as_the_harness_does(tmp_path: Path) -> None:
+    f = tmp_path / aj.LABEL_FILES["C"]
+    f.write_text("".join(json.dumps(r) + "\n" for r in ({"pair_id": "p1", "v": 1}, {"pair_id": "p2", "v": 2},
+                                                        {"pair_id": "p1", "v": 3})))
+    rows, dup, order = ctl.label_rows(tmp_path, "C")
+    assert rows["p1"]["v"] == 3 and dup == 1 and order == ["p1", "p2"]       # the last row wins, counted
+    assert ctl.label_rows(tmp_path, "E") == ({}, 0, [])
