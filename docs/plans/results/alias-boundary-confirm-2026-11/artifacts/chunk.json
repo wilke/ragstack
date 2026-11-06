@@ -1,0 +1,142 @@
+{
+ "chunker": {
+  "budget_mode": "joined",
+  "chunk_descriptor": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+  "chunk_params": {
+   "min_piece": 128,
+   "pack": "318",
+   "size_tolerance": 0.25,
+   "size_unit": "tokens",
+   "structure_cuts": "sections/1"
+  },
+  "markers": {
+   "structure_cuts": "sections/1"
+  },
+  "model_window": 4096,
+  "stage_a_descriptor": "fixed_token/512/0",
+  "tokenizer": "Salesforce/SFR-Embedding-Mistral",
+  "tolerance": {
+   "ceiling": 640,
+   "chunk_size": 512,
+   "method": "sentence",
+   "min_piece": 128,
+   "size_tolerance": 0.25,
+   "v": 1,
+   "window_budget": 4080
+  },
+  "window_budget": 4080
+ },
+ "chunks": 9150,
+ "chunks_sha256": "e9f00602eca4c6676b7e5968f08d83a01fcbdf36ca910d577419f5cca8748035",
+ "confirmatory": {
+  "prereg": "alias-boundary-confirm-2026-11",
+  "prereg_sha256": "b3a2d9e61f42675d9dccdd84bc449a0e7507e4b9c9d15bf957b6a3613e589b0e"
+ },
+ "docs_sha256": "140b1b313602b9d55532e992e85bf48eed87d7908d4b6d343bec5dc8631a95b0",
+ "documents": 343,
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1",
+  "token_counter": {
+   "class": "HFTokenCounter",
+   "model": "Salesforce/SFR-Embedding-Mistral"
+  }
+ },
+ "exploratory": false,
+ "p2_counts": {
+  "chunks": 9150,
+  "content_mismatch": 0,
+  "docs": 343,
+  "ingest:adapter:markdown/1": 343,
+  "ingest:backend:markdown-it-py/4.2.0;mdit-py-plugins/0.6.1": 343,
+  "ingest:chunks_stamped": 9150,
+  "ingest:cuts:short_pieces": 187,
+  "ingest:cuts:sibling_merges": 463,
+  "latex_preamble_docs": 17,
+  "one_untitled_section_chunks": 616,
+  "one_untitled_section_docs": 67,
+  "over_ceiling": 0,
+  "over_target": 771,
+  "section_crossing": 463,
+  "split_sentence_boundaries": 31,
+  "split_sentence_pieces": 49,
+  "split_sentences": 27,
+  "stamped": 9150,
+  "structured_docs": 343,
+  "under_min_piece": 187,
+  "whole_segment_unions": 463
+ },
+ "p2_gate": {
+  "i_no_fragment_of_two_segments": true,
+  "ii_boundaries_are_sentence_or_segment": true,
+  "iii_at_or_under_ceiling": true,
+  "iv_chunks_tile_documents": true,
+  "v_stage_a_offsets_reproduce": true,
+  "vi_environment": true
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "016fb61d03784e6505b43275e4ee7536a2fddec7",
+  "describe": "v1.6.25-6-g016fb61",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-06T04:54:04Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 343,
+    "n_spans": 80362,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "run",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "1f5de213f6f54361d4aa1a0ad7862c30f779572227b296ceabe007516150c2b9",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   },
+   {
+    "kind": "sections",
+    "n_docs": 343,
+    "n_spans": 6133,
+    "producer": "ragstack.ingestion.structure.attach_structure (markdown/1, raw mode)",
+    "sha256": "344b3670eb0d60125d592f95be459aeab43f415c5bc75afd9a5c079d780fc8bc",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   },
+   {
+    "kind": "chunks",
+    "n_docs": 343,
+    "n_spans": 9150,
+    "producer": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+    "sha256": "e5f0a105eef668590ab5a4c55657d0bb0c4282840e672d69a6adbd7f4f769a1c",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+016fb61",
+  "warnings_n": 1
+ },
+ "resolution": {
+  "ok": 343
+ },
+ "sample_sha256": "227aff47835003c083c2bc222b4c049071eb3753f7d7b7cfd86c6b961b8f3061",
+ "schema": "alias-control-chunk/1",
+ "tokens": {
+  "max": 640,
+  "mean": 397.75,
+  "min": 5,
+  "n": 9150,
+  "p10": 193,
+  "p50": 454,
+  "p90": 511,
+  "share_over_ceiling": 0.0,
+  "share_over_target": 0.0843,
+  "share_under_min_piece": 0.0204
+ }
+}
