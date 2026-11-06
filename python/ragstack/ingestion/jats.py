@@ -789,7 +789,9 @@ def merge_manifest(meta: dict, pmcid: str, manifest: dict | None) -> dict:
     present as keys (possibly empty) so the record shape is stable.
     """
     manifest = manifest or {}
-    meta["pmcid"] = meta.get("pmcid") or pmcid
+    # Only a PMC-shaped key stands in for a missing pmcid: a key from the
+    # file name (``journal.pone.0012345``) is a record id, not a PMCID.
+    meta["pmcid"] = meta.get("pmcid") or (pmcid if _PMC_STEM.match(pmcid) else "")
     for k_src, k_dst in (("sha256", "sha256"), ("source_url", "source_url"),
                          ("licence", "licence"), ("doi_xml", "doi")):
         v = manifest.get(k_src)
@@ -798,6 +800,91 @@ def merge_manifest(meta: dict, pmcid: str, manifest: dict | None) -> dict:
     meta["source_url"] = manifest.get("source_url", "")
     meta["sha256"] = manifest.get("sha256", "")
     return meta
+
+
+# ----------------------------------------------------------------- record key
+
+#: A filename stem that IS a PMC id (``PMC8092463``), case-insensitive.
+_PMC_STEM = re.compile(r"^PMC\d+$", re.IGNORECASE)
+#: An ``<article-id pub-id-type="pmc">`` value: ``PMC123`` or a bare ``123``.
+_PMC_ARTICLE_ID = re.compile(r"^\s*(?:PMC)?(\d+)\s*$", re.IGNORECASE)
+#: The suffixes a JATS file carries (``.nxml`` is the PMC OA bulk package's).
+JATS_SUFFIXES = (".xml", ".nxml")
+
+
+def pmc_stem(path: str | Path) -> str:
+    """The filename stem up to the first ``.`` when it is a PMC id
+    (``PMC8092463.v2.xml`` → ``PMC8092463``), else ``""``. Step 1 of
+    :func:`record_key`, the one step that needs no parse."""
+    stem = Path(path).name.split(".")[0]
+    return stem if _PMC_STEM.match(stem) else ""
+
+
+def article_pmcid(root) -> str:
+    """The article's own ``<article-id pub-id-type="pmc">`` as ``PMC<digits>``,
+    or ``""`` (none, or not a PMC id). Read only from ``<article-meta>``, as
+    :func:`front_meta` reads the ids."""
+    for e in root.findall(".//article-meta//article-id"):
+        if e.get("pub-id-type") in ("pmc", "pmcid"):
+            m = _PMC_ARTICLE_ID.match(itext(e))
+            if m and int(m.group(1)) > 0:
+                return f"PMC{int(m.group(1))}"
+    return ""
+
+
+def record_key(path: str | Path, xml_pmcid: str | None = None) -> str:
+    """The record key of one JATS file: the article record's ``path`` and the
+    prefix of its unit records (``<key>#table-1``), from which every document
+    id derives (#828 PR 5a). ONE rule for every route — ``JatsLoader``
+    (in process and in the GoWe extract step), ``jats_extract`` and the API's
+    same-document identity:
+
+    1. the filename stem up to the first ``.`` when it is a PMC id
+       (``PMC8092463.xml``, ``PMC8092463.nxml``, ``PMC8092463.v2.xml`` →
+       ``PMC8092463``) — byte-identical to the key every PMC-named file has
+       always had, so existing collections keep their ids;
+    2. else the article's ``<article-id pub-id-type="pmc">`` (``xml_pmcid``,
+       normalised to ``PMC<digits>`` without leading zeros, as
+       ``work_identity.normalize_pmcid`` does);
+    3. else the full file name minus a trailing ``.xml``/``.nxml``
+       (``journal.pone.0012345.xml`` → ``journal.pone.0012345``) — never the
+       stem up to the first dot, which folded every PLOS file to ``journal``.
+
+    Raises :class:`ValueError` when the key would be empty (a file named
+    ``.xml``)."""
+    stem = pmc_stem(path)
+    if stem:
+        return stem
+    m = _PMC_ARTICLE_ID.match(xml_pmcid or "")
+    if m and int(m.group(1)) > 0:
+        return f"PMC{int(m.group(1))}"
+    name = Path(path).name
+    for sfx in JATS_SUFFIXES:
+        if name.lower().endswith(sfx):
+            name = name[: -len(sfx)]
+            break
+    if not name:
+        raise ValueError("JATS file name gives an empty record key")
+    return name
+
+
+def file_record_key(path: str | Path) -> str:
+    """:func:`record_key` of a file on disk: parses it for step 2 only when
+    the name is not a PMC id. An unparseable file falls through to step 3 (its
+    ingest fails on the parse anyway). Raises :class:`ValueError` as
+    :func:`record_key` does."""
+    if pmc_stem(path):
+        return pmc_stem(path)
+    try:
+        xml_pmcid = article_pmcid(ET.parse(path).getroot())
+    except Exception:  # noqa: BLE001 - unreadable/unparseable: name only
+        xml_pmcid = ""
+    return record_key(path, xml_pmcid)
+
+
+def is_article_root(root) -> bool:
+    """Whether the document element is ``<article>`` (namespace-tolerant)."""
+    return str(root.tag).rsplit("}", 1)[-1] == "article"
 
 
 # -------------------------------------------------------------------- records
@@ -926,14 +1013,14 @@ def convert_file(
     xml_path: str | Path, pmcid: str | None = ..., manifest: dict | None = ...,
     max_chars: int = ..., min_unit_chars: int = ...,
     count_tokens: TokenCounter | None = ..., max_tokens: int = ...,
-    *, with_spans: Literal[False] = ...,
+    *, with_spans: Literal[False] = ..., require_article: bool = ...,
 ) -> _Records: ...
 @overload
 def convert_file(
     xml_path: str | Path, pmcid: str | None = ..., manifest: dict | None = ...,
     max_chars: int = ..., min_unit_chars: int = ...,
     count_tokens: TokenCounter | None = ..., max_tokens: int = ...,
-    *, with_spans: Literal[True],
+    *, with_spans: Literal[True], require_article: bool = ...,
 ) -> _RecordsWithSpans: ...
 def convert_file(
     xml_path: str | Path,
@@ -945,28 +1032,45 @@ def convert_file(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     *,
     with_spans: bool = False,
+    require_article: bool = False,
 ) -> _Records | _RecordsWithSpans:
     """Read + convert one JATS file -> ``(records, skipped)``.
 
     An unparseable / missing / unreadable file yields ``([], [entry])`` with
     ``kind="article"`` — one bad file is reported, never raised, so it cannot sink
-    a shard. ``pmcid`` defaults to the filename stem up to the first ``.``
-    (``PMC123.1.xml`` -> ``PMC123``). ``with_spans`` is as in
-    :func:`article_records` (a failed file's spans are ``[]``, its units ``{}``).
+    a shard; so does a file whose :func:`record_key` would be empty, and — with
+    ``require_article`` — a well-formed file whose document element is not
+    ``<article>`` (``reason`` starts ``not a JATS article``). ``pmcid`` defaults
+    to :func:`record_key` of the file (``PMC123.1.xml`` -> ``PMC123``; else the
+    article's own PMC id; else the file name minus ``.xml``). ``with_spans`` is
+    as in :func:`article_records` (a failed file's spans are ``[]``, its units
+    ``{}``).
     """
     path = Path(xml_path)
-    pmcid = pmcid or path.name.split(".")[0]
     failed: list[dict] | None = None
+    label = pmcid or pmc_stem(path) or path.name
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError as e:
-        failed = [{"path": str(path), "pmcid": pmcid, "kind": "article",
+        failed = [{"path": str(path), "pmcid": label, "kind": "article",
                    "reason": f"parse error: {e}"}]
     except Exception as e:  # noqa: BLE001 - missing/unreadable file must not raise
-        failed = [{"path": str(path), "pmcid": pmcid, "kind": "article",
+        failed = [{"path": str(path), "pmcid": label, "kind": "article",
                    "reason": f"{type(e).__name__}: {e}"}]
+    else:
+        if require_article and not is_article_root(root):
+            local = str(root.tag).rsplit("}", 1)[-1]
+            failed = [{"path": str(path), "pmcid": label, "kind": "article",
+                       "reason": f"not a JATS article (document element <{local}>)"}]
+        elif not pmcid:
+            try:
+                pmcid = record_key(path, article_pmcid(root))
+            except ValueError as e:
+                failed = [{"path": str(path), "pmcid": label, "kind": "article",
+                           "reason": str(e)}]
     if failed is not None:
         return ([], failed, [], {}) if with_spans else ([], failed)
+    assert pmcid
     if with_spans:
         return article_records(root, pmcid, manifest, max_chars, min_unit_chars,
                                count_tokens, max_tokens, with_spans=True)

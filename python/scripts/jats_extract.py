@@ -35,8 +35,11 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
       is resolved against ``--corpus`` when given, else against the directory
       holding the shard file.
     * ``pmcid`` (optional) — the article id; it becomes the record ``path`` and
-      hence the document id. Defaults to the filename stem up to the first ``.``
-      (``PMC123.1.xml`` -> ``PMC123``).
+      hence the document id. Defaults to ``jats.record_key``: the filename stem
+      up to the first ``.`` when it is a PMC id (``PMC123.1.xml`` -> ``PMC123``),
+      else the article's own ``<article-id pub-id-type="pmc">``, else the file
+      name minus ``.xml`` (``journal.pone.0012345.xml`` ->
+      ``journal.pone.0012345``).
     * **Any other keys on the line are treated as that article's manifest row**
       (``sha256``, ``source_url``, ``doi_xml``, ``licence``, ...), so a shard is
       self-contained and a worker never has to read the ~1M-line corpus
@@ -101,6 +104,8 @@ from ragstack.ingestion.jats import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_MIN_UNIT_CHARS,
     convert_file,
+    file_record_key,
+    pmc_stem,
 )
 from ragstack.ingestion.jats_structure import record_structure
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
@@ -148,16 +153,28 @@ def read_shard(shard: str | Path, corpus: str | Path | None = None) -> list[dict
             continue
         p = Path(raw)
         row["xml_path"] = str(p if p.is_absolute() else base / p)
-        row.setdefault("pmcid", Path(row["xml_path"]).name.split(".")[0])
+        # A PMC-named file's key is its name (no parse); any other file's is
+        # left to extract_articles, which reads the article's own PMC id
+        # (jats.record_key). An explicit pmcid on the line always wins.
+        if not row.get("pmcid") and pmc_stem(row["xml_path"]):
+            row["pmcid"] = pmc_stem(row["xml_path"])
         items.append(row)
     return items
 
 
 def walk_corpus(corpus: str | Path, tree: str = "clean") -> list[dict]:
-    """Walk ``corpus/tree/**/*.xml`` -> shard items, sorted for determinism."""
+    """Walk ``corpus/tree/**/*.xml`` -> shard items, sorted for determinism.
+
+    A PMC-named file carries its key (``pmcid``) from the name; any other
+    file's key is resolved by :func:`extract_articles` (``jats.record_key``)."""
     root = Path(corpus) / tree
-    return [{"pmcid": f.name.split(".")[0], "xml_path": str(f)}
-            for f in sorted(root.rglob("*.xml"))]
+    items: list[dict] = []
+    for f in sorted(root.rglob("*.xml")):
+        item = {"pmcid": pmc_stem(f), "xml_path": str(f)}
+        if not item["pmcid"]:
+            del item["pmcid"]
+        items.append(item)
+    return items
 
 
 def _attach_structure(record: dict, spans: list, units: dict,
@@ -214,7 +231,14 @@ def extract_articles(
     records: list[dict] = []
     skipped: list[dict] = []
     for item in items:
-        pmcid = item.get("pmcid") or Path(item["xml_path"]).name.split(".")[0]
+        # The record key (jats.record_key): the item's explicit pmcid, else a
+        # PMC-named file's stem, else the article's own PMC id, else the file
+        # name minus .xml — the rule JatsLoader keys the in-process records on.
+        # "" (a file named ".xml") lets convert_file report the item as failed.
+        try:
+            pmcid = item.get("pmcid") or file_record_key(item["xml_path"])
+        except ValueError:
+            pmcid = ""
         row = dict(manifest.get(pmcid, {}))
         row.update({k: v for k, v in item.items()
                     if k not in ("xml_path", "pmcid") and v not in (None, "")})
