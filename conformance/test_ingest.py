@@ -56,3 +56,20 @@ async def test_ingest_accepts_duplicate_policy_allow(client: httpx.AsyncClient) 
     body = resp.json()
     assert body["status"] == "accepted"
     assert "job_id" in body
+
+
+async def test_ingest_accepts_a_source_whose_suffix_has_no_loader(
+    client: httpx.AsyncClient,
+) -> None:
+    """#828 PR 5a (#833 item 1): the loader is chosen per file, in the
+    background — so a source whose suffix has no loader (`.rst` here) is still
+    accepted at the request level. It is never a 415/422: it becomes a failed
+    *item* with `no loader for .rst`, which `test_ingest_no_loader.py` pins
+    against a server that actually runs the job."""
+    resp = await client.post("/v1/ingest", json={"source": "/tmp/test.rst"})
+    if resp.status_code == 503:
+        pytest.skip("target server has no INGEST_ROOT; /v1/ingest disabled (503)")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "accepted"
+    assert "job_id" in body
