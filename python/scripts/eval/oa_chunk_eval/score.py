@@ -30,10 +30,18 @@ the outputs is ``score.tokenizer_label`` when set, else only the basename of the
 (never a local path).
 
 Question sets: ``clean`` (neither ``ambiguous_gold`` nor ``within_record_repeat`` per
-``audit.jsonl``; the primary set), ``ambiguous`` and ``all``. Only questions with an ``ok``
-retrieval row in EVERY arm are scored (paired); the per-arm count of missing rows is
+``audit.jsonl``; the primary set), ``ambiguous`` and ``all``. Only questions with a usable
+``ok`` retrieval row in EVERY arm are scored (paired); the per-arm count of missing rows is
 reported. Questions whose gold record text is not in the extracted JSONL are dropped from
 the paired set and counted (``records_without_text``).
+
+Request check (:func:`retrieve.usable_ok`): an ok row is used only when its ``request``
+equals the request the current config would send to that arm. A question whose ok rows
+were ALL fetched with a different request is missing for that arm AND a refusal
+(``request_mismatch_by_arm``). Rows without a ``request`` (older ledgers) are used and
+counted per arm in ``request_unverified_by_arm`` with a warning. ``server_versions``
+records per arm the distinct server versions (``version+git_sha``) of the rows actually
+scored; mixed versions within an arm or across the run are logged as a warning only.
 
 Noise-subset exclusion (``score.exclude_noise_subset``, default false; owner 2026-11-05):
 when true, the questions of the noise subset, selected by ``noise.noise_questions`` (the
@@ -43,11 +51,13 @@ then named ``clean_excl_noise`` (``all_excl_noise`` without an audit). Ambiguous
 handled as before. The set WITH the noise subset (``clean`` / ``all``) is still scored in
 full and named in ``sensitivity_set`` with ``sensitivity_label``: a sensitivity result, NOT
 the decision set. ``noise_exclusion`` in ``score.json`` records the subset size, how many
-questions it removed from the primary set, and both set sizes. :func:`set_rows` is the one
+questions it removed from the primary set, both set sizes and ``excluded_ids_sha256``
+(:func:`noise.ids_sha256` of the excluded ids; ``decide`` checks it against ``noise.json``). :func:`set_rows` is the one
 definition of every question set, used by ``score`` and ``decide``.
 
 Quality refusals (``refusals`` in ``score.json``; ``score`` exits 2 and ``decide`` refuses):
-any ``records_without_text``; per arm, a share of hits with an empty ``source_path`` above
+any ``records_without_text``; per arm, questions whose only ok rows mismatch the current
+request (see above); per arm, a share of hits with an empty ``source_path`` above
 ``score.max_unlocated_share`` (0.01), or a share of gold-record hits that could not be
 located (``unlocated`` + ``offsets_unverified``) above the same threshold.
 
@@ -75,9 +85,9 @@ from typing import Any
 from .common import article_of, log, norm_ws, norm_ws_map, read_jsonl, write_json, write_jsonl
 from .config import arms as cfg_arms
 from .config import baseline_arm, out_path, require
-from .noise import noise_questions
+from .noise import ids_sha256, noise_questions
 from .passages import iter_records
-from .retrieve import latest_ok
+from .retrieve import usable_ok
 from .stats import discordance, mean_ci, paired_diff, strip_private
 
 # ------------------------------------------------------------------- locating chunks
@@ -338,15 +348,16 @@ def journal_confusion(rows: list[dict[str, Any]], arm_names: list[str], fam_of: 
             wrong += 1
             gf = r["strata"].get("journal_family")
             tf = fam_of.get(t1)
-            if tf is None:
+            if tf is None:  # unknown family: in neither share (same denominator, ``known``)
                 unknown += 1
-            elif tf == gf:
+                continue
+            if tf == gf:
                 same += 1
             chance += (fam_counts.get(gf, 0) - 1) / max(1, total - 1)
         known = wrong - unknown
         out[a] = {"wrong_top1": wrong, "same_family": same, "unknown_family": unknown,
                   "share_same_family": round(same / known, 4) if known else None,
-                  "chance_share": round(chance / wrong, 4) if wrong else None}
+                  "chance_share": round(chance / known, 4) if known else None}
     return out
 
 
@@ -375,6 +386,10 @@ def refusals(meta: dict[str, Any], quality: dict[str, dict[str, Any]], max_share
     if meta.get("records_without_text"):
         out.append(f"records_without_text={meta['records_without_text']} (gold record text missing from the "
                    "extracted JSONL; those questions were dropped)")
+    for a, n in (meta.get("request_mismatch_by_arm") or {}).items():
+        if n:
+            out.append(f"{a}: {n} question(s) have only ok retrieval rows fetched with a different request than "
+                       "the current config sends (rerun retrieve, or score with the config they were fetched with)")
     for a, q in quality.items():
         if q["empty_source_path_share"] > max_share:
             out.append(f"{a}: empty_source_path_share={q['empty_source_path_share']} > {max_share}")
@@ -382,6 +397,34 @@ def refusals(meta: dict[str, Any], quality: dict[str, dict[str, Any]], max_share
             out.append(f"{a}: unlocated_share={q['unlocated_share']} > {max_share} "
                        f"(unlocated {q['unlocated']}, offsets_unverified {q['offsets_unverified']})")
     return out
+
+
+def version_label(sv: Any) -> str:
+    """One string per server identity of a row: ``version+git_sha``, ``error:<why>`` when
+    ``/v1/version`` failed, ``unknown`` when the row carries none."""
+    if not isinstance(sv, dict):
+        return "unknown"
+    if sv.get("error"):
+        return f"error:{sv['error']}"
+    v, sha = sv.get("version"), sv.get("git_sha")
+    if v is None and sha is None:
+        return "unknown"
+    return f"{v}+{sha}" if sha else str(v)
+
+
+def warn_request_and_versions(meta: dict[str, Any]) -> None:
+    """Log (never refuse): rows without a recorded request, and mixed server versions."""
+    unv = {a: n for a, n in (meta.get("request_unverified_by_arm") or {}).items() if n}
+    if unv:
+        log("score: WARNING: rows without a recorded request (unverifiable, used): "
+            + ", ".join(f"{a} {n}" for a, n in unv.items()))
+    versions = meta.get("server_versions") or {}
+    for a, vs in versions.items():
+        if len(vs) > 1:
+            log(f"score: WARNING: arm {a} mixes server versions: {', '.join(vs)}")
+    run_vs = sorted({v for vs in versions.values() for v in vs})
+    if len(run_vs) > 1:
+        log(f"score: WARNING: the run mixes server versions: {', '.join(run_vs)}")
 
 
 def build_rows(cfg: dict[str, Any], arm_names: list[str] | None = None,
@@ -395,7 +438,12 @@ def build_rows(cfg: dict[str, Any], arm_names: list[str] | None = None,
     if questions is None:
         questions = read_jsonl(out_path(cfg, "questions.jsonl"))
     amb = audit_flags(cfg, audit_file)
-    ret = {a: latest_ok(cfg, a) for a in arm_names}
+    ret: dict[str, dict[str, dict[str, Any]]] = {}
+    req_stats: dict[str, dict[str, Any]] = {}
+    for a in arm_names:
+        ret[a], req_stats[a] = usable_ok(cfg, a)
+    qids = {q["question_id"] for q in questions}
+    mismatch = {a: len(req_stats[a]["mismatch_only"] & qids) for a in arm_names}
     missing = {a: sum(1 for q in questions if q["question_id"] not in ret[a]) for a in arm_names}
     complete = [q for q in questions if all(q["question_id"] in ret[a] for a in arm_names)]
     gold_paths = {q["record_path"] for q in complete}
@@ -405,6 +453,9 @@ def build_rows(cfg: dict[str, Any], arm_names: list[str] | None = None,
             texts[rec["path"]] = RecordText(rec["text"])
     no_text = [q for q in complete if q["record_path"] not in texts]
     complete = [q for q in complete if q["record_path"] in texts]
+    used = {q["question_id"] for q in complete}
+    unverified = {a: len(req_stats[a]["unverified"] & used) for a in arm_names}
+    versions = {a: sorted({version_label(ret[a][qid].get("server_version")) for qid in used}) for a in arm_names}
     count, tok_name, estimated = make_tokenizer(sc.get("tokenizer"), sc.get("tokenizer_label"))
     tok_cache: dict[tuple[str, str], int] = {}
 
@@ -427,7 +478,10 @@ def build_rows(cfg: dict[str, Any], arm_names: list[str] | None = None,
         rows.append(r)
     meta = {"n_questions": len(questions), "n_complete": len(complete), "missing_by_arm": missing,
             "tokenizer": tok_name, "tokens_estimated": estimated, "audit_present": amb is not None,
-            "records_without_text": len(gold_paths - set(texts)), "questions_without_record_text": len(no_text)}
+            "records_without_text": len(gold_paths - set(texts)), "questions_without_record_text": len(no_text),
+            "request_mismatch_by_arm": mismatch, "request_unverified_by_arm": unverified,
+            "server_versions": versions}
+    warn_request_and_versions(meta)
     quality = hit_quality(rows, arm_names)
     meta["hit_quality"] = quality
     meta["refusals"] = refusals(meta, quality, float(sc.get("max_unlocated_share", 0.01)))
@@ -514,7 +568,8 @@ def summarise(rows: list[dict[str, Any]], cfg: dict[str, Any], meta: dict[str, A
         n_excl = sum(1 for r in ref_rows if r["noise_subset"])
         noise_info = {"enabled": True, "n_noise_subset": len(ids), "n_excluded_from_primary": n_excl,
                       "n_primary": len(ref_rows) - n_excl, "n_sensitivity": len(ref_rows),
-                      "noise_seed": cfg["noise"]["seed"], "noise_n_questions": int(cfg["noise"]["n_questions"])}
+                      "noise_seed": cfg["noise"]["seed"], "noise_n_questions": int(cfg["noise"]["n_questions"]),
+                      "excluded_ids_sha256": ids_sha256(ids)}
     sets = {n: set_rows(rows, n) for n in names}
     loss = skip_loss(cfg, dims)
     lossy = lossy_strata(loss, float(sc["skip_loss_threshold"]))
@@ -554,7 +609,9 @@ def check_writer_report(cfg: dict[str, Any]) -> dict[str, Any] | None:
         sets["clean"] = [r for r in rows if not r["ambiguous_gold"]]
     loss = skip_loss(cfg, list(sc["report_dims"]), suffix=".check")
     rep: dict[str, Any] = {k: meta[k] for k in ("n_questions", "n_complete", "missing_by_arm", "audit_present",
-                                                "records_without_text", "hit_quality", "refusals")}
+                                                "records_without_text", "hit_quality", "refusals",
+                                                "request_mismatch_by_arm", "request_unverified_by_arm",
+                                                "server_versions")}
     rep["skip_loss"] = loss
     rep["sets"] = {name: _set_block(rs, arm_names, base, ks, [], iters, seed, None) for name, rs in sets.items()}
     rep["primary_set"] = "clean" if "clean" in sets else "all"

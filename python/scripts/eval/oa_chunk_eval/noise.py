@@ -20,12 +20,16 @@ Computed on primary hit@``decide.k``:
   M_high = 2 x M_mid, floor = 2.0 points;
 - when ``noise.target_half_width`` H is set: the N at which the half-width is <= H.
 
-Writes ``noise.json`` (aggregates only). The margins are NOT applied automatically: the
+Writes ``noise.json`` (aggregates only), with ``noise_seed``, ``n_questions`` and
+``selected_ids_sha256`` (:func:`ids_sha256` of the selected ids) so ``decide`` can check that
+``score`` excluded the same subset. The margins are NOT applied automatically: the
 owner records them in the plan addendum and copies them into the config's ``margins``.
 """
 from __future__ import annotations
 
+import hashlib
 import math
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
@@ -47,6 +51,11 @@ def noise_arms(cfg: dict[str, Any]) -> list[str]:
     if not cheap:
         raise ValueError("noise needs a cheap arm besides the baseline (or noise.arms)")
     return [base, cheap[0]]
+
+
+def ids_sha256(ids: Iterable[str]) -> str:
+    """sha256 of the sorted question ids joined by newlines: ties a noise subset to its use."""
+    return hashlib.sha256("\n".join(sorted(ids)).encode("utf-8")).hexdigest()
 
 
 def noise_questions(cfg: dict[str, Any], questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -124,6 +133,8 @@ def run(cfg: dict[str, Any]) -> int:
     res = compute([r["arms"][base][k]["primary"] for r in rows], [r["arms"][arm][k]["primary"] for r in rows],
                   cfg["noise"], int(sc["bootstrap_iters"]), int(sc["bootstrap_seed"]))
     res.update({"arms": names, "k": int(k), "metric": "primary", "n_selected": len(qs),
+                "noise_seed": cfg["noise"]["seed"], "n_questions": int(cfg["noise"]["n_questions"]),
+                "selected_ids_sha256": ids_sha256(q["question_id"] for q in qs),
                 "missing_by_arm": meta["missing_by_arm"], "hit_quality": meta["hit_quality"],
                 "refusals": meta["refusals"]})
     write_json(out_path(cfg, "noise.json"), res)

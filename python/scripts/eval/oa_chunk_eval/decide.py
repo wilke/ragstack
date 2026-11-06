@@ -16,7 +16,8 @@ Per challenger arm (every non-baseline arm):
    ``context_ratio`` (1.5) x the baseline's, it needs the NEXT class's margin
    (cheap -> +M_mid, mid -> +M_high). Expensive has no next class: it keeps +M_high and the
    bump is recorded as ``context_rule: "no_next_class"``.
-3. Class test: paired bootstrap 95% CI lower bound >= threshold, AND the one-sided bootstrap
+3. Class test: paired bootstrap CI (two-sided 1 - 2 x ``alpha_one_sided``, 95% at 0.025)
+   lower bound >= threshold, AND the one-sided bootstrap
    p-value for H0 "diff <= threshold" is rejected after Holm across all challengers at
    ``alpha_one_sided`` (0.025, the one-sided level of a two-sided 95% CI).
 4. Stratum guard (Addendum A.4): for every reported stratum of ``score.strata_dims``
@@ -71,6 +72,8 @@ in ``decision.md``:
   ``source_path`` or unlocated share above ``score.max_unlocated_share``);
 - ``noise.json`` is missing, records scoring refusals, or the config margins differ from
   its margins;
+- with the noise exclusion on: ``noise.json``'s ``selected_ids_sha256`` differs from
+  ``score.json``'s ``noise_exclusion.excluded_ids_sha256`` (either absent: a warning only);
 - ``audit.jsonl`` was missing when ``score`` ran (no ``clean`` set).
 
 Writes ``decision.json`` and ``decision.md``: aggregates only (arm names, classes, numbers;
@@ -315,7 +318,9 @@ def gather(cfg: dict[str, Any], set_name: str | None = None) -> tuple[dict, dict
     iters, seed = int(sc["bootstrap_iters"]), int(sc["bootstrap_seed"])
     names = [a["name"] for a in cfg_arms(cfg)]
     vec = {a: np.array([r["arms"][a][k]["primary"] for r in rows]) for a in names}
-    diffs = {a: paired_diff(v, vec[base], iters, seed) for a, v in vec.items() if a != base}
+    # the class-test CI at the pass rule's level: two-sided 1 - 2 x alpha_one_sided (95% at 0.025)
+    a2 = 2 * float(cfg["decide"]["alpha_one_sided"])
+    diffs = {a: paired_diff(v, vec[base], iters, seed, alpha=a2) for a, v in vec.items() if a != base}
     block = score["sets"][set_name]
     st = block["primary"][k]["strata"]
     dims = [d for d in sc["strata_dims"] if d in st]
@@ -368,6 +373,26 @@ def sensitivity_block(sdec: dict[str, Any], s_info: dict[str, Any], decision: st
             "ladder": sdec.get("ladder")}
 
 
+def noise_subset_tie(noise: dict[str, Any], excl: dict[str, Any]) -> list[str]:
+    """With the noise exclusion on: refuse when ``noise.json``'s ``selected_ids_sha256``
+    and ``score.json``'s ``excluded_ids_sha256`` both exist and differ; warn (log, no
+    refusal) when either is absent (files written before the hashes existed)."""
+    if not excl.get("enabled"):
+        return []
+    want, got = noise.get("selected_ids_sha256"), excl.get("excluded_ids_sha256")
+    if want and got:
+        if want != got:
+            return [f"noise subset mismatch: noise.json selected_ids_sha256 {want[:12]}... != score.json "
+                    f"excluded_ids_sha256 {got[:12]}... (score excluded a different subset than the noise run "
+                    "measured; rerun noise or score)"]
+        return []
+    missing = [n for n, v in (("noise.json selected_ids_sha256", want), ("score.json excluded_ids_sha256", got))
+               if not v]
+    log("decide: WARNING: cannot check that score excluded the noise run's subset (missing "
+        + ", ".join(missing) + ")")
+    return []
+
+
 def preflight(cfg: dict[str, Any], margins: dict[str, float], info: dict[str, Any]) -> list[str]:
     """Reasons decide must not run without ``--force-unchecked``."""
     out = [f"score: {r}" for r in info.get("score_refusals") or []]
@@ -381,6 +406,7 @@ def preflight(cfg: dict[str, Any], margins: dict[str, float], info: dict[str, An
             out.append("noise.json was computed on scoring with refusals: " + "; ".join(noise["refusals"]))
         if not all(abs(float(nm.get(k, math.nan)) - margins[k]) < 1e-9 for k in margins):
             out.append(f"config margins {margins} differ from noise.json margins {nm}")
+        out += noise_subset_tie(noise, info.get("noise_exclusion") or {})
     if not info.get("audit_present"):
         out.append("audit.jsonl was missing when score ran: no clean set, ambiguous gold not excluded")
     want = bool(cfg["score"].get("exclude_noise_subset"))

@@ -13,8 +13,14 @@ main run; ``retrieve`` refuses to start without them. The key is read from
 
 Server identity: ``GET {api.base_url}/v1/version`` once per run (``VersionResponse``:
 version, git_tag, git_sha, started_at, impl). The result and the request settings (every
-body field except the query) are stored in every row, so rows fetched at different times
-(e.g. the noise subset reused by the main run) can be checked for a server change.
+body field except the query, :func:`request_settings`) are stored in every row. An ``ok``
+row counts (as done on resume, and as usable by ``score``/``noise``) only when its
+``request`` equals :func:`request_settings` for the current config and the arm's
+collection; ok rows fetched with other settings are ignored and counted. A row without a
+``request`` (written before the field existed) cannot be checked: it is accepted and
+counted as unverified. The server version is NOT a criterion here: rows from different
+server versions are accepted; ``score`` records the versions it used per arm and warns
+when they are mixed.
 
 Dormant collections: a 503 that carries ``Retry-After`` (seconds) is not a failure: the
 call waits that long (capped at ``api.max_retry_after_s``, 120) and retries, up to
@@ -29,7 +35,7 @@ a stage fell back) makes the call count as a failure unless ``api.accept_degrade
 true: the contract says a degraded response must not be compared with undegraded ones.
 
 ``retrieval/<arm>.jsonl`` is the append-only ledger of that arm: one row per call, ok or
-not. A rerun skips (question, arm) pairs that already have an ``ok`` row. Pause file,
+not. A rerun skips (question, arm) pairs that already have a usable ``ok`` row (see above). Pause file,
 failure stops and max 4 in flight as in :mod:`runner`; one Control spans all arms. Calls
 are interleaved: for each question every arm is called before the next question, so slow
 drift on the server (load, reranker, cache) does not line up with arm.
@@ -177,17 +183,56 @@ async def call_retrieve(http: Any, cfg: dict[str, Any], question: dict[str, Any]
     return {**row, "status": "ok"}
 
 
-def done_pairs(cfg: dict[str, Any], arm: str) -> set[str]:
-    return {r["question_id"] for r in iter_jsonl(ledger_path(cfg, arm)) if r.get("status") == "ok"}
+def request_check(row: dict[str, Any], want: dict[str, Any]) -> str:
+    """``match``, ``mismatch``, or ``unverified`` (the row predates the ``request`` field)."""
+    got = row.get("request")
+    if got is None:
+        return "unverified"
+    return "match" if got == want else "mismatch"
 
 
-def latest_ok(cfg: dict[str, Any], arm: str) -> dict[str, dict[str, Any]]:
-    """question_id -> the first ok row of that arm (later duplicates are ignored)."""
+def _arm_dict(cfg: dict[str, Any], arm: dict[str, Any] | str) -> dict[str, Any]:
+    if isinstance(arm, dict):
+        return arm
+    for a in cfg_arms(cfg):
+        if a["name"] == arm:
+            return a
+    raise ConfigError(f"unknown arm {arm!r}")
+
+
+def usable_ok(cfg: dict[str, Any], arm: dict[str, Any] | str) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """``(question_id -> first usable ok row, stats)`` for one arm's ledger.
+
+    Usable: ``status == "ok"`` and ``request`` equal to :func:`request_settings` for the
+    current config and the arm's collection, or no ``request`` at all (unverifiable, kept
+    so old ledgers still score). Later duplicates are ignored. ``stats``: ``mismatch_rows``
+    (ok rows ignored for a different request), ``mismatch_only`` (question ids whose ok
+    rows ALL mismatch) and ``unverified`` (question ids whose chosen row has no request)."""
+    a = _arm_dict(cfg, arm)
+    want = request_settings(cfg, a["collection_id"])
     out: dict[str, dict[str, Any]] = {}
-    for r in iter_jsonl(ledger_path(cfg, arm)):
-        if r.get("status") == "ok" and "question_id" in r:
-            out.setdefault(r["question_id"], r)
-    return out
+    mismatched: set[str] = set()
+    mismatch_rows = 0
+    for r in iter_jsonl(ledger_path(cfg, a["name"])):
+        if r.get("status") != "ok" or "question_id" not in r:
+            continue
+        if request_check(r, want) == "mismatch":
+            mismatch_rows += 1
+            mismatched.add(r["question_id"])
+            continue
+        out.setdefault(r["question_id"], r)
+    unverified = {q for q, r in out.items() if r.get("request") is None}
+    return out, {"mismatch_rows": mismatch_rows, "mismatch_only": mismatched - set(out), "unverified": unverified}
+
+
+def done_pairs(cfg: dict[str, Any], arm: dict[str, Any] | str) -> set[str]:
+    """Question ids of the arm that have a usable ok row (:func:`usable_ok`)."""
+    return set(usable_ok(cfg, arm)[0])
+
+
+def latest_ok(cfg: dict[str, Any], arm: dict[str, Any] | str) -> dict[str, dict[str, Any]]:
+    """question_id -> the first usable ok row of that arm (:func:`usable_ok`)."""
+    return usable_ok(cfg, arm)[0]
 
 
 def run_questions(cfg: dict[str, Any], subset: str | None) -> list[dict[str, Any]]:
@@ -224,7 +269,20 @@ async def run_async(cfg: dict[str, Any], subset: str | None = None, only_arms: l
             log(f"retrieve: GET {VERSION_ENDPOINT} failed ({version['error']}); recorded in every row")
         else:
             log(f"retrieve: server version {version.get('version')} ({version.get('git_sha')})")
-        done = {a["name"]: done_pairs(cfg, a["name"]) for a in all_arms}
+        done: dict[str, set[str]] = {}
+        ignored: dict[str, int] = {}
+        unverified: dict[str, int] = {}
+        for a in all_arms:
+            ok, st = usable_ok(cfg, a)
+            done[a["name"]] = set(ok)
+            ignored[a["name"]] = st["mismatch_rows"]
+            unverified[a["name"]] = len(st["unverified"])
+        if any(ignored.values()):
+            log("retrieve: ignored ok rows fetched with a different request than the current config: "
+                + ", ".join(f"{a} {n}" for a, n in ignored.items() if n) + " (refetched)")
+        if any(unverified.values()):
+            log("retrieve: WARNING: ok rows without a recorded request (unverifiable, counted as done): "
+                + ", ".join(f"{a} {n}" for a, n in unverified.items() if n))
 
         def job_for(q: dict[str, Any], arm: dict[str, Any]):
             async def job() -> dict[str, Any]:
@@ -242,7 +300,8 @@ async def run_async(cfg: dict[str, Any], subset: str | None = None, only_arms: l
 
         started = await run_pool(jobs(), control, in_flight(cfg["api"]), lambda row: ledger_path(cfg, row["arm"]))
         log(f"retrieve: {started} calls this run, "
-            + ", ".join(f"{a} {len(d)} already done" for a, d in done.items()))
+            + ", ".join(f"{a} {len(d)} already done ({ignored[a]} ignored for request mismatch)"
+                        for a, d in done.items()))
     finally:
         if own:
             await http.aclose()

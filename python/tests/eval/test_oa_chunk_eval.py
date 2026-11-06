@@ -1754,3 +1754,161 @@ def test_default_score_has_no_noise_exclusion_and_no_sensitivity(tmp_path):
     assert decide.run(cfg) == 0
     dec = json.loads((out / "decision.json").read_text())
     assert dec["sensitivity"] is None and dec["ladder"] is None and dec["stratum_correction"] == "none"
+
+
+# ---- PR #972 review: request check, server versions, noise-subset tie, journal confusion
+
+
+def _restamp(cfg, arm: str, fn) -> None:
+    """Rewrite an arm's ledger rows through ``fn(row) -> row``."""
+    p = Path(cfg["out_dir"]) / "retrieval" / f"{arm}.jsonl"
+    rows = [fn(dict(r)) for r in read_jsonl(p)]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_retrieve_resume_refetches_ok_rows_with_a_different_request(tmp_path, capsys):
+    cfg = make_cfg(tmp_path)
+    _write_questions(cfg, 3)
+    http = FakeHTTP(lambda u, b, h: FakeResp(200, {"sources": []}))
+    asyncio.run(retrieve.run_async(cfg, http=http))
+    assert len(http.calls) == 6
+    # q0 of base was fetched with another retrieval_mode: not done; q1 predates `request`: done (unverified)
+    def fn(r):
+        if r["question_id"] == "q0":
+            r["request"] = {**r["request"], "retrieval_mode": "vector"}
+        if r["question_id"] == "q1":
+            r.pop("request")
+        return r
+    _restamp(cfg, "base", fn)
+    assert retrieve.done_pairs(cfg, "base") == {"q1", "q2"}
+    ok, st = retrieve.usable_ok(cfg, cfg["arms"][0])
+    assert st["mismatch_rows"] == 1 and st["mismatch_only"] == {"q0"} and st["unverified"] == {"q1"}
+    capsys.readouterr()
+    http2 = FakeHTTP(lambda u, b, h: FakeResp(200, {"sources": []}))
+    asyncio.run(retrieve.run_async(cfg, http=http2))
+    assert [(c["json"]["collection"], c["json"]["query"]) for c in http2.calls] == [("col-base", "question 0")]
+    err = capsys.readouterr().err
+    assert "base 2 already done (1 ignored for request mismatch)" in err and "without a recorded request" in err
+    # the refetched row is now the usable one
+    assert retrieve.latest_ok(cfg, "base")["q0"]["request"]["retrieval_mode"] == "hybrid"
+
+
+def test_score_refuses_questions_whose_only_ok_rows_mismatch_the_request(tmp_path):
+    cfg = build_fixture(tmp_path)
+    want = {a["name"]: retrieve.request_settings(cfg, a["collection_id"]) for a in cfg["arms"]}
+    _restamp(cfg, "base", lambda r: {**r, "request": want["base"]})
+    _restamp(cfg, "alt", lambda r: {**r, "request": want["alt"] if r["question_id"] not in ("PMC3#p0", "PMC5#p0")
+                                    else {**want["alt"], "rerank": True}})
+    assert score.run(cfg) == 2
+    s = json.loads((Path(cfg["out_dir"]) / "score.json").read_text())
+    assert s["request_mismatch_by_arm"] == {"base": 0, "alt": 2}
+    assert s["missing_by_arm"]["alt"] == 2 and s["n_complete"] == 38
+    assert any(r.startswith("alt: 2 question(s)") and "different request" in r for r in s["refusals"])
+    assert s["request_unverified_by_arm"] == {"base": 0, "alt": 0}
+    write_noise(cfg)
+    assert decide.run(cfg) == 2  # the score refusal blocks decide
+    # a later matching row heals it
+    for qid in ("PMC3#p0", "PMC5#p0"):
+        row = next(r for r in read_jsonl(Path(cfg["out_dir"]) / "retrieval" / "alt.jsonl") if r["question_id"] == qid)
+        append_jsonl(Path(cfg["out_dir"]) / "retrieval" / "alt.jsonl", {**row, "request": want["alt"]})
+    assert score.run(cfg) == 0
+
+
+def test_score_accepts_rows_without_request_and_records_server_versions(tmp_path, capsys):
+    cfg = build_fixture(tmp_path)  # fixture rows carry neither `request` nor `server_version`
+    assert score.run(cfg) == 0
+    s = json.loads((Path(cfg["out_dir"]) / "score.json").read_text())
+    assert s["request_unverified_by_arm"] == {"base": 39 + 1, "alt": 40} and s["refusals"] == []
+    assert s["server_versions"] == {"base": ["unknown"], "alt": ["unknown"]}
+    assert "without a recorded request" in capsys.readouterr().err
+    # rows from two server versions (e.g. a noise subset reused by the main run): accepted, warned
+    v1 = {**VERSION}
+    v2 = {**VERSION, "version": "1.6.25", "git_tag": "v1.6.25", "git_sha": "0123abc"}
+    want = {a["name"]: retrieve.request_settings(cfg, a["collection_id"]) for a in cfg["arms"]}
+    _restamp(cfg, "base", lambda r: {**r, "request": want["base"],
+                                     "server_version": v2 if r["question_id"] in ("PMC1#p0", "PMC2#p0") else v1})
+    _restamp(cfg, "alt", lambda r: {**r, "request": want["alt"], "server_version": v1})
+    before = json.loads((Path(cfg["out_dir"]) / "score.json").read_text())
+    assert score.run(cfg) == 0
+    s = json.loads((Path(cfg["out_dir"]) / "score.json").read_text())
+    assert s["server_versions"] == {"base": ["1.6.22+74ef9bb", "1.6.25+0123abc"], "alt": ["1.6.22+74ef9bb"]}
+    assert s["request_unverified_by_arm"] == {"base": 0, "alt": 0} and s["refusals"] == []
+    err = capsys.readouterr().err
+    assert "arm base mixes server versions" in err and "the run mixes server versions" in err
+    assert s["sets"] == before["sets"]  # the scores themselves are unchanged
+    assert score.version_label({"error": "http_401"}) == "error:http_401"
+
+
+def test_noise_json_records_the_subset_hash_and_score_the_excluded_hash(tmp_path):
+    cfg = build_fixture(tmp_path)
+    out = Path(cfg["out_dir"])
+    assert noise.run(cfg) == 0
+    res = json.loads((out / "noise.json").read_text())
+    ids = [q["question_id"] for q in noise.noise_questions(cfg, read_jsonl(out / "questions.jsonl"))]
+    import hashlib
+    assert res["selected_ids_sha256"] == hashlib.sha256("\n".join(sorted(ids)).encode()).hexdigest()
+    assert res["noise_seed"] == cfg["noise"]["seed"] and res["n_questions"] == 10
+    cfg["score"]["exclude_noise_subset"] = True
+    assert score.run(cfg) == 0
+    s = json.loads((out / "score.json").read_text())
+    assert s["noise_exclusion"]["excluded_ids_sha256"] == res["selected_ids_sha256"]
+    cfg["margins"] = res["margins"]
+    assert decide.run(cfg) == 0
+
+
+def test_decide_refuses_noise_subset_hash_mismatch_and_warns_when_absent(tmp_path, capsys):
+    cfg = build_fixture(tmp_path)
+    cfg["score"]["exclude_noise_subset"] = True
+    out = Path(cfg["out_dir"])
+    assert score.run(cfg) == 0
+    good = json.loads((out / "score.json").read_text())["noise_exclusion"]["excluded_ids_sha256"]
+    # mismatch: refused (unless forced)
+    (out / "noise.json").write_text(json.dumps({"margins": MARGINS, "selected_ids_sha256": "0" * 64}))
+    capsys.readouterr()
+    assert decide.run(cfg) == 2
+    assert "noise subset mismatch" in capsys.readouterr().err
+    assert decide.run(cfg, force_unchecked=True) == 0
+    dec = json.loads((out / "decision.json").read_text())
+    assert any("noise subset mismatch" in p for p in dec["forced_unchecked"])
+    # match: fine
+    (out / "noise.json").write_text(json.dumps({"margins": MARGINS, "selected_ids_sha256": good}))
+    assert decide.run(cfg) == 0
+    # noise.json without the hash (older run): warning, not a refusal
+    write_noise(cfg)
+    capsys.readouterr()
+    assert decide.run(cfg) == 0
+    err = capsys.readouterr().err
+    assert "WARNING: cannot check" in err and "missing noise.json selected_ids_sha256" in err
+    # score.json without the hash (older score): warning too; exclusion off: no check at all
+    assert decide.noise_subset_tie({"selected_ids_sha256": good}, {"enabled": True}) == []
+    assert decide.noise_subset_tie({"selected_ids_sha256": good}, {"enabled": False}) == []
+    assert "score.json excluded_ids_sha256" in capsys.readouterr().err
+
+
+def test_gather_class_test_ci_uses_alpha_one_sided(tmp_path):
+    cfg = build_fixture(tmp_path)
+    assert score.run(cfg) == 0
+    d95 = decide.gather(cfg)[0]["alt"]
+    s = json.loads((Path(cfg["out_dir"]) / "score.json").read_text())
+    assert d95["lo"] == pytest.approx(s["sets"]["clean"]["primary"]["5"]["pooled"]["diff"]["alt"]["lo"], abs=1e-3)
+    cfg["decide"]["alpha_one_sided"] = 0.005
+    d99 = decide.gather(cfg)[0]["alt"]
+    assert d99["lo"] < d95["lo"] and d99["hi"] > d95["hi"]
+
+
+def test_journal_confusion_chance_share_uses_known_family_denominator():
+    fam_of = {"A1": "fa", "A2": "fa", "A3": "fb", "A4": "fb"}
+
+    def row(gold, top1, gf):
+        return {"pmcid": gold, "strata": {"journal_family": gf}, "arms": {"x": {"top1_article": top1}}}
+    rows = [row("A1", "A2", "fa"),       # wrong, same family
+            row("A3", "A1", "fb"),       # wrong, other family
+            row("A1", "Z9", "fa"),       # wrong, unknown family: in neither share
+            row("A4", "A4", "fb")]       # right
+    jc = score.journal_confusion(rows, ["x"], fam_of)["x"]
+    assert jc["wrong_top1"] == 3 and jc["unknown_family"] == 1 and jc["same_family"] == 1
+    assert jc["share_same_family"] == 0.5
+    # chance per known wrong row: (2 - 1) / 3 for both fa and fb gold -> mean over the 2 known rows
+    assert jc["chance_share"] == pytest.approx(round((1 / 3 + 1 / 3) / 2, 4))
+    only_unknown = score.journal_confusion([row("A1", "Z9", "fa")], ["x"], fam_of)["x"]
+    assert only_unknown["share_same_family"] is None and only_unknown["chance_share"] is None

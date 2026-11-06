@@ -3,9 +3,11 @@
 All differences are in PERCENTAGE POINTS (hit rate x 100), the unit the margins in
 PLAN-AND-PASS-RULE.md are written in. The bootstrap resamples question indices with
 replacement; resampling the per-question difference vector is the same as resampling
-both arms with the same indices, so the CI is paired. A fixed seed gives the same
-index stream for every comparison of the same length (as ``scripts/eval/_stats.py``
-does), so a re-run reproduces every interval exactly.
+both arms with the same indices, so the CI is paired. Draws are deterministic per input
+vector and seed: the same vector with the same seed always gives the same bootstrap
+distribution, so a re-run reproduces every interval exactly. Different comparisons of the
+same length do NOT share one index stream (the multinomial fast path draws level counts,
+which depend on the vector's levels and shares).
 
 Holm–Bonferroni comes from the shared ``scripts/eval/_stats.py``.
 """
