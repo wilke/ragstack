@@ -93,6 +93,14 @@ inputs:
     doc: "Document-structure stamping passed to embed_shard --structure-metadata
       (off|on; #828 §6). Not identity: chunk metadata only. Null = the tool's
       default (off)."
+  chunk_size_unit:
+    type: ["null", string]
+    doc: "Unit of chunk_size for sentence/words, passed to embed_shard
+      --chunk-size-unit (chars|tokens; #318). Collection identity: with
+      collection_id it must match the entry's size_unit or the embed step exits
+      2 before any embed. Null = the flag is omitted and the tool's default
+      (chars) applies, as before. Give tokens for an entry recording
+      size_unit=tokens."
   # Provenance (ADR-0010 decision 8, #821). Recorded on the receipts and the
   # summary, never verified. A hand run or `gowe_batch_ingest.py` seeds
   # `tool_image`/`tool_image_digest` from the stamped tree; `workflow_id` stays
@@ -206,6 +214,7 @@ steps:
       collection_id: collection_id
       registry: registry
       structure_metadata: structure_metadata
+      chunk_size_unit: chunk_size_unit
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
@@ -298,6 +307,11 @@ steps:
           inputBinding:
             prefix: --structure-metadata
             position: 18
+        chunk_size_unit:
+          type: ["null", string]
+          inputBinding:
+            prefix: --chunk-size-unit
+            position: 19
       arguments:
         - position: 10
           prefix: --out

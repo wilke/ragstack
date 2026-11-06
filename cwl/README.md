@@ -681,12 +681,16 @@ The two step tools live in the ragstack package's script tree:
   text names an older or an unstamped tools image
   (`tool_image.names_marker_capable_image`): those tools would chunk it unmarked, with
   no error. The shipped texts are stamped to v1.6.24.
-- **`size_unit` is now refused at embed, not at load.** The operator embed workflows
-  (`pdf-ingest`, `jats-ingest`, `embed-bulk`) bind no `--chunk-size-unit`, so now that the
-  embed step resolves the entry, a `sentence`/`words` entry recording `size_unit=tokens`
-  is refused at the embed step (exit 2, before any GPU work). The three embed steps declare
-  `permanentFailCodes: [2]`; GoWe parses the field but, as of v0.26.1, still retries every
-  non-zero exit, so the declaration is for when it is honoured. Before R the same run was
+- **`size_unit` is now refused at embed, not at load.** `pdf-ingest` and `jats-ingest`
+  bind no `--chunk-size-unit`, so now that the embed step resolves the entry, a
+  `sentence`/`words` entry recording `size_unit=tokens` is refused at their embed step
+  (exit 2, before any GPU work). `embed-bulk` takes an OPTIONAL `chunk_size_unit` input
+  (`chars`|`tokens`, no default) bound to `--chunk-size-unit`: give `tokens` for such an
+  entry and the unit check passes; omit it and the flag is not passed, so the tool's
+  default (`chars`) applies and the same entry is refused exactly as before. The three
+  embed steps declare `permanentFailCodes: [2]`; GoWe parses the field but, as of
+  v0.26.1, still retries every non-zero exit, so the declaration is for when it is
+  honoured. Before R the same run was
   refused at `load_embeddings.py`, after the GPU work.
 
 ## Running it
