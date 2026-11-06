@@ -282,15 +282,15 @@ paths:
 
 
         A file is dispatched to a loader by its suffix: `.pdf`, `.txt`, `.md`,
-        `.jsonl` (a batch file: one file, many documents) and `.xml` (a JATS
-        article: one file, several documents — the article and its tables and
-        figures). A directory is ingested recursively and enqueues only files
-        with those suffixes. **A file whose suffix has no loader is still
-        accepted (200) and becomes a failed item with the constant error
+        `.jsonl` (a batch file: one file, many documents) and `.xml`/`.nxml`
+        (a JATS article: one file, several documents — the article and its
+        tables and figures). A directory is ingested recursively and enqueues
+        only files with those suffixes. **A file whose suffix has no loader is
+        still accepted (200) and becomes a failed item with the constant error
         `no loader for <suffix>` (for example `no loader for .rst`); its bytes
         are never read as text.** Per-item errors are not returned by this API;
-        `items.failed` counts them and the server log carries the `no_loader`
-        label.
+        `items.failed` counts them, and on an in-process deployment the server
+        log carries the `no_loader` label.
 
 
         Re-ingesting the same source replaces that document's existing chunks

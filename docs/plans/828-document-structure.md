@@ -1244,6 +1244,14 @@ as written:
 - **`.xml` on path B waits for the next tools-image repin** (ADR-0010); until then
   path A ingests an `.xml` that path B refuses as `no loader for .xml`. The GoWe
   receipt rows for a JATS file are keyed by record, not by file name (#974).
+- **One record key, not the first-dot stem** (#975 review). The stem up to the first
+  `.` folded every PLOS file (`journal.pone.….xml`) to `journal`. `jats.record_key`
+  keeps a PMC-named file's stem (every existing id unchanged), else takes the
+  article's own PMC id, else the full name minus `.xml`, on all three paths. The
+  family rule admits only the unit grammar `jats.py` emits (`#table-N`,
+  `#figure-N`, `-part-M`), and the guard refuses an incoming document whose id
+  already holds a different DOI/PMCID (`ID_COLLISION_ERROR`) instead of replacing
+  it. `.nxml` is registered alongside `.xml`.
 
 ---
 

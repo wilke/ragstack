@@ -160,8 +160,9 @@ Verify with `GET /v1/collections`.
 It returns **202** with a `job_id`. The content-type allowlist
 (`UPLOAD_CONTENT_TYPES`) accepts **PDF, plain text, Markdown and XML** by
 default — anything outside it, or a "PDF" that does not start with `%PDF`, is a
-`415`; oversize files are a `413`. (An `.xml` file is accepted at the door but
-has no loader yet, so its *item* fails inside the job.)
+`415`; oversize files are a `413`. (An `.xml` file must be a JATS article: a
+local deployment ingests it as the article plus one document per table and
+figure; anything else fails its *item* inside the job.)
 
 ```bash
 curl -s -X POST "$BASE"/v1/ingest/upload \
