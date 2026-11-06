@@ -47,8 +47,9 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
       every run, so such a file gets new doc ids each run. jats-ingest.cwl
       runs no duplicate guard and ``ingest_shard.py --duplicate-policy``
       defaults to ``off``, so a re-run indexes a second copy. Give such lines
-      a ``pmcid`` (``plan_shards.py``/manifest ids), or load the shards with
-      ``ingest_shard.py --duplicate-policy refuse``.
+      a ``pmcid`` (``plan_shards.py``/manifest ids). (Loading the shards with
+      ``ingest_shard.py --duplicate-policy refuse`` instead refuses on DOI
+      only and drops the JATS passthrough keys — its loader has none.)
     * **Any other keys on the line are treated as that article's manifest row**
       (``sha256``, ``source_url``, ``doi_xml``, ``licence``, ...), so a shard is
       self-contained and a worker never has to read the ~1M-line corpus

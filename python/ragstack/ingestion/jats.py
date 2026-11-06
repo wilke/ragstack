@@ -854,10 +854,11 @@ def inherit_article_ids(documents: Iterable) -> None:
     text is a table or caption that may cite other works, so the guard's
     header scan and the enricher's text leg never read it; instead, after the
     ARTICLE has been filled, its present ``doi``/``pmcid``/``pmid`` (and the
-    ``doi_source`` that came with the DOI) are copied onto every unit
+    ``doi_source`` that came with the DOI) fill the MISSING ids of every unit
     (:func:`unit_root`) whose article is among ``documents`` — within one
-    load, one source. A unit whose article is not present keeps only what
-    its record carried. Duck-typed (``.source``, ``.metadata``) so this
+    load, one source. An id the unit's record already carries is never
+    overwritten. A unit whose article is not present keeps only what its
+    record carried. Duck-typed (``.source``, ``.metadata``) so this
     module stays free of the model layer."""
     docs = list(documents)
     articles = {d.source: d for d in docs if d.source and not unit_root(d.source)}
@@ -869,7 +870,11 @@ def inherit_article_ids(documents: Iterable) -> None:
             value = art.metadata.get(kind)
             if value is None or (isinstance(value, str) and not value.strip()):
                 continue
-            if d.metadata.get(kind) != value:
+            mine = d.metadata.get(kind)
+            if mine is None or (isinstance(mine, str) and not mine.strip()):
+                # Fill, never overwrite (#975 round 4): units no longer read
+                # their own text, so a present, differing value came from the
+                # record itself — keep it rather than relabel it.
                 d.metadata[kind] = value
                 if kind == "doi" and art.metadata.get("doi_source"):
                     d.metadata["doi_source"] = art.metadata["doi_source"]

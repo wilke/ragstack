@@ -920,9 +920,10 @@ What does **not** work today, or works differently from what you might assume:
     `embed_shard` → `load_embeddings`) runs no duplicate guard at all, and
     `ingest_shard.py`'s `--duplicate-policy` defaults to `off`. The OA harvest is not
     affected (`plan_shards.py` writes a `pmcid` on every line). For a custom corpus,
-    give each shard line a `pmcid` (a manifest/`plan_shards.py` id), or load the
-    shards with `ingest_shard.py --duplicate-policy refuse`, which refuses the
-    second copy on its DOI/PMID.
+    give each shard line a `pmcid` (a manifest/`plan_shards.py` id). Loading the
+    shards with `ingest_shard.py --duplicate-policy refuse` instead is not a real
+    remedy: it refuses on DOI only, and its bare `JsonlLoader()` drops the JATS
+    passthrough keys (`content_type`, `pmcid`, …; see below).
   - A re-ingest that produces fewer or different unit ids leaves the old ones
     indexed: a revised article that drops a table keeps its old `PMC1#table-3`, and a
     table split as `PMC1#table-1-part-N` on path C keeps those records when it is

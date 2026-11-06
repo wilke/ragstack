@@ -44,8 +44,8 @@ def test_same_record_family(a, b, expected):
 @pytest.mark.asyncio
 async def test_admit_refuses_a_jats_family_whole_and_leaves_other_records_alone():
     """#975 round 2 (argo N1a): within one ``admit`` call (a JSONL shard of
-    several articles, or one JatsLoader file), a refused record refuses its
-    family — article and units — and nothing else; ``seen`` records only what
+    several articles, or one JatsLoader file), a refused ARTICLE refuses its
+    units (article → units only, round 3) and nothing else; ``seen`` records only what
     was finally admitted. MUTATION: drop ``_refuse_whole_families`` → the
     units of the refused article are admitted."""
     from ragstack.ingestion.loaders import deterministic_doc_id
@@ -152,3 +152,21 @@ def test_fill_ids_gives_units_their_articles_ids_never_ids_from_their_own_text()
     assert {k: table.metadata.get(k) for k in ("doi", "pmid", "pmcid")} == {
         "doi": "10.1234/a", "pmid": "11111111", "pmcid": None}
     assert orphan.metadata == {}
+
+
+def test_inherit_article_ids_fills_missing_ids_and_never_overwrites_a_units_own():
+    """#975 round 4: a unit's record-level id is kept; only missing kinds are
+    filled from the article. MUTATION: overwrite whenever the values differ →
+    the unit's own DOI becomes the article's."""
+    from types import SimpleNamespace
+
+    from ragstack.ingestion.jats import inherit_article_ids
+
+    art = SimpleNamespace(source="PMC3", metadata={
+        "doi": "10.5555/art", "doi_source": "text", "pmcid": "PMC3"})
+    own = SimpleNamespace(source="PMC3#table-1", metadata={
+        "doi": "10.5555/own", "doi_source": "metadata"})
+    bare = SimpleNamespace(source="PMC3#figure-1", metadata={"doi": ""})
+    inherit_article_ids([art, own, bare])
+    assert own.metadata == {"doi": "10.5555/own", "doi_source": "metadata", "pmcid": "PMC3"}
+    assert bare.metadata == {"doi": "10.5555/art", "doi_source": "text", "pmcid": "PMC3"}
