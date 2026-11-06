@@ -4,12 +4,13 @@ This is the ported, repo-resident version of the validated out-of-tree converter
 ``/rag/oa/scripts/jats_to_jsonl.py`` (#301). It turns one PubMed-Central JATS
 article into the ``{"text", "path", "metadata"}`` records that
 :class:`ragstack.ingestion.loaders.JsonlLoader` consumes, so the OA corpus can
-flow through the existing embed/load plane without an XML loader.
+flow through the existing embed/load plane.
 
 It lives in the package (rather than inside the script) for the same reason
 ``PdfLoader`` does: the CLI (``scripts/jats_extract.py``) is I/O and argument
 plumbing, while the parsing rules are pure, importable and unit-tested offline —
-and a future ``JatsLoader``/``LoaderRegistry`` entry can reuse them unchanged.
+and :class:`ragstack.ingestion.loaders.JatsLoader`, the ``.xml`` entry of the
+loader registry (#828 PR 5a), reuses them unchanged.
 
 TWO RECORD KINDS, because tables must not be chunked as if they were prose:
 
@@ -167,6 +168,18 @@ JATS_METADATA_KEYS = (
     "doi", "pmid", "pmcid", "title", "authors", "keywords", "journal",
     "publisher", "year", "licence", "sha256", "source_url", "content_type",
     "section_title", "graphic", "abstract", "n_tables", "n_figures",
+)
+
+#: The raw metadata keys a JATS corpus opts back in on top of the enriched
+#: index subset (``JsonlLoader(passthrough_keys=...)``): the keys
+#: ``enrich.EnrichedDoc`` has no slot for. Exactly the ``metadata_passthrough``
+#: default of ``cwl/jats-ingest.cwl`` (path C), so the in-process
+#: ``JatsLoader`` (#828 PR 5a) stamps the keys path C stamps.
+#: ``content_type`` is load-bearing: without it "filter to tables" is
+#: unanswerable at query time.
+JATS_PASSTHROUGH_KEYS = (
+    "content_type", "pmcid", "pmid", "journal", "publisher", "licence",
+    "section_title", "sha256", "source_url", "graphic",
 )
 
 #: Record kinds, i.e. the values ``content_type`` can take.

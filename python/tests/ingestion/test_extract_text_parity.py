@@ -245,19 +245,52 @@ def test_pdf_still_goes_to_pdf_loader(tmp_path, monkeypatch):
 
 
 def test_unsupported_suffix_and_empty_text_are_skipped(tmp_path, no_pdf_loader):
-    xml = _write(tmp_path / "paper.xml", "<article><title>T</title></article>")
+    rst = _write(tmp_path / "notes.rst", "Title\n=====\n\nbody\n")
     noext = _write(tmp_path / "LICENSE", "text with no suffix")
     empty = _write(tmp_path / "empty.md", " \n\t\n")
     good = _write(tmp_path / "ok.md", "ok\n")
-    records, skipped = pdf_extract.extract_documents([xml, noext, empty, good])
+    records, skipped = pdf_extract.extract_documents([rst, noext, empty, good])
 
     assert [r["path"] for r in records] == [str(good)]
     assert [(s["path"], s["error"]) for s in skipped] == [
-        (str(xml), "no loader for .xml"),          # the in-process upload's string
+        (str(rst), "no loader for .rst"),          # the in-process paths' string
         (str(noext), "no loader for (no suffix)"),
         (str(empty), EMPTY_TEXT_ERROR),
     ]
     assert no_pdf_loader == []
+
+
+def test_the_extract_step_refuses_with_the_in_process_string(tmp_path):
+    """One refusal string on both paths (#833 item 1): what the GoWe extract
+    step records is ``NoLoader.job_error`` from ``LoaderRegistry.load``."""
+    for name in ("notes.rst", "LICENSE", "x.csv"):
+        f = _write(tmp_path / name, "x\n")
+        _, skipped = pdf_extract.extract_documents([f])
+        with pytest.raises(loaders.NoLoader) as exc:
+            default_loader_registry().load(str(f))
+        assert skipped[0]["error"] == exc.value.job_error, name
+
+
+def test_jats_xml_is_extracted_and_survives_the_second_enrichment(tmp_path):
+    """``.xml`` → JatsLoader on the extract step too (#828 PR 5a): one record
+    per article/table/figure, path = the opaque record id, structure key
+    written. The shard's metadata is ALREADY enriched (authors a list), and
+    JsonlLoader enriches it again — MUTATION: drop enrich's list tolerance →
+    TypeError here."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import test_jats_extract as t
+
+    xml = _write(tmp_path / "PMC1.xml", t._article("1", t.BODY_WITH_FLOATS))
+    records, skipped = pdf_extract.extract_documents([xml])
+    assert skipped == []
+    assert [r["path"] for r in records] == ["PMC1", "PMC1#table-1", "PMC1#figure-1"]
+    assert all(r["structure"]["adapter"] == "jats/1" for r in records)
+    assert records[0]["metadata"]["authors"] == ["Jane Doe", "Rick Roe"]
+    shard = tmp_path / "shard.jsonl"
+    pdf_extract.write_jsonl(records, str(shard))
+    docs = JsonlLoader().load(str(shard))
+    assert [d.metadata["authors"] for d in docs] == [["Jane Doe", "Rick Roe"]] * 3
+    assert [d.source for d in docs] == ["PMC1", "PMC1#table-1", "PMC1#figure-1"]
 
 
 def test_undecodable_text_file_is_skipped_not_crashed(tmp_path, no_pdf_loader):
@@ -293,14 +326,14 @@ def test_jsonl_is_refused_not_half_ingested(tmp_path, no_pdf_loader):
 
 def test_symlink_dispatches_on_its_target(tmp_path, no_pdf_loader):
     """``loader_for`` reads the suffix as given, ``registry.load`` the resolved
-    one; the extract step resolves first, so a ``.md`` link to an ``.xml``
-    target is refused like the ``.xml`` — not read as raw XML."""
-    target = _write(tmp_path / "paper.xml", "<article/>")
+    one; the extract step resolves first, so a ``.md`` link to an ``.rst``
+    target is refused like the ``.rst`` — not read as raw text."""
+    target = _write(tmp_path / "paper.rst", "Title\n=====\n")
     link = tmp_path / "paper.md"
     link.symlink_to(target)
     records, skipped = pdf_extract.extract_documents([link])  # unresolved on purpose
     assert records == []
-    assert [(s["path"], s["error"]) for s in skipped] == [(str(target), "no loader for .xml")]
+    assert [(s["path"], s["error"]) for s in skipped] == [(str(target), "no loader for .rst")]
 
 
 def test_registry_loader_for_is_the_dispatch_map():
@@ -312,7 +345,8 @@ def test_registry_loader_for_is_the_dispatch_map():
     assert isinstance(reg.loader_for("a.txt"), TextFileLoader)
     assert isinstance(reg.loader_for("a.pdf"), PdfLoader)
     assert isinstance(reg.loader_for("a.jsonl"), JsonlLoader)
-    assert reg.loader_for("a.xml") is None
+    assert isinstance(reg.loader_for("a.xml"), loaders.JatsLoader)
+    assert reg.loader_for("a.rst") is None
     assert reg.loader_for("LICENSE") is None
 
 

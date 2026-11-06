@@ -342,3 +342,47 @@ async def test_shared_collection_scope_finds_the_owners_copy(
                           headers=_h("admin"))
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["existing_doc_id"] == owners.pop()
+
+
+# --------------------------------------------------------------------------- #
+# JATS .xml by reference (#828 PR 5a): the records are keyed on the stem
+# --------------------------------------------------------------------------- #
+
+
+def _jats_article(n: str) -> str:
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ingestion"))
+    import test_jats_extract as t
+
+    return t._article(n, t.BODY_WITH_FLOATS)
+
+
+async def test_path_reingest_of_a_jats_file_is_not_refused_as_its_own_duplicate(
+    client, tmp_path
+) -> None:
+    """``PMC8092463.xml`` names a pmcid, so the admission pre-check runs; the
+    indexed records are ``PMC8092463`` and ``PMC8092463#table-1`` (stem-keyed,
+    never the file path). A re-ingest of the same file is a replace, not a
+    409. MUTATION: drop the JATS keys from ``_source_identity`` → 409."""
+    src = tmp_path / "a" / "PMC8092463.xml"
+    src.parent.mkdir()
+    src.write_text(_jats_article("8092463"), encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(src), "duplicate_policy": "allow"})
+    assert r.status_code == 200, r.text
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    first = _doc_ids()
+    assert len(first) == 3  # the article, its table and its figure
+
+    r = await client.post("/v1/ingest", json={"source": str(src)})  # refuse (default)
+    assert r.status_code == 200, r.text
+    await _poll(client, r.json()["job_id"])
+    assert _doc_ids() == first
+
+    # The same article under another stem is still a duplicate at admission.
+    copy = tmp_path / "b" / "PMC8092463.v2.xml"
+    copy.parent.mkdir()
+    copy.write_text(_jats_article("8092463"), encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(copy)})
+    assert r.status_code == 200 or r.status_code == 409, r.text

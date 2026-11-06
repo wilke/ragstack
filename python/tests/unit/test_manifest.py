@@ -45,6 +45,28 @@ def test_directory_manifest_filters_by_suffix(tmp_path: Path):
     assert sources == {"keep.pdf", "keep.txt"}
 
 
+def test_directory_manifest_enqueues_the_default_suffixes_including_xml(tmp_path: Path):
+    """A directory ingest enqueues exactly ``DEFAULT_INGEST_SUFFIXES`` — since
+    #828 PR 5a that includes JATS ``.xml``; an unknown suffix stays out."""
+    from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
+
+    for name in ("a.xml", "b.pdf", "c.txt", "d.md", "e.jsonl", "f.rst", "LICENSE"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    m = build_manifest(str(tmp_path), suffixes=DEFAULT_INGEST_SUFFIXES)
+    assert sorted(Path(i.source).name for i in m.items) == [
+        "a.xml", "b.pdf", "c.txt", "d.md", "e.jsonl"]
+
+
+def test_single_file_is_never_suffix_filtered(tmp_path: Path):
+    """A by-reference single file reaches the loader whatever its suffix — the
+    registry, not the manifest, refuses an unknown one (NoLoader, #833 item 1)."""
+    from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
+
+    f = tmp_path / "notes.rst"
+    f.write_text("x", encoding="utf-8")
+    assert len(build_manifest(str(f), suffixes=DEFAULT_INGEST_SUFFIXES)) == 1
+
+
 def test_build_manifest_confines_to_ingest_root(tmp_path: Path):
     root = tmp_path / "corpus"
     root.mkdir()

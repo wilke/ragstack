@@ -11,10 +11,16 @@ file gives one text on both ingest paths:
 * ``.pdf`` -> :class:`~ragstack.ingestion.loaders.PdfLoader` (PyMuPDF);
 * ``.md`` / ``.txt`` -> :class:`~ragstack.ingestion.loaders.TextFileLoader`
   (the raw file text, byte for byte what the in-process path stores);
+* ``.xml`` -> :class:`~ragstack.ingestion.loaders.JatsLoader` (#828 PR 5a):
+  one JATS article -> several records (the article, ``PMC1``, and each table
+  and figure, ``PMC1#table-1``), each with its ``jats/1`` structure. The
+  records' ``path`` is that opaque id, not the staged file's path;
 * ``.jsonl`` -> *skipped* with ``JSONL_UNSUPPORTED_ERROR``: a batch file is
   many documents behind one receipt item (use the bulk JSONL workflows);
 * any other suffix -> *skipped* with the constant ``no loader for <suffix>``
-  error, the string the in-process upload path records for it.
+  error, the string the in-process paths record for it (the upload staging
+  refusal, and ``LoaderRegistry.load``'s ``NoLoader`` for a by-reference
+  ingest, #833 item 1).
 
 Before #828 every file went to ``PdfLoader``. PyMuPDF 2.x *opens* Markdown and
 returns a rendering of it — link targets, inline HTML and some code dropped —
@@ -108,10 +114,12 @@ def extract_documents(
     :func:`~ragstack.ingestion.loaders.default_loader_registry`, the map the
     in-process API path loads through — so a ``.md`` file yields exactly the
     ``Document.content`` the in-process path stores (#828). A suffix with no
-    registration is skipped with ``no loader for <suffix>`` rather than falling
-    back to the registry's default loader: that is what the in-process upload
-    path records for it (``documents._fail_unsupported_items``), and uploads are
-    what this tool mostly sees.
+    registration is skipped with ``no loader for <suffix>`` — the string the
+    in-process paths record for it (``documents._fail_unsupported_items`` for
+    an upload, :class:`~ragstack.ingestion.loaders.NoLoader` from
+    ``registry.load`` by reference). The ``loader_for`` pre-check is kept
+    although ``registry.load`` now raises the same refusal: it refuses without
+    resolving, confining or reading the file.
 
     ``records`` are JSONL-ready ``{"text", "path", "metadata"}`` dicts (the shape
     ``JsonlLoader`` consumes), with a ``"structure"`` key added when the loader
@@ -169,9 +177,9 @@ def extract_documents(
             # top-level key (never inside ``metadata``: that is what the
             # passthrough allow-list, index_metadata and the ES mapping read).
             # Only when the loader built one, so a record without structure is
-            # byte-identical to one written before the key existed. No loader
-            # builds one yet (the PDF adapter is PR 8); Markdown structure is
-            # built at ingest, never here.
+            # byte-identical to one written before the key existed. Today only
+            # JatsLoader builds one (``.xml``, #828 PR 5a; the PDF adapter is
+            # PR 8); Markdown structure is built at ingest, never here.
             if doc.structure is not None:
                 record["structure"] = doc.structure.model_dump()
             records.append(record)
