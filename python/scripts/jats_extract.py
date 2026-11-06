@@ -42,6 +42,13 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
       key ``JatsLoader`` gives the same file in process, and the one a PDF at
       that path gets. Step 1 is literal (``pmc4242.xml`` -> ``pmc4242``).
       An explicit ``pmcid`` is taken as given (never normalised).
+      **Re-runs of a non-PMC corpus:** a path key follows the STAGED path,
+      and cwltool stages ``corpus`` under a fresh ``stg<uuid>`` directory on
+      every run, so such a file gets new doc ids each run. jats-ingest.cwl
+      runs no duplicate guard and ``ingest_shard.py --duplicate-policy``
+      defaults to ``off``, so a re-run indexes a second copy. Give such lines
+      a ``pmcid`` (``plan_shards.py``/manifest ids), or load the shards with
+      ``ingest_shard.py --duplicate-policy refuse``.
     * **Any other keys on the line are treated as that article's manifest row**
       (``sha256``, ``source_url``, ``doi_xml``, ``licence``, ...), so a shard is
       self-contained and a worker never has to read the ~1M-line corpus

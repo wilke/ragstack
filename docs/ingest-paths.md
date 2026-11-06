@@ -906,9 +906,23 @@ What does **not** work today, or works differently from what you might assume:
     other file.
   - A path-keyed (step 3) file's ids follow its path, exactly as a PDF's do: a
     moved file, a re-upload (each upload is staged under a new job directory) and a
-    GoWe run (the input is staged under a fresh path) all mint new ids, and the
-    duplicate guard refuses the second copy on its DOI under `refuse`. Name a file
-    for its PMC id, or give the article a `pmc` article-id, for ids that survive.
+    GoWe run (the input is staged under a fresh path) all mint new ids. Whether the
+    second copy is then refused depends on the path's duplicate policy: on A
+    (`DUPLICATE_POLICY`, default `refuse`) the guard refuses it on its DOI/PMID; on
+    B only once the registered workflow declares `duplicate_policy`; on C **nothing
+    refuses it by default** (next bullet). Name a file for its PMC id, or give the
+    article a `pmc` article-id, for ids that survive.
+  - **Path C and a non-PMC corpus: a re-run indexes a second copy.** cwltool stages
+    the `corpus` Directory under a fresh `/…/stg<uuid>/` on every run, so a file with
+    no PMC id in its name, no `pmc` article-id and no `pmcid` on its shard line is
+    keyed (step 3) on a path that changes per run: new doc ids every time, and
+    delete-prior matches nothing. `cwl/jats-ingest.cwl` (`jats_extract` →
+    `embed_shard` → `load_embeddings`) runs no duplicate guard at all, and
+    `ingest_shard.py`'s `--duplicate-policy` defaults to `off`. The OA harvest is not
+    affected (`plan_shards.py` writes a `pmcid` on every line). For a custom corpus,
+    give each shard line a `pmcid` (a manifest/`plan_shards.py` id), or load the
+    shards with `ingest_shard.py --duplicate-policy refuse`, which refuses the
+    second copy on its DOI/PMID.
   - A re-ingest that produces fewer or different unit ids leaves the old ones
     indexed: a revised article that drops a table keeps its old `PMC1#table-3`, and a
     table split as `PMC1#table-1-part-N` on path C keeps those records when it is
