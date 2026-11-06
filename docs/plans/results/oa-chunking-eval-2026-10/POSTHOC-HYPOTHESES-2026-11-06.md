@@ -15,8 +15,52 @@ private experiments repository.
   collection.
 - Questions: one 1,200-character passage per eval article, taken from inside a single section. An LLM
   writes one paraphrased question plus an exact answer quote of at most 300 characters.
-  Decision set n = 2,035, after removing ambiguous-gold items, within-record repeats and the noise
-  subset.
+- **n** is the number of questions a figure is computed over. Every hit@k value and paired comparison
+  in this document uses the **decision set** (n = 2,035) unless marked otherwise. That is the subset
+  the frozen pass rule decides on:
+
+  | Step | Count | What happens |
+  |---|---|---|
+  | Sample | 22,600 articles | 2,600 eval articles, stratified by journal family × length band, plus 20,000 background articles (seed 20261104) |
+  | Corpus | 22,593 articles | 7 sampled articles gave no extracted record (6 background, 1 eval). The rest are chunked and indexed in every arm, so every question is searched against all 22,593 |
+  | Passages | 2,592 | One 1,200-character passage per eval article. 8 articles skipped: 6 no fitting passage, 1 no target region, 1 no article record |
+  | Questions | 2,437 | One LLM question + exact answer quote per passage. 155 passages failed the automatic checks in 3 attempts (quote not an exact substring, question not self-contained, quote too long, copied wording) |
+  | Clean set | 2,335 | Minus 63 ambiguous-gold items (the quote also appears elsewhere) and 66 within-record repeats; some had both flags |
+  | **Decision set** (`clean_excl_noise`) | **2,035** | Minus the 300-question noise subset |
+
+  So each decision-set question comes from a different eval article. About 20,000 articles have no
+  question and serve only as distractors.
+- **Passage selection.** The passage is not random text: it comes from a seeded draw under fixed rules.
+  1. The article text is split into section regions at its headings. Text before the first heading
+     is the abstract.
+  2. Only target regions are used: those whose heading, or parent heading, contains results,
+     discussion, methods, introduction or abstract.
+  3. A seeded draw picks one target type present in the article, then a region of that type, then a
+     start sentence. This spreads section types across the sample.
+  4. The passage is grown from whole sentences, using the sentence chunker's splitter, inside that one
+     region. It grows until it reaches 1,200 characters. If it overshoots 1,500, the last sentence is
+     dropped, as long as at least 900 remain.
+  5. Articles with no usable target region, such as short letters without headings, are retried over
+     the whole body (type `body`, 85 articles).
+
+  Result:
+  - Median length 1,242 characters (p10 979, p90 1,371).
+  - Section types: abstract 657, methods 482, results 471, introduction 467, discussion 430, body 85.
+
+  Two properties used later follow from these rules. Every gold quote lies inside one section, and
+  quotes are sentence-shaped.
+- **Why 1,200 characters.** The plan gives no written rationale; the value was carried over from an
+  earlier chunking experiment. Our reading (analysis, not a documented decision):
+  - At about 300 tokens, a passage is well under one 512-token chunk (about 2,000 characters).
+  - It gives the question writer enough context for a self-contained question about one fact.
+
+  The downside is that such passages yield only short, single-span answers. That is the limit
+  discussed under hypothesis D.
+
+  - The noise subset (300 questions) was used beforehand to measure run-to-run noise, which set the
+    pass rule's margins. It is excluded so that the same questions don't both set the margins and
+    decide the outcome.
+  - The clean set (n = 2,335), with the noise subset kept in, is the sensitivity check.
 - Metric: hit@k = the union of the top-k chunks covers >= 90% of the gold quote's characters.
   Primary k = 5.
 - Retrieval settings:
