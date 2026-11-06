@@ -2,7 +2,7 @@
 """Power for the alias boundary confirmation (PREREG.md §3), under the record-clustered design.
 Standard library only; seeded; no study outcome is read.
 
-    python3 -I -B power.py [--out power.json] [--sims 2000]
+    python3 -I -B power.py [--out power.json] [--sims 5000]
 
 **Design simulated** (PREREG §2–§4). Each eligible stage-A *agreed answers* pair is judged twice by the
 frozen judge: against its boundary-respecting control chunk (X = 1 when the final label is *not*) and
@@ -24,9 +24,11 @@ equal across the arms (remainder to base, then neighbour; a short arm's shortfal
 pair is taken when its (record, arm) cell is free: the first pair of a record to appear is the minimum
 of its pairs' hashes, so a record with w eligible pairs in the arm is reached with probability
 proportional to w — successive sampling proportional to size, which the simulation reproduces with
-Efraimidis-Spirakis keys (u^(1/w)). Each drawn pair is then dropped independently with probability
-:data:`EXCLUSION` (the pre-judging exclusions the 5 % oversample is for), and the realised n is what
-remains.
+Efraimidis-Spirakis keys (u^(1/w)). The one-pair-per-window rule of the draw (PREREG §4.3) is **not**
+simulated: shared windows lie within an arm, and the achievable cells under that rule are 197 / 154 /
+118 against the owner's quotas of 117 / 117 / 117. Each drawn pair is then dropped independently with
+probability :data:`EXCLUSION` (the pre-judging exclusions the oversample is for), and the realised n is
+what remains; its distribution is reported.
 
 **Outcome model.** Pair-level marginals pX (control flips) and pY (retest flips) with the phi
 coefficient between X and Y on one pair:
@@ -38,18 +40,24 @@ share of them in the hypothesised direction, so the least power for a fixed pX -
 a pair that flips under one cut being *less* likely to flip under the other — has no mechanism here;
 both arms re-judge the same borderline passage). **Within-record correlation** rho: with probability
 rho every pair of a record shares one (X, Y) draw; otherwise its pairs draw independently. The
-intra-record correlation of X, of Y and of X - Y is then rho. The sizing case is **rho = 0.5**; 0, 0.3
-and 1.0 are sensitivities. (rho = 1 means a record is one unit, the worst case for the design effect.)
+intra-record correlation of X, of Y and of X - Y is then rho. The sizing case is **rho = 0.5, assumed,
+not estimated**; 0, 0.3 and 1.0 are sensitivities (rho = 1 means a record is one unit, the worst case
+for the design effect).
 
-**Outputs** (``power.json``): for the sizing scenario, power of both tests on a grid of draw sizes
-n_draw up to the whole availability (470); the 90 % and 80 % draw sizes (the smallest grid value at
-which sign-flip power reaches the target and stays there at every larger grid value), whether 90 % is
-reachable at all, and the recommended draw; every sensitivity scenario at those draw sizes (the null
-scenario shows each test's size under within-record correlation); the realised-n and cluster-structure
-summaries (records drawn in 1 / 2 / 3 arms); the sizing grid again at rho 0 and 0.3, with the 90 % draw
-each would give; the minimum detectable pX (80 % power) at the 80 % and, when it exists, the 90 % draw,
-on a 0.5-point grid; and, for continuity with the earlier draft, the exact McNemar n for independent
-pairs (one pair per record) computed analytically.
+**Outputs** (``power.json``): the sizing scenario on a grid of draw sizes n_draw up to the whole
+availability (470), each cell with both tests' power, the realised-n distribution and the cluster
+structure (records drawn in 1 / 2 / 3 arms); the 90 % and 80 % grid draw sizes (the smallest grid value
+at which sign-flip power reaches the target and stays there at every larger grid value) and whether
+90 % is reachable at all; **the owner's draw size** :data:`N_DRAW_OWNER` with its cell, the floor
+:data:`N_FLOOR` on the realised n with the share of simulated studies that fall below it; **a
+power-by-realised-n curve** (exact realised sizes, no exclusion) from which the result sentence
+interpolates the power at the realised n; every sensitivity scenario at the owner's draw (the null
+scenario shows each test's size under within-record correlation); the sizing grid again at rho 0 and
+0.3; the minimum detectable pX (80 % power) at the owner's draw on a 0.5-point grid; and, for
+continuity with the earlier draft, the exact McNemar n for independent pairs (one pair per record)
+computed analytically. Every cell is its own simulation with its own slice of the seeded stream, so the
+same design point simulated in two places (for example n_draw 351 in the grid and as the sizing
+scenario's owner cell) gives two independent Monte-Carlo estimates that differ by sampling error.
 """
 from __future__ import annotations
 
@@ -67,7 +75,12 @@ EXCLUSION = 0.05
 TARGETS = (0.80, 0.90)
 SEED_STRING = "261105|alias|confirm|power"
 ARMS = ("base", "neighbour", "random")
-N_DRAW_GRID = (240, 260, 280, 300, 320, 334, 350, 370, 390, 410, 430, 450, 470)
+N_DRAW_GRID = (240, 260, 280, 300, 316, 334, 351, 370, 390, 410, 430, 450, 470)
+#: the owner's draw size (2026-11-05, v3; PREREG §3.3) and the harness-failure floor on the realised n
+N_DRAW_OWNER = 351
+N_FLOOR = 316  # 0.90 x 351, rounded down (PREREG §8 gate 1)
+#: the power-by-realised-n curve: exact realised sizes (no exclusion), for the result sentence
+REALISED_GRID = tuple(sorted(set(range(290, 356, 5)) | {N_FLOOR, 333}))
 MDE_PX_GRID = (0.100, 0.105, 0.110, 0.115, 0.120, 0.125, 0.130, 0.135, 0.140)
 DEFAULT_SIMS = 5000
 
@@ -227,8 +240,18 @@ def sign_flip_p_greater(scores: list[int]) -> float:
 
 # ------------------------------------------------------------------ simulation
 
-def simulate(rng: random.Random, n_draw: int, px: float, py: float, phi: float, rho: float, sims: int
-             ) -> dict[str, object]:
+def percentile(sorted_vals: list[int], q: float) -> float:
+    """Linear-interpolation percentile (numpy's default) of an ascending list."""
+    if not sorted_vals:
+        return float("nan")
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(math.floor(pos))
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+
+
+def simulate(rng: random.Random, n_draw: int, px: float, py: float, phi: float, rho: float, sims: int,
+             exclusion: float = EXCLUSION) -> dict[str, object]:
     p10, p01, p11 = joint(px, py, phi)
     cum = (p11, p11 + p10, p11 + p10 + p01)
 
@@ -243,14 +266,16 @@ def simulate(rng: random.Random, n_draw: int, px: float, py: float, phi: float, 
         return 0, 0
 
     rej_sf = rej_mc = 0
-    n_real = n_rec = n_multi = 0
+    n_rec = n_multi = 0
     arms_hist = [0, 0, 0, 0]
+    realised: list[int] = []
     for _ in range(sims):
         recs = draw(rng, n_draw)
         scores = []
         b = c = 0
+        n_real = 0
         for arms in recs:
-            kept = [a for a in arms if rng.random() >= EXCLUSION]
+            kept = [a for a in arms if exclusion <= 0.0 or rng.random() >= exclusion]
             if not kept:
                 continue
             n_real += len(kept)
@@ -268,13 +293,21 @@ def simulate(rng: random.Random, n_draw: int, px: float, py: float, phi: float, 
                 b += x == 1 and y == 0
                 c += x == 0 and y == 1
             scores.append(s)
+        realised.append(n_real)
         rej_sf += sign_flip_p_greater(scores) <= ALPHA
         rej_mc += mcnemar_p_greater(b, c) <= ALPHA
+    realised.sort()
     return {"power_sign_flip": rej_sf / sims, "power_mcnemar": rej_mc / sims,
-            "mean_realised_n": round(n_real / sims, 1), "mean_records": round(n_rec / sims, 1),
+            "mean_realised_n": round(sum(realised) / sims, 1),
+            "realised_n": {"min": realised[0], "p1": round(percentile(realised, 0.01), 1),
+                           "p5": round(percentile(realised, 0.05), 1), "p50": round(percentile(realised, 0.5), 1),
+                           "p95": round(percentile(realised, 0.95), 1), "max": realised[-1]},
+            "share_realised_below_floor": round(sum(n < N_FLOOR for n in realised) / sims, 4),
+            "mean_records": round(n_rec / sims, 1),
             "mean_records_in_2_or_3_arms": round(n_multi / sims, 1),
             "mean_records_by_arms_drawn": {str(k): round(arms_hist[k] / sims, 1) for k in (1, 2, 3)},
-            "sims": sims, "mc_se_at_0.9": round(math.sqrt(0.9 * 0.1 / sims), 4)}
+            "exclusion": exclusion, "sims": sims,
+            "mc_se_at_0.9": round(math.sqrt(0.9 * 0.1 / sims), 4), "mc_se_at_0.8": round(math.sqrt(0.8 * 0.2 / sims), 4)}
 
 
 # ------------------------------------------------------------------ the analytic reference (one pair per record)
@@ -331,6 +364,13 @@ def git_state(here: Path) -> dict[str, object]:
         return {"commit": None, "dirty": None}
 
 
+def stable_n(grid: dict[str, dict[str, object]], target: float) -> int | None:
+    """The smallest grid draw size at which sign-flip power reaches the target and stays at or above it
+    for every larger grid size (so Monte-Carlo noise cannot pick a lucky point)."""
+    return next((n for i, n in enumerate(N_DRAW_GRID)
+                 if all(float(grid[str(m)]["power_sign_flip"]) >= target for m in N_DRAW_GRID[i:])), None)  # type: ignore[arg-type]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "power.json")
@@ -341,74 +381,68 @@ def main(argv: list[str] | None = None) -> int:
     rng = random.Random(seed_int(SEED_STRING))
 
     label0, px0, py0, phi0, rho0 = SIZING
-    grid = {}
-    for n in N_DRAW_GRID:
-        grid[str(n)] = simulate(rng, n, px0, py0, phi0, rho0, a.sims)
-    # the smallest grid draw size at which sign-flip power reaches the target and stays at or above it
-    # for every larger grid size (so Monte-Carlo noise cannot pick a lucky point)
-    chosen: dict[str, int | None] = {}
-    for t in TARGETS:
-        chosen[f"{t:.2f}"] = next((n for i, n in enumerate(N_DRAW_GRID)
-                                   if all(grid[str(m)]["power_sign_flip"] >= t for m in N_DRAW_GRID[i:])), None)
-    n_draw = chosen["0.90"]
-    n_draw80 = chosen["0.80"]
-    feasible = n_draw is not None and n_draw <= sum(AVAILABLE.values())
+    grid = {str(n): simulate(rng, n, px0, py0, phi0, rho0, a.sims) for n in N_DRAW_GRID}
+    n_draw90, n_draw80 = stable_n(grid, 0.90), stable_n(grid, 0.80)
+    feasible90 = n_draw90 is not None and n_draw90 <= sum(AVAILABLE.values())
+    owner_cell = grid[str(N_DRAW_OWNER)]
 
     scen = []
     for label, px, py, phi, rho in SCENARIOS:
         row: dict[str, object] = {"label": label, "px_control_flip": px, "py_retest_flip": py, "phi": phi, "rho": rho}
         p10, p01, p11 = joint(px, py, phi)
         row.update({"p10": round(p10, 6), "p01": round(p01, 6), "p11": round(p11, 6),
-                    "discordant_share": round(p10 + p01, 6)})
-        for name, n in (("at_n_draw", n_draw), ("at_n_draw_80", n_draw80)):
-            row[name] = None if n is None else simulate(rng, n, px, py, phi, rho, a.sims)
+                    "discordant_share": round(p10 + p01, 6),
+                    "at_n_draw_owner": simulate(rng, N_DRAW_OWNER, px, py, phi, rho, a.sims)})
         scen.append(row)
 
-    # the minimum detectable control rate (80 % power) at the 80 % draw and, when it exists, the 90 % draw
-    mde: dict[str, object] = {}
-    for name, n in (("at_n_draw_80", n_draw80), ("at_n_draw_90", n_draw)):
-        if n is None:
-            mde[name] = None
-            continue
-        curve = {}
-        for px in MDE_PX_GRID:
-            curve[f"{px:.3f}"] = simulate(rng, n, px, py0, phi0, rho0, a.sims)["power_sign_flip"]
-        hit = next((px for px in MDE_PX_GRID if curve[f"{px:.3f}"] >= 0.80), None)
-        mde[name] = {"n_draw": n, "py": py0, "phi": phi0, "rho": rho0, "power": 0.80, "grid_step": 0.005,
-                     "px": hit, "excess_points": None if hit is None else round(100 * (hit - py0), 2),
-                     "power_by_px": curve}
+    # the minimum detectable control rate (80 % power) at the owner's draw, on a 0.5-point grid
+    curve = {}
+    for px in MDE_PX_GRID:
+        curve[f"{px:.3f}"] = simulate(rng, N_DRAW_OWNER, px, py0, phi0, rho0, a.sims)["power_sign_flip"]
+    hit = next((px for px in MDE_PX_GRID if float(curve[f"{px:.3f}"]) >= 0.80), None)  # type: ignore[arg-type]
+    mde = {"n_draw": N_DRAW_OWNER, "py": py0, "phi": phi0, "rho": rho0, "power": 0.80, "grid_step": 0.005,
+           "px": hit, "excess_points": None if hit is None else round(100 * (hit - py0), 2), "power_by_px": curve}
 
-    # what within-record correlation would make 90 % reachable: the sizing grid again at rho 0 and 0.3
+    # the sizing grid again at rho 0 and 0.3: what within-record correlation would make 90 % reachable
     by_rho: dict[str, object] = {}
     for rho in (0.0, 0.3):
-        g = {str(n): simulate(rng, n, px0, py0, phi0, rho, a.sims)["power_sign_flip"] for n in N_DRAW_GRID}
-        by_rho[f"{rho:.1f}"] = {"power_sign_flip_by_n_draw": g,
-                                "n_draw_90": next((n for i, n in enumerate(N_DRAW_GRID)
-                                                   if all(g[str(m)] >= 0.90 for m in N_DRAW_GRID[i:])), None)}
+        g = {str(n): simulate(rng, n, px0, py0, phi0, rho, a.sims) for n in N_DRAW_GRID}
+        by_rho[f"{rho:.1f}"] = {"power_sign_flip_by_n_draw": {k: v["power_sign_flip"] for k, v in g.items()},
+                                "n_draw_90": stable_n(g, 0.90)}
+
+    # power by realised n: exact realised sizes (no exclusion), sizing scenario; the result sentence
+    # interpolates linearly between the two grid points around the realised n
+    realised_curve = {str(n): {k: simulate(rng, n, px0, py0, phi0, rho0, a.sims, exclusion=0.0)[k]
+                               for k in ("power_sign_flip", "power_mcnemar")} for n in REALISED_GRID}
 
     p10, p01, _ = joint(px0, py0, phi0)
     ref = {"design": "one pair per record, independent pairs, exact McNemar (analytic)",
            "n_exact": {f"{t:.2f}": smallest_stable_n(p10, p01, t) for t in TARGETS}}
 
     out = {
-        "schema": "alias-boundary-confirm-power/2",
+        "schema": "alias-boundary-confirm-power/3",
         "alpha_one_sided": ALPHA, "exclusion": EXCLUSION, "targets": list(TARGETS),
         "primary_test": "exact one-sided sign-flip over records on S_j = sum(x_i - y_i), p = P(T* >= T)",
         "sensitivity_test": "exact one-sided McNemar on the pooled discordant pairs",
         "draw_rule": "one pair per (record, arm); equal arm quotas, remainder base then neighbour, shortfall "
                      "to the other arms; within an arm records reached with probability proportional to "
-                     "their eligible pair count; one-pair-per-window not simulated",
+                     "their eligible pair count; the one-pair-per-window rule is not simulated",
         "pool": {"records": len(POOL_RECORDS), "pairs": sum(sum(r) for r in POOL_RECORDS),
                  "record_arm_cells": AVAILABLE, "records_in_arms": {
                      str(k): sum(1 for r in POOL_RECORDS if sum(v > 0 for v in r) == k) for k in (1, 2, 3)}},
         "seed_string": SEED_STRING, "seed_int": seed_int(SEED_STRING), "sims": a.sims,
+        "mc_se": {"at_0.9": round(math.sqrt(0.9 * 0.1 / a.sims), 4), "at_0.8": round(math.sqrt(0.8 * 0.2 / a.sims), 4)},
         "sizing_scenario": label0, "n_draw_grid": list(N_DRAW_GRID),
-        "sizing_power_by_n_draw": grid, "n_draw_chosen": n_draw, "n_draw_80": n_draw80,
-        "feasible_within_availability": feasible, "max_n_draw": sum(AVAILABLE.values()),
-        "n_draw_recommended": n_draw if feasible else n_draw80,
-        "recommendation_basis": "the 90 % draw" if feasible else
-                                "90 % is not reachable within the (record, arm) availability under the sizing "
-                                "assumptions; the 80 % draw is recommended (PREREG §3.3, owner decision pending)",
+        "sizing_power_by_n_draw": grid,
+        "n_draw_90_grid": n_draw90, "n_draw_80_grid": n_draw80, "feasible_90_within_availability": feasible90,
+        "max_n_draw": sum(AVAILABLE.values()),
+        "n_draw_owner": N_DRAW_OWNER, "owner_decision": "n_draw 351, equal arms 117 / 117 / 117 (owner, 2026-11-05, v3)",
+        "quotas_at_owner_draw": quotas(N_DRAW_OWNER, AVAILABLE),
+        "owner_cell": owner_cell,
+        "n_floor": N_FLOOR, "n_floor_rule": "0.90 x n_draw, rounded down",
+        "power_at_floor": realised_curve[str(N_FLOOR)],
+        "share_realised_below_floor_at_owner_draw": owner_cell["share_realised_below_floor"],
+        "power_by_realised_n": realised_curve,
         "sizing_power_by_n_draw_by_rho": by_rho,
         "mde": mde, "scenarios": scen, "analytic_reference": ref,
         "provenance": {"script_sha256": hashlib.sha256(here.read_bytes()).hexdigest(),
@@ -416,16 +450,20 @@ def main(argv: list[str] | None = None) -> int:
                        "implementation": sys.implementation.name, **state},
     }
     a.out.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"n_draw_chosen": n_draw, "n_draw_80": n_draw80, "feasible": feasible,
-                      "n_draw_recommended": out["n_draw_recommended"],
-                      "mde": {k: v and {kk: v[kk] for kk in ("n_draw", "px", "excess_points")} for k, v in mde.items()},
-                      "n_draw_90_by_rho": {k: v["n_draw_90"] for k, v in by_rho.items()},
-                      "sizing_power_by_n_draw": {n: (g["power_sign_flip"], g["power_mcnemar"], g["mean_realised_n"],
-                                                     g["mean_records_by_arms_drawn"]) for n, g in grid.items()},
+    print(json.dumps({"n_draw_owner": N_DRAW_OWNER, "quotas": out["quotas_at_owner_draw"],
+                      "owner_cell": {k: owner_cell[k] for k in ("power_sign_flip", "power_mcnemar", "mean_realised_n",
+                                                                "realised_n", "share_realised_below_floor",
+                                                                "mean_records", "mean_records_by_arms_drawn")},
+                      "n_floor": N_FLOOR, "power_at_floor": out["power_at_floor"],
+                      "n_draw_90_grid": n_draw90, "n_draw_80_grid": n_draw80, "feasible_90": feasible90,
+                      "mde": {k: mde[k] for k in ("px", "excess_points")},
+                      "n_draw_90_by_rho": {k: v["n_draw_90"] for k, v in by_rho.items()},  # type: ignore[index]
+                      "sizing_power_by_n_draw": {n: (g["power_sign_flip"], g["power_mcnemar"], g["mean_realised_n"])
+                                                 for n, g in grid.items()},
+                      "power_by_realised_n": realised_curve,
                       "scenarios": [{"label": r["label"],
-                                     "sf_at_n_draw": r["at_n_draw"] and r["at_n_draw"]["power_sign_flip"],
-                                     "mc_at_n_draw": r["at_n_draw"] and r["at_n_draw"]["power_mcnemar"],
-                                     "sf_at_n_draw_80": r["at_n_draw_80"] and r["at_n_draw_80"]["power_sign_flip"]}
+                                     "sf": r["at_n_draw_owner"]["power_sign_flip"],  # type: ignore[index]
+                                     "mc": r["at_n_draw_owner"]["power_mcnemar"]}  # type: ignore[index]
                                     for r in scen],
                       "analytic_reference": ref}, indent=1))
     return 0

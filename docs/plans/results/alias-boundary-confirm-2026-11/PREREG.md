@@ -1,4 +1,4 @@
-# Pre-registration: does a boundary-respecting chunk lose *answers* labels beyond judge noise? (alias study follow-up) — DRAFT v2, 2026-11-05
+# Pre-registration: does a boundary-respecting chunk lose *answers* labels beyond judge noise? (alias study follow-up) — DRAFT v3, 2026-11-05
 
 **Status: DRAFT — not frozen; owner review pending.** Nothing in this text binds a run until it is frozen
 by the procedure in §9. At freeze the text is frozen **as written**, draft status line included; its sha256
@@ -9,8 +9,14 @@ After freeze this file is never edited; any later change is a `DEVIATIONS.md` en
 "freeze after fixes") and the owner's decision of the same day on the draw cap and the primary test (§13):
 the cap is one pair per (record, arm); the primary test is the exact sign-flip over records; exact McNemar
 is a pre-specified sensitivity; the power is re-done by simulation under the clustered design, and **90 %
-power is not reachable within the pool** under the sizing assumptions (§3.3); the owner chose n_draw = 370
-(80 %) on 2026-11-05 (§13).
+power is not reachable within the pool** under the sizing assumptions (§3.3).
+
+**v3 (2026-11-05)** folds in the second round of both reviews and the owner's v3 decision (§13): **n_draw =
+351, equal arms 117 / 117 / 117**, the sizing unchanged; the floor on the realised n is a harness-failure
+detector at 0.90 × n_draw = 316, not the mean; the result sentence quotes the simulated power at the realised
+n from a committed curve; the cache check is on the Qwen label rows that already exist (the gateway models
+have no stage-A reply to replay for these pairs); the harness is not changed; quotas, shared-window
+structure, shortfall, drift sample, Opus cap and costs are restated at 351.
 
 **Tier: record** (study-writeup skill). This is a **confirmatory** follow-up to the **exploratory**
 chunk-boundary control of the alias study
@@ -122,7 +128,10 @@ independent (McNemar) is then anti-conservative when within-record outcomes are 
 the simulation of §3.2 puts its size at **.071** under the sizing correlation against **.038** for the
 sign-flip test (`power.json`, the null scenario). The sign-flip test conditions on the record scores, so
 its size holds under any within-record dependence, and it equals exact McNemar when every record gives one
-pair. Clusters above the record (passage papers: 1,050 distinct in the pool, the largest holding 15 pairs;
+pair. **What the test is exact for:** it is exact under the sharp null of per-record sign symmetry (the two
+arms exchangeable within every record); for the weak null of §2, P(X = 1) ≤ P(Y = 1) with possibly skewed
+record scores, it is valid only asymptotically; with ≈ 333 pairs at a discordant share of ≈ .17 about 50–60
+records are expected to have a non-zero score, so the normal regime is close but not exact. Clusters above the record (passage papers: 1,050 distinct in the pool, the largest holding 15 pairs;
 documents) are not modelled; the realised largest paper cluster and the number of records drawn in ≥ 2 arms
 are reported (§6).
 
@@ -132,18 +141,23 @@ printed beside the primary, **deciding nothing**; a primary and a sensitivity th
 in the sentence.
 
 **Intervals (descriptive, deciding nothing).** Beside the primary: the **record-cluster bootstrap**
-percentile interval of d (resample records with replacement, 10,000 resamples, seed
-`261105|alias|confirm|boot` by the project's seed rule), **90 % two-sided**, whose upper end is the
-one-sided 95 % upper bound the null wording of §7 quotes. Beside the McNemar sensitivity: the **Tango
-(1998) asymptotic score interval** for the paired difference, 90 % two-sided (the interval that inverts the
-score form of the paired test; the Wald form of v1 is withdrawn). Each arm's rate with its Wilson 95 %
-interval; the 2 × 2 table (both *not*, control only, retest only, neither); the distribution of S_j; the
-counts behind each.
+percentile interval of d, **90 % two-sided**, whose upper end is the one-sided 95 % upper bound the null
+wording of §7 quotes. Its statistic is the ratio form of `chunktrial_stats._bootstrap_net_shares` /
+`page_bootstrap_ci` with records as the clusters: each resample draws r records with replacement and
+computes **d\* = Σ_j S_j / Σ_j n_j** over the resampled records (n_j = the record's pairs), 10,000
+resamples, `numpy.random.default_rng(seed_int("261105|alias|confirm|boot"))`, the 5th and 95th percentiles
+(numpy's default linear interpolation). Beside the McNemar sensitivity: the **Tango (1998) asymptotic
+score interval** for δ = p10 − p01 (Statistics in Medicine 17:891–908), 90 % two-sided: the set of δ with
+|b − c − nδ| / √(n(2 p̃21 + δ(1 − δ))) ≤ z₀.₉₅ = 1.6449, where p̃21 is the restricted MLE of p01 under δ,
+p̃21 = (−B + √(B² − 4AC)) / (2A) with A = 2n, B = −b − c + (2n − b + c) δ, C = −c δ (1 − δ), solved for the
+two ends by bisection on either side of δ̂ = (b − c) / n. The Wald form of v1 is withdrawn. Each arm's rate
+with its Wilson 95 % interval; the 2 × 2 table (both *not*, control only, retest only, neither); the
+distribution of S_j; the counts behind each.
 
 ### 3.2 Power, computed by committed code
 
 `power.py` beside this file (standard library only; seeded `261105|alias|confirm|power`; 5,000 simulated
-studies per cell, Monte-Carlo SE ≈ .004 at power .9) simulates the design as specified: the draw rule of
+studies per cell, Monte-Carlo SE ≈ .0057 at power .8 and ≈ .0042 at .9) simulates the design as specified: the draw rule of
 §4.3 on the pool's anonymised record × arm structure (262 records; 470 (record, arm) cells = 198 base /
 154 neighbour / 118 random; records in 1 / 2 / 3 arms = 118 / 80 / 64), a 5 % independent exclusion per
 drawn pair, pair outcomes with within-record correlation, the exact sign-flip test (its null distribution by
@@ -165,58 +179,72 @@ likely to flip under the other — has no mechanism here: both arms re-judge the
 the same judge, and anything that makes a pair borderline raises both flip rates; φ < 0 is therefore not
 simulated. **Within-record correlation ρ:** with probability ρ all pairs of a record share one (X, Y) draw,
 otherwise they draw independently (the intra-record correlation of X, of Y and of X − Y is then ρ).
-**ρ = 0.5 is the sizing case** (conservative: half the records behave as one unit); 0, 0.3 and 1.0 are
-sensitivities.
+**ρ = 0.5 is the sizing case — assumed, not estimated** (no data on within-record agreement of the judge
+exist; half the records behaving as one unit is a stated assumption, and ρ = 1 gives ≈ .71 at the chosen
+draw); 0, 0.3 and 1.0 are sensitivities. **Not simulated:** the one-pair-per-window rule of §4.3 (shared
+windows lie within an arm, and the achievable cells under the rule, 197 / 154 / 118, exceed the quotas) and
+the arm alternation of §5. **Reading two figures for one design point:** every cell of `power.json` is its
+own simulation on its own slice of the seeded stream, so the same design point simulated twice (n_draw 351
+in the grid and as the sizing scenario's owner cell) gives two independent Monte-Carlo estimates that
+differ by sampling error (SE ≈ .0057 at power .8, ≈ .0042 at .9, 5,000 studies).
 
 **Power of the primary by draw size, sizing case (13 % vs 6 %, φ 0, ρ 0.5)** — `power.json`
-`sizing_power_by_n_draw`; realised n ≈ 0.95 × draw; records ≈ 215 at 370, of which ≈ 100 in two or three
-arms:
+`sizing_power_by_n_draw`; realised n ≈ 0.95 × draw:
 
-| n_draw | 300 | 334 | 350 | **370** | 390 | 410 | 430 | 450 | 470 (all cells) |
-|---|---|---|---|---|---|---|---|---|---|
-| sign-flip power | .751 | .773 | .794 | **.806** | .824 | .838 | .859 | .866 | .879 |
-| McNemar (sensitivity) | .833 | .849 | .866 | .883 | .891 | .901 | .915 | .924 | .933 |
-| realised n (mean) | 285 | 317 | 333 | 352 | 370 | 390 | 409 | 428 | 447 |
+| n_draw | 300 | 316 | 334 | **351** | 370 | 390 | 410 | 430 | 450 | 470 (all cells) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| sign-flip power | .751 | .771 | .774 | **.790** | .810 | .824 | .843 | .855 | .875 | .879 |
+| McNemar (sensitivity) | .833 | .849 | .850 | .865 | .878 | .889 | .909 | .919 | .926 | .933 |
+| realised n (mean) | 285 | 300 | 317 | 333 | 352 | 371 | 390 | 409 | 428 | 447 |
 
 **90 % power is not reachable** within the 470 (record, arm) cells under the sizing assumptions
-(`feasible_within_availability` false). It would be reached at a draw of **450 with ρ = 0.3** or **350 with
-ρ = 0** (`sizing_power_by_n_draw_by_rho`). The 80 % target is reached at **n_draw = 370** (the smallest grid
-value at or above .80 at every larger grid value).
+(`feasible_90_within_availability` false). It would be reached at a draw of **450 with ρ = 0.3** or **351
+with ρ = 0** (`sizing_power_by_n_draw_by_rho`: at 351, .914 for ρ 0 and .843 for ρ 0.3). On the grid the
+80 % target is first held from **370** upward (`n_draw_80_grid`); at the owner's **351** the sizing power is
+**≈ .79** (.790 in the grid, .785 in the owner cell: two independent estimates, SE ≈ .0057), just under
+the target, and the owner accepted that (§13).
 
-**Sensitivities at n_draw = 370** (`scenarios[].at_n_draw_80`, sign-flip / McNemar):
+**Sensitivities at n_draw = 351** (`scenarios[].at_n_draw_owner`, sign-flip / McNemar):
 
 | scenario | sign-flip | McNemar |
 |---|---|---|
-| **13 % vs 6 %, φ 0, ρ 0.5 (sizing)** | **.814** | .885 |
-| ρ 0 | .925 | .925 |
-| ρ 0.3 | .860 | .901 |
-| ρ 1.0 | .712 | .852 |
-| φ 0.2, ρ 0.5 | .884 | .935 |
-| φ 0.4, ρ 0.5 | .955 | .980 |
-| 11 % vs 6 %, φ 0, ρ 0.5 | .589 | .707 |
-| 13 % vs 8 %, φ 0, ρ 0.5 | .519 | .644 |
-| 10 % vs 6 %, φ 0, ρ 0.5 | .440 | .553 |
-| **null 6 % vs 6 %, ρ 0.5 (size)** | **.038** | **.071** |
+| **13 % vs 6 %, φ 0, ρ 0.5 (sizing)** | **.785** | .865 |
+| ρ 0 | .914 | .914 |
+| ρ 0.3 | .843 | .888 |
+| ρ 1.0 | .696 | .836 |
+| φ 0.2, ρ 0.5 | .872 | .922 |
+| φ 0.4, ρ 0.5 | .949 | .973 |
+| 11 % vs 6 %, φ 0, ρ 0.5 | .555 | .669 |
+| 13 % vs 8 %, φ 0, ρ 0.5 | .490 | .612 |
+| 10 % vs 6 %, φ 0, ρ 0.5 | .417 | .526 |
+| **null 6 % vs 6 %, ρ 0.5 (size)** | **.040** | **.072** |
 | *reference only, selected, not for sizing:* 18.7 % vs 4.0 % | 1.000 | 1.000 |
+
+**Power by realised n** (`power_by_realised_n`: the sizing scenario simulated at exact realised sizes, no
+exclusion; the result sentence of §7 interpolates linearly between the two grid points around the realised
+n): 290 → .741, 300 → .761, 310 → .762, **316 → .772**, 320 → .776, 330 → .792, 333 → .786, 340 → .795,
+350 → .815, 355 → .814 (sign-flip; McNemar .824–.890 over the same range). The sawtooth of ± .01 between
+neighbouring points is Monte-Carlo noise at this SE, not a feature of the test.
 
 For continuity: the v1 design (one pair per record, independent pairs, exact McNemar, analytic) needed
 237 / 318 pairs for 80 % / 90 % (`analytic_reference`).
 
-### 3.3 The draw size (owner decision, 2026-11-05: n_draw = 370)
+### 3.3 The draw size (owner decision, 2026-11-05, v3: n_draw = 351)
 
-- **Recommended: n_draw = 370** (80 % power in the sizing case; `n_draw_recommended`). Realised n ≈ 352
-  pairs with both final labels over ≈ 215 records; quotas 124 / 123 / 123 by arm (§4.3), within every arm's
-  availability (198 / 154 / 118).
-- **The 80 % floor is n₈₀ = 352 realised pairs** (the simulation's mean at 370). Below it the test is
-  GATE-NOT-EVALUABLE (§8).
-- **Minimum detectable effect** at n_draw = 370 (80 % power, pY 6 %, φ 0, ρ 0.5, on a 0.5-point grid):
-  a control rate of **13.0 %**, an excess of **7.0 points** (`mde.at_n_draw_80`; power .757 at 12.5 %, .816
-  at 13.0 %). What the design **cannot** resolve: an excess of 4–5 points (power .44–.59).
-- **Alternatives for the owner** (§13 Q4): draw **every cell, 470** → power ≈ .88, realised ≈ 447, but the
-  random arm is exhausted (118) so the arms are unequal (198 / 154 / 118) and the estimand's mix changes, and
-  there is no slack for exclusions beyond the 5 % modelled; **410** → .84; or state ρ = 0.3 as the planning
-  assumption and draw 450 for 90 % — not recommended, since ρ is unknown and 0.5 is the conservative choice.
-  Reverting to one pair per record (318 for 90 %) is the v1 design the owner replaced.
+- **n_draw = 351, quotas 117 / 117 / 117** (`power.json` `n_draw_owner`, `quotas_at_owner_draw`), within
+  every arm's achievable availability under the one-pair-per-window rule (197 / 154 / 118, §4.3); the random
+  arm stays a sample of its 118 cells.
+- **What 351 gives** (`owner_cell`, sizing case): sign-flip power **≈ .79** (McNemar sensitivity .87);
+  realised n **333** on average (5th–95th percentile 327–340, min 317, max 345 over 5,000 studies) over ≈ 207
+  records, ≈ 94 of them drawn in two or three arms (61 in two, 33 in three).
+- **The floor on the realised n is 316** (0.90 × 351; `n_floor`), a harness-failure detector: no simulated
+  study fell below it, and the sizing power at exactly 316 pairs is .772 (`power_at_floor`). Below it the
+  test is GATE-NOT-EVALUABLE (§8 gate 1).
+- **Minimum detectable effect** at n_draw = 351 (80 % power, pY 6 %, φ 0, ρ 0.5, on a 0.5-point grid): a
+  control rate of **13.5 %**, an excess of **7.5 points** (`mde`; power .747 at 12.5 %, .794 at 13.0 %, .837
+  at 13.5 %). What the design **cannot** resolve: an excess of 4–5 points (power .42–.56).
+- **What the result sentence quotes** (§7): the simulated power at the realised n, interpolated from
+  `power_by_realised_n`, and the design MDE above.
 
 ## 4. The population and the draw
 
@@ -257,8 +285,8 @@ committed registry's final rows; no retrieval, no new stage-A label.
 ### 4.3 The draw rule (owner decision, 2026-11-05)
 
 - **Stratified by arm, equal across base / neighbour / random**, the remainder to base, then neighbour
-  (`alias_study_judge.drift_allocation`, the rule the control's draw and the drift sample use): 370 →
-  **124 / 123 / 123**. Equal arms keep the mix the exploratory *answers* stratum had (50 / 50 / 50), so the
+  (`alias_study_judge.drift_allocation`, the rule the control's draw and the drift sample use): 351 →
+  **117 / 117 / 117** (owner, 2026-11-05, v3). Equal arms keep the mix the exploratory *answers* stratum had (50 / 50 / 50), so the
   estimand is read at the same composition; the by-arm rates are secondary descriptives (§6). Simple random
   sampling would weight the arms 40 / 26 / 34 and would not change the test, but would make the estimand a
   pool-weighted one that no earlier figure was read at. (Owner answer Q2.)
@@ -266,9 +294,16 @@ committed registry's final rows; no retrieval, no new stage-A label.
   arm, pairs are visited in ascending order of `sha256(261105|alias|confirm|draw|<arm>|<pair id>)` and a
   pair is taken only when (i) no pair of its record has been taken **in this arm** and (ii) its window has
   not been taken in any arm (**one pair per window**, so no two drawn pairs share a passage); the walk stops
-  at the arm's quota. A short arm's shortfall goes to the other arms as `drift_allocation` does.
-  Availability is 198 / 154 / 118 cells, above every quota. **This does not remove within-question
-  dependence** — the simulation expects ≈ 100 of ≈ 215 drawn records in two or three arms — which is why the
+  at the arm's quota. **Shared windows are within-arm:** the 123 windows carrying pairs of more than one
+  record all lie inside one arm (0 cross arms), so rule (ii) can only cost an arm cells of its own; 9 base,
+  2 neighbour and 2 random records have every pair of a cell on a shared window. Availability is
+  198 / 154 / 118 cells, and the most cells a walk can reach under rule (ii) is **197 / 154 / 118**
+  (maximum matching of records to windows per arm), each above its quota of 117, the random arm by one.
+  **Shortfall:** the quotas are first set from the cell counts; after each arm's walk, the count
+  **achieved** (not the cell count) is compared with its quota, and any shortfall is reallocated equally to
+  the other arms in a second pass that continues their walks (remainder to base, then neighbour, as
+  `drift_allocation`); `draw.json` reports availability per arm both as cells and as achieved. **This does
+  not remove within-question dependence** — the simulation expects ≈ 94 of ≈ 207 drawn records in two or three arms — which is why the
   primary test is clustered by record (§3.1); the realised number of records drawn in ≥ 2 arms is reported
   (§6). Because the first pair of a record to appear in an arm's order is the minimum of its pairs' hashes,
   a record with more eligible pairs in that arm is reached earlier (with probability proportional to its
@@ -276,8 +311,8 @@ committed registry's final rows; no retrieval, no new stage-A label.
 - **Seed string `261105|alias|confirm|draw`** (new; the project's `<yymmdd>|<study>|<purpose>` pattern,
   alias prereg §5.5). The judge's labelling order stays the frozen `261101|alias|judge|order`, and the
   drift sample stays `261101|alias|drift|<batch>` (one batch of ≤ 2,000; 5 % of the registry rounded half
-  up, ≈ 18 at a registry of ≈ 352 or 19 at 370, split equally with the remainder to base then neighbour:
-  6 / 6 / 6 or 7 / 6 / 6), because the judge configuration is the frozen one.
+  up: **17** at the expected registry of ≈ 333 mapped pairs, split 6 / 6 / 5, or 18 = 6 / 6 / 6 if all 351
+  map; the remainder to base then neighbour), because the judge configuration is the frozen one.
 - **Run by committed code before any judging** (`draw-confirm`, §11), after the freeze, from a clean
   checkout: it refuses unless the stage-A commit sha256 and the control sample's sha256 are the two above.
   Its private output `sample.jsonl` (pair, record, window ids; arm; stratum *answers*) stays off the
@@ -305,8 +340,8 @@ committed registry's final rows; no retrieval, no new stage-A label.
    to the earlier chunk), coverage and purity recorded. → private `pairs-seed.jsonl`; public `map.json`.
    **`retest-seed`** (unchanged): the same pairs re-pointed at their own stage-A windows, the windows as an
    export → private `chunks-retest.jsonl`, `pairs-seed-retest.jsonl`; public `retest-seed.json`.
-   *Gate:* the mapped count ≥ n₈₀ (else stop and record; §8); exclusions counted by reason; the three public
-   files committed. No label exists yet.
+   *Gate:* the mapped count ≥ 316 (else stop and record; §8 gate 1); exclusions counted by reason; the three
+   public files committed. No label exists yet.
 3. **Two registries** by `alias_study_judge.py build-control` (unchanged), each in its own new `out_dir`
    under one control config: the control arm from `pairs-seed.jsonl` with `chunks-control.jsonl` as the
    control export; the retest arm from `pairs-seed-retest.jsonl` with `chunks-retest.jsonl`. Each config is
@@ -317,8 +352,8 @@ committed registry's final rows; no retrieval, no new stage-A label.
    gateway notice goes to the gateway coordinator, naming both arms' expected call counts, and no gateway
    call is made before its acknowledgement in chat** (`label` refuses without `--notice-acknowledged`).
    *Gate:* served-model check on every backend; `fallback_model ""`; ≤ 4 in flight; the Opus cap at 7 % of
-   the registry (alias prereg §6.5; ≈ 24 at a registry of ≈ 352, 25 at 370; ≈ 18–19 expected); no Argon cap
-   (R30).
+   the registry (alias prereg §6.5; **23** at the expected registry of ≈ 333, 24 if all 351 map; ≈ 17
+   expected); no Argon cap (R30).
 5. **`label`**, per backend, the two arms back to back, **the arm that goes first alternating by backend**
    so that neither arm is always the later one: **C: control → retest; E: retest → control; Argon:
    control → retest; Opus: retest → control.** Then `finalize` both. (The harness labels one registry at a
@@ -364,9 +399,18 @@ pre-specified McNemar sensitivity's is computed, and no quantity below decides a
    selected pairs.
 4. **Escalation:** C-alone and E-alone *answers* rates and the escalation share per arm; the overlap of the
    escalated sets between the arms (Jaccard) and, for pairs escalated in both arms, the Argon verdict
-   agreement — **not** a byte-identical replicate here, since the prompts differ between arms; the
-   byte-identical replicate is the retest arm's Argon rows against stage A's (`tiebreak_replicate`), read
-   beside the exploratory baseline of 27 / 34 (79.4 %) and used for the cache check of §10.10.
+   agreement — **not** a byte-identical replicate here, since the prompts differ between arms. The retest
+   arm's Argon rows have **no stage-A counterpart** on this pool (every pool pair has `source = agree`, so
+   stage A never called Argon on it; `tiebreak_replicate` has n = 0 by construction and is not reported), and
+   the Opus drift samples of stage A and the retest arm overlap on about 2 pairs; neither gateway model is
+   where a replay could hide (§10.10).
+9. **The Qwen cache check** (§10.10): for every retest pair, the retest arm's `labels-qwen-C.jsonl` and
+   `labels-qwen-E.jsonl` rows are compared with stage A's rows of the **same pair id** (byte-identical prompt,
+   same `prompt_sha256` and `system_sha256`, checked) on the fields that already exist in both:
+   `reasoning_sample`, `texts_sample` and `ct` (completion tokens). Reported: the number of pairs whose
+   `reasoning_sample` or `texts_sample` is byte-identical to stage A's, per backend; the number with equal
+   `ct`; the share of verdict agreement (`verdicts`) per backend. At T 0.7 with thinking on, a byte-identical
+   reasoning text is a replayed response, not a resample.
 5. **Opus drift reference:** agreement between each arm's final label and Opus on the 5 % sample, overall
    and per arm, the *no-reference* count. The arm-gap pause of §6.3 cannot trigger (it needs ≥ 100
    Opus-answered pairs per arm); the reference lines are printed, not gated.
@@ -394,17 +438,21 @@ retrieval figure; any change to any alias-study number.
 
 Let n be the pairs with a final label in both arms, b and c as in §3.1, p the primary's exact sign-flip p,
 d the per-pair difference, U the one-sided 95 % upper bound on d from the record-cluster bootstrap, pX̂ and
-pŶ the arm rates, and E the minimum detectable excess at the realised n (the §3.3 MDE, 7.0 points at
-n ≈ 352, pY 6 %, φ 0, ρ 0.5).
+pŶ the arm rates, **P(n)** the simulated power of the primary for the planning effect at the realised n
+(linear interpolation of `power.json` `power_by_realised_n` between the two grid points around n; below
+290 or above 355 the nearest end, flagged), and **E** the design's minimum detectable excess at the draw
+of 351 (`power.json` `mde`: **7.5 points**, a control rate of 13.5 % against 6 %, 80 % power, φ 0, ρ 0.5,
+on a 0.5-point grid). E is a property of the design, not of the realised n; P(n) is what the realised n
+gave.
 
 | outcome | rule | the sentence (filled from `confirm-report.json`) |
 |---|---|---|
 | **Confirmed** | gates pass (§8) **and** p ≤ 0.05 | "Confirmed: on n fresh stage-A pairs (r records) whose two Qwen judges had agreed the 512-token window *answers*, the frozen judge labelled the `max-overlap` control chunk under this chunker (`sentence/512/0`, section cuts, 640 ceiling) *not* on b pairs where it kept *answers* on the identical window re-read, against c the other way (exact one-sided sign-flip over records p = …; control pX̂ %, retest pŶ %, difference d points, 90 % cluster-bootstrap interval …; McNemar sensitivity p = …). The control chunking as produced — its cut positions, coverage and shorter chunks together — loses *answers* labels beyond the judge's own test-retest noise, under single-passage judging." |
-| **Not confirmed (powered null)** | gates pass **and** p > 0.05 | "Not confirmed: on n fresh pairs (r records) the control chunk was labelled *not* on b pairs against c for the identical window (sign-flip p = …; control pX̂ %, retest pŶ %, difference d points; the one-sided 95 % upper bound on the excess is U points; McNemar sensitivity p = …). At this n the design had 80 % power for an excess of E points (a control rate of 13.0 % against a retest rate of 6 %, independent discordance within a pair, within-record correlation 0.5); smaller excesses are not resolved by this test. The exploratory 18.7 %-vs-4.0 % contrast was not confirmed." *Never* "no difference", *never* "the chunking has no effect". |
+| **Not confirmed (powered null)** | gates pass **and** p > 0.05 | "Not confirmed: on n fresh pairs (r records) the control chunk was labelled *not* on b pairs against c for the identical window (sign-flip p = …; control pX̂ %, retest pŶ %, difference d points; the one-sided 95 % upper bound on the excess is U points; McNemar sensitivity p = …). At the realised n the primary had simulated power P(n) for the planning effect (a control rate of 13 % against a retest rate of 6 %; independent discordance within a pair, φ = 0; within-record correlation ρ = 0.5, assumed), and the design's minimum detectable excess at 80 % power is E = 7.5 points under the same assumptions; smaller excesses are not resolved by this test. The exploratory 18.7 %-vs-4.0 % contrast was not confirmed." *Never* "no difference", *never* "the chunking has no effect". |
 | **GATE-NOT-EVALUABLE** | any §8 gate fails | "GATE-NOT-EVALUABLE: <the gate, with its count>. The test was computed (p = …, n = …) and decides nothing." The table is still printed in full. |
 
-The sentence always carries: the realised n and r, b and c, p, both arm rates, U or the interval, the MDE at
-the realised n with its assumptions, the word *exploratory* for any figure quoted from the earlier control,
+The sentence always carries: the realised n and r, b and c, p, both arm rates, U or the interval, P(n) and E
+with their assumptions, the word *exploratory* for any figure quoted from the earlier control,
 *judge incomplete* when unjudged pairs exceed 1 % of mapped pairs in either arm (alias prereg §6.3's rule,
 carried over), and *cache suspected* when the check of §10.10 fires.
 
@@ -413,10 +461,12 @@ carried over), and *cache suspected* when the check of §10.10 fires.
 The result is **GATE-NOT-EVALUABLE** when any of these holds; a gate is read before the p is read, by the
 report, not by a person:
 
-1. **Realised n < n₈₀ = 352** pairs with a final label in both arms after the exclusions of §5 step 2 and
-   the pairwise deletion of §6.8. With 370 drawn this needs a loss above the 5 % modelled — a harness
-   failure, not noise. (If the owner chooses another draw size in §13 Q4, n₈₀ is that size's
-   `mean_realised_n` in `power.json`.)
+1. **Realised n < 316** (= 0.90 × 351, rounded down; `power.json` `n_floor`) pairs with a final label in
+   both arms after the exclusions of §5 step 2 and the pairwise deletion of §6.8. The floor is a
+   harness-failure detector, set well below the expected realised n: under the modelled 5 % loss the
+   simulated realised n at 351 is 333 on average (5th–95th percentile 327–340, minimum 317 over 5,000
+   studies; `owner_cell.realised_n`), so none of the simulated studies fell below it. The sizing power at
+   exactly 316 realised pairs is **.772** (`power_at_floor`).
 2. **Unjudged > 5 %** of mapped pairs in either arm (1–5 %: the *judge incomplete* caveat, not a gate).
 3. **The two registries do not hold the same `control_of` set**, or a drawn pair is a control pair, or two
    drawn pairs share a window, or the stage-A commit sha256 or the control sample sha256 differs from §4.1.
@@ -425,7 +475,8 @@ report, not by a person:
 5. **An arm is incomplete after a hard stop** (§5 step 5) and the owner did not resume under the same
    frozen design; a served-model mismatch stored no reply, by the harness's rule.
 6. **The report's input shas** (both registries' `pairs-manifest.json` `inputs_sha256`, the seed files, the
-   chunk exports) do not match the committed `draw.json` / `chunk.json` / `map.json` / `retest-seed.json`.
+   chunk exports) do not match the committed `draw.json` / `chunk.json` / `map.json` / `retest-seed.json`,
+   or any of those public artifacts' `confirmatory.prereg_sha256` differs from the frozen sha of this file.
 
 A gate that fails is named with its count; *absent* is written *absent*, never left blank.
 
@@ -434,8 +485,8 @@ A gate that fails is named with its count; *absent* is written *absent*, never l
 ### 9.1 Frozen before data (the freeze set)
 
 This text; `power.py` and `power.json` as committed (produced from a clean tree at the commit their
-provenance names); the endpoint, direction, primary test, sensitivity, α, the draw size the owner chooses
-in §13 Q4 and its n₈₀; the pool definition and the two exclusions (§4.1–4.2); the draw rule, the
+provenance names); the endpoint, direction, primary test, sensitivity, α, the draw size n_draw = 351 and
+the floor 316; the pool definition and the two exclusions (§4.1–4.2); the draw rule, the
 (record, arm) cap, the one-pair-per-window rule and the seed strings (§4.3, §3.1); the control chunking (the
 control plan's §2 markers, `chunk_descriptor`
 `sentence/512/0/{"min_piece":128,"pack":"318","size_tolerance":0.25,"size_unit":"tokens","structure_cuts":"sections/1"}`);
@@ -504,14 +555,17 @@ is one. Re-running the draw, for any reason, is a deviation with a new seed stri
 9. **Only the *answers → not* direction** on agreed pairs is tested. The exploratory saw no *not → answers*
    on agreed-*not* pairs (0 / 99) and nothing on tiebroken pairs; both are untested here.
 10. **A response cache would favour the retest arm.** The retest arm's prompts are byte-identical to stage
-    A's; a gateway- or endpoint-side cache returning a stage-A answer would make the retest flip rate
-    artificially low and the contrast artificially large. The Qwen endpoints sample at T 0.7 (prefix
-    caching there changes speed, not sampling); the gateway's behaviour is not known. **Check** (§6.4):
-    the retest arm's Argon verdict agreement with stage A on byte-identical prompts, read beside the
-    exploratory 27 / 34 = 79.4 % (63.2–89.7); the report carries *cache suspected* when that agreement is
-    at or above 0.95 on at least 20 pairs, and the Opus drift rows of the retest arm are compared with stage
-    A's on the same footing. The harness records no response headers; the §11 change adds any cache header
-    the gateway returns to the calls log (`cache` field), else the report says *absent*.
+    A's; an endpoint-side cache returning a stage-A answer would make the retest flip rate artificially low
+    and the contrast artificially large. **The exposure is the Qwen primaries, not the gateway:** every pool
+    pair was decided by C and E agreeing in stage A, so stage A made no Argon call and (bar ≈ 2 drift
+    pairs) no Opus call on them — there is no stage-A gateway reply to replay. The Qwen endpoints sample at
+    T 0.7 with thinking on (prefix caching there changes speed, not sampling), so a replay is detectable.
+    **Check** (§6.9, on rows that already exist; no harness change): the retest arm's C and E rows against
+    stage A's rows of the same pair id on `reasoning_sample`, `texts_sample` and `ct`. The report carries
+    ***cache suspected*** when **any** retest pair's `reasoning_sample` or `texts_sample` is byte-identical
+    to stage A's on either backend (threshold fixed now at one pair: at T 0.7 the chance of an identical
+    multi-hundred-token reasoning text is negligible), and the sentence of §7 says so. The harness records
+    no response headers, so the report says *absent* for any cache status.
 11. **Mapping, not straddle.** A window's answer span is unknown; `max-overlap` picks one control chunk, and
     the cover-any descriptive bounds how often the evidence sits in another overlapping chunk. The primary
     endpoint is about the mapped chunk, so part of any confirmed effect is attributable to where the cut
@@ -530,43 +584,42 @@ existing subcommand's default behaviour.
 |---|---|
 | `python/scripts/eval/alias_control_chunks.py` | constants `CONFIRM_SEED = "261105\|alias\|confirm\|draw"`, `CONFIRM_BOOT_SEED = "261105\|alias\|confirm\|boot"`; `SCHEMA` entries `"draw-confirm": "alias-confirm-draw/1"`, `"confirm-report": "alias-confirm-report/1"`. |
 | — `--confirmatory PREREG_SHA256` on `chunk`, `map`, `retest-seed` | `run_chunk`, `run_map` and `run_retest_seed` hard-code `"exploratory": True` and the `alias-control-*/1` schemas; the switch writes `"exploratory": false` and a `"confirmatory": {"prereg": "alias-boundary-confirm-2026-11", "prereg_sha256": …}` block into their public files (the schema strings stay: they name the file's shape, which is unchanged). `draw-confirm` and `confirm-report` write the block always. |
-| — `draw_confirm(final, *, exclude_pairs, exclude_windows, n, seed) -> (picked, counts)` | the §4.1 filter (`stage == "A"`, `source == "agree"`, `label_of(f) == 1`), the §4.2 exclusions, availability per arm (distinct records with a pair in the arm), quotas by `alias_study_judge.drift_allocation(n, sizes)`, the seeded walk per arm taking a pair when its (record, arm) is free **and** its window is untaken, the shortfall chain; counts as §4.1's table plus records drawn in 1 / 2 / 3 arms and distinct windows. |
+| — `draw_confirm(final, *, exclude_pairs, exclude_windows, n, seed) -> (picked, counts)` | the §4.1 filter (`stage == "A"`, `source == "agree"`, `label_of(f) == 1`), the §4.2 exclusions, availability per arm as cells (distinct records with a pair in the arm), quotas by `alias_study_judge.drift_allocation(n, cells)`, the seeded walk per arm taking a pair when its (record, arm) is free **and** its window is untaken; then the **achieved** count per arm (not the cell count) against its quota, the shortfall reallocated equally to the other arms (remainder base, then neighbour) in a second pass that continues their walks, repeated until no arm can give more; counts as §4.1's table plus availability as cells and as achieved, records drawn in 1 / 2 / 3 arms and distinct windows. |
 | — `run_draw_confirm(judge_config, control_draw_json, control_sample, n, out_dir)` | `asp.committed_stage_a(cfg)` (the committed final rows); refuses unless `sha256_file(control_sample) == control_draw_json["sample_sha256"]` and the stage-A commit sha256 matches; reads the control sample's pair and chunk ids; `asp.refuse_in_repo(out_dir)`; writes private `sample.jsonl` in the control's row shape (`pair_id, record_id, chunk_id, stratum = "answers", arm, in_spot_sheet = false`, so `chunk`, `map` and `retest-seed` run unchanged) and public `draw.json` by `write_summary` with the ids forbidden. |
-| — `confirm_table(rows, *, boot_seed)` | from one row per `control_of` with the two final rows (or `None` when a registry holds no row): **unjudged** = `source == "unjudged"` (or `label is None`); pairwise deletion with unjudged counts by arm; the record scores S_j; `cs.sign_flip_test_exact(sums, alternative="greater")`; `cs.mcnemar_exact(b, c, "greater")`; d, the record-cluster bootstrap 90 % interval (10,000 resamples, `seed_int(CONFIRM_BOOT_SEED)`) and its upper end; the Tango score 90 % interval; per-arm Wilson; the three unjudged re-computations of §6.8 (the *unjudged = not* one through `label_of`); the cluster counts; the §8 gates with their counts. |
-| — `run_confirm_report(judge_config, control_config, retest_config, control_dir, retest_dir, prereg, prereg_sha256, out, cover_config=None, write_flipped=None)` | joins the control arm by `aj.pair_id(record_id, control chunk id)` and the retest arm by the stage-A pair id; the §6 descriptives by reusing `compute_report`-style helpers, `compute_retest`'s escalation overlap, `tiebreak_replicate`, `cover_split`; the time-block split of §6.7; per-backend, per-arm first/last call UTC from the sources named in §5 step 5; the cache flag of §10.10; input shas against the committed `draw.json` / `chunk.json` / `map.json` / `retest-seed.json`; `experiment_provenance()` without host; `write_public`. `--write-flipped` writes the private control-arm *not* pair ids for `map --cover-any --pairs`. |
+| — `confirm_table(rows, *, boot_seed)` | from one row per `control_of` with the two final rows (or `None` when a registry holds no row): **unjudged** = `source == "unjudged"` (or `label is None`); pairwise deletion with unjudged counts by arm; the record scores S_j; `cs.sign_flip_test_exact(sums, alternative="greater")`; `cs.mcnemar_exact(b, c, "greater")`; d, the record-cluster bootstrap 90 % interval by `cs.page_bootstrap_ci(records, x, y, n_boot=10_000, seed=seed_int(CONFIRM_BOOT_SEED), level=0.90)` (records as the pages; its statistic is Σ_j S_j / Σ_j n_j per resample) and its upper end; the Tango score 90 % interval by a new `tango_score_ci(b, c, n, level)` implementing the §3.1 formula; per-arm Wilson; the three unjudged re-computations of §6.8 (the *unjudged = not* one through `label_of`); the Qwen cache check of §6.9 from the two arms' `labels-qwen-*.jsonl` rows; the cluster counts; the §8 gates with their counts. The private `pairs-manifest.json` of each registry carries `control: {"exploratory": true}` written by `build-control`; `confirm-report` ignores that field (the registry builder is unchanged) and stamps the public report from `--prereg-sha256`. |
+| — `run_confirm_report(judge_config, control_config, retest_config, control_dir, retest_dir, prereg, prereg_sha256, out, cover_config=None, write_flipped=None)` | joins the control arm by `aj.pair_id(record_id, control chunk id)` and the retest arm by the stage-A pair id; the §6 descriptives by reusing `compute_report`-style helpers, `compute_retest`'s escalation overlap and `cover_split` (not `tiebreak_replicate`: n = 0 on this pool, §6.4); the time-block split of §6.7; per-backend, per-arm first/last call UTC from the sources named in §5 step 5; the cache flag of §10.10; input shas against the committed `draw.json` / `chunk.json` / `map.json` / `retest-seed.json`; `experiment_provenance()` without host; `write_public`. `--write-flipped` writes the private control-arm *not* pair ids for `map --cover-any --pairs`. |
 | — `main` | two subparsers: `draw-confirm --judge-config --control-draw --control-sample --n --out-dir`; `confirm-report --judge-config --control-config --retest-config --control-dir --retest-dir --prereg --prereg-sha256 --out [--cover-config] [--write-flipped]`; the `--confirmatory` option on `chunk`, `map`, `retest-seed`. |
-| `python/scripts/eval/glossbench/glossbench_alias_judge.py` (gateway backend) | record any cache-related response header the gateway returns as a `cache` field of the calls-log row (`None` when none); no other change. If the review finds this touches the frozen study's harness in a way the alias prereg's pin forbids, the field is dropped and §10.10 reads *absent*. |
-| `python/scripts/eval/alias_study_judge.py` | **no change expected**: `build-control`, `preflight`, `label`, `finalize` ran both arm shapes in the exploratory (the retest export under the control key, duplicate chunk ids with identical content accepted). |
-| `python/tests/eval/test_alias_control_chunks.py` | `draw_confirm` is deterministic, excludes the control pairs and windows, honours the (record, arm) cap, the one-pair-per-window rule and the arm quotas with a shortfall on a fixture; `run_draw_confirm` refuses a control sample whose sha differs from `control-draw.json`; `confirm_table` on hand-checkable tables (every record one pair with b = 10, c = 2 → sign-flip p = McNemar p = 79 / 4096; a two-pair record with scores (+2) vs singletons; b = c → p > 0.5); **a real unjudged final row** (`label: None, source: "unjudged"`) is dropped pairwise and counted, and the three re-computations of §6.8 move as specified; every gate trips on a forged input; `confirm-report` refuses ids, text and host fields and a prereg sha mismatch; `--confirmatory` sets the flag and block. |
+| `python/scripts/eval/alias_study_judge.py`, `python/scripts/eval/glossbench_alias_judge.py` | **no change** (owner, 2026-11-05): `build-control`, `preflight`, `label`, `finalize` ran both arm shapes in the exploratory (the retest export under the control key, duplicate chunk ids with identical content accepted); the judge harness is the frozen study's and is not touched. |
+| `python/tests/eval/test_alias_control_chunks.py` | `draw_confirm` is deterministic, excludes the control pairs and windows, honours the (record, arm) cap, the one-pair-per-window rule and the arm quotas with a shortfall on a fixture; `run_draw_confirm` refuses a control sample whose sha differs from `control-draw.json`; `confirm_table` on hand-checkable tables (every record one pair with b = 10, c = 2 → sign-flip p = McNemar p = 79 / 4096; a two-pair record with scores (+2) vs singletons; b = c → p > 0.5); `tango_score_ci` fixtures from the §3.1 formula: b = 10, c = 2, n = 100 → 90 % interval **[0.0260, 0.1437]** (95 %: [0.0143, 0.1580]); b = 5, c = 5, n = 100 → [−0.0571, 0.0571] (symmetric about 0); b = c = 0, n = 50 → [−0.0513, 0.0513]; and the structural identity p̃21(δ̂) = c / n; the bootstrap reproduces `page_bootstrap_ci` on a fixture with records as pages; **a real unjudged final row** (`label: None, source: "unjudged"`) is dropped pairwise and counted, and the three re-computations of §6.8 move as specified; every gate trips on a forged input; `confirm-report` refuses ids, text and host fields and a prereg sha mismatch; `--confirmatory` sets the flag and block. |
 | `docs/plans/results/alias-boundary-confirm-2026-11/power.py`, `power.json` | this commit, from a clean tree (`README.md`). |
 
-## 12. Cost (rates from the alias prereg §6.5 and the exploratory control; planning only, at n_draw = 370)
+## 12. Cost (rates from the alias prereg §6.5 and the exploratory control; planning only, at n_draw = 351)
 
-- **Qwen** (local, 4 in flight): C 1.85 s/pair, E 0.74 s/pair → ≈ 352 × 2 arms ≈ 704 pairs ≈ **30 min**;
-  the cover-any registry ≈ 2.1 chunks per flipped pair (exploratory 85 / 40) × ≈ 13 % × 352 ≈ 95 pairs ≈
-  4 min.
+- **Qwen** (local, 4 in flight): C 1.85 s/pair, E 0.74 s/pair → ≈ 333 mapped × 2 arms ≈ 666 pairs ≈
+  **29 min**; the cover-any registry ≈ 2.1 chunks per flipped pair (exploratory 85 / 40) × ≈ 13 % × 333 ≈
+  90 pairs ≈ 4 min.
 - **Gateway, Argon:** escalation share × 2 × n. The exploratory escalated 10.7 % (control) and 15.7 %
-  (retest) of 300 → ≈ 0.13 × 704 ≈ **90 calls** (range 75–115), plus ≈ 13 for cover-any; no cap (R30).
-- **Gateway, Opus:** 5 % per arm → ≈ 18 + 18 = **36 calls**, plus ≈ 5 for cover-any; capped at 7 % of each
-  registry (≈ 24–25). ≈ 1 k input tokens per call, `max_tokens` 4096 / 2048.
+  (retest) of 300 → ≈ 0.13 × 666 ≈ **87 calls** (range 70–105), plus ≈ 12 for cover-any; no cap (R30).
+- **Gateway, Opus:** 5 % per arm → 17 + 17 = **34 calls**, plus ≈ 5 for cover-any; capped at 7 % of each
+  registry (23 at ≈ 333). ≈ 1 k input tokens per call, `max_tokens` 4096 / 2048.
 - **Notices:** one before the main gateway batch (both arms), one before cover-any; each acknowledged in
   chat before the first call. **Owner time:** none at the bench; the go, the acks, any resume.
 - **Store:** none; no collection, no retrieval; the non-production environment only.
-- At 470 drawn (§13 Q4): ≈ 27 % more of each line.
 
-## 13. Open decisions for the owner (with recommendations)
+## 13. The owner's decisions (the questions, the recommendations, and the dated answers)
 
 1. **Exclude the 43 shared-window pairs (§4.2)?** — Recommend yes (pool 1,871; 2 % cost; "fresh" then holds
    for passage and pair).
 2. **Arm-stratified equal draw, or simple random?** — Recommend equal by arm (§4.3), the control's and the
    drift sample's rule; the test is the same either way, the estimand's mix is not.
 3. **The cap.** — *Decided* (below): one pair per (record, arm).
-4. **Draw size: n_draw = 370 (80 % power, recommended), 410 (.84), or every cell, 470 (.88, unequal arms, no
-   slack)?** 90 % is not reachable under the sizing assumptions (§3.2–3.3). — Recommend 370, with the 80 %
-   floor and the 7.0-point MDE stated in every result sentence.
-5. **The sizing effect 13 % vs 6 % and ρ = 0.5.** — Recommend keeping both: 13 % is about the selected
-   stratum's Wilson lower bound and 6 % is above its retest rate (§3.2); ρ = 0.5 is the conservative
-   within-record assumption, and 0.3 would already make 90 % reachable at 450.
+4. **Draw size.** — *Decided* (v3, below): **n_draw = 351**, equal arms 117 / 117 / 117. (History: v1
+   recommended 334 under the one-pair-per-record design; v2 recommended 370 and listed 410 and 470 as
+   alternatives after 90 % proved unreachable; the owner first chose 370, then 351 so that the random arm
+   stays a sample of its 118 cells.)
+5. **The sizing effect 13 % vs 6 % and ρ = 0.5.** — *Decided* (v2): both kept; 13 % is about the selected
+   stratum's Wilson lower bound and 6 % is above its retest rate (§3.2); ρ = 0.5 is assumed, not estimated,
+   and 0.3 would make 90 % reachable at 450.
 6. **Unjudged handling in the primary**: pairwise deletion with the three re-computations of §6.8. —
    Recommend as written: *unjudged = not* in a flip-to-*not* endpoint would count a gateway failure as a
    flip, so it is a sensitivity, not the primary.
@@ -599,6 +652,13 @@ the **arm alternation per backend** as written in §5 step 5. Cache check: the p
 changed; the gateway cache status reads *absent*, and §10.10's retest-vs-stage-A Argon agreement check carries
 the threat. The freeze still needs the owner's go naming the commit (§9.2), after the second round of both
 reviews.
+
+**Owner decision, 2026-11-05 (v3, after the second round of both reviews), superseding the v2 answer to
+Q4.** **n_draw = 351, equal arms 117 / 117 / 117**; the random arm (118 cells) is still a sample. The sizing
+is unchanged (13 % vs 6 %, φ 0, ρ 0.5). `power.json` carries the 351 cell with its realised-n distribution,
+the power-by-realised-n curve the result sentence reads, the floor at 0.90 × 351 = 316 with its power, and
+the MDE at 351 (§3.3). The cache check moves to the Qwen label rows (§6.9, §10.10); the judge harness stays
+unchanged. Every other answer stands.
 
 ## 14. What is released
 
