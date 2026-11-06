@@ -28,14 +28,15 @@ K = [cid(f"k{i}") for i in range(8)]
 
 def table_rows() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """B1 base answers; B2 base lost other_only; B3 base lost none (ten labelled chunks for its
-    record, one unjudged); N1 neighbour lost primary_only (the record of B1); Q1 random1 answers."""
+    record, one unjudged; stage A retrieved its window only in a neighbour leg); N1 neighbour lost
+    primary_only (the record of B1); Q1 random1 answers. Every pair's draw stratum is the
+    confirmatory sample's (answers)."""
     pairs = [
         rfx.pair_row(R1, "base", cid("m1"), tag="1", stage_a_legs=["base|none|default", "base|none|norerank"]),
         rfx.pair_row(R2, "base", cid("m2"), tag="2", covers=[cid("m2"), cid("o2")], control_label="not", lost=True,
                      cover_class="other_only", coverage_band="0.5-0.8", stage_a_legs=["base|none|bm25"]),
         rfx.pair_row(R3, "base", cid("m3"), tag="3", covers=[cid("m3"), cid("o3")], control_label="not", lost=True,
-                     cover_class="none", coverage_band="0.5-0.8", stage_a_legs=["neighbour|none|default"],
-                     stratum="tiebreak"),
+                     cover_class="none", coverage_band="0.5-0.8", stage_a_legs=["neighbour|none|default"]),
         rfx.pair_row(R1, "neighbour", cid("n1"), tag="4", covers=[cid("n1")], control_label="not", lost=True,
                      cover_class="primary_only", stage_a_legs=["neighbour|none|default"]),
         rfx.pair_row(R4, "random1", cid("q1"), tag="5", coverage_band="<0.5",
@@ -61,7 +62,8 @@ RANKED: dict[tuple[str, str], dict[str, list[str] | None]] = {
     ("base", R3): {"default": top({5: cid("m3")}),
                    "bm25": top({**{i + 1: k for i, k in enumerate(K)}, 9: cid("o3"), 10: cid("u3"), 11: cid("m3")}),
                    "norerank": top({1: cid("o3"), **{i + 2: k for i, k in enumerate(K)}, 10: cid("m3")})},
-    ("neighbour", R1): {"default": top({2: cid("n1")}), "bm25": top({}), "norerank": top({4: cid("n1")})},
+    # bm25: B1's chunk m1 (answers for the record, not one of N1's own chunks) at rank 5
+    ("neighbour", R1): {"default": top({2: cid("n1")}), "bm25": top({5: cid("m1")}), "norerank": top({4: cid("n1")})},
     ("random1", R4): {"default": top({1: cid("q1")}), "bm25": None, "norerank": top({7: cid("q1")})},
 }
 
@@ -109,20 +111,26 @@ def test_score_pair_measures() -> None:
         ids = RANKED[(arm, rec)][r]
         return rs.score_pair(by[cid(f"w{tag}")], {"failed": ids is None, "ranked_chunk_ids": ids}, t)
 
-    assert s("1", "base", R1, "default") == {"failed": False, "A": True, "M": True, "M_rank": 1, "U": 9,
-                                             "A_or_unlabelled": True}
+    assert s("1", "base", R1, "default") == {"failed": False, "A": True, "A_own": True, "M": True, "M_rank": 1,
+                                             "U": 9, "A_or_unlabelled": True}
     # o2 answers for R2, not for R1: unlabelled there
-    assert s("1", "base", R1, "bm25") == {"failed": False, "A": False, "M": False, "M_rank": None, "U": 10,
-                                          "A_or_unlabelled": True}
-    assert s("2", "base", R2, "default")["A"] is True and s("2", "base", R2, "default")["M"] is False
-    assert s("3", "base", R3, "default") == {"failed": False, "A": False, "M": True, "M_rank": 5, "U": 9,
-                                             "A_or_unlabelled": True}
+    assert s("1", "base", R1, "bm25") == {"failed": False, "A": False, "A_own": False, "M": False, "M_rank": None,
+                                          "U": 10, "A_or_unlabelled": True}
+    # o2 is one of B2's own cover-any chunks
+    got = s("2", "base", R2, "default")
+    assert got["A"] is True and got["A_own"] is True and got["M"] is False
+    assert s("3", "base", R3, "default") == {"failed": False, "A": False, "A_own": False, "M": True, "M_rank": 5,
+                                             "U": 9, "A_or_unlabelled": True}
     # rank 11 is outside the top 10; an unjudged label counts as unlabelled
-    assert s("3", "base", R3, "bm25") == {"failed": False, "A": False, "M": False, "M_rank": None, "U": 1,
-                                          "A_or_unlabelled": True}
+    assert s("3", "base", R3, "bm25") == {"failed": False, "A": False, "A_own": False, "M": False, "M_rank": None,
+                                          "U": 1, "A_or_unlabelled": True}
     # ten chunks, all labelled not: the upper bound is no
-    assert s("3", "base", R3, "norerank") == {"failed": False, "A": False, "M": True, "M_rank": 10, "U": 0,
-                                              "A_or_unlabelled": False}
+    assert s("3", "base", R3, "norerank") == {"failed": False, "A": False, "A_own": False, "M": True, "M_rank": 10,
+                                              "U": 0, "A_or_unlabelled": False}
+    # m1 answers for the record but was mapped for B1, not N1: A from another pair's chunk only
+    assert s("4", "neighbour", R1, "bm25") == {"failed": False, "A": True, "A_own": False, "M": False,
+                                               "M_rank": None, "U": 9, "A_or_unlabelled": True}
+    assert s("4", "neighbour", R1, "default")["A_own"] is True
     assert s("5", "random1", R4, "bm25") == {"failed": True}
     with pytest.raises(SystemExit, match="no row"):
         rs.score_pair(by[cid("w1")], None, t)
@@ -134,19 +142,44 @@ def test_report_q1_q2_and_reference(tmp_path: Path) -> None:
     rec = rs.run(runs, table, out)
     assert rec["pairs"] == 5 and rec["records"] == 4 and rec["exploratory"] is True
     assert rec["pairs_by_corpus_arm"] == {"base": 3, "neighbour": 1, "random1": 1}
+    assert rec["base_windows_only_in_larger_arm_legs"] == 1  # B3
     q1 = rec["q1_lost_pairs"]
     assert q1["lost_pairs"] == 3 and q1["cover_class"] == {"other_only": 1, "both": 0, "primary_only": 1, "none": 1}
-    d = {k: q1[k]["by_retriever"]["default"] for k in ("recovered", "others", "none", "primary_only")}
+    # the plan's groups: recovered (other_only + both), others (none only), primary_only alone, all lost
+    assert {k: q1["definitions"][k] for k in ("recovered", "others", "primary_only")} == {
+        "recovered": ["other_only", "both"], "others": ["none"], "primary_only": ["primary_only"]}
+    assert "conflicting re-read" in q1["definitions"]["primary_only_note"]
+    assert "base collection" in q1["definitions"]["base_windows"]
+    assert "none" not in q1
+    d = {k: q1[k]["by_retriever"]["default"] for k in ("recovered", "others", "primary_only", "all_lost")}
     assert d["recovered"]["n"] == 1 and d["recovered"]["A"]["k"] == 1 and d["recovered"]["M"]["k"] == 0
-    assert d["others"]["n"] == 2 and d["others"]["A"]["k"] == 1 and d["others"]["M"]["k"] == 2
-    assert d["others"]["M_rank"] == {"1": 0, "2-3": 1, "4-10": 1}
-    assert d["none"]["A_or_unlabelled"]["k"] == 1 and d["primary_only"]["A"]["k"] == 1
-    assert q1["none"]["by_retriever"]["norerank"]["A_or_unlabelled"] == {**q1["none"]["by_retriever"]["norerank"]
-                                                                         ["A_or_unlabelled"], "k": 0, "n": 1}
+    assert d["recovered"]["A_own"]["k"] == 1
+    assert d["others"]["n"] == 1 and d["others"]["A"]["k"] == 0 and d["others"]["M"]["k"] == 1
+    assert d["others"]["M_rank"] == {"1": 0, "2-3": 0, "4-10": 1} and d["others"]["A_or_unlabelled"]["k"] == 1
+    assert d["primary_only"]["n"] == 1 and d["primary_only"]["A"]["k"] == 1 and d["primary_only"]["M"]["k"] == 1
+    assert d["all_lost"]["n"] == 3 and d["all_lost"]["A"]["k"] == 2 and d["all_lost"]["A_own"]["k"] == 2
+    assert d["all_lost"]["M"]["k"] == 2 and d["all_lost"]["M_rank"] == {"1": 0, "2-3": 1, "4-10": 1}
+    assert d["all_lost"]["records"] == 3 and d["all_lost"]["top10_lists"] == 3 and q1["all_lost"]["pairs"] == 3
+    assert "wilson95" in d["all_lost"]["A_own"]
+    # bm25: N1's A comes only from B1's chunk, counted
+    pb = q1["primary_only"]["by_retriever"]["bm25"]
+    assert pb["A"]["k"] == 1 and pb["A_own"]["k"] == 0 and pb["A_from_other_pairs_only"]["k"] == 1
+    assert q1["others"]["by_retriever"]["norerank"]["A_or_unlabelled"] == {
+        **q1["others"]["by_retriever"]["norerank"]["A_or_unlabelled"], "k": 0, "n": 1}
     q2 = rec["q2_all_pairs"]
     assert q2["headline"]["M_all_pairs"]["default"]["k"] == 4 and q2["headline"]["M_all_pairs"]["default"]["n"] == 5
     assert q2["headline"]["A_control_answers_pairs"]["default"] == {
         **q2["headline"]["A_control_answers_pairs"]["default"], "k": 2, "n": 2}
+    assert q2["headline"]["A_own_control_answers_pairs"]["default"]["k"] == 2
+    # M among the pairs whose window was in the same retriever's same-arm stage-A top 10:
+    # default B1, N1, Q1 (all M); bm25 B2 (M at 1); norerank B1, Q1
+    wr = q2["headline"]["M_window_retained"]
+    assert [(wr[r]["k"], wr[r]["n"]) for r in ("default", "bm25", "norerank")] == [(3, 3), (1, 1), (2, 2)]
+    assert "wilson95" in wr["default"]
+    # one record (R1) in two arms: 4 records, 5 top-10 lists
+    allp = q2["all_pairs"]["all"]
+    assert allp["records"] == 4 and allp["top10_lists"] == 5
+    assert allp["by_retriever"]["default"]["records"] == 4 and allp["by_retriever"]["default"]["top10_lists"] == 5
     # the failed bm25 call is left out and counted
     bm = q2["control_answers_pairs"]["all"]["by_retriever"]["bm25"]
     assert bm["pairs"] == 2 and bm["failed"] == 1 and bm["n"] == 1
@@ -158,13 +191,15 @@ def test_report_q1_q2_and_reference(tmp_path: Path) -> None:
     assert arms["random2"]["by_retriever"]["default"]["M"]["rate"] is None
     assert q2["control_answers_pairs"]["by_corpus_arm"]["neighbour"]["by_retriever"]["default"]["pairs"] == 0
     ref = q2["all_pairs"]["all"]["reference"]
-    assert ref["stage_a_status"] == {"agree": 4, "tiebreak": 1}
+    assert ref["draw_stratum"] == {"answers": 5} and "stage_a_status" not in ref
+    assert ref["base_windows_only_in_larger_arm_legs"] == 1
     # judged stage-A legs only (bm25 is judged in stage B)
     assert ref["stage_a_judged_legs"] == {"base|none|default": 1, "base|none|norerank": 1, "neighbour|none|default": 2,
                                           "random1|none|default": 1, "random1|none|norerank": 1}
     same = ref["window_in_stage_a_top10_same_arm"]
     assert same["default"]["k"] == 3 and same["bm25"]["k"] == 1 and same["norerank"]["k"] == 2
     assert set(rec["runs"]) == {"base", "neighbour", "random1"}
+    assert rec["runs"]["base"]["gates"] == {"base": None, "bm25": None, "norerank": None}
     assert rec["runs"]["base"]["collection_build"] == {"n_chunks": 100, "load_receipt_sha256": "b" * 64,
                                                        "glossary_file_sha256": "c" * 64}
 
@@ -197,6 +232,9 @@ def test_a_leaked_id_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.parametrize(("over", "msg"), [
     ({"base": {"status": "running"}}, "status"),
+    ({"base": {"status": "hard_stop", "reason": "config differs"}}, "hard stop \\(config differs\\)"),
+    ({"neighbour": {"conditions": {"base": {"gate": None}, "bm25": {"gate": "GATE: served depth differs"},
+                                   "norerank": {"gate": None}}}}, "gated condition\\(s\\): bm25: GATE: served depth"),
     ({"neighbour": {"study": {"mode": "main"}}}, "not a rechunk-mode run"),
     ({"neighbour": {"study": {"exploratory": False}}}, "not a rechunk-mode run"),
     ({"random1": {"conditions": {"base": {}, "bm25": {}}}}, "retriever is missing"),

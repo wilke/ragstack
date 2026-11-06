@@ -186,11 +186,20 @@ def test_export_expect_chunks_and_duplicate_records(words: WordCounter, tmp_path
 
 
 def test_export_sends_no_request(words: WordCounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The pipeline's client refuses every request, and no other client is opened."""
+    """The pipeline's embedder sits on the refusing transport (an embed call forced through it is
+    refused there, before any socket), and the export itself sends nothing."""
+    import asyncio
+
     import httpx
 
-    with pytest.raises(RuntimeError, match="no request is ever sent"):
-        rp._refuse_request(httpx.Request("POST", rp.NO_HOST + "/v1/embeddings"))
+    refused: list[str] = []
+    real_refuse = rp._refuse_request
+
+    def counting_refuse(request: Any) -> Any:
+        refused.append(str(request.url))
+        return real_refuse(request)
+
+    monkeypatch.setattr(rp, "_refuse_request", counting_refuse)
     opened: list[Any] = []
     real = httpx.AsyncClient.send
 
@@ -199,10 +208,33 @@ def test_export_sends_no_request(words: WordCounter, tmp_path: Path, monkeypatch
         return await real(self, request, *a, **k)
 
     monkeypatch.setattr(httpx.AsyncClient, "send", spy)
+
+    # the export's own pipeline, with an embed call forced through its embedder
+    pipe, http = rp.build_pipeline(rp.embed_args(), rp.registry_spec())
+
+    async def force() -> None:
+        try:
+            await pipe.embedder.embed(["a text the export never embeds"])
+        finally:
+            await http.aclose()
+
+    with pytest.raises(Exception) as caught:
+        asyncio.run(force())
+    chain, e = [], caught.value
+    while e is not None:
+        chain.append(str(e))
+        e = e.__cause__ or e.__context__
+    assert any("no request is ever sent" in m for m in chain), chain
+    assert refused and all(u.startswith(rp.NO_HOST) for u in refused)
+    assert opened and all(u.startswith(rp.NO_HOST) for u in opened)
+
+    # the export: nothing is sent at all
+    refused.clear()
+    opened.clear()
     dst = tmp_path / "s.jsonl"
     rp.run_add_structure(records(tmp_path), dst)
     rp.run_export([dst], tmp_path / "chunks.jsonl")
-    assert opened == []
+    assert opened == [] and refused == []
 
 
 def test_export_refuses_a_window_that_clamps_the_tolerance(words: WordCounter, tmp_path: Path) -> None:
@@ -229,6 +261,8 @@ def test_gold_map_counts(tmp_path: Path) -> None:
     assert rec["by_arm_group"] == {"base": 3, "neighbour": 2, "random": 3}
     assert rec["records_by_corpus_arm"] == {"base": 3, "neighbour": 2, "random1": 2, "random2": 1}
     assert rec["random_both_draws"] == 1 and rec["lost"] == 4 and rec["lost_without_cover"] == 1
+    # pair 8: a base window stage A retrieved only in a neighbour leg, still run in base
+    assert rec["base_windows_only_in_larger_arm_legs"] == 1
     assert rec["cover_class"] == {"other_only": 1, "both": 0, "primary_only": 1, "none": 1}
     assert rec["control_label"] == {"answers": 3, "not": 4, "unjudged": 1}
     assert rec["labels"] == 12 and rec["label"] == {"answers": 5, "not": 5, "unjudged": 2}
@@ -255,6 +289,11 @@ def test_gold_map_pair_and_label_rows(tmp_path: Path) -> None:
     assert row("6")["corpus_arm"] == "random1" and row("6")["random_both_draws"] is True
     assert row("6")["control_label"] == "unjudged" and row("6")["lost"] is False and row("6")["cover_class"] is None
     assert row("8")["lost"] is True and row("8")["cover_class"] is None
+    assert row("8")["corpus_arm"] == "base" and row("8")["stage_a_legs"]
+    assert not any(lg.startswith("base|") for lg in row("8")["stage_a_legs"]) and rp.base_only_in_larger_arm(row("8"))
+    assert not rp.base_only_in_larger_arm(row("1")) and not rp.base_only_in_larger_arm(row("3"))
+    # the sample's stratum is kept as the draw stratum (no stage-A route is claimed)
+    assert {x["draw_stratum"] for x in t.pairs} == {"answers"} and all("stratum" not in x for x in t.pairs)
     assert row("1")["max_overlap_chunk_id"] == p["1"].control and row("1")["pair_id"] == p["1"].pair_id
     # the window's stage-A legs: every retrieval stage-A leg of its corpus arm, the failed bm25 row skipped
     assert "base|none|default" in row("1")["stage_a_legs"] and "base|merged|bm25" in row("1")["stage_a_legs"]
@@ -327,6 +366,23 @@ def test_gold_map_refusals(tmp_path: Path) -> None:
         rp.gold_map(w.sample, w.seeds, w.cover_seeds, w.cfinal, w.vfinal, {})
 
 
+def test_gold_map_cover_split_cross_check_fires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The table's cover classes come from rechunk_prep.cover_class; the cross-check recounts them
+    with alias_control_chunks.cover_split over the same labels. A local rule that drifts from
+    cover_split (here: other_only read as none) is refused, nothing is returned."""
+    w = rfx.GoldWorld(tmp_path)
+    hits, _ = rp.stage_a_hits(w.runs, {(s["record_id"], s["chunk_id"]) for s in w.sample})
+    real = rp.cover_class
+
+    def drifted(other: Any, primary: Any) -> str:
+        c = real(other, primary)
+        return "none" if c == "other_only" else c
+
+    monkeypatch.setattr(rp, "cover_class", drifted)
+    with pytest.raises(SystemExit, match="disagree with alias_control_chunks.cover_split"):
+        rp.gold_map(w.sample, w.seeds, w.cover_seeds, w.cfinal, w.vfinal, hits)
+
+
 def test_final_rows_are_read_without_repair(tmp_path: Path) -> None:
     p = tmp_path / "final.jsonl"
     p.write_text('{"k": "batch|1"}\n{"k": "pair|a", "pair_id": "a", "label": 1}\n{"k": "pair|b", "pa\n')
@@ -369,15 +425,42 @@ def test_rechunk_presence(tmp_path: Path) -> None:
              rfx.pair_row(r1, "neighbour", rfx.cid("m7"), tag="7")]
     table = rp.read_label_table(rfx.write_label_table(tmp_path / "t.jsonl", pairs, []))
 
-    def export(name: str, ids: list[str]) -> Path:
+    def export(name: str, ids: list[str], desc: str | None = rp.DESCRIPTOR) -> Path:
+        md = {} if desc is None else {"chunk_descriptor": desc}
         return rfx.write_jsonl(tmp_path / name, [{"chunk_id": c, "doc_id": "d", "content": f"text {c}", "start_char": 0,
-                                                 "end_char": 9, "metadata": {}} for c in ids])
+                                                 "end_char": 9, "metadata": md} for c in ids])
+
+    def check(exports: list[Path], arm: str = "base", n: int = 4, receipt: Path | None = None) -> dict[str, Any]:
+        return rp.check_rechunk_presence(table, exports, arm, expected_chunks=n, load_receipt=receipt)
 
     good = export("good.jsonl", [rfx.cid(t) for t in ("m1", "m2", "o2", "x")])
-    got = rp.check_rechunk_presence(table, [good], "base")
+    got = check([good])
     assert got["pairs"] == 2 and got["records"] == 2 and got["mapped_chunks"] == 3 and got["present"] == 3
     assert got["label_table_sha256"] == table.sha256 and got["chunks_in_export"] == 4
+    assert got["expected_chunks"] == 4 and got["chunk_descriptor"] == rp.DESCRIPTOR
+    assert got["descriptor_checked_in"] == ["export_rows"]
     with pytest.raises(f10.Refused, match="1 of the 3 mapped"):
-        rp.check_rechunk_presence(table, [export("bad.jsonl", [rfx.cid(t) for t in ("m1", "m2")])], "base")
+        check([export("bad.jsonl", [rfx.cid(t) for t in ("m1", "m2")])], n=2)
     with pytest.raises(f10.Refused, match="neighbour"):
-        rp.check_rechunk_presence(table, [good], "neighbour")
+        check([good], arm="neighbour")
+    # the export holds another number of chunks than the run config expects
+    with pytest.raises(f10.Refused, match="holds 4 chunks, corpora.base.expected_chunks is 5"):
+        check([good], n=5)
+    # an export of the stage-A chunking, or rows without the stamp
+    with pytest.raises(f10.Refused, match="another chunk_descriptor"):
+        check([export("stage-a.jsonl", [rfx.cid(t) for t in ("m1", "m2", "o2", "x")], acc.STAGE_A_DESCRIPTOR)])
+    with pytest.raises(f10.Refused, match="<none>"):
+        check([export("bare.jsonl", [rfx.cid(t) for t in ("m1", "m2", "o2", "x")], None)])
+    # the load receipt: no descriptor recorded (load_embeddings.py today) passes on the rows' stamp;
+    # a recorded one must be the confirmatory descriptor
+    plain = tmp_path / "receipt.json"
+    plain.write_text(json.dumps({"n_chunks": 4}))
+    assert check([good], receipt=plain)["descriptor_checked_in"] == ["export_rows"]
+    same = tmp_path / "receipt-same.json"
+    same.write_text(json.dumps({"n_chunks": 4, "chunking": {"chunk_descriptor": rp.DESCRIPTOR}}))
+    assert check([good], receipt=same)["descriptor_checked_in"] == ["export_rows", "load_receipt"]
+    for name, rec in (("r1.json", {"chunk_descriptor": acc.STAGE_A_DESCRIPTOR}),
+                      ("r2.json", {"chunking": {"chunk_descriptor": "sentence/512/0"}})):
+        (tmp_path / name).write_text(json.dumps(rec))
+        with pytest.raises(f10.Refused, match="load receipt records chunk_descriptor"):
+            check([good], receipt=tmp_path / name)

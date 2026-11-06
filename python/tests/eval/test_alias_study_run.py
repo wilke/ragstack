@@ -868,10 +868,29 @@ def test_run_status_needs_the_study_block_with_mode_and_stage(tmp_path: Path, dr
 
 # ------------------------------------------------------------------ the rechunk mode (exploratory)
 
+def rechunk_exports(tmp: Path, w: fx.World, n: int = 100, desc: str | None = None) -> dict[str, list[str]]:
+    """One rechunked export per corpus arm, as ``rechunk_prep.py export`` writes it: the arm's
+    chunks (base plus its added papers), padded to ``n`` (the arm's expected_chunks), every row
+    stamped with the confirmatory chunk descriptor (``desc`` overrides it)."""
+    import rechunk_prep as rp
+
+    out = {}
+    for a in asc.CORPUS_ARMS:
+        rows = [*asc.read_jsonl(w.base_export), *([] if a == "base" else asc.read_jsonl(w.exports[a]))]
+        rows += [{**rows[0], "chunk_id": f"pad-{a}-{i}"} for i in range(n - len(rows))]
+        for r in rows:
+            r["metadata"] = {**r["metadata"], "chunk_descriptor": desc or rp.DESCRIPTOR}
+        out[a] = [str(fx.write_jsonl(tmp / f"rechunked-{a}.jsonl", rows))]
+    return out
+
+
 def rechunk_setup(tmp: Path, monkeypatch: pytest.MonkeyPatch, missing: str | None = None
                   ) -> tuple[fx.World, dict[str, Any]]:
-    """A rechunk config: the four none collections only, no gold hashes, and a label table whose
-    pairs sit in base (two records), neighbour (one, also in base) and random1; none in random2."""
+    """A rechunk config: the four none collections only, no gold hashes, each arm's rechunked
+    export (100 chunks, the load receipt's and expected_chunks' count), and a label table whose
+    pairs sit in base (two records), neighbour (one, also in base) and random1; none in random2.
+    The random1 pair's max-overlap chunk is its record's gold, which the fake API serves at rank
+    1 or 2: its M is True under every retriever."""
     import rechunk_fixture as rfx
 
     monkeypatch.setattr(asc, "verify_record_set", lambda path, recs: {"accepted_sha256": "x", "records": len(recs)})
@@ -879,13 +898,16 @@ def rechunk_setup(tmp: Path, monkeypatch: pytest.MonkeyPatch, missing: str | Non
     cfg.pop("gold_hashes")
     cfg["collections"] = {c: {"none": cfg["collections"][c]["none"]} for c in asc.CORPUS_ARMS}
     cfg["arms"] = {"none": cfg["arms"]["none"]}
+    for a, paths in rechunk_exports(tmp, w).items():
+        cfg["corpora"][a]["chunk_export"] = paths
     r = [x["record_id"] for x in w.records]
+    gold4 = w.records[3]["gold_chunks"][0]
     pairs = [rfx.pair_row(r[0], "base", fx.chunk_id("P00", 1), tag="1", covers=[fx.chunk_id("P00", 1),
                                                                               fx.chunk_id("P00", 3)]),
              rfx.pair_row(r[1], "base", fx.chunk_id("P00", 2), tag="2"),
              rfx.pair_row(r[0], "neighbour", missing or fx.chunk_id("N00", 1), tag="3"),
-             rfx.pair_row(r[3], "random1", fx.chunk_id("R01", 0), tag="4")]
-    labels = [rfx.label_row(r[0], fx.chunk_id("P00", 1), "answers")]
+             rfx.pair_row(r[3], "random1", gold4, tag="4")]
+    labels = [rfx.label_row(r[0], fx.chunk_id("P00", 1), "answers"), rfx.label_row(r[3], gold4, "answers")]
     cfg["rechunk"] = {"label_table": str(rfx.write_label_table(tmp / "labels.jsonl", pairs, labels))}
     return w, cfg
 
@@ -919,6 +941,26 @@ def test_rechunk_runs_the_arm_s_pair_records_only(tmp_path: Path, monkeypatch: p
     assert {api2.q2rec[b["query"]]["record_id"] for b in api2.bodies} == {w.records[0]["record_id"]}
     with pytest.raises(f10.Refused, match="no label-table pair"):
         run(cfg, API(w), corpus="random2", census=Census())
+
+
+def test_rechunk_refuses_an_export_of_another_size_or_chunking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+                                                               ) -> None:
+    """The arm's export must hold corpora.<arm>.expected_chunks chunks and carry the confirmatory
+    descriptor; both are refused before any API call."""
+    import alias_control_chunks as acc
+
+    w, cfg = rechunk_setup(tmp_path, monkeypatch)
+    (tmp_path / "small").mkdir()
+    cfg["corpora"]["base"]["chunk_export"] = rechunk_exports(tmp_path / "small", w, n=90)["base"]
+    api = API(w)
+    with pytest.raises(f10.Refused, match="holds 90 chunks, corpora.base.expected_chunks is 100"):
+        run(cfg, api, census=Census())
+    (tmp_path / "fixed").mkdir()
+    cfg["corpora"]["base"]["chunk_export"] = rechunk_exports(tmp_path / "fixed", w,
+                                                             desc=acc.STAGE_A_DESCRIPTOR)["base"]
+    with pytest.raises(f10.Refused, match="another chunk_descriptor"):
+        run(cfg, api, census=Census())
+    assert api.bodies == [] and api.config_reads == 0
 
 
 def test_rechunk_refuses_a_mapped_chunk_absent_from_the_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -985,5 +1027,17 @@ def test_rechunk_runs_feed_the_stage1_report(tmp_path: Path, monkeypatch: pytest
     rec = rs.run(Path(cfg["out_dir"]), Path(cfg["rechunk"]["label_table"]), out)
     assert rec["pairs"] == 4 and set(rec["runs"]) == {"base", "neighbour", "random1"}
     d = rec["q2_all_pairs"]["all_pairs"]["all"]["by_retriever"]["default"]
-    assert d["n"] == 4 and d["failed"] == 0 and d["M"]["k"] == 0
+    assert d["n"] == 4 and d["failed"] == 0
+    # M: only the random1 pair's max-overlap chunk is its record's gold, which the fake API serves
+    # (rank 1, or 2 under the reranker); the other three max-overlap chunks are never served
+    by = rec["q2_all_pairs"]["all_pairs"]["by_corpus_arm"]
+    for r in ("default", "bm25", "norerank"):
+        assert rec["q2_all_pairs"]["headline"]["M_all_pairs"][r] == {
+            **rec["q2_all_pairs"]["headline"]["M_all_pairs"][r], "k": 1, "n": 4}
+        assert by["random1"]["by_retriever"][r]["M"]["k"] == 1 and by["base"]["by_retriever"][r]["M"]["k"] == 0
+    assert by["random1"]["by_retriever"]["default"]["M_rank"] == {"1": 0, "2-3": 1, "4-10": 0}
+    assert by["random1"]["by_retriever"]["bm25"]["M_rank"] == {"1": 1, "2-3": 0, "4-10": 0}
+    # A / A_own: the random1 pair's own chunk is labelled answers; nothing else answers in a top 10
+    assert d["A"]["k"] == 1 and d["A_own"]["k"] == 1 and d["A_from_other_pairs_only"]["k"] == 0
     assert rec["runs"]["base"]["collection_build"]["n_chunks"] == 100
+    assert rec["runs"]["base"]["gates"] == {"base": None, "bm25": None, "norerank": None}

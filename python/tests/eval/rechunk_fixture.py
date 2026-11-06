@@ -53,7 +53,8 @@ class Pair:
     control_label: int | None
     coverage: float
     covers: dict[str, int | None] = field(default_factory=dict)
-    stratum: str = "agree"
+    #: the confirmatory draw stratum: every pair was drawn from the stage-A answers stratum
+    stratum: str = "answers"
 
     @property
     def window(self) -> str:
@@ -78,7 +79,7 @@ def default_pairs() -> list[Pair]:
     5. random2 only, answers, low coverage;
     6. random in both draws, the control unjudged;
     7. the record of pair 1 again, in neighbour, answers;
-    8. base, lost, no cover-any rows.
+    8. base, lost, no cover-any rows; stage A retrieved its window only in the neighbour arm.
     """
     r = rid
     return [
@@ -87,9 +88,9 @@ def default_pairs() -> list[Pair]:
         Pair("3", r("P03"), "neighbour", ("neighbour",), 0, 0.55, {"m3": 1, "o3a": 0}),
         Pair("4", r("P04"), "random", ("random1",), 0, 0.85, {"m4": 0, "o4a": None}),
         Pair("5", r("P05"), "random", ("random2",), 1, 0.31),
-        Pair("6", r("P06"), "random", ("random1", "random2"), None, 0.66, stratum="tiebreak"),
+        Pair("6", r("P06"), "random", ("random1", "random2"), None, 0.66),
         Pair("7", r("P01"), "neighbour", ("neighbour",), 1, 0.81),
-        Pair("8", r("P08"), "base", ("base",), 0, 0.95),
+        Pair("8", r("P08"), "base", ("neighbour",), 0, 0.95),
     ]
 
 
@@ -164,12 +165,12 @@ def write_label_table(path: Path, pairs: Sequence[Mapping[str, Any]], labels: Se
 
 def pair_row(record: str, corpus_arm: str, max_overlap: str, *, tag: str, covers: Sequence[str] = (),
              control_label: str = "answers", lost: bool = False, cover_class: str | None = None,
-             coverage_band: str = ">=0.8", stage_a_legs: Sequence[str] = (), stratum: str = "agree"
+             coverage_band: str = ">=0.8", stage_a_legs: Sequence[str] = (), draw_stratum: str = "answers"
              ) -> dict[str, Any]:
     window = cid(f"w{tag}")
     return {"kind": "pair", "pair_id": aj.pair_id(record, window), "record_id": record, "stage_a_chunk_id": window,
             "arm": asc.arm_group(corpus_arm), "corpus_arm": corpus_arm, "random_both_draws": False,
-            "stratum": stratum, "max_overlap_chunk_id": max_overlap, "coverage": 0.9, "coverage_band": coverage_band,
+            "draw_stratum": draw_stratum, "max_overlap_chunk_id": max_overlap, "coverage": 0.9, "coverage_band": coverage_band,
             "cover_any_chunk_ids": list(covers), "control_label": control_label, "lost": lost,
             "cover_class": cover_class, "stage_a_legs": list(stage_a_legs)}
 

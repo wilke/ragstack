@@ -32,7 +32,7 @@ glossary is its own field and changes no chunk id, span or content.
 **gold-map.** The private label table (one JSON object per line, ASCII-escaped):
 
 - one ``pair`` row per confirmatory pair: the stage-A pair id, record id, stage-A window id, arm
-  group and the **corpus arm** the question is run in for this pair, the max-overlap control chunk
+  group, the draw stratum and the **corpus arm** the question is run in for this pair, the max-overlap control chunk
   id with its coverage, the cover-any chunk ids, the control label, whether the pair was *lost*
   (control judged and not answers, the confirmatory report's rule) and, for a lost pair, its
   cover-any class (:data:`alias_control_chunks.COVER_SPLIT`);
@@ -45,6 +45,16 @@ out dir, read only; the judged stage-A legs, ``alias_study_run.JUDGING_A_LEGS``)
 retrieved in both draws (its paper is in both) takes the first draw in corpus-arm order, and is
 counted. Every stage-A retrieval leg that had the window in its top 10 is kept on the pair row
 (the stage-A reference the report prints beside each figure).
+
+A base-paper window is always run in the **base** collection, even when stage A retrieved it only
+in a larger arm's leg (neighbour or a random draw, whose collections hold the base papers too).
+Its stage-1 query then meets less competition than the stage-A leg that found it, and its
+same-arm stage-A reference (the window in the base legs' top 10) is 0. The summary counts these
+pairs (``base_windows_only_in_larger_arm_legs``: base pairs with no base-arm stage-A leg).
+
+The ``stratum`` kept on a pair row is the confirmatory **draw stratum** (the sample's
+``stratum``; every confirmatory pair was drawn from the stage-A *answers* stratum), not the
+stage-A judge's route or label source, which the gold-map inputs do not carry.
 
 The judge files are read without repair (a torn tail is refused, never truncated). The labels
 reuse ``alias_control_chunks``' helpers (``cover_labels``, ``cover_split``, ``label_of``,
@@ -464,7 +474,13 @@ def corpus_arm_of(group: str, legs: Sequence[str]) -> tuple[str | None, bool]:
     return draws[0], len(draws) > 1
 
 
-def gold_map(sample: Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, Any]],
+def base_only_in_larger_arm(pair: Mapping[str, Any]) -> bool:
+    """A base pair (run in the base collection) whose window no base-arm stage-A leg retrieved:
+    stage A found it only in a larger arm's leg (module docstring)."""
+    return pair["corpus_arm"] == "base" and not any(lg.split("|")[0] == "base" for lg in pair["stage_a_legs"])
+
+
+def gold_map(sample:Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, Any]],
              cover_seeds: Sequence[Mapping[str, Any]], cfinal: Mapping[str, Mapping[str, Any]],
              vfinal: Mapping[str, Mapping[str, Any]], hits: Mapping[tuple[str, str], Sequence[str]]
              ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -544,7 +560,7 @@ def gold_map(sample: Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, A
         counts["random_both_draws"] += int(both)
         cov = float(seed["coverage"])
         pairs.append({"kind": "pair", "pair_id": sid, "record_id": s["record_id"], "stage_a_chunk_id": s["chunk_id"],
-                      "arm": group, "corpus_arm": corpus, "random_both_draws": both, "stratum": s.get("stratum"),
+                      "arm": group, "corpus_arm": corpus, "random_both_draws": both, "draw_stratum": s.get("stratum"),
                       "max_overlap_chunk_id": seed["chunk_id"], "coverage": cov,
                       "coverage_band": acc.band(cov, acc.COVERAGE_BANDS),
                       "cover_any_chunk_ids": list(covers.get(sid, [])),
@@ -572,6 +588,7 @@ def gold_map(sample: Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, A
         "records_by_corpus_arm": {c: len({p["record_id"] for p in pairs if p["corpus_arm"] == c})
                                   for c in asc.CORPUS_ARMS},
         "random_both_draws": counts["random_both_draws"],
+        "base_windows_only_in_larger_arm_legs": sum(base_only_in_larger_arm(p) for p in pairs),
         "control_label": dict(Counter(p["control_label"] for p in pairs)),
         "lost": sum(p["lost"] for p in pairs), "lost_without_cover": sum(p["lost"] and p["cover_class"] is None
                                                                          for p in pairs),
@@ -654,9 +671,43 @@ def run_gold_map(sample: Path, seeds: Path, cover_seeds: Path, cfinal: Path, vfi
 
 # ------------------------------------------------------------------ the rechunk run's presence check
 
-def check_rechunk_presence(table: LabelTable, exports: Sequence[Path], corpus_arm: str) -> dict[str, Any]:
-    """Every chunk id the table maps for this corpus arm's pairs (the max-overlap chunk and every
-    cover-any chunk) must be in the arm's new export. Raises ``found10.Refused``."""
+def export_descriptors(exports: Sequence[Path]) -> Counter[str]:
+    """``chunk_descriptor -> rows`` over the export rows' ``metadata.chunk_descriptor`` (the stamp
+    :func:`export_row` writes on every row; a row without one counts as ``"<none>"``)."""
+    import _glossbench_r2 as g
+
+    out: Counter[str] = Counter()
+    for path in exports:
+        with g._open_text(path) as fh:
+            for i, line in enumerate(fh, 1):
+                if not line.strip():
+                    continue
+                row = g.parse_chunk(json.loads(line), f"{Path(path).name}:{i}")
+                out[str(row.metadata.get("chunk_descriptor") or "<none>")] += 1
+    return out
+
+
+def receipt_descriptor(receipt: Mapping[str, Any]) -> str | None:
+    """The chunk descriptor a load receipt records, if it records one (top-level
+    ``chunk_descriptor`` or ``chunking.chunk_descriptor``). ``load_embeddings.py``'s receipts on
+    the v1.6.24 tools image record none; the export rows' stamp is then the descriptor check."""
+    d = receipt.get("chunk_descriptor")
+    if d is None and isinstance(receipt.get("chunking"), Mapping):
+        d = receipt["chunking"].get("chunk_descriptor")
+    return None if d is None else str(d)
+
+
+def check_rechunk_presence(table: LabelTable, exports: Sequence[Path], corpus_arm: str, *,
+                           expected_chunks: int, load_receipt: Path | None = None) -> dict[str, Any]:
+    """The arm's new export is the confirmatory chunking's, complete, and holds every chunk the
+    table maps for this corpus arm's pairs. Raises ``found10.Refused`` when:
+
+    - the export holds another number of distinct chunks than ``expected_chunks`` (the run
+      config's ``corpora.<arm>.expected_chunks``, the offline count);
+    - an export row's ``metadata.chunk_descriptor`` is missing or is not :data:`DESCRIPTOR`
+      (``sentence/512/0`` and the control params), or the load receipt records a descriptor
+      (:func:`receipt_descriptor`) other than :data:`DESCRIPTOR`;
+    - a mapped chunk id (the max-overlap chunk and every cover-any chunk) is absent."""
     import found10 as f10
 
     pairs = table.pairs_in(corpus_arm)
@@ -664,13 +715,30 @@ def check_rechunk_presence(table: LabelTable, exports: Sequence[Path], corpus_ar
     for p in pairs:
         want |= {p["max_overlap_chunk_id"], *p["cover_any_chunk_ids"]}
     chunks = asc.read_chunk_exports(exports)
+    if len(chunks) != expected_chunks:
+        raise f10.Refused(f"rechunk presence: the {corpus_arm} export holds {len(chunks)} chunks, "
+                          f"corpora.{corpus_arm}.expected_chunks is {expected_chunks}")
+    descs = export_descriptors(exports)
+    other = {d: n for d, n in descs.items() if d != DESCRIPTOR}
+    if other:
+        raise f10.Refused(f"rechunk presence: {sum(other.values())} row(s) of the {corpus_arm} export carry "
+                          f"another chunk_descriptor than the confirmatory {DESCRIPTOR!r} ({sorted(other)})")
+    sources = ["export_rows"]
+    if load_receipt is not None and Path(load_receipt).is_file():
+        rd = receipt_descriptor(json.loads(Path(load_receipt).read_text(encoding="utf-8")))
+        if rd is not None and rd != DESCRIPTOR:
+            raise f10.Refused(f"rechunk presence: the {corpus_arm} load receipt records chunk_descriptor {rd!r}, "
+                              f"not the confirmatory {DESCRIPTOR!r}")
+        if rd is not None:
+            sources.append("load_receipt")
     absent = sorted(c for c in want if c not in chunks)
     if absent:
         raise f10.Refused(f"rechunk presence: {len(absent)} of the {len(want)} mapped chunk id(s) of the "
                           f"{corpus_arm} pairs are absent from the arm's export (is it the rechunked export?)")
     return {"pairs": len(pairs), "records": len(table.records(corpus_arm)), "mapped_chunks": len(want),
             "present": len(want), "label_table_sha256": table.sha256,
-            "export_sha256": [asc.sha256_file(x) for x in exports], "chunks_in_export": len(chunks)}
+            "export_sha256": [asc.sha256_file(x) for x in exports], "chunks_in_export": len(chunks),
+            "expected_chunks": expected_chunks, "chunk_descriptor": DESCRIPTOR, "descriptor_checked_in": sources}
 
 
 # ------------------------------------------------------------------ CLI

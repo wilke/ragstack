@@ -70,7 +70,9 @@ only ``none``; no ``gold_hashes``). The record set is verified as in the main ru
 records of the label table's pairs (``rechunk_prep.py gold-map``) are kept, and each run of a
 corpus arm asks the records with a pair in that arm. Gold presence is replaced by
 ``rechunk_prep.check_rechunk_presence``: every chunk id the table maps for the arm's pairs (the
-max-overlap chunk and the cover-any chunks) must be in the arm's new export. Retriever settings,
+max-overlap chunk and the cover-any chunks) must be in the arm's new export, the export must hold
+``corpora.<arm>.expected_chunks`` chunks, and its rows (and the load receipt, when it records one)
+must carry the confirmatory chunk descriptor. Retriever settings,
 ``top_k`` 50, ``rerank_candidates`` 50, the load-receipt and census checks and the provenance are
 the main run's. Run it with ``--stage A`` in a fresh out dir (every ``<arm> x none`` leg is a
 retrieval stage-A leg). The summaries carry ``mode: rechunk`` and ``exploratory: true`` (and the
@@ -680,7 +682,8 @@ class AliasRunner(f10.Runner):
         summary["census"] = cen
         if self.study.get("mode") == RECHUNK:
             # exploratory: found10's found@10 is gold-id based, and the gold ids are stage-A chunk
-            # ids that the new chunking does not have; the levels are left out, not reported as 0
+            # ids that the new chunking does not have; the levels are left out, not reported as 0.
+            # The rows' found10 / gold_ranks are computed from those stage-A ids too: unused here.
             summary["exploratory"] = True
             summary["mode"] = RECHUNK
             for c in (summary.get("conditions") or {}).values():
@@ -771,7 +774,9 @@ def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: 
         import rechunk_prep as rp
 
         table = rechunk_table(cfg)
-        extra["rechunk_presence"] = rp.check_rechunk_presence(table, export_paths(ccfg["chunk_export"]), corpus_arm)
+        extra["rechunk_presence"] = rp.check_rechunk_presence(
+            table, export_paths(ccfg["chunk_export"]), corpus_arm, expected_chunks=int(ccfg["expected_chunks"]),
+            load_receipt=Path(cfg["collections"][corpus_arm][glossary]["load_receipt"]))
         extra["exploratory"] = True
         arm_records = table.records(corpus_arm)
         recs = [r for r in recs if r["record_id"] in arm_records]
