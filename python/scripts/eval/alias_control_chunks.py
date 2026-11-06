@@ -14,6 +14,17 @@
                                                      [--retest-config RETEST.json --retest-dir RDIR] --out REPORT.json
     PYTHONPATH=python alias_control_chunks.py retest-seed --judge-config MAIN.json --control-dir DIR --out-dir RDIR
 
+The confirmatory follow-up (``docs/plans/results/alias-boundary-confirm-2026-11/PREREG.md`` §11):
+
+    PYTHONPATH=python alias_control_chunks.py draw-confirm --judge-config MAIN.json \\
+        --control-draw control-draw.json --control-sample CONTROL/sample.jsonl --n 351 --out-dir DIR \\
+        --confirmatory PREREG_SHA256 --prereg PREREG.md
+    (chunk / map / retest-seed as above, each with --confirmatory PREREG_SHA256 --prereg PREREG.md)
+    PYTHONPATH=python alias_control_chunks.py confirm-report --judge-config MAIN.json \\
+        --control-config CONTROL.json --retest-config RETEST.json --control-dir DIR --retest-dir RDIR \\
+        --prereg PREREG.md --prereg-sha256 SHA --out confirm-report.json [--cover-config COVER.json] \\
+        --artifacts-dir ARTIFACTS [--write-flipped FLIPPED.txt]
+
 **Record texts for the main run** (read-only; every source is needed, or documents are excluded
 as ``no_text``): the base arm's extractor output (the round-1 ``oa.jsonl`` record file), and for the
 added arms all four per-paper text directories of the study corpus, ``text``, ``text-v2`` (it holds
@@ -140,6 +151,19 @@ rate, for display; no test is made of it).
 
 Every artifact embeds ``experiment_provenance()`` with span fingerprints: sentences over the
 documents' texts, and the adapter's sections and the control chunks where the documents are known.
+
+**The confirmatory test (PREREG alias-boundary-confirm-2026-11, §11).** ``draw-confirm``
+(:func:`draw_confirm`, :func:`run_draw_confirm`) draws the fresh pairs of PREREG §4 from stage A's
+committed final rows (agreed *answers*, minus the control's pairs and windows), one pair per
+(record, arm) and per window, equal arms, seed ``261105|alias|confirm|draw``, and writes
+``sample.jsonl`` in the control's row shape, so ``chunk``, ``map`` and ``retest-seed`` run
+unchanged; with ``--confirmatory PREREG_SHA256`` their public files carry ``exploratory: false``
+and a ``confirmatory`` block (``draw-confirm`` and ``confirm-report`` always do).
+``confirm-report`` (:func:`run_confirm_report`, :func:`confirm_table`) joins the control arm by
+``pair_id(record, control chunk)`` and the retest arm by the stage-A pair id and writes the
+primary table (exact one-sided sign-flip over records, the McNemar sensitivity, the cluster
+bootstrap and Tango intervals, the §6.8 unjudged sensitivities, the §8 gates, the §7 outcome),
+the §6 descriptives, the times, and the Qwen cache check (:func:`cache_check`).
 """
 from __future__ import annotations
 
@@ -148,6 +172,7 @@ import bisect
 import json
 import math
 import os
+import re
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -167,7 +192,8 @@ REPO = _HERE.parents[2]
 
 SCHEMA = {"check": "alias-control-check/1", "draw": "alias-control-draw/1", "chunk": "alias-control-chunk/1",
           "map": "alias-control-map/1", "report": "alias-control-report/1",
-          "retest": "alias-control-retest-seed/1"}
+          "retest": "alias-control-retest-seed/1",
+          "draw-confirm": "alias-confirm-draw/1", "confirm-report": "alias-confirm-report/1"}
 #: §2: the control chunking as collection markers (``chunk_params``), read by THE readers
 CONTROL_METHOD = "sentence"
 CONTROL_SIZE = 512
@@ -201,6 +227,57 @@ TOKEN_BANDS: tuple[tuple[float, float, str], ...] = ((0, MIN_PIECE, f"<{MIN_PIEC
                                                      (CEILING + 1, math.inf, f">{CEILING}"))
 #: #940: a document holding a full LaTeX preamble is its own report stratum (the text is NOT cleaned)
 LATEX_MARKERS = ("\\documentclass", "\\begin{document}")
+
+# ------------------------------------------------------------------ the confirmatory test (PREREG §11)
+#: docs/plans/results/alias-boundary-confirm-2026-11/PREREG.md: names, seeds, the §4.1 input shas,
+#: the §8 floor and thresholds, the §3.1 interval settings, the frozen power file
+CONFIRM_PREREG = "alias-boundary-confirm-2026-11"
+CONFIRM_SEED = "261105|alias|confirm|draw"
+CONFIRM_BOOT_SEED = "261105|alias|confirm|boot"
+#: §4.1: the committed stage-A commit and the exploratory control's private sample (the latter's
+#: full sha256, quoted in full in the prereg's §4.1, is the committed public
+#: ``control/artifacts/control-draw.json``'s ``sample_sha256``)
+CONFIRM_STAGE_A_COMMIT_SHA256 = "f53ca9d0b18fb66753ae3fbe219b7b63e2163aee44f8dfe0e9ce386b04d266cd"
+CONFIRM_CONTROL_SAMPLE_SHA256 = "64a8bbc1adc5c22db1f0a3fee447bc3f691d3ee6f7fae7bf1948bfd8a118d39e"
+CONFIRM_STRATUM = "answers"
+CONFIRM_ALPHA = 0.05
+#: §8 gate 1: 0.90 x 351 = 315.9, rounded up (``power.json`` ``n_floor``)
+CONFIRM_N_FLOOR = 316
+#: §8 gate 2 and the §7 *judge incomplete* caveat: unjudged share of mapped pairs in either arm
+CONFIRM_UNJUDGED_GATE = 0.05
+CONFIRM_UNJUDGED_CAVEAT = 0.01
+#: §6.9 / §10.10: reasoning texts shorter than this count as empty; one identical pair flags
+CONFIRM_CACHE_MIN_CHARS = 200
+CONFIRM_CACHE_THRESHOLD = 1
+#: §3.1: the record-cluster bootstrap and the Tango interval
+CONFIRM_N_BOOT = 10_000
+CONFIRM_CI_LEVEL = 0.90
+CONFIRM_DIR = REPO / "docs" / "plans" / "results" / CONFIRM_PREREG
+#: §9.1: ``power.json`` is in the freeze set; its sha256 is the one this directory's README records
+CONFIRM_POWER_JSON = CONFIRM_DIR / "power.json"
+CONFIRM_POWER_JSON_SHA256 = "13afd2ba3e31f06455972cf001ae2b566dc4e428941bf48a0f4b8298020bc685"
+#: §11.1 (1) / §9.2: the frozen sha must be the committed PREREG.md's own (read at call time)
+CONFIRM_PREREG_FILE = CONFIRM_DIR / "PREREG.md"
+#: §3.3 / §4.3: the owner's draw size and its quotas (``power.json`` ``n_draw_owner``,
+#: ``quotas_at_owner_draw``); draw-confirm refuses any other ``--n``
+CONFIRM_N_DRAW = 351
+CONFIRM_QUOTAS = {"base": 117, "neighbour": 117, "random": 117}
+#: §4.1: the pool as the drafting session counted it; draw-confirm refuses unless the recount
+#: reproduces every figure (keys are :func:`draw_confirm`'s count names; ``*_total`` = its total)
+CONFIRM_POOL_COUNTS: dict[str, Any] = {
+    "stage_a_pairs": 9205, "agreed": 8580,
+    "agreed_answers": {"base": 816, "neighbour": 542, "random": 706, "total": 2064},
+    "in_control_sample": {"total": 150},
+    "eligible": {"base": 766, "neighbour": 492, "random": 656, "total": 1914},
+    "shared_window_excluded": {"base": 18, "neighbour": 11, "random": 14, "total": 43},
+    "pool": {"base": 748, "neighbour": 481, "random": 642, "total": 1871},
+    "pool_records": 262, "pool_records_by_arms": {"1": 118, "2": 80, "3": 64}, "pool_max_pairs_per_record": 51,
+    "cells": {"base": 198, "neighbour": 154, "random": 118, "total": 470},
+    "pool_papers": 1050, "pool_largest_paper_cluster": 15, "pool_windows": 1734,
+    "pool_windows_multi_record": 123, "pool_pairs_on_multi_record_windows": 260, "pool_windows_cross_arm": 0}
+#: §8 gate names, in the prereg's order
+CONFIRM_GATES = ("g1_realised_n", "g2_unjudged", "g3_draw_and_registries", "g4_chunker_and_environment",
+                 "g5_arms_complete", "g6_input_shas")
 
 
 # ------------------------------------------------------------------ environment
@@ -581,6 +658,44 @@ def write_summary(path: Path, obj: Mapping[str, Any], what: str, forbidden: Iter
     asp.write_key(path, obj, what)
 
 
+def confirmatory_block(prereg_sha256: str) -> dict[str, Any]:
+    """The ``confirmatory`` block of a public file of the confirmatory test (PREREG §11): the
+    prereg's name and its sha256 (64 lower-case hex digits, or refused)."""
+    if not re.fullmatch(r"[0-9a-f]{64}", str(prereg_sha256 or "")):
+        raise SystemExit("REFUSED: --confirmatory / --prereg-sha256 takes the prereg's sha256 (64 lower-case hex "
+                         "digits)")
+    return {"prereg": CONFIRM_PREREG, "prereg_sha256": prereg_sha256}
+
+
+def check_prereg(prereg_sha256: str, prereg: Path | None) -> dict[str, Any]:
+    """``--confirmatory SHA --prereg PREREG.md``: the sha is well formed and is the prereg file's
+    own sha256 (so a wrong sha stops step 1, not step 6). Returns the ``confirmatory`` block."""
+    block = confirmatory_block(prereg_sha256)
+    if prereg is None:
+        raise SystemExit("REFUSED: --confirmatory needs --prereg PREREG.md (its sha256 is checked against it)")
+    if asc.sha256_file(prereg) != prereg_sha256:
+        raise SystemExit("REFUSED: the prereg file's sha256 is not --confirmatory (the frozen sha)")
+    require_committed_prereg(prereg_sha256)
+    return block
+
+
+def require_committed_prereg(prereg_sha256: str) -> None:
+    """The sha must be the committed ``PREREG.md``'s (:data:`CONFIRM_PREREG_FILE`): another file
+    with its own matching sha is refused."""
+    if asc.sha256_file(CONFIRM_PREREG_FILE) != prereg_sha256:
+        raise SystemExit("REFUSED: the sha is not the committed PREREG.md's (another file was given, or the "
+                         "committed prereg changed)")
+
+
+def stamp_confirmatory(rec: dict[str, Any], prereg_sha256: str | None) -> dict[str, Any]:
+    """``--confirmatory``: ``exploratory`` false and the ``confirmatory`` block; without it the
+    record is left as it was (``exploratory`` true). The schema string stays: it names the shape."""
+    if prereg_sha256 is not None:
+        rec["exploratory"] = False
+        rec["confirmatory"] = confirmatory_block(prereg_sha256)
+    return rec
+
+
 # ------------------------------------------------------------------ check (P2)
 
 def check_docs(ex: Exports, sample_docs: Iterable[str], per_arm: int) -> dict[str, list[str]]:
@@ -751,11 +866,13 @@ def run_draw(judge_config: Path, spot_key: Path, spot_sheet: Path, out_dir: Path
 
 # ------------------------------------------------------------------ chunk
 
-def run_chunk(chunk_exports: Mapping[str, str], texts: Sequence[Path], sample: Path, out_dir: Path
-              ) -> dict[str, Any]:
+def run_chunk(chunk_exports: Mapping[str, str], texts: Sequence[Path], sample: Path, out_dir: Path,
+              confirmatory: str | None = None, prereg: Path | None = None) -> dict[str, Any]:
     import alias_study_spot as asp
 
     env = require_env()
+    if confirmatory is not None:
+        check_prereg(confirmatory, prereg)  # refused before any file is written
     asp.refuse_in_repo(out_dir, "--out-dir")
     ex = read_exports(chunk_exports)
     samp = asc.read_jsonl(sample)
@@ -789,14 +906,21 @@ def run_chunk(chunk_exports: Mapping[str, str], texts: Sequence[Path], sample: P
                                       "chunk_descriptor": CONTROL_DESCRIPTOR, "tokens": t, "split_sentence": pc}})
     csha = write_private(out_dir / "chunks-control.jsonl", jsonl_bytes(rows), "the control chunks")
     dsha = write_private(out_dir / "docs.jsonl", jsonl_bytes(drows), "the control documents")
+    env = {**env, "token_counter": token_counter_info(cc.counter)}
     rec = {"schema": SCHEMA["chunk"], "exploratory": True, "chunker": cc.applied(), "environment": env,
            "documents": len(doc_ids), "resolution": dict(res), "chunks": len(rows), "p2_counts": dict(p2),
            "p2_gate": p2_gate(p2, True), "tokens": token_summary(toks_all),
            "chunks_sha256": csha, "docs_sha256": dsha, "sample_sha256": asc.sha256_file(sample),
            "provenance": public_provenance(provenance(ok_texts, docs, spans))}
+    stamp_confirmatory(rec, confirmatory)
     forbidden = set(doc_ids) | {r["chunk_id"] for r in rows} | {r["pair_id"] for r in samp}
     write_summary(out_dir / "chunk.json", rec, "chunk.json", forbidden)
     return {"documents": len(doc_ids), "resolution": dict(res), "chunks": len(rows), "chunks_sha256": csha}
+
+
+def token_counter_info(counter: Any) -> dict[str, Any]:
+    """The token counter the chunker loaded (§8 gate 4: the SFR tokenizer): its class and model."""
+    return {"class": type(counter).__name__, "model": getattr(counter, "model", None)}
 
 
 def _stamp_keys() -> tuple[str, ...]:
@@ -870,10 +994,13 @@ def read_pair_ids(path: Path) -> set[str]:
 
 
 def run_map(chunk_exports: Mapping[str, str], sample: Path, control_dir: Path, *, cover: bool = False,
-            pairs: Path | None = None) -> dict[str, Any]:
+            pairs: Path | None = None, confirmatory: str | None = None, prereg: Path | None = None
+            ) -> dict[str, Any]:
     import alias_study_spot as asp
 
     env = require_env()
+    if confirmatory is not None:
+        check_prereg(confirmatory, prereg)  # refused before any file is written
     asp.refuse_in_repo(control_dir, "--control-dir")
     ex = read_exports(chunk_exports)
     samp = asc.read_jsonl(sample)
@@ -945,6 +1072,7 @@ def run_map(chunk_exports: Mapping[str, str], sample: Path, control_dir: Path, *
     if cover:
         rec["cover_any_cap"] = COVER_ANY_CAP
         rec["windows_capped"] = capped
+    stamp_confirmatory(rec, confirmatory)
     forbidden = set(docs) | {s["control_of"] for s in seeds} | {s["record_id"] for s in seeds} | \
         {s["chunk_id"] for s in seeds} | {s["stage_a_chunk_id"] for s in seeds}
     write_summary(control_dir / ("map-cover.json" if cover else "map.json"), rec, "the map summary", forbidden)
@@ -1013,7 +1141,8 @@ def retest_export_bytes(rows: Iterable[tuple[str, Mapping[str, Any]]]) -> tuple[
     return "".join(parts).encode("utf-8"), escaped
 
 
-def run_retest_seed(judge_config: Path, control_dir: Path, out_dir: Path) -> dict[str, Any]:
+def run_retest_seed(judge_config: Path, control_dir: Path, out_dir: Path, confirmatory: str | None = None,
+                    prereg: Path | None = None) -> dict[str, Any]:
     """``retest-seed`` (module docstring, *retest*): the control's seed pairs re-pointed at their own
     stage-A windows, and those windows as a control-shaped export."""
     import _glossbench_r2 as g
@@ -1021,6 +1150,8 @@ def run_retest_seed(judge_config: Path, control_dir: Path, out_dir: Path) -> dic
     import alias_study_spot as asp
 
     env = require_env()
+    if confirmatory is not None:
+        check_prereg(confirmatory, prereg)  # refused before any file is written
     asp.refuse_in_repo(out_dir, "--out-dir")
     cfg = judge_cfg(judge_config)
     seeds = asc.read_jsonl(control_dir / "pairs-seed.jsonl")
@@ -1054,6 +1185,7 @@ def run_retest_seed(judge_config: Path, control_dir: Path, out_dir: Path) -> dic
            "control_seed_sha256": asc.sha256_file(control_dir / "pairs-seed.jsonl"),
            "chunk_exports_sha256": {a: asc.sha256_file(p) for a, p in sorted(cfg["chunk_exports"].items())},
            "environment": env, "provenance": public_provenance(provenance())}
+    stamp_confirmatory(rec, confirmatory)
     doc_ids = {g.parse_chunk(found[c][1], c).doc_id for c in order}
     forbidden = {s["control_of"] for s in rseeds} | {s["record_id"] for s in rseeds} | want | doc_ids
     write_summary(out_dir / "retest-seed.json", rec, "retest-seed.json", forbidden)
@@ -1151,9 +1283,6 @@ def compute_retest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     flips = [r for r in judged if flipped(r)]
     c = Counter((label_of(r["retest"]), label_of(r["stage_a"])) for r in judged)
-    esc_a = {i for i, r in enumerate(judged) if route(r["stage_a"]) != "agree"}
-    esc_r = {i for i, r in enumerate(judged) if route(r["retest"]) != "agree"}
-    union = esc_a | esc_r
     return {
         "n_seed": len(rows), "n_judged_both": len(judged),
         "n_without_retest_label": sum(r["retest"] is None for r in rows),
@@ -1171,10 +1300,19 @@ def compute_retest(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "sources": {"stage_a": dict(Counter(str(r["stage_a"].get("source")) for r in judged)),
                     "retest": dict(Counter(str(r["retest"].get("source")) for r in judged))},
         "agreement_retest_vs_stage_a": ast.agreement_metrics(c[(1, 1)], c[(1, 0)], c[(0, 1)], c[(0, 0)]),
-        "escalation_overlap": {"n": len(judged), "stage_a_escalated": len(esc_a), "retest_escalated": len(esc_r), "both": len(esc_a & esc_r),
-                               "stage_a_only": len(esc_a - esc_r), "retest_only": len(esc_r - esc_a),
-                               "jaccard": round(len(esc_a & esc_r) / len(union), 4) if union else None},
+        "escalation_overlap": escalation_overlap(judged, "stage_a", "retest"),
     }
+
+
+def escalation_overlap(judged: Sequence[Mapping[str, Any]], a: str, b: str) -> dict[str, Any]:
+    """Over rows holding both final rows ``a`` and ``b``: how many left the ``agree`` route under
+    each, under both, under one only, and the Jaccard of the two escalated sets."""
+    esc_a = {i for i, r in enumerate(judged) if route(r[a]) != "agree"}
+    esc_b = {i for i, r in enumerate(judged) if route(r[b]) != "agree"}
+    union = esc_a | esc_b
+    return {"n": len(judged), f"{a}_escalated": len(esc_a), f"{b}_escalated": len(esc_b), "both": len(esc_a & esc_b),
+            f"{a}_only": len(esc_a - esc_b), f"{b}_only": len(esc_b - esc_a),
+            "jaccard": round(len(esc_a & esc_b) / len(union), 4) if union else None}
 
 
 def tiebreak_replicate(pair_ids: Iterable[str], stage_a_argon: Mapping[str, Mapping[str, Any]],
@@ -1450,6 +1588,953 @@ def run_report(judge_config: Path, control_config: Path, control_dir: Path, out:
     return write_public(out, rec, forbidden, passages)
 
 
+# ------------------------------------------------------------------ draw-confirm (the confirmatory test, PREREG §4)
+
+def _by_arm(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    c = Counter(r["arm"] for r in rows)
+    return {**{a: c.get(a, 0) for a in asc.ARM_GROUPS}, "total": sum(c.values())}
+
+
+def _records_by_arms(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+    """How many records have rows in 1 / 2 / 3 arms."""
+    arms_of: dict[str, set[str]] = defaultdict(set)
+    for r in rows:
+        arms_of[r["record_id"]].add(r["arm"])
+    h = Counter(len(v) for v in arms_of.values())
+    return {str(k): h.get(k, 0) for k in (1, 2, 3)}
+
+
+def _largest(values: Iterable[Any]) -> int:
+    c = Counter(values)
+    return max(c.values()) if c else 0
+
+
+def draw_confirm(final: Sequence[Mapping[str, Any]], *, exclude_pairs: Iterable[str], exclude_windows: Iterable[str],
+                 n: int, seed: str = CONFIRM_SEED, paper_of: Mapping[str, str] | None = None
+                 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """PREREG §4.1-§4.3: the eligible pool and the draw. Returns the drawn final rows (stratum
+    ``answers`` attached, in arm order then walk order) and the counts (no id).
+
+    Pool: stage-A final rows (``stage == "A"``) with ``source == "agree"`` and ``label_of == 1``,
+    minus ``exclude_pairs`` (the control's pairs, by pair id) and minus the pairs whose window
+    (stage-A chunk id) is in ``exclude_windows`` (the control's windows). Availability per arm =
+    its cells (distinct records with a pool pair in the arm); first-pass quotas
+    ``alias_study_judge.drift_allocation(n, cells)``. Per arm the pool pairs are walked in the order
+    ``sha256(<seed>|<arm>|<pair id>)`` (ties by pair id), a pair taken when its record has no pair
+    taken in this arm and its window has not been taken in any arm, until the arm's target. Then
+    the shortfall of the ACHIEVED counts against ``n`` is reallocated equally to the arms whose
+    walk is not exhausted (remainder to base, then neighbour), whose walks continue, repeated
+    until ``n`` is reached or every walk is exhausted. ``paper_of`` (pair id -> passage paper)
+    adds the paper-cluster counts."""
+    import alias_study_judge as aj
+
+    exclude_pairs, exclude_windows = set(exclude_pairs), set(exclude_windows)
+    stage_a = [f for f in final if f.get("stage") == "A"]
+    for f in stage_a:
+        if f.get("arm") not in asc.ARM_GROUPS:
+            raise SystemExit(f"a stage-A final row carries arm {f.get('arm')!r}")
+    agreed = [f for f in stage_a if f.get("source") == "agree"]
+    answers = [f for f in agreed if label_of(f) == 1]
+    ids = [f["pair_id"] for f in answers]
+    if len(set(ids)) != len(ids):
+        raise SystemExit("REFUSED: a pair id appears twice among stage A's final rows")
+    in_control = [f for f in answers if f["pair_id"] in exclude_pairs]
+    eligible = [f for f in answers if f["pair_id"] not in exclude_pairs]
+    shared = [f for f in eligible if f["chunk_id"] in exclude_windows]
+    pool = [f for f in eligible if f["chunk_id"] not in exclude_windows]
+    order = {a: sorted((f for f in pool if f["arm"] == a), key=lambda f: (asc.seeded_key(seed, a, f["pair_id"]),
+                                                                         f["pair_id"]))
+             for a in asc.ARM_GROUPS}
+    cells = {a: len({f["record_id"] for f in order[a]}) for a in asc.ARM_GROUPS}
+    quotas = aj.drift_allocation(n, cells)
+    got: dict[str, list[Mapping[str, Any]]] = {a: [] for a in asc.ARM_GROUPS}
+    pos = dict.fromkeys(asc.ARM_GROUPS, 0)
+    rec_taken: dict[str, set[str]] = {a: set() for a in asc.ARM_GROUPS}
+    win_taken: set[str] = set()
+
+    def walk(a: str, target: int) -> None:
+        lst = order[a]
+        while len(got[a]) < target and pos[a] < len(lst):
+            f = lst[pos[a]]
+            pos[a] += 1
+            if f["record_id"] in rec_taken[a] or f["chunk_id"] in win_taken:
+                continue
+            rec_taken[a].add(f["record_id"])
+            win_taken.add(f["chunk_id"])
+            got[a].append(f)
+
+    def capacity(a: str) -> int:
+        """The arm's walk run to exhaustion on its own (no other arm's windows taken)."""
+        recs: set[str] = set()
+        wins: set[str] = set()
+        for f in order[a]:
+            if f["record_id"] not in recs and f["chunk_id"] not in wins:
+                recs.add(f["record_id"])
+                wins.add(f["chunk_id"])
+        return len(recs)
+
+    walk_capacity = {a: capacity(a) for a in asc.ARM_GROUPS}
+    for a in asc.ARM_GROUPS:
+        walk(a, quotas[a])
+    first = {a: len(got[a]) for a in asc.ARM_GROUPS}
+    target = dict(quotas)
+    rounds = 0
+    while True:
+        short = n - sum(len(v) for v in got.values())
+        open_ = [a for a in asc.ARM_GROUPS if pos[a] < len(order[a])]
+        if short <= 0 or not open_:
+            break
+        rounds += 1
+        share = dict.fromkeys(open_, short // len(open_))
+        for a in open_[: short % len(open_)]:
+            share[a] += 1
+        for a in open_:
+            target[a] = len(got[a]) + share[a]
+            walk(a, target[a])
+    picked = [{**f, "stratum": CONFIRM_STRATUM} for a in asc.ARM_GROUPS for f in got[a]]
+    win_recs: dict[str, set[str]] = defaultdict(set)
+    win_arms: dict[str, set[str]] = defaultdict(set)
+    for f in pool:
+        win_recs[f["chunk_id"]].add(f["record_id"])
+        win_arms[f["chunk_id"]].add(f["arm"])
+    multi = {w for w, r in win_recs.items() if len(r) > 1}
+    per_rec = Counter(f["record_id"] for f in pool)
+    achieved = {a: len(got[a]) for a in asc.ARM_GROUPS}
+    counts: dict[str, Any] = {
+        "stage_a_pairs": len(stage_a), "stage_a_sources": dict(Counter(str(f.get("source")) for f in stage_a)),
+        "agreed": len(agreed), "agreed_answers": _by_arm(answers), "in_control_sample": _by_arm(in_control),
+        "eligible": _by_arm(eligible), "shared_window_excluded": _by_arm(shared), "pool": _by_arm(pool),
+        "pool_records": len(per_rec), "pool_records_by_arms": _records_by_arms(pool),
+        "pool_max_pairs_per_record": max(per_rec.values(), default=0), "pool_windows": len(win_recs),
+        "pool_windows_multi_record": len(multi), "pool_pairs_on_multi_record_windows": sum(
+            f["chunk_id"] in multi for f in pool),
+        "pool_windows_cross_arm": sum(len(v) > 1 for v in win_arms.values()),
+        "availability": {"cells": cells, "achieved": achieved}, "walk_capacity": walk_capacity,
+        "quotas": quotas, "achieved_first_pass": first, "targets_after_reallocation": target,
+        "reallocation_rounds": rounds, "exhausted": {a: pos[a] >= len(order[a]) for a in asc.ARM_GROUPS},
+        "n_draw": n, "n_drawn": len(picked), "drawn": _by_arm(picked),
+        "drawn_records": len({f["record_id"] for f in picked}), "drawn_records_by_arms": _records_by_arms(picked),
+        "drawn_windows": len({f["chunk_id"] for f in picked}),
+        "drawn_control_pairs": sum(f["pair_id"] in exclude_pairs for f in picked),
+        "drawn_control_windows": sum(f["chunk_id"] in exclude_windows for f in picked),
+        "drawn_shared_windows": len(picked) - len({f["chunk_id"] for f in picked}),
+        "drawn_record_arm_repeats": len(picked) - len({(f["record_id"], f["arm"]) for f in picked}),
+    }
+    if paper_of is not None:
+        counts["pool_papers"] = len({paper_of.get(f["pair_id"]) for f in pool})
+        counts["pool_largest_paper_cluster"] = _largest(paper_of.get(f["pair_id"]) for f in pool)
+        counts["drawn_papers"] = len({paper_of.get(f["pair_id"]) for f in picked})
+        counts["drawn_largest_paper_cluster"] = _largest(paper_of.get(f["pair_id"]) for f in picked)
+    return picked, counts
+
+
+def pool_count_problems(counts: Mapping[str, Any], expected: Mapping[str, Any] | None = None) -> list[str]:
+    """The §4.1 figures (:data:`CONFIRM_POOL_COUNTS`) the recount does not reproduce, as
+    ``name: recounted != expected`` (counts only)."""
+    expected = CONFIRM_POOL_COUNTS if expected is None else expected
+    cells = dict((counts.get("availability") or {}).get("cells") or {})
+    have = {**counts, "cells": {**cells, "total": sum(cells.values())}}
+    bad = []
+    for k, v in expected.items():
+        got = have.get(k)
+        if isinstance(v, Mapping):
+            for kk, vv in v.items():
+                g = got.get(kk) if isinstance(got, Mapping) else None
+                if g != vv:
+                    bad.append(f"{k}.{kk}: {g} != {vv}")
+        elif got != v:
+            bad.append(f"{k}: {got} != {v}")
+    return bad
+
+
+def run_draw_confirm(judge_config: Path, control_draw_json: Path, control_sample: Path, n: int, out_dir: Path,
+                     confirmatory: str, prereg: Path | None = None) -> dict[str, Any]:
+    """``draw-confirm`` (PREREG §4.3, §5 step 1): refuses unless the control sample's sha256 is
+    ``control-draw.json``'s and §4.1's, and the committed stage-A commit is §4.1's and the one
+    ``control-draw.json`` names. Writes the PRIVATE ``sample.jsonl`` in the control's row shape (so
+    ``chunk``, ``map`` and ``retest-seed`` run unchanged) and the public ``draw.json``."""
+    import alias_study_spot as asp
+
+    env = require_env()
+    block = check_prereg(confirmatory, prereg)
+    if n != CONFIRM_N_DRAW:
+        raise SystemExit(f"REFUSED: --n is {n}; PREREG §3.3 fixes the draw at {CONFIRM_N_DRAW}")
+    asp.refuse_in_repo(out_dir, "--out-dir")
+    cdraw = json.loads(Path(control_draw_json).read_text(encoding="utf-8"))
+    csha = asc.sha256_file(control_sample)
+    if csha != cdraw.get("sample_sha256"):
+        raise SystemExit("REFUSED: the control sample's sha256 is not control-draw.json's sample_sha256")
+    if csha != CONFIRM_CONTROL_SAMPLE_SHA256:
+        raise SystemExit("REFUSED: the control sample is not the one PREREG §4.1 names (sha256 differs)")
+    cfg = judge_cfg(judge_config)
+    sa = asp.committed_stage_a(cfg)
+    if sa["commit_sha256"] != CONFIRM_STAGE_A_COMMIT_SHA256:
+        raise SystemExit("REFUSED: the committed stage-A commit is not the one PREREG §4.1 names (sha256 differs)")
+    if cdraw.get("stage_a_commit_sha256") != sa["commit_sha256"]:
+        raise SystemExit("REFUSED: control-draw.json names another stage-A commit")
+    ctrl = asc.read_jsonl(control_sample)
+    paper_of = {p["pair_id"]: str(p["c_paper"]) for p in sa["pairs"]}
+    picked, counts = draw_confirm(sa["final"], exclude_pairs={r["pair_id"] for r in ctrl},
+                                  exclude_windows={r["chunk_id"] for r in ctrl}, n=n, seed=CONFIRM_SEED,
+                                  paper_of=paper_of)
+    bad = pool_count_problems(counts)
+    if bad:
+        raise SystemExit(f"REFUSED: the recounted pool does not reproduce PREREG §4.1 ({'; '.join(bad)}); nothing "
+                         "written")
+    if counts["drawn_control_pairs"] or counts["drawn_control_windows"] or counts["drawn_shared_windows"] \
+            or counts["drawn_record_arm_repeats"]:
+        raise SystemExit("REFUSED: the draw broke its own rule (a control pair or window, a shared window, or two "
+                         "pairs of one (record, arm)); nothing written")
+    rows = [{"pair_id": f["pair_id"], "record_id": f["record_id"], "chunk_id": f["chunk_id"],
+             "stratum": CONFIRM_STRATUM, "arm": f["arm"], "in_spot_sheet": False} for f in picked]
+    sha = write_private(out_dir / "sample.jsonl", jsonl_bytes(rows), "the confirmatory sample")
+    rec = {"schema": SCHEMA["draw-confirm"], "exploratory": False, "confirmatory": block, "seed": CONFIRM_SEED,
+           "stratum": CONFIRM_STRATUM,
+           "draw_rule": "PREREG §4.3: equal arms by alias_study_judge.drift_allocation over the cells; per arm the "
+                        "seeded walk, one pair per (record, arm) and one pair per window; the achieved shortfall "
+                        "reallocated to the arms whose walk is not exhausted",
+           "counts": counts, "sample_sha256": sha, "stage_a_commit_sha256": sa["commit_sha256"],
+           "control_sample_sha256": csha, "control_draw_sha256": asc.sha256_file(control_draw_json),
+           "environment": env, "provenance": public_provenance(provenance())}
+    forbidden = {f["pair_id"] for f in sa["final"]} | {f["record_id"] for f in sa["final"]} | \
+        {f["chunk_id"] for f in sa["final"]} | {r["pair_id"] for r in ctrl} | {r["chunk_id"] for r in ctrl} | \
+        set(paper_of.values())
+    write_summary(out_dir / "draw.json", rec, "draw.json", forbidden)
+    return {"n": len(rows), "counts": counts, "sample_sha256": sha}
+
+
+# ------------------------------------------------------------------ confirm-report (PREREG §3, §6-§8, §11)
+
+def tango_score_ci(b: int, c: int, n: int, level: float = CONFIRM_CI_LEVEL) -> dict[str, Any]:
+    """The Tango (1998) asymptotic score interval for ``δ = p10 − p01`` (PREREG §3.1): the δ with
+    ``|b − c − nδ| / sqrt(n (2 p̃21 + δ(1 − δ))) <= z``, ``p̃21`` the restricted MLE of p01 under δ,
+    ``(−B + sqrt(B² − 4AC)) / (2A)``, ``A = 2n``, ``B = −b − c + (2n − b + c) δ``, ``C = −c δ (1 − δ)``;
+    each end by bisection on its side of ``δ̂ = (b − c) / n`` (an end at ±1 when the statistic
+    never exceeds z there)."""
+    from statistics import NormalDist
+
+    if n <= 0:
+        return {"level": level, "ci": None, "point": None, "n": n, "b": b, "c": c}
+    z = NormalDist().inv_cdf(1 - (1 - level) / 2)
+
+    def f(d: float) -> float:
+        return abs(b - c - n * d) - z * math.sqrt(max(0.0, n * (2 * tango_p21(b, c, n, d) + d * (1 - d))))
+
+    def end(inside: float, outside: float) -> float:
+        if f(outside) <= 0:
+            return outside
+        lo, hi = inside, outside
+        for _ in range(200):
+            m = (lo + hi) / 2
+            if f(m) <= 0:
+                lo = m
+            else:
+                hi = m
+        return (lo + hi) / 2
+
+    dh = (b - c) / n
+    return {"level": level, "z": z, "point": dh, "ci": [end(dh, -1.0), end(dh, 1.0)], "n": n, "b": b, "c": c}
+
+
+def tango_p21(b: int, c: int, n: int, delta: float) -> float:
+    """The restricted MLE of p01 under ``δ`` (:func:`tango_score_ci`)."""
+    a_ = 2 * n
+    b_ = -b - c + (2 * n - b + c) * delta
+    c_ = -c * delta * (1 - delta)
+    return (-b_ + math.sqrt(max(0.0, b_ * b_ - 4 * a_ * c_))) / (2 * a_)
+
+
+def is_unjudged(f: Mapping[str, Any] | None) -> bool:
+    """§6.8: a final row whose ``source`` is ``unjudged`` (equivalently ``label`` None)."""
+    return f is not None and (f.get("source") == "unjudged" or f.get("label") is None)
+
+
+#: §6.8: the primary (pairwise deletion) and the three re-computations
+UNJUDGED_POLICIES = ("primary", "unjudged_not", "adverse", "favourable")
+
+
+def confirm_xy(row: Mapping[str, Any], policy: str = "primary") -> tuple[int, int] | None:
+    """``(X, Y)`` of one pair (PREREG §2: X = 1 when the control arm's final label is *not*, Y the
+    same for the retest arm), or None when the pair is dropped. A pair without a final row in an
+    arm is dropped under every policy. ``primary``: a pair unjudged in either arm is dropped;
+    ``unjudged_not``: unjudged = *not* through :func:`label_of`; ``adverse``: an unjudged control
+    pair X = 0, an unjudged retest pair Y = 1; ``favourable``: the reverse."""
+    c, r = row.get("control"), row.get("retest")
+    if c is None or r is None:
+        return None
+    cu, ru = is_unjudged(c), is_unjudged(r)
+    if policy == "primary":
+        if cu or ru:
+            return None
+        return 1 - int(label_of(c) or 0), 1 - int(label_of(r) or 0)
+    if policy == "unjudged_not":
+        return 1 - int(label_of(c) or 0), 1 - int(label_of(r) or 0)
+    if policy not in ("adverse", "favourable"):
+        raise ValueError(policy)
+    x = (0 if policy == "adverse" else 1) if cu else 1 - int(label_of(c) or 0)
+    y = (1 if policy == "adverse" else 0) if ru else 1 - int(label_of(r) or 0)
+    return x, y
+
+
+def _paired(rows: Sequence[Mapping[str, Any]], policy: str) -> list[tuple[Mapping[str, Any], int, int]]:
+    """The kept pairs with their (X, Y), ordered by (record id, stage-A pair id): the record order
+    the record scores and the bootstrap's clusters follow."""
+    out = []
+    for r in sorted(rows, key=lambda r: (str(r["record_id"]), str(r["control_of"]))):
+        xy = confirm_xy(r, policy)
+        if xy is not None:
+            out.append((r, xy[0], xy[1]))
+    return out
+
+
+def record_scores(kept: Sequence[tuple[Mapping[str, Any], int, int]]) -> tuple[list[str], list[int]]:
+    """The records (sorted) and their scores ``S_j = Σ (x − y)``."""
+    s: dict[str, int] = defaultdict(int)
+    for r, x, y in kept:
+        s[str(r["record_id"])] += x - y
+    recs = sorted(s)
+    return recs, [s[k] for k in recs]
+
+
+def sign_flip_primary(sums: Sequence[int]) -> dict[str, Any]:
+    """§3.1: ``chunktrial_stats.sign_flip_test_exact(sums, alternative="greater")``; no record -> p 1."""
+    import chunktrial_stats as cs
+
+    if not sums:
+        return {"p": 1.0, "p_method": "no_records", "n_pages": 0, "n_pages_nonzero": 0, "statistic": 0.0}
+    return cs.sign_flip_test_exact([float(x) for x in sums], alternative="greater")
+
+
+def _contrast(kept: Sequence[tuple[Mapping[str, Any], int, int]], alpha: float) -> dict[str, Any]:
+    import chunktrial_stats as cs
+
+    n = len(kept)
+    b = sum(x == 1 and y == 0 for _, x, y in kept)
+    c = sum(x == 0 and y == 1 for _, x, y in kept)
+    _, sums = record_scores(kept)
+    sf = sign_flip_primary(sums)
+    return {"n": n, "records": len(sums), "b": b, "c": c, "d": round((b - c) / n, 6) if n else None,
+            "p_sign_flip": sf["p"], "p_mcnemar": cs.mcnemar_exact(b, c, "greater"),
+            "confirmed": bool(sf["p"] <= alpha) if n else False}
+
+
+def power_at_realised_n(power: Mapping[str, Any] | None, n: int) -> dict[str, Any]:
+    """§7 P(n): the sign-flip power of ``power.json`` ``power_by_realised_n``, linearly
+    interpolated between the two grid points around n; below / above the grid the nearest end,
+    flagged."""
+    if not power or not power.get("power_by_realised_n"):
+        return {"status": "absent"}
+    curve = {int(k): float(v["power_sign_flip"]) for k, v in power["power_by_realised_n"].items()}
+    ks = sorted(curve)
+    if n <= ks[0] or n >= ks[-1]:
+        k = ks[0] if n <= ks[0] else ks[-1]
+        flag = "below_grid" if n < ks[0] else "above_grid" if n > ks[-1] else None
+        return {"n": n, "power": curve[k], "grid_points": [k], "flag": flag}
+    hi = next(k for k in ks if k >= n)
+    if hi == n:
+        return {"n": n, "power": curve[n], "grid_points": [n], "flag": None}
+    lo = max(k for k in ks if k < n)
+    p = curve[lo] + (curve[hi] - curve[lo]) * (n - lo) / (hi - lo)
+    return {"n": n, "power": round(p, 4), "grid_points": [lo, hi], "flag": None}
+
+
+def confirm_table(rows: Sequence[Mapping[str, Any]], *, boot_seed: str = CONFIRM_BOOT_SEED,
+                  checks: Mapping[str, Mapping[str, Any]] | None = None, cache: Mapping[str, Any] | None = None,
+                  power: Mapping[str, Any] | None = None, n_floor: int | None = None,
+                  n_boot: int = CONFIRM_N_BOOT, alpha: float = CONFIRM_ALPHA) -> dict[str, Any]:
+    """The primary table (PREREG §3.1, §6.1-§6.2, §6.8, §7, §8) from one row per ``control_of``:
+    ``control`` / ``retest`` (the two final rows, or None when a registry holds no row),
+    ``record_id``, ``arm``; optional ``c_paper`` and ``doc_id`` for the cluster counts.
+    ``checks``: the file-derived gates 3, 4 and 6 (``{"pass": bool, ...}`` each; a missing one is
+    written *absent* and does not pass); ``cache``: :func:`cache_check`'s result; ``power``: the
+    loaded ``power.json``. Counts, rates, p values and intervals only."""
+    import alias_study_stats as ast
+    import chunktrial_stats as cs
+
+    n_floor = CONFIRM_N_FLOOR if n_floor is None else n_floor
+    ids = [r["control_of"] for r in rows]
+    if len(set(ids)) != len(ids):
+        raise SystemExit("REFUSED: a stage-A pair appears twice in the confirmatory rows")
+    n_mapped = len(rows)
+    kept = _paired(rows, "primary")
+    n = len(kept)
+    xs = [x for _, x, _ in kept]
+    ys = [y for _, _, y in kept]
+    tab = Counter((x, y) for _, x, y in kept)
+    b, c = tab[(1, 0)], tab[(0, 1)]
+    recs, sums = record_scores(kept)
+    primary = sign_flip_primary(sums)
+    p = float(primary["p"])
+    boot: dict[str, Any]
+    if n:
+        boot = cs.page_bootstrap_ci([str(r["record_id"]) for r, _, _ in kept], xs, ys, n_boot=n_boot,
+                                    seed=asc.seed_int(boot_seed), level=CONFIRM_CI_LEVEL)
+        boot["seed_string"] = boot_seed
+    else:
+        boot = {"ci": None, "point": None, "level": CONFIRM_CI_LEVEL, "seed_string": boot_seed}
+    upper = boot["ci"][1] if boot.get("ci") else None
+
+    def arm_counts(side: str) -> dict[str, Any]:
+        unj = [r for r in rows if is_unjudged(r.get(side))]
+        return {"unjudged": len(unj), "unjudged_share": round(len(unj) / n_mapped, 6) if n_mapped else None,
+                "unjudged_by_corpus_arm": dict(Counter(str(r["arm"]) for r in unj)),
+                "without_final_row": sum(r.get(side) is None for r in rows)}
+
+    arms = {"control": arm_counts("control"), "retest": arm_counts("retest")}
+    sens = {pol: _contrast(_paired(rows, pol), alpha) for pol in UNJUDGED_POLICIES[1:]}
+    by_arm: dict[str, Any] = {}
+    for a in asc.ARM_GROUPS:
+        ka = [(x, y) for r, x, y in kept if r["arm"] == a]
+        by_arm[a] = {"n": len(ka), "control_not": wilson(sum(x for x, _ in ka), len(ka)),
+                     "retest_not": wilson(sum(y for _, y in ka), len(ka)),
+                     "b": sum(x == 1 and y == 0 for x, y in ka), "c": sum(x == 0 and y == 1 for x, y in ka)}
+    clusters: dict[str, Any] = {
+        "records": len(recs), "records_by_arms": _records_by_arms(r for r, _, _ in kept),
+        "score_distribution": {str(k): v for k, v in sorted(Counter(sums).items())},
+        "records_nonzero": sum(s != 0 for s in sums)}
+    if all("c_paper" in r for r, _, _ in kept):
+        clusters["passage_papers"] = len({r["c_paper"] for r, _, _ in kept})
+        clusters["largest_paper_cluster"] = _largest(r["c_paper"] for r, _, _ in kept)
+    if all("doc_id" in r for r, _, _ in kept):
+        clusters["documents"] = len({r["doc_id"] for r, _, _ in kept})
+    worst = max((arms[s]["unjudged_share"] or 0.0) for s in arms) if n_mapped else None
+    gates: dict[str, dict[str, Any]] = {
+        "g1_realised_n": {"pass": n >= n_floor, "realised_n": n, "floor": n_floor},
+        "g2_unjudged": {"pass": worst is not None and worst <= CONFIRM_UNJUDGED_GATE, "n_mapped": n_mapped,
+                        "threshold_share": CONFIRM_UNJUDGED_GATE,
+                        "control_unjudged": arms["control"]["unjudged"], "retest_unjudged": arms["retest"]["unjudged"]},
+        "g5_arms_complete": {"pass": arms["control"]["without_final_row"] == 0
+                             and arms["retest"]["without_final_row"] == 0,
+                             "control_without_final_row": arms["control"]["without_final_row"],
+                             "retest_without_final_row": arms["retest"]["without_final_row"]},
+    }
+    for g in ("g3_draw_and_registries", "g4_chunker_and_environment", "g6_input_shas"):
+        v = (checks or {}).get(g)
+        gates[g] = dict(v) if isinstance(v, Mapping) and "pass" in v else {"status": "absent", "pass": False}
+    gates = {g: gates[g] for g in CONFIRM_GATES}
+    failed = [g for g in CONFIRM_GATES if not gates[g]["pass"]]
+    outcome = "GATE-NOT-EVALUABLE" if failed else ("Confirmed" if p <= alpha else "Not confirmed (powered null)")
+    confirmed = p <= alpha
+    caveats = {"judge_incomplete": bool(worst is not None and worst > CONFIRM_UNJUDGED_CAVEAT),
+               "cache_suspected": cache.get("flag") if cache is not None else "absent",
+               "adverse_bound_disagrees_with_primary": sens["adverse"]["confirmed"] != confirmed,
+               "primary_and_mcnemar_disagree": (cs.mcnemar_exact(b, c, "greater") <= alpha) != confirmed}
+    return {
+        "n_mapped": n_mapped, "n": n, "records": len(recs), "alpha": alpha,
+        "table": {"both_not": tab[(1, 1)], "control_only": b, "retest_only": c, "neither": tab[(0, 0)]},
+        "b": b, "c": c,
+        "rates": {"control_not": wilson(sum(xs), n), "retest_not": wilson(sum(ys), n)},
+        "d": round((b - c) / n, 6) if n else None,
+        "primary": {"test": "exact one-sided sign-flip over records (chunktrial_stats.sign_flip_test_exact, "
+                            "alternative greater)", **primary},
+        "mcnemar_sensitivity": {"p": cs.mcnemar_exact(b, c, "greater"), "b": b, "c": c,
+                                "test": "exact one-sided McNemar (chunktrial_stats.mcnemar_exact, greater)"},
+        "bootstrap": {**boot, "statistic": "Σ_j S_j / Σ_j n_j over resampled records", "upper_one_sided_95": upper},
+        "tango": tango_score_ci(b, c, n, CONFIRM_CI_LEVEL),
+        "agreement_control_vs_retest": ast.agreement_metrics(tab[(1, 1)], tab[(1, 0)], tab[(0, 1)], tab[(0, 0)])
+        if n else None,
+        "arms": arms, "unjudged_sensitivity": sens, "by_arm": by_arm, "clusters": clusters,
+        "gates": gates, "gates_failed": failed, "outcome": outcome, "caveats": caveats,
+        "power_at_realised_n": power_at_realised_n(power, n),
+        "design_mde_points": ((power or {}).get("mde") or {}).get("excess_points", "absent"),
+    }
+
+
+# ---- the Qwen cache check (§6.9, §10.10)
+
+def _reasoning_ok(v: Any, min_chars: int) -> bool:
+    return isinstance(v, list) and bool(v) and all(isinstance(x, str) and len(x) >= min_chars for x in v)
+
+
+def cache_check(retest_ids: Iterable[str], stage_a: Mapping[str, Mapping[str, Mapping[str, Any]]],
+                retest: Mapping[str, Mapping[str, Mapping[str, Any]]],
+                min_chars: int = CONFIRM_CACHE_MIN_CHARS) -> dict[str, Any]:
+    """§6.9: per Qwen backend (``C``, ``E``), each retest pair's retest-arm label row against
+    stage A's row of the same pair id. The flag (*cache suspected*) rests on ``reasoning_sample``
+    identity only, counted where both rows' reasoning is non-empty (every text >= ``min_chars``);
+    one identical pair on either backend flags. ``texts_sample`` identity, ``ct`` equality, the
+    verdict agreement and the prompt / system sha256 mismatch counts are descriptives."""
+    import glossbench_alias_judge as jd
+
+    ids = sorted(set(retest_ids))
+    out: dict[str, Any] = {}
+    for be in ("C", "E"):
+        sa, rt = stage_a.get(be) or {}, retest.get(be) or {}
+        both = [(sa[p], rt[p]) for p in ids if p in sa and p in rt]
+        elig = [(a, b) for a, b in both if _reasoning_ok(a.get("reasoning_sample"), min_chars)
+                and _reasoning_ok(b.get("reasoning_sample"), min_chars)]
+
+        def verdict(r: Mapping[str, Any], be: str = be) -> int | None:
+            v = r.get("verdicts") or []
+            return jd.majority(v if be == "C" else v[:1])
+
+        vb = [(verdict(a), verdict(b)) for a, b in both]
+        vb = [(x, y) for x, y in vb if x is not None and y is not None]
+        out[be] = {
+            "retest_pairs": len(ids), "compared": len(both),
+            "without_stage_a_row": sum(p not in sa for p in ids), "without_retest_row": sum(p not in rt for p in ids),
+            "reasoning_eligible": len(elig),
+            "reasoning_identical": sum(a["reasoning_sample"] == b["reasoning_sample"] for a, b in elig),
+            "reasoning_field_missing": sum("reasoning_sample" not in a or "reasoning_sample" not in b for a, b in both),
+            "texts_sample_identical": sum(a.get("texts_sample") is not None and a.get("texts_sample")
+                                          == b.get("texts_sample") for a, b in both),
+            "ct_equal": sum(a.get("ct") is not None and a.get("ct") == b.get("ct") for a, b in both),
+            "verdict_agreement": wilson(sum(x == y for x, y in vb), len(vb)),
+            "prompt_sha256_differs": sum(a.get("prompt_sha256") != b.get("prompt_sha256") for a, b in both),
+            "system_sha256_differs": sum(a.get("system_sha256") != b.get("system_sha256") for a, b in both)}
+    for be in ("C", "E"):
+        out[be]["evaluable"] = not (out[be]["compared"] > 0 and out[be]["reasoning_eligible"] == 0)
+    flag: bool | str = any(out[be]["reasoning_identical"] >= CONFIRM_CACHE_THRESHOLD for be in ("C", "E"))
+    if not flag and not all(out[be]["evaluable"] for be in ("C", "E")):
+        flag = "not_evaluable"
+    return {"flag": flag, "threshold_pairs": CONFIRM_CACHE_THRESHOLD, "min_reasoning_chars": min_chars,
+            "rule": "reasoning_sample byte-identical to stage A's on either backend, where both are non-empty; "
+                    "not_evaluable when a backend with compared rows has no eligible pair",
+            "response_cache_status": "absent", **out}
+
+
+def label_rows(out_dir: Path, backend: str) -> tuple[dict[str, dict[str, Any]], int, list[str]]:
+    """A judge dir's label rows of one backend by pair id as the harness reads them (repaired
+    tail, the last row of a pair id wins), the number of pair ids seen more than once, and the pair
+    ids in file order (first occurrence). A missing file is empty."""
+    import alias_study_judge as aj
+    import glossbench_alias_judge as jd
+
+    p = Path(out_dir) / aj.LABEL_FILES[backend]
+    rows = jd.p4.read_jsonl_repair_tail(p) if p.is_file() else []
+    out: dict[str, dict[str, Any]] = {}
+    seen: list[str] = []
+    for r in rows:
+        if r["pair_id"] not in out:
+            seen.append(r["pair_id"])
+        out[r["pair_id"]] = r
+    return out, len(rows) - len(out), seen
+
+
+# ---- times (§5 step 5, §6.7)
+
+def _iso_epoch(t: str) -> float:
+    from datetime import UTC, datetime
+
+    return datetime.strptime(t, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC).timestamp()
+
+
+def _epoch_iso(x: float) -> str:
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(x, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def qwen_times(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """First and last call (UTC) of a Qwen backend from its label rows: ``t`` is written when the
+    reply is in, so a call started at ``t − duration_s``."""
+    starts, ends = [], []
+    for r in rows:
+        if r.get("t"):
+            e = _iso_epoch(str(r["t"]))
+            ends.append(e)
+            starts.append(e - float(r.get("duration_s") or 0.0))
+    if not ends:
+        return {"rows": 0, "first_utc": "absent", "last_utc": "absent"}
+    return {"rows": len(ends), "first_utc": _epoch_iso(min(starts)), "last_utc": _epoch_iso(max(ends)),
+            "first_epoch": round(min(starts), 2), "last_epoch": round(max(ends), 2)}
+
+
+def gateway_times(path: Path) -> dict[str, Any]:
+    """First and last call (UTC) of a gateway backend from its calls log (``t`` epoch seconds),
+    with the rows per ``step`` / ``status``."""
+    rows = asc.read_jsonl(path) if Path(path).is_file() else []
+    ts = [float(r["t"]) for r in rows if r.get("t") is not None]
+    out: dict[str, Any] = {"rows": len(rows),
+                           "by_step_status": dict(Counter(f"{r.get('step')}|{r.get('status')}" for r in rows))}
+    if not ts:
+        return {**out, "first_utc": "absent", "last_utc": "absent"}
+    return {**out, "first_utc": _epoch_iso(min(ts)), "last_utc": _epoch_iso(max(ts)),
+            "first_epoch": round(min(ts), 2), "last_epoch": round(max(ts), 2)}
+
+
+def arm_gap(a: Mapping[str, Any], b: Mapping[str, Any]) -> dict[str, Any]:
+    """Which arm a backend judged first, and the gap from its last call to the other arm's first
+    (negative when the two overlap)."""
+    if "first_epoch" not in a or "first_epoch" not in b:
+        return {"first_arm": "absent", "gap_s": "absent"}
+    first, second = ("control", "retest") if a["first_epoch"] <= b["first_epoch"] else ("retest", "control")
+    x, y = (a, b) if first == "control" else (b, a)
+    return {"first_arm": first, "gap_s": round(y["first_epoch"] - x["last_epoch"], 2)}
+
+
+def halves(ids_in_order: Sequence[str]) -> dict[str, str]:
+    """Position halves: the first ceil(N/2) ids are ``first``, the rest ``second``."""
+    n = len(ids_in_order)
+    return {p: "first" if 2 * i < n else "second" for i, p in enumerate(ids_in_order)}
+
+
+def discordance_by(kept: Sequence[tuple[Mapping[str, Any], int, int]], block: Mapping[str, str], key: str
+                   ) -> dict[str, Any]:
+    """b and c per block; ``key`` names the row field holding the pair id the blocks are keyed by."""
+    out: dict[str, Counter[str]] = defaultdict(Counter)
+    for r, x, y in kept:
+        g = block.get(r[key], "unknown")
+        out[g]["n"] += 1
+        out[g]["b"] += int(x == 1 and y == 0)
+        out[g]["c"] += int(x == 0 and y == 1)
+    return {g: {k: out[g][k] for k in ("n", "b", "c")} for g in sorted(out)}
+
+
+def c_call_order(rows: Mapping[str, Mapping[str, Any]], file_order: Sequence[str]) -> list[str]:
+    """A backend's pair ids in the order of their calls: by ``t`` (seconds), ties by file order."""
+    idx = {p: i for i, p in enumerate(file_order)}
+    return sorted(rows, key=lambda p: (_iso_epoch(str(rows[p]["t"])) if rows[p].get("t") else math.inf,
+                                       idx.get(p, 0)))
+
+
+# ---- §6.4-§6.6 descriptives
+
+def escalation_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """§6.4: C alone, E alone and the escalation share per arm; the overlap of the escalated sets
+    (Jaccard) and the Argon verdict agreement where both arms escalated (prompts differ: not a
+    replicate)."""
+    out: dict[str, Any] = {}
+    for side in ("control", "retest"):
+        fs = [r[side] for r in rows if r.get(side) is not None]
+        out[side] = {"n": len(fs), "c_answers": wilson(sum(f.get("c_label") == 1 for f in fs), len(fs)),
+                     "e_answers": wilson(sum(f.get("e_label") == 1 for f in fs), len(fs)),
+                     "escalated": wilson(sum(f.get("source") != "agree" for f in fs), len(fs)),
+                     "sources": dict(Counter(str(f.get("source")) for f in fs))}
+    both = [r for r in rows if r.get("control") is not None and r.get("retest") is not None]
+    out["overlap"] = escalation_overlap(both, "control", "retest")
+    be = [r for r in both if route(r["control"]) != "agree" and route(r["retest"]) != "agree"]
+    have = [r for r in be if r["control"].get("tiebreak_label") is not None
+            and r["retest"].get("tiebreak_label") is not None]
+    out["argon_both_escalated"] = {
+        "n": len(be), "n_null_verdict": len(be) - len(have),
+        "verdict_agreement": wilson(sum(r["control"]["tiebreak_label"] == r["retest"]["tiebreak_label"]
+                                        for r in have), len(have)),
+        "note": "not a byte-identical replicate: the two arms' prompts differ"}
+    return out
+
+
+def opus_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """§6.5: per arm, the drift-sampled pairs, the Opus agreement with the final label where
+    Opus answered and the pair was judged, overall and per corpus arm, and *no-reference*."""
+    out: dict[str, Any] = {}
+    for side in ("control", "retest"):
+        sampled = [r for r in rows if r.get(side) is not None and r[side].get("drift_sampled")]
+        ans = [r for r in sampled if r[side].get("opus_status") == "answered" and not is_unjudged(r[side])]
+
+        def agree(pool: Sequence[Mapping[str, Any]], side: str = side) -> dict[str, Any]:
+            return wilson(sum(int(bool(r[side]["opus"])) == label_of(r[side]) for r in pool), len(pool))
+
+        out[side] = {"sampled": len(sampled), "answered_and_judged": len(ans),
+                     "no_reference": sum(r[side].get("opus_status") == "no_reference" for r in sampled),
+                     "unjudged_sampled": sum(is_unjudged(r[side]) for r in sampled),
+                     "agreement": agree(ans),
+                     "by_corpus_arm": {a: agree([r for r in ans if r["arm"] == a]) for a in asc.ARM_GROUPS}}
+    return out
+
+
+def confirm_boundary(rows: Sequence[Mapping[str, Any]], kept: Sequence[tuple[Mapping[str, Any], int, int]]
+                     ) -> dict[str, Any]:
+    """§6.6: the boundary diagnostics of the sampled windows and control chunks (as the exploratory
+    ``metrics.boundary``), and X and Y by coverage band, control-token band, LaTeX preamble and
+    section structure over the analysed pairs."""
+    def diag(texts: Sequence[str]) -> dict[str, Any]:
+        n = len(texts)
+        return {"n": n, "ends_in_sentence_punctuation": wilson(sum(map(ends_sentence, texts)), n),
+                "starts_capital_or_digit": wilson(sum(map(starts_capital_or_digit, texts)), n),
+                "holds_a_heading_line": wilson(sum(map(holds_heading_line, texts)), n)}
+
+    def by(key: Any) -> dict[str, Any]:
+        groups: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        for r, x, y in kept:
+            groups[str(key(r))].append((x, y))
+        return {g: {"n": len(v), "control_not": wilson(sum(x for x, _ in v), len(v)),
+                    "retest_not": wilson(sum(y for _, y in v), len(v))} for g, v in sorted(groups.items())}
+
+    return {
+        "windows": diag([r["window"] for r in rows]), "control": diag([r["control_text"] for r in rows]),
+        "control_section_crossing": wilson(sum(bool(r.get("section_crossing")) for r in rows), len(rows)),
+        "control_split_sentence_pieces": wilson(sum(bool(r.get("split_sentence")) for r in rows), len(rows)),
+        "window_tokens": token_summary([int(r["window_tokens"]) for r in rows if r.get("window_tokens") is not None]),
+        "control_tokens": token_summary([int(r["control_tokens"]) for r in rows
+                                         if r.get("control_tokens") is not None]),
+        "one_untitled_section_pairs": wilson(sum(bool(r.get("one_untitled_section")) for r in rows), len(rows)),
+        "by_coverage_band": by(lambda r: band(r["coverage"], COVERAGE_BANDS)),
+        "by_control_token_band": by(lambda r: band(r["control_tokens"] or 0, TOKEN_BANDS)),
+        "by_latex_preamble": by(lambda r: "latex_preamble" if r.get("latex_preamble") else "no_latex_preamble"),
+        "by_section_structure": by(lambda r: "one_untitled_section" if r.get("one_untitled_section")
+                                   else "sectioned"),
+    }
+
+
+# ---- the file-derived gates (§8 gates 3, 4, 6)
+
+def confirm_checks(*, prereg_sha256: str, stage_a_commit_sha256: str | None, artifacts: Mapping[str, Any],
+                   sample_rows: Sequence[Mapping[str, Any]] | None, control_registry: Sequence[Mapping[str, Any]],
+                   retest_registry: Sequence[Mapping[str, Any]], manifests: Mapping[str, Any],
+                   files: Mapping[str, str | None], committed: Mapping[str, Any] | None = None
+                   ) -> dict[str, dict[str, Any]]:
+    """§8 gates 3, 4 and 6 with their counts. ``artifacts``: the loaded public ``draw``,
+    ``chunk``, ``map``, ``retest_seed`` of the run directories (None when absent); ``committed``:
+    the same four from the committed ``artifacts/`` directory, each of which must equal its run
+    copy but for ``provenance`` (a missing committed copy is *absent* and fails); ``manifests``: the two registries'
+    ``pairs-manifest.json`` (``control`` / ``retest``); ``files``: sha256 of the private files
+    (``sample``, ``seed``, ``chunks``, ``rseed``, ``rchunks``) and of the two configs' control
+    exports (``control_export``, ``retest_export``). A missing value never matches."""
+    draw, chunk, map_, rseed = (artifacts.get(k) for k in ("draw", "chunk", "map", "retest_seed"))
+    c_of = {x for p in control_registry for x in p.get("control_of") or []}
+    r_of = {x for p in retest_registry for x in p.get("control_of") or []}
+    drawn_ctl = ((draw or {}).get("counts") or {}).get("drawn_control_pairs")
+    shared = (len(sample_rows) - len({r["chunk_id"] for r in sample_rows})) if sample_rows is not None else None
+    g3 = {"control_of_only_in_control_registry": len(c_of - r_of),
+          "control_of_only_in_retest_registry": len(r_of - c_of),
+          "registries_hold_pairs": bool(c_of),
+          "drawn_control_pairs": drawn_ctl if drawn_ctl is not None else "absent",
+          "drawn_shared_windows": shared if shared is not None else "absent",
+          "stage_a_commit_sha256_matches": stage_a_commit_sha256 == CONFIRM_STAGE_A_COMMIT_SHA256
+          and (draw or {}).get("stage_a_commit_sha256") == CONFIRM_STAGE_A_COMMIT_SHA256,
+          "control_sample_sha256_matches": (draw or {}).get("control_sample_sha256") == CONFIRM_CONTROL_SAMPLE_SHA256,
+          "n_draw": ((draw or {}).get("counts") or {}).get("n_draw", "absent"),
+          "quotas": ((draw or {}).get("counts") or {}).get("quotas", "absent")}
+    g3["n_draw_is_prereg"] = g3["n_draw"] == CONFIRM_N_DRAW
+    g3["quotas_are_prereg"] = g3["quotas"] == dict(CONFIRM_QUOTAS)
+    g3["pass"] = bool(not (c_of ^ r_of) and c_of and drawn_ctl == 0 and shared == 0
+                      and g3["stage_a_commit_sha256_matches"] and g3["control_sample_sha256_matches"]
+                      and g3["n_draw_is_prereg"] and g3["quotas_are_prereg"])
+    p2 = (chunk or {}).get("p2_gate")
+    envc = (chunk or {}).get("environment") or {}
+    g4 = {"p2_gate": "absent" if not isinstance(p2, Mapping) else all(p2.values()),
+          "segmenter_version": envc.get("segmenter_version", "absent"), "adapter": envc.get("adapter", "absent"),
+          "markdown_backend": "absent" if not envc.get("markdown_backend") else "present",
+          "token_counter": envc.get("token_counter") or "absent"}
+    g4["token_counter_is_sfr"] = envc.get("token_counter") == {"class": "HFTokenCounter", "model": TOKENIZER}
+    g4["pass"] = bool(g4["p2_gate"] is True and envc.get("segmenter_version") == REQUIRED_SEGMENTER
+                      and envc.get("adapter") == REQUIRED_ADAPTER and envc.get("markdown_backend")
+                      and g4["token_counter_is_sfr"])
+
+    def inputs(side: str) -> Mapping[str, Any]:
+        return (manifests.get(side) or {}).get("inputs_sha256") or {}
+
+    pairs = [("sample.jsonl = draw.json sample_sha256", files.get("sample"), (draw or {}).get("sample_sha256")),
+             ("sample.jsonl = chunk.json sample_sha256", files.get("sample"), (chunk or {}).get("sample_sha256")),
+             ("sample.jsonl = map.json sample_sha256", files.get("sample"), (map_ or {}).get("sample_sha256")),
+             ("pairs-seed.jsonl = map.json seed_sha256", files.get("seed"), (map_ or {}).get("seed_sha256")),
+             ("chunks-control.jsonl = chunk.json chunks_sha256", files.get("chunks"),
+              (chunk or {}).get("chunks_sha256")),
+             ("chunks-control.jsonl = map.json chunks_sha256", files.get("chunks"), (map_ or {}).get("chunks_sha256")),
+             ("pairs-seed.jsonl = retest-seed.json control_seed_sha256", files.get("seed"),
+              (rseed or {}).get("control_seed_sha256")),
+             ("pairs-seed-retest.jsonl = retest-seed.json seed_sha256", files.get("rseed"),
+              (rseed or {}).get("seed_sha256")),
+             ("chunks-retest.jsonl = retest-seed.json chunks_sha256", files.get("rchunks"),
+              (rseed or {}).get("chunks_sha256")),
+             ("control registry inputs seed_pairs = pairs-seed.jsonl", inputs("control").get("seed_pairs"),
+              files.get("seed")),
+             ("control registry inputs chunks_control = chunks-control.jsonl",
+              inputs("control").get("chunks_control"), files.get("chunks")),
+             ("retest registry inputs seed_pairs = pairs-seed-retest.jsonl", inputs("retest").get("seed_pairs"),
+              files.get("rseed")),
+             ("retest registry inputs chunks_control = chunks-retest.jsonl", inputs("retest").get("chunks_control"),
+              files.get("rchunks")),
+             ("control config control export = chunks-control.jsonl", files.get("control_export"),
+              files.get("chunks")),
+             ("retest config control export = chunks-retest.jsonl", files.get("retest_export"), files.get("rchunks"))]
+    for name, art in (("draw.json", draw), ("chunk.json", chunk), ("map.json", map_), ("retest-seed.json", rseed)):
+        pairs.append((f"{name} confirmatory.prereg_sha256 = the frozen sha",
+                      ((art or {}).get("confirmatory") or {}).get("prereg_sha256"), prereg_sha256))
+        pairs.append((f"{name} exploratory is false", (art or {}).get("exploratory", "absent") is False, True))
+    for name, key in (("draw.json", "draw"), ("chunk.json", "chunk"), ("map.json", "map"),
+                      ("retest-seed.json", "retest_seed")):
+        run, com = artifacts.get(key), (committed or {}).get(key)
+        same = None if run is None or com is None else _sans_provenance(run) == _sans_provenance(com)
+        pairs.append((f"{name} = its committed copy in artifacts/ (provenance aside)", same, True))
+    bad = [name for name, a, b in pairs if a is None or b is None or a != b]
+    g6 = {"pass": not bad, "checked": len(pairs), "mismatched": len(bad), "mismatches": bad}
+    return {"g3_draw_and_registries": g3, "g4_chunker_and_environment": g4, "g6_input_shas": g6}
+
+
+def _sans_provenance(obj: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in obj.items() if k != "provenance"}
+
+
+def _json_or_none(path: Path) -> dict[str, Any] | None:
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def load_power(path: Path = CONFIRM_POWER_JSON) -> dict[str, Any]:
+    """The frozen ``power.json`` (PREREG §9.1), refused when its sha256 is not the recorded one."""
+    if asc.sha256_file(path) != CONFIRM_POWER_JSON_SHA256:
+        raise SystemExit("REFUSED: power.json is not the frozen file (sha256 differs from the README's)")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run_confirm_report(judge_config: Path, control_config: Path, retest_config: Path, control_dir: Path,
+                       retest_dir: Path, prereg: Path, prereg_sha256: str, out: Path,
+                       cover_config: Path | None = None, write_flipped: Path | None = None,
+                       artifacts_dir: Path | None = None) -> dict[str, Any]:
+    """``confirm-report`` (PREREG §5 step 6, §11): the control arm joined by
+    ``pair_id(record_id, control chunk id)``, the retest arm by the stage-A pair id, one row per
+    ``pairs-seed.jsonl`` row; :func:`confirm_table`, the §6 descriptives, the times, the cache
+    check, the gates; written by :func:`write_public`. Run once: an existing ``--out`` is refused,
+    except with ``--cover-config`` (§5 step 7), which needs it and refuses unless its primary
+    table is the one recomputed now, then adds the ``cover_any`` block."""
+    import alias_study_judge as aj
+    import alias_study_spot as asp
+
+    env = require_env()
+    block = confirmatory_block(prereg_sha256)
+    if asc.sha256_file(prereg) != prereg_sha256:
+        raise SystemExit("REFUSED: the prereg file's sha256 is not --prereg-sha256 (the frozen sha)")
+    require_committed_prereg(prereg_sha256)
+    old = _json_or_none(out)
+    if cover_config is None and old is not None:
+        raise SystemExit("REFUSED: --out exists; confirm-report runs once (§5 step 6); the cover-any re-run takes "
+                         "--cover-config")
+    if cover_config is not None and old is None:
+        raise SystemExit("REFUSED: --cover-config adds to the step-6 report; --out does not exist yet")
+    if write_flipped is not None:
+        asp.refuse_in_repo(write_flipped, "--write-flipped")
+    power = load_power()
+    cfg = judge_cfg(judge_config)
+    ccfg, rcfg = aj.load_config(control_config), aj.load_config(retest_config)
+    cout, rout = Path(ccfg["out_dir"]), Path(rcfg["out_dir"])
+    sa = asp.committed_stage_a(cfg)
+    stage_a = {f["pair_id"]: f for f in sa["final"]}
+    paper_of = {p["pair_id"]: str(p["c_paper"]) for p in sa["pairs"]}
+    ex = read_exports(cfg["chunk_exports"])
+    seeds = asc.read_jsonl(control_dir / "pairs-seed.jsonl")
+    rseeds = asc.read_jsonl(retest_dir / "pairs-seed-retest.jsonl")
+    cdocs = control_docs(control_dir / "chunks-control.jsonl")
+    dinfo = {r["doc_id"]: r for r in asc.read_jsonl(control_dir / "docs.jsonl")}
+    cchunk = {c["chunk_id"]: c for rows in cdocs.values() for c in rows}
+    cfinal, rfinal = final_pairs(cout), final_pairs(rout)
+    creg, rreg = asc.read_jsonl(cout / "pairs.jsonl"), asc.read_jsonl(rout / "pairs.jsonl")
+    cc = control_chunker()
+    rows: list[dict[str, Any]] = []
+    for s in seeds:
+        w = ex.by_id.get(s["stage_a_chunk_id"])
+        k = cchunk.get(s["chunk_id"])
+        if w is None or k is None:
+            raise SystemExit("REFUSED: a seed row's stage-A window or control chunk is in no input file")
+        di = dinfo.get(s["doc_id"]) or {}
+        cpid = aj.pair_id(s["record_id"], s["chunk_id"])
+        rows.append({"control_of": s["control_of"], "record_id": s["record_id"], "arm": s["arm"],
+                     "stage_a": stage_a.get(s["control_of"]), "control": cfinal.get(cpid),
+                     "retest": rfinal.get(s["control_of"]), "control_pair": cpid, "doc_id": s["doc_id"],
+                     "c_paper": paper_of.get(s["control_of"]), "coverage": s["coverage"],
+                     "control_tokens": s["control_tokens"], "latex_preamble": s["latex_preamble"],
+                     "window": w.content, "control_text": k["content"], "window_tokens": cc.counter.count(w.content),
+                     "section_crossing": k["metadata"].get("section_crossing"),
+                     "split_sentence": k["metadata"].get("split_sentence"),
+                     "one_untitled_section": di.get("n_sections", 0) <= 1 and di.get("untitled_only", False)})
+    rexp, cexp = rcfg["chunk_exports"].get(aj.CONTROL_EXPORT), ccfg["chunk_exports"].get(aj.CONTROL_EXPORT)
+    sample_p = control_dir / "sample.jsonl"
+    files = {"sample": asc.sha256_file(sample_p) if sample_p.is_file() else None,
+             "seed": asc.sha256_file(control_dir / "pairs-seed.jsonl"),
+             "chunks": asc.sha256_file(control_dir / "chunks-control.jsonl"),
+             "rseed": asc.sha256_file(retest_dir / "pairs-seed-retest.jsonl"),
+             "rchunks": asc.sha256_file(retest_dir / "chunks-retest.jsonl"),
+             "control_export": asc.sha256_file(cexp) if cexp and Path(cexp).is_file() else None,
+             "retest_export": asc.sha256_file(rexp) if rexp and Path(rexp).is_file() else None}
+    artifacts = {"draw": _json_or_none(control_dir / "draw.json"), "chunk": _json_or_none(control_dir / "chunk.json"),
+                 "map": _json_or_none(control_dir / "map.json"),
+                 "retest_seed": _json_or_none(retest_dir / "retest-seed.json")}
+    checks = confirm_checks(
+        prereg_sha256=prereg_sha256, stage_a_commit_sha256=sa["commit_sha256"], artifacts=artifacts,
+        sample_rows=asc.read_jsonl(sample_p) if sample_p.is_file() else None, control_registry=creg,
+        retest_registry=rreg, manifests={"control": _json_or_none(cout / "pairs-manifest.json"),
+                                         "retest": _json_or_none(rout / "pairs-manifest.json")}, files=files,
+        committed={k: _json_or_none(Path(artifacts_dir) / f) if artifacts_dir is not None else None
+                   for k, f in (("draw", "draw.json"), ("chunk", "chunk.json"), ("map", "map.json"),
+                                ("retest_seed", "retest-seed.json"))})
+    retest_ids = [p["pair_id"] for p in rreg]
+    sa_labels = {be: label_rows(Path(cfg["out_dir"]), be) for be in ("C", "E")}
+    c_labels = {be: label_rows(cout, be) for be in ("C", "E")}
+    r_labels = {be: label_rows(rout, be) for be in ("C", "E")}
+    cache = cache_check(retest_ids, {be: v[0] for be, v in sa_labels.items()},
+                        {be: v[0] for be, v in r_labels.items()})
+    cache["duplicate_label_rows"] = {f"{side}_{be}": v[be][1] for side, v in
+                                     (("stage_a", sa_labels), ("retest", r_labels), ("control", c_labels))
+                                     for be in ("C", "E")}
+    table = confirm_table(rows, boot_seed=CONFIRM_BOOT_SEED, checks=checks, cache=cache, power=power)
+    kept = _paired(rows, "primary")
+    times: dict[str, Any] = {}
+    for be in ("C", "E"):
+        a, b = qwen_times(c_labels[be][0].values()), qwen_times(r_labels[be][0].values())
+        times[be] = {"control": a, "retest": b, **arm_gap(a, b)}
+    for be in ("argon", "opus"):
+        a, b = gateway_times(cout / f"calls-gw-{be}.jsonl"), gateway_times(rout / f"calls-gw-{be}.jsonl")
+        times[be] = {"control": a, "retest": b, **arm_gap(a, b)}
+    corder = [p["pair_id"] for p in sorted(creg, key=lambda p: (p["order"], p["pair_id"]))]
+    rorder = [p["pair_id"] for p in sorted(rreg, key=lambda p: (p["order"], p["pair_id"]))]
+    time_blocks = {
+        "rule": "halves by position: the first ceil(N/2) of an arm's N registry pairs (seeded labelling order) or "
+                "of its N C calls (by t, ties by file order) are 'first'",
+        "by_control_labelling_order": discordance_by(kept, halves(corder), "control_pair"),
+        "by_retest_labelling_order": discordance_by(kept, halves(rorder), "control_of"),
+        "by_control_c_call_half": discordance_by(kept, halves(c_call_order(c_labels["C"][0], c_labels["C"][2])),
+                                                 "control_pair"),
+        "by_retest_c_call_half": discordance_by(kept, halves(c_call_order(r_labels["C"][0], r_labels["C"][2])),
+                                                "control_of")}
+    shared = Counter(r["control_pair"] for r in rows)
+    descriptives = {
+        "escalation": escalation_block(rows), "opus_drift_reference": opus_block(rows),
+        "boundary": confirm_boundary(rows, kept), "time_blocks": time_blocks,
+        "control_pairs_shared_by_two_or_more_windows": sum(v > 1 for v in shared.values()),
+        "registries": {"control_pairs": len(creg), "retest_pairs": len(rreg), "seed_rows": len(seeds),
+                       "retest_seed_rows": len(rseeds)}}
+    docs = sorted({s["doc_id"] for s in seeds if s["doc_id"] in cdocs})
+    texts = [doc_text(cdocs[d]) or "" for d in docs]
+    rec: dict[str, Any] = {
+        "schema": SCHEMA["confirm-report"], "exploratory": False, "confirmatory": block,
+        "prereg_sha256": prereg_sha256, "outcome": table["outcome"], "primary": table,
+        "cache_check": cache, "times": times, "descriptives": descriptives,
+        "judge_files": {"control": judge_files(cout), "retest": judge_files(rout)},
+        "chunker": cc.applied(), "environment": env,
+        "inputs": {"stage_a_commit_sha256": sa["commit_sha256"], "power_json_sha256": CONFIRM_POWER_JSON_SHA256,
+                   **{f"{k}_sha256": v for k, v in files.items()},
+                   "control_manifest_inputs_sha256": (_json_or_none(cout / "pairs-manifest.json") or {}).get(
+                       "inputs_sha256"),
+                   "retest_manifest_inputs_sha256": (_json_or_none(rout / "pairs-manifest.json") or {}).get(
+                       "inputs_sha256")},
+        "provenance": public_provenance(provenance(texts, [chunk_structure(d, t) for d, t in zip(docs, texts,
+                                                                                                 strict=True)],
+                                                   [[(c["start_char"], c["end_char"]) for c in cdocs[d]]
+                                                    for d in docs]))}
+    forbidden = set(docs) | set(stage_a) | set(cfinal) | set(rfinal) | {s["record_id"] for s in seeds} | \
+        {s["chunk_id"] for s in seeds} | {s["stage_a_chunk_id"] for s in seeds} | set(paper_of.values()) | \
+        {p["pair_id"] for p in creg} | {p["pair_id"] for p in rreg}
+    if cover_config is not None:
+        if (old or {}).get("primary") != json.loads(json.dumps(table)):
+            raise SystemExit("REFUSED: the primary table recomputed now is not the committed step-6 report's; the "
+                             "cover-any re-run never changes a primary number (§5 step 7)")
+        vcfg = aj.load_config(cover_config)
+        vout = Path(vcfg["out_dir"])
+        vreg = asc.read_jsonl(vout / "pairs.jsonl")
+        vfin = final_pairs(vout)
+        cover, cover_prim, cover_other = cover_labels(vreg, vfin, {s["control_of"]: s["chunk_id"] for s in seeds})
+        covered = []
+        for r in rows:
+            if r["control"] is not None and not is_unjudged(r["control"]) and label_of(r["control"]) == 0 \
+                    and r["control_of"] in cover:
+                covered.append({**r, "cover_primary": cover_prim.get(r["control_of"]),
+                                "cover_other": cover_other.get(r["control_of"], [])})
+        rec["cover_any"] = {"control_not_pairs": sum(r["control"] is not None and not is_unjudged(r["control"])
+                                                     and label_of(r["control"]) == 0 for r in rows),
+                            "with_cover_labels": len(covered),
+                            "split": cover_split(covered, lambda r: "answers_to_not"
+                                                 if label_of(r["stage_a"]) == 1 else "not_to_answers")}
+        rec["judge_files"]["cover_any"] = judge_files(vout)
+        forbidden |= {p["pair_id"] for p in vreg} | set(vfin)
+    passages = [r["window"] for r in rows] + [r["control_text"] for r in rows]
+    res = write_public(out, rec, forbidden, passages)
+    if write_flipped is not None:
+        flipped = sorted(r["control_of"] for r in rows if r["control"] is not None
+                         and not is_unjudged(r["control"]) and label_of(r["control"]) == 0)
+        write_private(write_flipped, "".join(f"{p}\n" for p in flipped).encode("ascii"), "the flipped pair ids")
+    return res
+
+
 # ------------------------------------------------------------------ main
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1471,12 +2556,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     ch.add_argument("--texts", required=True, type=Path, action="append")
     ch.add_argument("--sample", required=True, type=Path)
     ch.add_argument("--out-dir", required=True, type=Path)
+    ch.add_argument("--confirmatory", metavar="PREREG_SHA256", default=None)
+    ch.add_argument("--prereg", type=Path, default=None)
     mp = sub.add_parser("map")
     mp.add_argument("--judge-config", required=True, type=Path)
     mp.add_argument("--sample", required=True, type=Path)
     mp.add_argument("--control-dir", required=True, type=Path)
     mp.add_argument("--cover-any", action="store_true")
     mp.add_argument("--pairs", type=Path, default=None)
+    mp.add_argument("--confirmatory", metavar="PREREG_SHA256", default=None)
+    mp.add_argument("--prereg", type=Path, default=None)
     rp = sub.add_parser("report")
     rp.add_argument("--judge-config", required=True, type=Path)
     rp.add_argument("--control-config", required=True, type=Path)
@@ -1489,6 +2578,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     rt.add_argument("--judge-config", required=True, type=Path)
     rt.add_argument("--control-dir", required=True, type=Path)
     rt.add_argument("--out-dir", required=True, type=Path)
+    rt.add_argument("--confirmatory", metavar="PREREG_SHA256", default=None)
+    rt.add_argument("--prereg", type=Path, default=None)
+    dc = sub.add_parser("draw-confirm")
+    dc.add_argument("--judge-config", required=True, type=Path)
+    dc.add_argument("--control-draw", required=True, type=Path)
+    dc.add_argument("--control-sample", required=True, type=Path)
+    dc.add_argument("--n", required=True, type=int)
+    dc.add_argument("--out-dir", required=True, type=Path)
+    dc.add_argument("--confirmatory", metavar="PREREG_SHA256", required=True)
+    dc.add_argument("--prereg", type=Path, required=True)
+    cr = sub.add_parser("confirm-report")
+    cr.add_argument("--judge-config", required=True, type=Path)
+    cr.add_argument("--control-config", required=True, type=Path)
+    cr.add_argument("--retest-config", required=True, type=Path)
+    cr.add_argument("--control-dir", required=True, type=Path)
+    cr.add_argument("--retest-dir", required=True, type=Path)
+    cr.add_argument("--prereg", required=True, type=Path)
+    cr.add_argument("--prereg-sha256", required=True)
+    cr.add_argument("--out", required=True, type=Path)
+    cr.add_argument("--cover-config", type=Path, default=None)
+    cr.add_argument("--write-flipped", type=Path, default=None)
+    cr.add_argument("--artifacts-dir", type=Path, required=True)
     a = ap.parse_args(argv)
     os.umask(0o077)
     if a.cmd == "check":
@@ -1497,12 +2608,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif a.cmd == "draw":
         res = run_draw(a.judge_config, a.spot_key, a.spot_sheet, a.out_dir)
     elif a.cmd == "chunk":
-        res = run_chunk(judge_cfg(a.judge_config)["chunk_exports"], a.texts, a.sample, a.out_dir)
+        res = run_chunk(judge_cfg(a.judge_config)["chunk_exports"], a.texts, a.sample, a.out_dir,
+                        confirmatory=a.confirmatory, prereg=a.prereg)
     elif a.cmd == "map":
         res = run_map(judge_cfg(a.judge_config)["chunk_exports"], a.sample, a.control_dir, cover=a.cover_any,
-                      pairs=a.pairs)
+                      pairs=a.pairs, confirmatory=a.confirmatory, prereg=a.prereg)
     elif a.cmd == "retest-seed":
-        res = run_retest_seed(a.judge_config, a.control_dir, a.out_dir)
+        res = run_retest_seed(a.judge_config, a.control_dir, a.out_dir, confirmatory=a.confirmatory,
+                              prereg=a.prereg)
+    elif a.cmd == "draw-confirm":
+        res = run_draw_confirm(a.judge_config, a.control_draw, a.control_sample, a.n, a.out_dir, a.confirmatory,
+                               a.prereg)
+    elif a.cmd == "confirm-report":
+        res = run_confirm_report(a.judge_config, a.control_config, a.retest_config, a.control_dir, a.retest_dir,
+                                 a.prereg, a.prereg_sha256, a.out, a.cover_config, a.write_flipped,
+                                 a.artifacts_dir)
+        t = res["primary"]
+        res = {"outcome": t["outcome"], "n": t["n"], "records": t["records"], "b": t["b"], "c": t["c"],
+               "p_sign_flip": t["primary"]["p"], "gates_failed": t["gates_failed"]}
     else:
         res = run_report(a.judge_config, a.control_config, a.control_dir, a.out, a.cover_config,
                          a.retest_config, a.retest_dir)
