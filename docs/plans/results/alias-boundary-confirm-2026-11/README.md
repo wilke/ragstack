@@ -1,7 +1,7 @@
 <!-- experiment: Alias study follow-up: confirmatory chunk-boundary test | 2026-11-06 | CONFIRMATORY · CONFIRMED -->
 # Alias study follow-up: confirmatory test of the chunk-boundary effect on judged labels
 
-**Status: RUN 2026-11-06 — Confirmed, all six gates pass ([RESULTS.md](RESULTS.md)).** Frozen 2026-11-06T02:47:50Z on the owner's go of 2026-11-05 ("Go: freeze at 016fb61"). The freeze record below is kept as written at the freeze.
+**Status: RUN 2026-11-06 — Confirmed, all six gates pass ([REPORT.md](REPORT.md); record: [RESULTS.md](RESULTS.md)).** Frozen 2026-11-06T02:47:50Z on the owner's go of 2026-11-05 ("Go: freeze at 016fb61"). The freeze record below is kept as written at the freeze.
 
 **Status: FROZEN 2026-11-06T02:47:50Z on the owner's go of 2026-11-05 ("Go: freeze at 016fb61"); not run.**
 `PREREG.md` is frozen as written at commit `016fb61d03784e6505b43275e4ee7536a2fddec7`, sha256
@@ -29,9 +29,12 @@ those assumptions (PREREG §3.2–3.3).
 |---|---|---|
 | [PREREG.md](PREREG.md) | record, once frozen; a draft until then | question, estimand, tests, power, pool and draw, procedure, descriptives, decision wording, gates, freeze set and procedure, threats, cost, the code needed, the owner's questions and dated answers |
 | [power.py](power.py), [power.json](power.json) | record, once frozen | the seeded power simulation (standard library) of the clustered design: the draw rule on the pool's anonymised record × arm structure, a within-record correlation model, the exact sign-flip test and the McNemar sensitivity, the 351 cell with its realised-n distribution, the power-by-realised-n curve the result sentence reads, the floor and the MDE; a planning calculation, no study data |
+| [REPORT.md](REPORT.md) | reader's report, revised in place (like a paper; not record) | hypothesis → results summary → how it was tested → results → conclusion; cites RESULTS.md |
+| [TEST-DATA.md](TEST-DATA.md) | record | how the test pairs were generated, from the papers to the 351 pairs, with counts and their artifacts |
 | [RESULTS.md](RESULTS.md) | record | the outcome, the decision sentence of PREREG §7, the primary table, the gates, the §6 descriptives, procedural notes |
-| [artifacts/](artifacts/) | record | `draw.json`, `chunk.json`, `map.json`, `retest-seed.json` (steps 1–2, #977) and `confirm-report.json` (step 6) |
-| [DEVIATIONS.md](DEVIATIONS.md) | record, append-only | post-freeze deviations (PREREG §9.3); D-1: the owner's go replaced the gateway coordinator's ack |
+| [artifacts/](artifacts/) | record | `draw.json`, `chunk.json`, `map.json`, `retest-seed.json` (steps 1–2, #977), `confirm-report.json` (step 6, with the step-7 `cover_any` block added) and `map-cover.json` (step 7) |
+| [ADDENDUM-2026-11-06-cover-any.md](ADDENDUM-2026-11-06-cover-any.md) | record | step 7: where the lost answers went (descriptive) |
+| [DEVIATIONS.md](DEVIATIONS.md) | record, append-only | post-freeze deviations (PREREG §9.3); D-1, D-2: the owner's go replaced the gateway coordinator's ack (both gateway batches) |
 
 `power.json` was produced by `python3 -I -B power.py` from a **clean tree at commit `0bbe2d9`** (its
 provenance: `dirty: false`, CPython 3.8.5, `script_sha256` equal to the committed `power.py`'s hash below)
