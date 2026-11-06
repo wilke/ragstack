@@ -1462,7 +1462,11 @@ async def ingest(
     """Accept a file or directory for ingestion and run it in the background.
 
     `request.source` is a path the loader can read (confined to INGEST_ROOT
-    when configured). A directory is ingested recursively (.pdf/.txt/.md). Returns
+    when configured). A file is dispatched to a loader by its suffix (.pdf, .txt,
+    .md, .jsonl, and .xml as a JATS article); a directory is ingested
+    recursively and enqueues only those suffixes. A single file whose suffix
+    has no loader is still accepted and becomes a failed item, error
+    `no loader for <suffix>`, its bytes never read (#833 item 1). Returns
     immediately with a real job_id and `status="accepted"`; poll
     `GET /v1/ingest/{job_id}` for progress (including per-item counts).
 
