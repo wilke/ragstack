@@ -6,9 +6,11 @@ The XML counterpart of ``scripts/pdf_extract.py``: it runs the real
 and emits **one JSONL shard** in the exact ``{"text", "path", "metadata"}`` shape
 that ``scripts/embed_shard.py`` / ``scripts/ingest_shard.py`` consume via
 :class:`ragstack.ingestion.loaders.JsonlLoader`, plus a sidecar JSON report of
-everything that was skipped. RAGStack has no XML loader (ingest suffixes are
-``.pdf/.txt/.md/.jsonl``), so JATS has to become JSONL before it can be ingested
-at all.
+everything that was skipped. This is the bulk route (the CWL scatter, path C
+of #828 §8): since #828 PR 5a the API process also loads a single ``.xml`` in
+process through :class:`ragstack.ingestion.loaders.JatsLoader`, which builds its
+documents from the same parser, the same structure helper and the same
+record-to-``Document`` code ``JsonlLoader`` applies to this tool's shard.
 
 Ported from the validated out-of-tree converter ``/rag/oa/scripts/jats_to_jsonl.py``
 (800 articles -> 6,538 records, 0 failures; inline-table chunk contamination
@@ -16,8 +18,10 @@ Ported from the validated out-of-tree converter ``/rag/oa/scripts/jats_to_jsonl.
 record kinds, floats lifted at any depth, ``<floats-group>`` captured,
 row-splitting of oversized tables with the caption+header repeated — live in
 ``ragstack/ingestion/jats.py`` and are documented there; the structure adapter
-(``jats/1``) lives in ``ragstack/ingestion/jats_structure.py``. This file is I/O
-plus attaching and validating each record's structure.
+(``jats/1``) lives in ``ragstack/ingestion/jats_structure.py``, and so does the
+one helper that builds and validates a record's structure
+(``record_structure``). This file is I/O plus attaching that structure and
+counting its drops.
 
 INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad hoc)
 
@@ -98,8 +102,7 @@ from ragstack.ingestion.jats import (
     DEFAULT_MIN_UNIT_CHARS,
     convert_file,
 )
-from ragstack.ingestion.jats_structure import article_structure, unit_structure
-from ragstack.ingestion.structure import StructureInvalid, validate_structure
+from ragstack.ingestion.jats_structure import record_structure
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 
@@ -159,32 +162,20 @@ def walk_corpus(corpus: str | Path, tree: str = "clean") -> list[dict]:
 
 def _attach_structure(record: dict, spans: list, units: dict,
                       structure_dropped: Counter[str]) -> None:
-    """Build, validate and attach one record's ``jats/1`` structure (#828 §4).
+    """Attach one record's ``jats/1`` structure (#828 §4), or count its drop.
 
-    Article records get :func:`article_structure` from the article spans, unit
-    records :func:`unit_structure` from their layout. On success the structure
-    is the record's LAST top-level key, ``structure`` (never inside
-    ``metadata``). On any failure — an adapter ``ValueError``, any other
-    exception, a :class:`StructureInvalid` — no key is written, the drop is
-    counted under the validator's reason (or the exception class name), one
-    stderr line says so, and the record is kept exactly as it was."""
-    kind = record["metadata"].get("content_type", "article")
-    text = record["text"]
-    try:
-        if kind == "article":
-            structure = article_structure(text, spans)
-        else:
-            layout, supplementary = units[record["path"]]
-            structure = unit_structure(text, layout, kind=kind, supplementary=supplementary)
-        validate_structure(structure, text)
-        dumped = structure.model_dump()
-    except StructureInvalid as e:
-        reason = e.reason
-    except Exception as e:  # noqa: BLE001 - a dropped structure, never a crashed file
-        reason = type(e).__name__
-    else:
+    The structure is built and validated by
+    :func:`ragstack.ingestion.jats_structure.record_structure` — the same
+    helper the in-process ``JatsLoader`` uses, so the two cannot disagree. On
+    success it is the record's LAST top-level key, ``structure`` (never inside
+    ``metadata``). On failure no key is written, the drop is counted under the
+    reason the helper gave (the validator's reason, or the exception class
+    name), one stderr line says so, and the record is kept exactly as it was."""
+    dumped, reason = record_structure(record, spans, units)
+    if dumped is not None:
         record["structure"] = dumped
         return
+    assert reason is not None
     structure_dropped[reason] += 1
     print(f"jats_extract: {record['path']}: structure dropped ({reason})", file=sys.stderr)
 
