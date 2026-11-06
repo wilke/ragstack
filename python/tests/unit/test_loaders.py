@@ -574,19 +574,28 @@ def test_a_link_to_a_suffixless_blob_loads_by_the_links_suffix(tmp_path: Path):
     assert reg.dispatch(str(link)) == (reg.loader_for(str(link)), ".md")
 
 
-def test_dispatch_is_the_resolved_suffix_first_then_the_links(tmp_path: Path):
-    """The order: the target's suffix when it has a loader (a ``.md`` link to
-    a ``.pdf`` is a PDF), else the link's (a ``.md`` link to an ``.rst`` is
-    read as the Markdown its name declares)."""
+def test_dispatch_is_the_resolved_suffix_then_the_links_only_when_it_has_none(
+    tmp_path: Path,
+):
+    """The target's suffix decides (a ``.md`` link to a ``.pdf`` is a PDF);
+    the link's suffix only when the target has NONE (a blob). #975 round 2
+    N7: a ``.md`` link to an ``.rst``/``.docx``/``.gz``/``.epub`` used to be
+    read as Markdown text; it is ``no loader for <target suffix>`` now, its
+    bytes never read. MUTATION: fall back whenever the target's suffix is
+    unregistered → TextFileLoader."""
     from ragstack.ingestion.loaders import NoLoader
 
-    target = tmp_path / "x.rst"
-    target.write_text("Title\n=====\n", encoding="utf-8")
-    link = tmp_path / "x.md"
-    link.symlink_to(target)
     reg = default_loader_registry(ingest_root=str(tmp_path))
-    assert isinstance(reg.loader_for(str(link)), TextFileLoader)
-    assert reg.dispatch(str(target)) == (None, ".rst")
+    for sfx in (".rst", ".docx", ".gz", ".epub"):
+        target = tmp_path / f"x{sfx}"
+        target.write_bytes(b"PK\x03\x04 binary-ish \xff\xfe")
+        link = tmp_path / f"x{sfx}.md"
+        link.symlink_to(target)
+        assert reg.loader_for(str(link)) is None
+        assert reg.dispatch(str(link)) == (None, sfx)
+        with pytest.raises(NoLoader) as exc:
+            reg.load(str(link))
+        assert exc.value.job_error == f"no loader for {sfx}"
     pdf_target = tmp_path / "y.pdf"
     pdf_target.write_bytes(b"%PDF-1.4 not really")
     pdf_link = tmp_path / "y.md"

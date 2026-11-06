@@ -337,7 +337,11 @@ def _blob_link(tmp_path: Path, link_name: str, text: str, target_name: str | Non
 
 @pytest.mark.parametrize("link_name, target_name, outcome", [
     ("notes.md", None, "loaded"),          # suffix-less blob: the link's .md
-    ("paper.md", "paper.rst", "loaded"),   # target has no loader: the link's .md
+    # #975 round 2 N7: a target WITH a suffix is dispatched on it, registered
+    # or not — never read as the link's Markdown.
+    ("paper.md", "paper.rst", "no loader for .rst"),
+    ("paper.md", "paper.docx", "no loader for .docx"),
+    ("paper.md", "paper.gz", "no loader for .gz"),
     ("notes.rst", None, "no loader for .rst"),
     ("notes.rst", "data.csv", "no loader for .csv"),
     ("LICENSE", None, "no loader for (no suffix)"),
@@ -346,7 +350,8 @@ def test_symlink_dispatch_is_identical_in_process_and_on_the_extract_step(
     tmp_path, no_pdf_loader, link_name, target_name, outcome
 ):
     """#975 F7(b): ``registry.load`` and the extract step's pre-check take ONE
-    dispatch decision — the resolved suffix, then the suffix as given — so a
+    dispatch decision — the resolved suffix, or the suffix as given only when
+    the resolved path has none — so a
     ``notes.md → ../blobs/<sha256>`` link loads on both (it failed with ``no
     loader for (no suffix)`` once the TextFileLoader fallback was removed), and
     a refusal names the same suffix on both. MUTATION: resolve-only dispatch

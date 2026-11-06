@@ -120,7 +120,8 @@ def extract_documents(
     ``registry.load`` by reference). The ``registry.dispatch`` pre-check is
     kept although ``registry.load`` now raises the same refusal: it refuses
     without confining or reading the file, and it is the same dispatch
-    (resolved suffix, then the suffix as given).
+    (the resolved suffix; the suffix as given only when the resolved path
+    has none).
 
     ``records`` are JSONL-ready ``{"text", "path", "metadata"}`` dicts (the shape
     ``JsonlLoader`` consumes), with a ``"structure"`` key added when the loader
@@ -139,8 +140,8 @@ def extract_documents(
     skipped: list[dict] = []
     for path in paths:
         # ``registry.dispatch`` is the decision ``registry.load`` takes: the
-        # resolved path's suffix, then the suffix as given (a ``notes.md`` link
-        # to a suffix-less blob). Both get the path AS GIVEN; ``source`` (the
+        # resolved path's suffix, or — only when it has none — the suffix as
+        # given (a ``notes.md`` link to a suffix-less blob). Both get the path AS GIVEN; ``source`` (the
         # resolved path) is only what the skip rows report.
         source = str(Path(path).resolve())
         loader, suffix = registry.dispatch(str(path))

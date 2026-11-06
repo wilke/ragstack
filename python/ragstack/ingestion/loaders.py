@@ -671,16 +671,17 @@ class LoaderRegistry:
 
     def _dispatch(self, given: Path, resolved: Path) -> tuple[DocumentLoader | None, str]:
         """``(loader, suffix)`` for one source: the RESOLVED path's suffix
-        first, then — when that has no loader — the suffix of the path AS
-        GIVEN. The second step is for a link to a content-addressed blob with
-        no suffix (``notes.md → ../blobs/<sha256>``: the HF hub cache,
-        git-annex, DVC), which a directory ingest enqueues by the link's
-        suffix. ``(None, suffix)`` names the suffix the refusal reports: the
-        resolved one, else the given one."""
-        for sfx in (resolved.suffix.lower(), given.suffix.lower()):
-            if sfx and sfx in self._loaders:
-                return self._loaders[sfx], sfx
-        return None, (resolved.suffix or given.suffix).lower()
+        decides. Only when the resolved path has NO suffix at all does the
+        suffix of the path AS GIVEN decide instead: a link to a
+        content-addressed blob (``notes.md → ../blobs/<sha256>``: the HF hub
+        cache, DVC), which a directory ingest enqueues by the link's suffix.
+        A target with a suffix of its own is dispatched on it, registered or
+        not — ``report.md → report.docx`` is ``no loader for .docx``, its
+        bytes never read as text. ``(None, suffix)`` names the suffix the
+        refusal reports: the resolved one, else the given one."""
+        sfx = (resolved.suffix or given.suffix).lower()
+        loader = self._loaders.get(sfx) if sfx else None
+        return loader, sfx
 
     def dispatch(self, source: str) -> tuple[DocumentLoader | None, str]:
         """:meth:`_dispatch` of ``source`` — the decision :meth:`load` takes,
@@ -695,7 +696,7 @@ class LoaderRegistry:
 
     def loader_for(self, source: str) -> DocumentLoader | None:
         """The loader :meth:`load` would dispatch ``source`` to, or ``None``
-        when no suffix of it has a registration (where :meth:`load` raises
+        when its suffix has no registration (where :meth:`load` raises
         :class:`NoLoader`). Dispatch only: no confinement, existence or size
         check.
 
@@ -703,7 +704,8 @@ class LoaderRegistry:
         the SAME suffix map the in-process path loads through, instead of
         keeping its own copy that can drift — the drift that sent ``.md`` files
         through PyMuPDF on one path and ``TextFileLoader`` on the other. Reads
-        the same two suffixes as :meth:`load` (resolved, then as given)."""
+        the same suffix as :meth:`load` (the resolved path's; the path's as
+        given only when the resolved one has none)."""
         return self.dispatch(source)[0]
 
     def _resolve(self, source: str) -> Path:
