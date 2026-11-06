@@ -13,7 +13,7 @@ and the record differ, the record wins.
 | Pre-registration (frozen 2026-11-04, sha256 `d54f4201…`, signed tag `prereg-alias-study-2026-11`) | [prereg/PREREG-alias-study.md](prereg/PREREG-alias-study.md), freeze record in [prereg/README.md](prereg/README.md) |
 | Deviations D-1 to D-3 | [DEVIATIONS.md](DEVIATIONS.md) |
 | Chunk-boundary control, exploratory | [ADDENDUM-2026-11-05-chunk-boundary-control.md](ADDENDUM-2026-11-05-chunk-boundary-control.md), plan and artifacts in [control/](control/README.md) |
-| Presentation (18 slides, generated from the artifacts) | [the deck](../../../presentations/alias-study-2026-11.html), generator [`presentation/make_deck.py`](presentation/make_deck.py) |
+| Presentation (20 slides, generated from the artifacts) | [the deck](../../../presentations/alias-study-2026-11.html), generator [`presentation/make_deck.py`](presentation/make_deck.py) |
 | Lab book (dated status, decisions, open questions) | [LABBOOK.md](LABBOOK.md) |
 | Public artifacts | [artifacts/](artifacts/), [control/artifacts/](control/artifacts/) (counts, rates and hashes only) |
 
