@@ -31,6 +31,7 @@ those assumptions (PREREG §3.2–3.3).
 | [power.py](power.py), [power.json](power.json) | record, once frozen | the seeded power simulation (standard library) of the clustered design: the draw rule on the pool's anonymised record × arm structure, a within-record correlation model, the exact sign-flip test and the McNemar sensitivity, the 351 cell with its realised-n distribution, the power-by-realised-n curve the result sentence reads, the floor and the MDE; a planning calculation, no study data |
 | [RESULTS.md](RESULTS.md) | record | the outcome, the decision sentence of PREREG §7, the primary table, the gates, the §6 descriptives, procedural notes |
 | [artifacts/](artifacts/) | record | `draw.json`, `chunk.json`, `map.json`, `retest-seed.json` (steps 1–2, #977) and `confirm-report.json` (step 6) |
+| [DEVIATIONS.md](DEVIATIONS.md) | record, append-only | post-freeze deviations (PREREG §9.3); D-1: the owner's go replaced the gateway coordinator's ack |
 
 `power.json` was produced by `python3 -I -B power.py` from a **clean tree at commit `0bbe2d9`** (its
 provenance: `dirty: false`, CPython 3.8.5, `script_sha256` equal to the committed `power.py`'s hash below)
