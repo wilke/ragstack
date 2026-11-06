@@ -178,6 +178,12 @@ PAGES = [
         card="ADR 0011 — Provenance records", index=False,
         blurb="",
     ),
+    dict(
+        src="adr/0012-document-chunk-registry.md",
+        out="adr/0012-document-chunk-registry.html", label="ADR 0012 · Proposed",
+        card="ADR 0012 — Document and chunk registry", index=False,
+        blurb="",
+    ),
 ]
 
 # Experiment records. Any docs/plans/results/<dir>/README.md whose first line is
