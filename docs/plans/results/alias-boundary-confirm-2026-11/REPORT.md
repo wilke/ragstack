@@ -110,8 +110,8 @@ pairs each).
 In documents with one untitled section, where section cuts cannot move a boundary, 0 of 67 new chunks lost
 the label (re-read: 2 of 67).
 
-**Where the answer went** (step 7, cover-any; descriptive, not tested; `cover_any` in
-`confirm-report.json`). For each of the 75 pairs whose new chunk lost *answers*, the judge re-read every new
+**Where the answer went** (step 7, cover-any; descriptive, not tested; record:
+[ADDENDUM-2026-11-06-cover-any.md](ADDENDUM-2026-11-06-cover-any.md), `cover_any` in `confirm-report.json`). For each of the 75 pairs whose new chunk lost *answers*, the judge re-read every new
 chunk overlapping the original window (174 chunks):
 
 | outcome of the re-read | pairs |
@@ -147,4 +147,4 @@ single-chunk prompt; it says where the answer text sits, not whether retrieval w
 - **Practical reading.** If re-chunking moves or splits answer text, as the descriptives suggest, an
   evaluation that judges single passages would register it as a loss even where the answer is still in the
   collection. Overlap between chunks, or judging a chunk together with its neighbours, are the mitigations
-  to test next, beside the retrieval run.
+  this leaves to test, beside the retrieval run.

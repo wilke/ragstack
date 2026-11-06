@@ -30,7 +30,8 @@ which result it touches.
 - **Why.** The coordinator session was still unreachable. The operator asked whether to proceed as for D-1,
   and the owner answered in chat "Yes, same as before". The gateway's model list answered, with both models
   served; that check made no model call.
-- **When.** The batch ran 15:06:55–15:07:52Z; the cover registry was finalized at 15:07:55Z.
+- **When.** The batch ran 15:06:55–15:07:52Z†; the cover registry was finalized at 15:07:55Z†. († Operator
+  shell time, from the private run log; the step-7 re-run adds no cover-arm `times` block.)
 - **What had been seen.** The step-6 report, committed in #979, including the primary result. Step 7 runs
   only after it by design, and its re-run refuses unless the recomputed primary table equals the committed
   one.

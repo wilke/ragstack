@@ -4,7 +4,8 @@ Descriptive, not tested. It adds to [RESULTS.md](RESULTS.md), which stays as com
 
 - **Source.** The `cover_any` block of [`artifacts/confirm-report.json`](artifacts/confirm-report.json),
   re-run with `--cover-config` (`recorded_at` 2026-11-06T15:08:28Z), and
-  [`artifacts/map-cover.json`](artifacts/map-cover.json).
+  [`artifacts/map-cover.json`](artifacts/map-cover.json) (`recorded_at` 14:42:44Z, after step 6's commit b607bb4 at
+  14:36:45Z).
 - **The step-6 report is unchanged.** The step-6 version of `confirm-report.json` is the one committed in #979
   (`recorded_at` 14:34:20Z). The re-run recomputed the primary table, found it identical, and added only
   `cover_any` and its `judge_files` counts. `primary` and `outcome` (Confirmed) did not change.
@@ -33,7 +34,7 @@ same frozen judge and prompt: 174 chunks in all, and no window reached the cap.
 
 ## Reading
 
-In about seven of ten lost pairs, the answer text is still whole in a neighbouring chunk of the new chunking.
+In about seven of ten lost pairs, a neighbouring chunk of the new chunking, read alone, still answers.
 In about a quarter, no single chunk carries it, consistent with answer text split across a cut. This is a
 statement about where the judged answer sits under single-chunk judging. It does not say whether retrieval
 would rank that neighbouring chunk in the top 10, which needs a found@10 run on the new chunking.
