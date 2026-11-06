@@ -72,7 +72,11 @@ questions, gold-quote coverage).
 ## 4. Outcomes and analysis (all descriptive)
 
 Per pair, under each retriever:
-- **A:** is a chunk labelled *answers* (control or cover-any registry) in the top 10?
+- **A:** is a chunk labelled *answers* (control or cover-any registry, for any pair of the same question) in the
+  top 10?
+- **A_own:** is one of *this* pair's own chunks (its max-overlap chunk or its cover-any chunks) labelled
+  *answers* and in the top 10? A_own is the per-pair reading. A can also be credited by another pair of the
+  same question, and the report counts how often that happens.
 - **M:** is the max-overlap chunk in the top 10, and at which rank?
 - **U:** the number of top-10 chunks with no label.
 
@@ -80,12 +84,16 @@ U bounds the answer from above: found@10 for the pair lies between "A" and "A or
 top 10".
 
 Reported:
-- **Q1.** For the 53 recovered pairs and for the 18 others: counts and Wilson 95 % intervals for A, plus its
-  upper bound. The default retriever is the headline; norerank and BM25 are shown beside it.
+- **Q1.** For the 53 recovered pairs, the 18 others, the 4 whose max-overlap chunk the re-read labelled *answers*
+  (reported alone), and all 75: counts and Wilson 95 % intervals for A and A_own, plus the upper bound and the
+  number of distinct questions in each group. The default retriever is the headline; norerank and BM25 are shown beside it.
 - **Q2.** For all 351: M, the share of retrieved windows whose counterpart is retrieved, by coverage band
-  and by corpus arm; and A for the 276 pairs whose control chunk was labelled *answers*.
-- **Reference.** Beside each figure, the stage-A status of the same pair (its window was in the top 10 in at
-  least one stage-A leg by construction), and the leg it came from.
+  and by corpus arm; M among pairs whose window was in the same retriever's stage-A top 10 (counterpart retained); and A and A_own
+  for the 276 pairs whose control chunk was labelled *answers*.
+- **Reference.** Beside each figure, whether the pair's window was in the same retriever's stage-A top 10 in
+  the same corpus arm. Base-paper windows run in the base collection; none of the 351 was found only in a
+  larger arm's legs (gold-map count 0).
+- **Gates.** A retrieval leg whose depth or reranker gate fired is refused, not reported.
 
 **No new judging in stage 1.** If U makes the Q1 upper and lower bounds differ by more than 10 pairs out of
 75, a small judging step is the stage-1b option, put to the owner:
@@ -110,6 +118,9 @@ Stage 1 is too small for a test; it shows direction and size, labelled explorato
   coordinated with the management session.
 - **Reviews.** A Fable review and an independent argo-agent read of the live-ops plan and of the harness
   change before any create.
+- **Workflow.** The committed embed workflow cannot pass the chunk-size unit, so a token-sized collection is
+  refused (exit 2). The owner chose a repo PR (2026-11-06) adding an optional `chunk_size_unit` input to
+  `cwl/embed-bulk.cwl`. It merges before the first create; the image is unchanged.
 - **Compute.** Four resolved embeds, about 453k chunk embeddings (about 1–1.5 h on the two SFR endpoints).
   Retrieval is about 218 questions × 3 retrievers × the arms each question touches, roughly 1–2k calls.
 - **Judging.** None in stage 1. The stage-1b option is at most 750 local Qwen pairs, plus a small gateway
