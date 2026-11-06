@@ -85,3 +85,70 @@ async def test_admit_refuses_a_jats_family_whole_and_leaves_other_records_alone(
     admitted = await WorkIdentityStage(ix).admit(refused, tenants=["t"], policy=POLICY_ALLOW)
     assert len(admitted) == 3
     assert "duplicate_of" not in admitted[1].metadata
+
+
+@pytest.mark.asyncio
+async def test_a_refused_unit_refuses_only_itself_never_its_article():
+    """#975 round 3 (argo S1b): the family rule runs article → units only. A
+    unit that carries a foreign id (here a pmid held by another work) is
+    refused alone; its article and its other units are admitted. Before, the
+    unit's refusal was copied onto the article and every sibling, so a table
+    citing an indexed paper took the whole work down. MUTATION: let any
+    family member's refusal propagate (``first.setdefault(family(d), m)``
+    for units too) → the article and the figure are refused."""
+    from ragstack.ingestion.loaders import deterministic_doc_id
+    from ragstack.ingestion.work_identity import (
+        POLICY_REFUSE,
+        WorkIdentityStage,
+        format_refusal,
+        refusal_of,
+    )
+    from ragstack.models import Chunk, Document
+    from ragstack.stores.memory import InMemoryTextIndex
+
+    ix = InMemoryTextIndex()
+    await ix.index([Chunk(id="c0", doc_id="held", content="x",
+                          metadata={"tenant_id": "t", "pmid": "23456789"})])
+
+    def doc(src: str, **meta) -> Document:
+        return Document(id=deterministic_doc_id(src), content="body", source=src,
+                        metadata=dict(meta))
+
+    a = "/c/a.xml"
+    art = doc(a, doi="10.1234/a")
+    table = doc(f"{a}#table-1", doi="10.1234/a", pmid="23456789")
+    fig = doc(f"{a}#figure-1", doi="10.1234/a")
+    seen: dict = {}
+    admitted = await WorkIdentityStage(ix).admit(
+        [table, art, fig], tenants=["t"], policy=POLICY_REFUSE, seen=seen)
+    assert [d.source for d in admitted] == [a, f"{a}#figure-1"]
+    assert refusal_of(table) == format_refusal(("pmid", "23456789"), "held")
+    assert not refusal_of(art) and not refusal_of(fig)
+    assert seen[("doi", "10.1234/a")] == art.id
+    assert ("pmid", "23456789") not in seen
+
+
+def test_fill_ids_gives_units_their_articles_ids_never_ids_from_their_own_text():
+    """#975 round 3 (argo S1a): a JATS unit is not a source of identity.
+    ``fill_ids`` scans an ARTICLE's header text, then copies the article's
+    final doi/pmid/pmcid onto its units; a unit's own text (a table listing
+    the studies it cites) is never scanned. A unit whose article is not in
+    the call keeps what its record carried. MUTATION: scan units' text too →
+    the table carries pmid 23456789; drop the copy → the units lack the
+    article's labelled pmid."""
+    from ragstack.ingestion.work_identity import WorkIdentityStage
+    from ragstack.models import Document
+
+    a = "/c/a.xml"
+    art = Document(id="a", source=a, metadata={"doi": "10.1234/a"},
+                   content="PMID: 11111111 The abstract.")
+    table = Document(id="t", source=f"{a}#table-1", metadata={"doi": "10.1234/a"},
+                     content="Table 1. Included studies. Smith, PMID 23456789, "
+                             "DOI: 10.5555/cited.study, PMCID: PMC7654321")
+    orphan = Document(id="o", source="/c/b.xml#figure-1", metadata={},
+                      content="Figure 1. From PMID: 23456789")
+    WorkIdentityStage(text_index=None).fill_ids([table, art, orphan])
+    assert art.metadata["pmid"] == "11111111"
+    assert {k: table.metadata.get(k) for k in ("doi", "pmid", "pmcid")} == {
+        "doi": "10.1234/a", "pmid": "11111111", "pmcid": None}
+    assert orphan.metadata == {}

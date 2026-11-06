@@ -19,7 +19,7 @@ from ragstack.ingestion.enrich import (
     enrich,
     index_metadata,
 )
-from ragstack.ingestion.jats import JATS_PASSTHROUGH_KEYS, convert_file
+from ragstack.ingestion.jats import JATS_PASSTHROUGH_KEYS, convert_file, inherit_article_ids
 from ragstack.ingestion.jats_structure import record_structure
 from ragstack.ingestion.structure import structure_from_record
 from ragstack.models import Document
@@ -473,6 +473,9 @@ class JsonlLoader:
                     docs.append(doc)
         if not docs:
             raise LoaderError("no usable documents in JSONL source")
+        # A JATS unit record takes its article's ids (#975 round 3, argo S1a):
+        # ``enrich`` never derives a unit's DOI from its own text.
+        inherit_article_ids(docs)
         return docs
 
     def _metadata(self, enriched: EnrichedDoc, record: dict) -> dict[str, Any]:
@@ -645,6 +648,7 @@ class JatsLoader:
                 docs.append(doc)
         if not docs:
             raise NoJatsContent(f"no JATS article content in '{path.name}'")
+        inherit_article_ids(docs)  # as JsonlLoader.load (#975 round 3, argo S1a)
         return docs
 
 

@@ -636,6 +636,32 @@ async def test_enricher_shares_one_lookup_across_documents_with_the_same_doi():
     assert len(seen) == 1
 
 
+@pytest.mark.asyncio
+async def test_enricher_gives_jats_units_their_articles_doi_not_one_from_their_text():
+    """#975 round 3 (argo S1a): a JATS unit record is not an independent
+    identity source. The text leg (most frequent DOI in the text) runs on the
+    ARTICLE; its units take the article's DOI and never scan their own text —
+    a table of included studies would otherwise be labelled with a cited
+    study's DOI (and refused as that study under ``refuse``). A unit whose
+    article is not in the batch keeps only what its record carried. Both get
+    the article's resolution. MUTATION: units keep the text leg → the table
+    carries the cited DOI and the orphan gains one."""
+    resolver, seen = _resolver(_crossref_ok)
+    cited = "10.5555/cited.study"
+    art = Document(id="a", source="/c/p.xml", metadata={},
+                   content=f"Antibiotics 2025\nhttps://doi.org/{DOI}\n\nAbstract")
+    table = Document(id="t", source="/c/p.xml#table-1", metadata={},
+                     content=f"Table 1. Included. doi:{cited} doi:{cited} doi:{cited}")
+    orphan = Document(id="o", source="/c/q.xml#figure-1-part-2", metadata={},
+                      content=f"Figure 1. Adapted from https://doi.org/{cited}")
+    await DoiEnricher(resolver).enrich_documents([table, art, orphan])
+    assert art.metadata["doi"] == DOI
+    assert table.metadata["doi"] == DOI
+    assert table.metadata["title"] == art.metadata["title"]
+    assert orphan.metadata == {}
+    assert len(seen) == 1  # one DOI resolved: the article's
+
+
 # --------------------------------------------------------------------------- #
 # NCBI ID Converter (pmid / pmcid) — #596
 # --------------------------------------------------------------------------- #

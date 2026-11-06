@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Re-exported: the coercions live in the dependency-free leaf so a CPU-only CWL
 # worker (ingestion/jats.py) can import them without pydantic. Kept importable
 # from here because this is where year handling has always lived.
+from ragstack.ingestion.jats import unit_root
 from ragstack.metadata_schema import (  # noqa: F401
     MIN_PLAUSIBLE_YEAR,
     coerce_year,
@@ -459,7 +460,12 @@ def enrich(
     meta = record.get("metadata") or {}
 
     doc_type = classify(path, text, profile)
-    doi, doi_source = derive_doi(path, text, meta.get("doi", ""), profile=profile)
+    # A JATS unit record (``PMC1#table-2``) gets no DOI from its own text: a
+    # table of included studies names OTHER works (#975 round 3, argo S1a).
+    # Its record's DOI, or its article's (``jats.inherit_article_ids``,
+    # applied by the loaders), is its DOI.
+    doi, doi_source = derive_doi(path, "" if unit_root(path) else text,
+                                 meta.get("doi", ""), profile=profile)
     citations = extract_citations(text) if doc_type == ARTICLE else []
 
     return EnrichedDoc(

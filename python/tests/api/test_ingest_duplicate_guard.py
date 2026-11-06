@@ -606,6 +606,51 @@ async def test_an_article_refused_on_a_text_label_takes_its_units_with_it(
     assert _doc_ids() == {held}  # no orphan unit of the refused article
 
 
+async def test_a_table_citing_an_indexed_paper_neither_refuses_nor_relabels_its_article(
+    client, tmp_path
+) -> None:
+    """argo round 3 S1, the unit → article direction. An article with a DOI
+    nobody holds and no pmid has a table listing a source study ("PMID
+    23456789", "DOI: 10.1234/cited.paper") that is already indexed. Before,
+    ``fill_ids`` scanned the TABLE's own text, gave the unit pmid 23456789,
+    the guard refused it, and the family rule copied that refusal onto the
+    article and the figure: item ``failed`` with ``duplicate_work`` naming an
+    unrelated paper. Now units take their article's ids and a unit refusal
+    never travels up: everything is indexed and every record carries the
+    article's ids, not the cited ones. RED at 96fe2e5. MUTATIONS: scan units'
+    text in ``fill_ids`` (with S1b kept) → the table is refused alone;
+    unit → article propagation (with S1a kept) is caught by
+    ``test_a_refused_unit_refuses_only_itself_never_its_article``."""
+    import tests.jats_support as t
+
+    r = await _upload_md(client, "held.md",
+                         f"PMID: 23456789 · DOI: 10.1234/cited.paper\n\n{BODY}")
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    (held,) = _doc_ids()
+    table = t.TABLE_1.replace(
+        "ZZCELLZZ", "Smith 2019, PMID 23456789, DOI: 10.1234/cited.paper")
+    xml = t._article("7", t.BODY_WITH_FLOATS.replace(t.TABLE_1, table), pmc=False,
+                     doi="10.1234/fresh.work").replace(
+        '<article-id pub-id-type="pmid">997</article-id>', "")
+    assert "pmid" not in xml.split("<body>")[0]
+    src = tmp_path / "fresh.xml"
+    src.write_text(xml, encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(src)})
+    job_id = r.json()["job_id"]
+    body = await _poll(client, job_id)
+    assert body["status"] == "completed", _item(job_id).error
+    assert body["items"] == {"total": 1, "completed": 1, "failed": 0, "pending": 0}
+    key = str(src.resolve())
+    mine = [c for c in app.state.text_index._chunks if c.doc_id != held]
+    assert {c.metadata.get("source_path") for c in mine} == {
+        key, f"{key}#table-1", f"{key}#figure-1"}
+    assert any("23456789" in c.content for c in mine)  # the cited id is in the text
+    for c in mine:
+        assert c.metadata.get("doi") == "10.1234/fresh.work", c.metadata
+        assert not c.metadata.get("pmid"), c.metadata
+        assert "duplicate_of" not in c.metadata
+
+
 async def test_directory_ingest_of_plos_names_keeps_every_article(client, tmp_path) -> None:
     """F1(i): ``journal.pone.0012345.xml`` and ``journal.pone.0067890.xml`` both
     keyed to ``journal`` and overwrote each other. Each is keyed on its path

@@ -60,6 +60,7 @@ from typing import Any, Protocol
 from ragstack.documents import DocumentSummary
 from ragstack.ingestion.doi_metadata import normalize_doi
 from ragstack.ingestion.enrich import DEFAULT_PROFILE, PublisherProfile
+from ragstack.ingestion.jats import UNIT_ID, inherit_article_ids, unit_root
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
 from ragstack.models import Document
 
@@ -239,22 +240,10 @@ def ids_from_text(text: str, limit: int = HEADER_SCAN_CHARS) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 
-#: The unit-record ids ``jats.article_records`` emits: ``<key>#table-N``,
-#: ``<key>#figure-N``, each optionally ``-part-M`` (an oversized unit split).
-#: ``<key>`` is a PMC id or, for a file with none (``jats.record_key`` step
-#: 3), the file's resolved path — so it may hold ``/``
-#: (``/corpus/paper.xml#table-1``). Nothing else is a unit — not a JSONL record
-#: ``corpus#0001``, not an uploaded file named ``PMC1#supp.pdf``. A file a
-#: loader reads can never end in ``#table-N``: its resolved path carries a
-#: registered suffix (``LoaderRegistry._dispatch``).
-_JATS_UNIT = re.compile(r"^(.+)#(?:table|figure)-\d+(?:-part-\d+)?$")
-
-
-def _unit_root(source: str) -> str:
-    """The record a JATS unit record was split from (``"PMC1#table-1"`` →
-    ``"PMC1"``), or ``""`` when ``source`` is not a unit id of that grammar."""
-    m = _JATS_UNIT.match(source or "")
-    return m.group(1) if m else ""
+#: The unit-record grammar and its root live in :mod:`ragstack.ingestion.jats`
+#: (``UNIT_ID``, ``unit_root``) so the DOI enricher can share them.
+_JATS_UNIT = UNIT_ID
+_unit_root = unit_root
 
 
 def same_record_family(a: str, b: str) -> bool:
@@ -394,10 +383,16 @@ class WorkIdentityStage:
         A file-name DOI is deliberately NOT written here: it would pre-empt the
         enricher's frequency-ranked text scan (``document_doi`` takes a present
         ``doi`` as authoritative). The enricher applies the same filename rule
-        itself; the guard uses it only as a lookup key (:meth:`keys_for`)."""
+        itself; the guard uses it only as a lookup key (:meth:`keys_for`).
+
+        A JATS unit record (``…#table-1``) is not an identity source of its
+        own (#975 round 3, argo S1a): its text — a table of included studies,
+        a figure "adapted from" another paper — names OTHER works, so it is
+        never scanned. Once the articles are filled, each unit takes its
+        article's ids (:func:`ragstack.ingestion.jats.inherit_article_ids`)."""
         for doc in documents:
             from_name = ids_from_filename(_name_of(doc), self._profile)
-            found = {**ids_from_text(doc.content)}
+            found = {} if unit_root(doc.source) else {**ids_from_text(doc.content)}
             if "pmcid" in from_name:
                 found.setdefault("pmcid", from_name["pmcid"])
             for kind in KEY_KINDS:
@@ -406,6 +401,7 @@ class WorkIdentityStage:
                     doc.metadata[kind] = value
                     if kind == "doi":
                         doc.metadata.setdefault("doi_source", "text")
+        inherit_article_ids(documents)
 
     def keys_for(self, doc: Document) -> list[tuple[str, str]]:
         """The lookup keys of ``doc``: its metadata ids, plus the ``.pdf``
@@ -498,28 +494,25 @@ class WorkIdentityStage:
 def _refuse_whole_families(
     docs: list[Document], matches: list[_Match | None],
 ) -> list[_Match | None]:
-    """Under ``refuse``, one refused record of a JATS file refuses the whole
-    file (#975 round 2, argo N1a): the article and its table/figure records
-    (:func:`same_record_family`) are one work, admitted or refused together.
-    Their keys can differ — a labelled ``DOI:`` in the article's abstract
-    fills the article's ``doi`` and no unit's (:meth:`WorkIdentityStage.fill_ids`)
-    — so a per-record decision could refuse the article and index its units
-    with no article, and the item would still complete. Each sibling of a
-    refused record takes the first refusal of its family."""
-    roots = {_unit_root(d.source) for d in docs} - {""}
-    if not roots:
+    """Under ``refuse``, a refused ARTICLE refuses its table/figure records
+    (#975 round 2, argo N1a): they are one work (:func:`same_record_family`)
+    and must not be indexed with no article. Their keys can differ — a
+    labelled ``DOI:`` in the article's abstract fills the article's ``doi``
+    — so a per-record decision could refuse the article and index its units,
+    and the item would still complete. Each unit of a refused article takes
+    the article's refusal.
+
+    Article → units only (#975 round 3, argo S1b). A unit's verdict never
+    travels up: a refused unit refuses only itself. Units take their
+    article's ids (:meth:`WorkIdentityStage.fill_ids`), so a unit refusal
+    the article does not share means a foreign id reached the unit — that
+    must not take down the article, and it cannot erase a work."""
+    article_match = {d.source: m for d, m in zip(docs, matches, strict=True)
+                     if m is not None and d.source and not unit_root(d.source)}
+    if not article_match:
         return matches
-
-    def family(d: Document) -> str:
-        root = _unit_root(d.source) or d.source
-        return root if root in roots else ""
-
-    first: dict[str, _Match] = {}
-    for d, m in zip(docs, matches, strict=True):
-        if m is not None and family(d):
-            first.setdefault(family(d), m)
-    return [m if m is not None else first.get(family(d)) for d, m in
-            zip(docs, matches, strict=True)]
+    return [m if m is not None else article_match.get(unit_root(d.source))
+            for d, m in zip(docs, matches, strict=True)]
 
 
 def _first_match(

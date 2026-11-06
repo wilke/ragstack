@@ -77,6 +77,7 @@ from urllib.parse import quote
 import httpx
 
 from ragstack.ingestion.enrich import PublisherProfile, derive_doi
+from ragstack.ingestion.jats import inherit_article_ids, unit_root
 from ragstack.metadata_schema import coerce_year
 from ragstack.models import Document
 
@@ -256,7 +257,7 @@ def scan_text_for_doi(text: str, limit: int = TEXT_SCAN_CHARS) -> str:
 
 
 def document_doi(
-    doc: Document, profile: PublisherProfile | None = None
+    doc: Document, profile: PublisherProfile | None = None, *, scan_text: bool = True
 ) -> tuple[str, str]:
     """Find ``doc``'s DOI, returning ``(doi, source)`` — source is one of
     ``metadata`` / ``filename`` / ``text`` / ``""``.
@@ -273,7 +274,8 @@ def document_doi(
 
     The result is run through :func:`normalize_doi`, so a malformed or non-DOI
     value degrades to ``("", "")`` rather than producing a request we know will
-    404.
+    404. ``scan_text=False`` skips the text leg (a JATS unit record, whose
+    text names other works — :meth:`DoiEnricher._enrich`).
     """
     path = doc.source or str(doc.metadata.get("source_path") or "") or str(
         doc.metadata.get("filename") or ""
@@ -281,8 +283,8 @@ def document_doi(
     meta_doi = str(doc.metadata.get("doi") or "")
     raw, source = derive_doi(path, "", meta_doi, profile=profile)
     doi = normalize_doi(raw)
-    if doi:
-        return doi, source
+    if doi or not scan_text:
+        return (doi, source) if doi else ("", "")
     text_doi = scan_text_for_doi(doc.content)
     return (text_doi, "text") if text_doi else ("", "")
 
@@ -1030,19 +1032,36 @@ class DoiEnricher:
             log.warning("doi enrichment skipped (%s): %s", type(e).__name__, e)
             return 0
 
+    def _discover(self, doc: Document, found: list[tuple[Document, str]], *,
+                  scan_text: bool) -> None:
+        doi, source = document_doi(doc, self._profile, scan_text=scan_text)
+        if not doi:
+            return
+        if _is_missing(doc.metadata.get("doi")):
+            doc.metadata["doi"] = doi
+            doc.metadata.setdefault("doi_source", source)
+        found.append((doc, doi))
+
     async def _enrich(self, documents: list[Document]) -> int:
         # Pass 1: discover DOIs. Pure and local, so it also helps documents whose
         # DOI never resolves — recording the DOI alone already improves the UI's
         # label fallback and gives operators something to grep for.
+        #
+        # A JATS unit record (``…#table-1``) is not an identity source of its
+        # own (#975 round 3, argo S1a): the most frequent DOI in a table of
+        # included studies is a cited study's. Articles are discovered first;
+        # each unit then takes its article's DOI (``inherit_article_ids``,
+        # within this batch) and is discovered WITHOUT the text leg — so it
+        # resolves to the article's record, and a unit whose article is not
+        # in the batch keeps only what its record carried.
         found: list[tuple[Document, str]] = []
-        for doc in documents:
-            doi, source = document_doi(doc, self._profile)
-            if not doi:
-                continue
-            if _is_missing(doc.metadata.get("doi")):
-                doc.metadata["doi"] = doi
-                doc.metadata.setdefault("doi_source", source)
-            found.append((doc, doi))
+        units = [d for d in documents if unit_root(d.source)]
+        for doc in [d for d in documents if not unit_root(d.source)]:
+            self._discover(doc, found, scan_text=True)
+        if units:
+            inherit_article_ids(documents)
+            for doc in units:
+                self._discover(doc, found, scan_text=False)
         if not found:
             return 0
 

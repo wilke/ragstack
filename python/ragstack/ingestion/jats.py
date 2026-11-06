@@ -821,6 +821,60 @@ _PMC_ARTICLE_ID = re.compile(r"^\s*(?:PMC)?(\d+)\s*$", re.IGNORECASE)
 JATS_SUFFIXES = (".xml", ".nxml")
 
 
+#: The unit-record ids :func:`article_records` emits: ``<key>#table-N``,
+#: ``<key>#figure-N``, each optionally ``-part-M`` (an oversized unit split).
+#: ``<key>`` is a PMC id or, for a file with none (:func:`record_key` step
+#: 3), the file's resolved path — so it may hold ``/``
+#: (``/corpus/paper.xml#table-1``). Nothing else is meant to match — not a
+#: JSONL record ``corpus#0001``, not an uploaded file named ``PMC1#supp.pdf``.
+#: A loaded file's own path normally cannot: it ends in a registered suffix.
+#: The exception is a suffix-less TARGET reached through a link, which
+#: dispatches on the link's suffix (``LoaderRegistry._dispatch``):
+#: ``paper.xml → blobs/abc#table-1`` keys its article on
+#: ``/…/blobs/abc#table-1``, which this grammar reads as a unit of
+#: ``/…/blobs/abc`` (contrived; that record is then treated as a unit whose
+#: article is absent — it keeps its own record's ids).
+UNIT_ID = re.compile(r"^(.+)#(?:table|figure)-\d+(?:-part-\d+)?$")
+
+#: The work ids a unit record takes from its article (:func:`inherit_article_ids`).
+WORK_ID_KINDS = ("doi", "pmcid", "pmid")
+
+
+def unit_root(source: str) -> str:
+    """The record a JATS unit record was split from (``"PMC1#table-1"`` →
+    ``"PMC1"``), or ``""`` when ``source`` is not a unit id of that grammar
+    (:data:`UNIT_ID`)."""
+    m = UNIT_ID.match(source or "")
+    return m.group(1) if m else ""
+
+
+def inherit_article_ids(documents: Iterable) -> None:
+    """Give each JATS unit record its article's work ids, in place (#975
+    round 3, argo S1a). A unit is not an independent identity source: its
+    text is a table or caption that may cite other works, so the guard's
+    header scan and the enricher's text leg never read it; instead, after the
+    ARTICLE has been filled, its present ``doi``/``pmcid``/``pmid`` (and the
+    ``doi_source`` that came with the DOI) are copied onto every unit
+    (:func:`unit_root`) whose article is among ``documents`` — within one
+    load, one source. A unit whose article is not present keeps only what
+    its record carried. Duck-typed (``.source``, ``.metadata``) so this
+    module stays free of the model layer."""
+    docs = list(documents)
+    articles = {d.source: d for d in docs if d.source and not unit_root(d.source)}
+    for d in docs:
+        art = articles.get(unit_root(d.source))
+        if art is None:
+            continue
+        for kind in WORK_ID_KINDS:
+            value = art.metadata.get(kind)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            if d.metadata.get(kind) != value:
+                d.metadata[kind] = value
+                if kind == "doi" and art.metadata.get("doi_source"):
+                    d.metadata["doi_source"] = art.metadata["doi_source"]
+
+
 def pmc_stem(path: str | Path) -> str:
     """The filename stem up to the first ``.`` when it is a PMC id
     (``PMC8092463.v2.xml`` → ``PMC8092463``), else ``""``. Step 1 of

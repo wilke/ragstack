@@ -710,3 +710,51 @@ def test_nxml_is_registered_and_enqueued(tmp_path: Path):
     assert [d.source for d in reg.load(str(xml))][0] == "PMC8092463"
     manifest = build_manifest(str(tmp_path), ingest_root=str(tmp_path))
     assert [Path(i.source).name for i in manifest.items] == ["PMC8092463.nxml"]
+
+
+def test_loaders_never_label_a_jats_unit_with_a_doi_from_its_own_text(tmp_path: Path):
+    """argo round 3 S1a, the loader leg: ``enrich.derive_doi``'s text scan ran
+    on EVERY JSONL record, so the table of a DOI-less article was labelled
+    with the first DOI in its own text — a cited study's — on path C by
+    default (no guard, no enricher needed) and in process by ``JatsLoader``.
+    A unit record's DOI now comes from its record or its article: the text
+    leg runs on the article only and, within one load, the units take the
+    article's ids. A unit whose article is not in the file keeps its record's.
+    MUTATIONS: text leg for units → the table carries the cited DOI; no
+    inheritance in ``JsonlLoader.load``/``JatsLoader.load`` → the table has
+    no DOI."""
+    import json
+
+    import tests.jats_support as t
+    from ragstack.ingestion.loaders import JatsLoader, JsonlLoader
+
+    cited = "10.5555/cited.study"
+    shard = tmp_path / "s.jsonl"
+    shard.write_text("".join(json.dumps(r) + "\n" for r in [
+        {"text": "Title. https://doi.org/10.1234/own.work Abstract.",
+         "path": "/c/p.xml", "metadata": {}},
+        {"text": f"Table 1. Included studies: doi:{cited}", "path": "/c/p.xml#table-1",
+         "metadata": {}},
+        {"text": f"Figure 1. Adapted from doi:{cited}", "path": "/c/q.xml#figure-1",
+         "metadata": {}},
+    ]), encoding="utf-8")
+    art, table, orphan = JsonlLoader().load(str(shard))
+    assert art.metadata["doi"] == "10.1234/own.work"
+    assert table.metadata["doi"] == "10.1234/own.work"
+    assert "doi" not in orphan.metadata
+
+    table_xml = t.TABLE_1.replace("ZZCELLZZ", f"Smith 2019 doi:{cited}")
+    xml = t._article("7", t.BODY_WITH_FLOATS.replace(t.TABLE_1, table_xml), pmc=False)
+    xml = xml.replace('<article-id pub-id-type="doi">10.1234/synth.7</article-id>', "")
+    src = tmp_path / "nodoi.xml"
+    src.write_text(xml, encoding="utf-8")
+    docs = JatsLoader().load(str(src))
+    assert [d.source.rsplit("/", 1)[-1] for d in docs] == [
+        "nodoi.xml", "nodoi.xml#table-1", "nodoi.xml#figure-1"]
+    assert [d.metadata.get("doi") for d in docs] == [None, None, None]
+    # …and in process, too, the units take the article's text DOI.
+    src.write_text(xml.replace("<p>The abstract of article 7",
+                               "<p>https://doi.org/10.1234/own.work The abstract of article 7"),
+                   encoding="utf-8")
+    docs = JatsLoader().load(str(src))
+    assert [d.metadata.get("doi") for d in docs] == ["10.1234/own.work"] * 3
