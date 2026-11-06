@@ -881,29 +881,34 @@ What does **not** work today, or works differently from what you might assume:
     repinned (ADR-0010: the server and the tools image ship separately). Between the
     server release and the repin, path A ingests an `.xml` while path B records the
     item as `no loader for .xml`.
-  - A directory ingest now enqueues `.xml` and `.nxml` files. A well-formed XML file
-    that is not a JATS article (its document element is not `<article>`, as for an
-    XHTML page, or it has no abstract or body prose and no table or figure) becomes a
-    failed item with the constant error `no JATS article content (not a JATS
+  - A directory ingest now enqueues `.xml` and `.nxml` files. A `<pmc-articleset>`
+    holding exactly one `<article>` (what NCBI `efetch db=pmc` returns) is that
+    article, on every path; one holding none or several is refused. A well-formed XML
+    file that is not a JATS article (its document element is not `<article>`, as for
+    an XHTML page, or it has no abstract or body prose and no table or figure) becomes
+    a failed item with the constant error `no JATS article content (not a JATS
     article?)` (`NO_JATS_CONTENT_ERROR`); one that does not parse fails with the
     constant `could not parse JATS XML` (`JATS_PARSE_ERROR`; the server log line names
     the file and carries the `jats_parse_error` label).
-  - Document ids are keyed on a record key, not on the path, by one rule on every
-    path (`jats.record_key`): a file named for a PMC id keys on that id
-    (`PMC1.xml`, `PMC1.nxml`, `PMC1.v2.xml` → `PMC1`, records `PMC1`,
-    `PMC1#table-1`, …, as path C has always keyed them); any other file keys on the
-    article's own `<article-id pub-id-type="pmc">` when it has one, else on its full
-    name minus `.xml` (`journal.pone.0012345.xml` → `journal.pone.0012345`). The key
-    is read from the resolved path, so a symlink keys on its target's name.
-  - Two files with one key still share ids: two `PMC1.xml` in different directories,
-    or two different works both named `paper.xml` with no PMC id. When the indexed
-    document under that id carries a DOI or PMCID and the incoming one carries a
-    different one, the duplicate guard refuses the incoming document under
-    `duplicate_policy=refuse` with the constant `document id already holds a
-    different work (doi or pmcid differs)` (`ID_COLLISION_ERROR`) instead of
-    replacing the indexed work. Under `allow` or `off`, and when either side has no
-    DOI or PMCID, the second file replaces the first. Rename one of the files to
-    keep both.
+  - Document ids derive from one record key, by one rule on every path
+    (`jats.record_key`): (1) a file whose name up to the first `.` is a PMC id keys
+    on that stem, literally (`PMC1.xml`, `PMC1.nxml`, `PMC1.v2.xml` → `PMC1`;
+    `pmc4242.xml` → `pmc4242`), records `PMC1`, `PMC1#table-1`, …, as path C has
+    always keyed them; (2) else the article's own first `<article-id
+    pub-id-type="pmc">`, normalised (`PMC<digits>`); (3) else the file's resolved
+    path — the key a PDF at that path gets (`/corpus/paper.xml`,
+    `/corpus/paper.xml#table-1`). The key is read from the resolved path, so a
+    symlink keys on its target.
+  - Two files share ids only when they name one PMC id — the same work, so the
+    second replaces the first, as a re-ingest should — or are one file. Two
+    different works named `paper.xml` (in two directories, or two uploads) are
+    different documents; the duplicate guard decides on their DOIs as for any
+    other file.
+  - A path-keyed (step 3) file's ids follow its path, exactly as a PDF's do: a
+    moved file, a re-upload (each upload is staged under a new job directory) and a
+    GoWe run (the input is staged under a fresh path) all mint new ids, and the
+    duplicate guard refuses the second copy on its DOI under `refuse`. Name a file
+    for its PMC id, or give the article a `pmc` article-id, for ids that survive.
   - A re-ingest that produces fewer or different unit ids leaves the old ones
     indexed: a revised article that drops a table keeps its old `PMC1#table-3`, and a
     table split as `PMC1#table-1-part-N` on path C keeps those records when it is
