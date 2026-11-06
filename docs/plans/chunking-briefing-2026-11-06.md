@@ -219,18 +219,41 @@ Shipped on `main` 23 Oct and deployed on **dev only** from 24 Oct: tools v1.6.16
 - Same direction under BM25: −2.21 [−3.64, −0.79]
 - Reading: overlap's cost is small, but the production path does not show it is free. 512/64 stays
 
-### Slide B: "OA eval: no challenger beat 512/64 in production"
+### Slide B: "512/64 kept: three arms tie, dropping overlap loses"
 | arm | hit@5 | Δ vs 512/64 [95 % CI] | ctx@5 | rule |
 |---|---|---|---|---|
 | ft512o64 | 79.0 | — | 2,316 | kept |
-| sent512 | 79.6 | +0.54 [−0.74, +1.87] | 2,182 | NI, no switch |
+| sent512 | 79.6 | +0.54 [−0.74, +1.87] | 2,182 | passed NI; tie-break kept 512/64 |
 | sempool512 | 80.3 | +1.28 [−0.20, +2.75] | 1,843 | below +2 bar |
 | sem512 | 79.2 | +0.15 [−1.38, +1.67] | 1,762 | below +4 bar |
 | ft512o0 | 77.0 | −2.06 [−3.49, −0.59] | 2,300 | fails NI |
 | ft1024o0 | 76.7 | −2.36 [−4.03, −0.79] | 4,601 | fails |
+- Three challengers score slightly higher than 512/64, but every one of their CIs includes zero: a statistical tie, not a win for either side. 512/64 is shown better only than the two no-overlap arms, whose CIs exclude zero
+- `sent512` passed its non-inferiority test (Holm p 0.001); the pre-registered paired-ladder tie-break switches only when the candidate's two-sided CI against the incumbent excludes zero (−0.74), so the baseline was kept (`settings/a-hybrid-rerank/decision.json`, `ladder.steps[0].switched` false)
+- `sempool512` and `sem512` deliver 20–24 % less context at equal hit@5 (ctx tokens estimated as chars/4)
 - Pre-registered rule, frozen 5 Nov; 6 arms × 241,930 records; Qwen3.8 gold-quote questions
 - The reranker flattens differences. Semantic chunks gain +8 points in vector-only retrieval and lose 4–6 under BM25
 - Not yet in the registry or the public record; no answer grading yet
+
+### Slide B2: "Adding storage: sent512 is the cheaper tie"
+Derived from chunk counts, not measured. The run recorded no storage, memory or ingest-time figures per arm. Every arm uses the same embedder (SFR-Embedding-Mistral, 4096-d), so vector storage and vector memory scale with the chunk count.
+
+| arm | chunks | vectors vs 512/64 | raw vectors, eval set | at current OA size (est.) | hit@5 | reader context |
+|---|---|---|---|---|---|---|
+| ft512o64 | 705,204 | 1.00× | 11.6 GB | ~780 GB | 79.0 | 1.00× |
+| ft512o0 | 648,801 | 0.92× | 10.6 GB | ~718 GB | 77.0, fails NI | 0.99× |
+| sent512 | 677,580 | 0.96× | 11.1 GB | ~750 GB | 79.6, tie | 0.94× |
+| ft1024o0 | 439,153 | 0.62× | 7.2 GB | ~486 GB | 76.7, fails | 1.99× |
+| sempool512 | 830,791 | 1.18× | 13.6 GB | ~919 GB | 80.3, tie | 0.80× |
+| sem512 | 868,937 | 1.23× | 14.2 GB | ~961 GB | 79.2, tie | 0.76× |
+
+- Raw vectors = chunks × 4,096 × 4 bytes (float32, uncompressed). Quantization changes the absolute sizes, not the ratios
+- "At current OA size" applies each arm's ratio to the live `open-access` collection: 47,625,155 chunks over ~1,408,194 articles (distinct `pmcid`), 97.7 % of the 1,441,791-record discovery list, built at `fixed_token` 512/64 (`docs/plans/results/asm-tenant-metadata-audit-2026-09-15.md`; chunk method in `docs/plans/metadata-consistency.md`). That is ~33.8 chunks per article, close to the eval set's ~31.2 (705,204 chunks over 22,600 articles), so the extrapolation is plausible but still an estimate
+- `sent512` is no worse on every measured axis: 4 % fewer vectors, 6 % less reader context, hit@5 tied. Against it: sentence collections need a full re-ingest (#811), and the plan's `cost_rank` puts it above 512/64 (3 vs 2), apparently weighing ingest work, not storage. OPEN: what `cost_rank` was meant to capture
+- No-overlap saves storage and loses answers: ft512o0 −8 % vectors, −2.06 points; ft1024o0 −38 % vectors but 2× reader context and −2.36 points. Overlap 64 costs ~9 % more vectors than overlap 0
+- Semantic arms trade storage and ingest for cheaper queries: +18 to +23 % vectors (~140 to 180 GB more at OA size, uncompressed) and, per the plan, ~4.5 to 7× embed tokens for legacy semantic, for 20 to 24 % less reader context at equal hit@5. Worth it only at high query volume; no query-volume figure is on record
+- Not measured, and the gap that would settle it: ingest wall time and embed GPU-hours per arm
+- Source: chunk counts and context tokens from `ragstack-experiments/oa-chunking-eval-2026-10/main-run-2026-11/RESULTS.md` and `settings/a-hybrid-rerank/decision.json` (context tokens estimated as chars/4); embed-cost note from `reports/PLAN-AND-PASS-RULE.md`
 
 ### Slide C: "Capped semantic is safe on deployed docs (provisional)"
 - Part 4, pre-registered, citable: 372 two-passage questions, 71 pages, 4,096-token budget, δ 7.5 points, both readers
