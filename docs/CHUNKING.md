@@ -463,14 +463,16 @@ computed from the rendered text. Building glossary files over the rendered text
 is a separate issue. `ingest_chunks.py`, which loads pre-chunked JSON, refuses
 any entry that records a marker.
 
-**Not on GoWe deployments until the repin.** On `INGEST_BACKEND=gowe`,
-`POST /v1/collections` refuses (400) a collection that records any marker
-until the repin step R, because the shipped workflows' tools image predates
-the markers and would ingest it unmarked. An entry that arrived another way
+**On GoWe deployments since the repin.** Before the repin step R, on
+`INGEST_BACKEND=gowe`, `POST /v1/collections` refused (400) a collection that
+records any marker, because the shipped workflows' tools image predated the
+markers and would have ingested it unmarked; an entry that arrived another way
 (seeded, a collections file, a registry shared with an in-process deployment)
-is refused when an ingest is dispatched (422, before anything is uploaded or a
-version reserved). The dispatch also refuses `text_render` on a workflow that
-builds a glossary file. R lifts the first refusal. Note that the API's
+was refused when an ingest was dispatched (422, before anything is uploaded or
+a version reserved). R lifted both (`chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`
+is `True`; a tree whose CWLs name an older image sets it back). The dispatch
+still refuses `text_render` on a workflow that builds a glossary file, and a
+marked collection on a workflow whose `embed_shard.py` step is unwired. Note that the API's
 scatter workflow (`pdf-ingest-scatter.cwl`) runs the glossary step and passes
 `--glossary-file` to `ingest_shard.py`; until glossary files follow the
 render, a `text_render` collection cannot be ingested through it even after R.
@@ -491,8 +493,12 @@ collection as raw Markdown, with no error; its receipts have no
 `chunking.text_render`. Roll the tools image before creating marked
 collections on a GoWe tenant. On the operator embed workflows
 (`jats-ingest.cwl`, `pdf-ingest.cwl`, `embed-bulk.cwl`), the embed step must
-also pass `collection_id`, which the shipped texts do not yet do (repin step
-R). Three backstops refuse what they cannot prove was built from the entry:
+also pass `collection_id`, which the shipped texts do since the repin step R
+(`jats-ingest.cwl` through its `registry_db`, `pdf-ingest.cwl` and
+`embed-bulk.cwl` through the `registry` name; `embed-bulk.cwl`'s
+`collection_id` and `registry` are optional inputs — give the same id to
+`load-embeddings.cwl`). Every shard-tool workflow also declares an optional
+`structure_metadata` input since R. Three backstops refuse what they cannot prove was built from the entry:
 `load_embeddings.py` refuses, before any write, an embedding file whose
 header's markers differ from the entry's (an old header with no `chunking`
 object, against a marked entry, included); `gowe_batch_ingest.py` refuses to

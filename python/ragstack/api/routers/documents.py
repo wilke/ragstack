@@ -736,9 +736,9 @@ def _refuse_marked_on_unwired_workflow(entry: CollectionEntry, workflow_cwl: str
     reservation, like every gate here.
 
     Two more refusals come first (#828 PR 4 review): any recorded marker while
-    ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`` is ``False`` (until the
-    repin step R — create refuses the same, but an entry can arrive by another
-    route), and ``text_render`` on a workflow that builds and applies a
+    ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`` is ``False`` (it was,
+    before the repin step R; ``True`` since — create refuses the same, but an
+    entry can arrive by another route), and ``text_render`` on a workflow that builds and applies a
     glossary file (``tool_image.uses_glossary_file``), which every shipped
     ingest workflow does."""
     try:

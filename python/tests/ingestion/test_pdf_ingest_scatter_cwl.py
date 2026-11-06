@@ -722,7 +722,9 @@ def test_no_workflow_input_carries_a_dsn(cwl: Path) -> None:
 # --- the registry sweep: every workflow that resolves through the registry --- #
 
 #: CLIs that resolve a collection through ``ragstack.ops.ingest_target``.
-_REGISTRY_CLIS = ("ingest_shard", "load_embeddings", "load_graph",
+#: ``embed_shard`` since #828 PR 3 (``--collection-id``); its workflows bind it
+#: since the repin step R.
+_REGISTRY_CLIS = ("ingest_shard", "embed_shard", "load_embeddings", "load_graph",
                   "ingest_jsonl", "ingest_chunks")
 
 
@@ -774,7 +776,7 @@ def test_the_registry_sweep_matches_the_workflows_that_resolve() -> None:
         if _invokes_a_registry_cli(yaml.safe_load(f.read_text(encoding="utf-8")))
     }
     assert resolvers == {
-        "graph-extract.cwl", "ingest-bulk.cwl", "jats-ingest.cwl",
+        "embed-bulk.cwl", "graph-extract.cwl", "ingest-bulk.cwl", "jats-ingest.cwl",
         "load-embeddings.cwl", "pdf-ingest.cwl", "pdf-ingest-scatter.cwl",
         "restore-collection.cwl",
     }, f"the set of registry-resolving workflows changed: {sorted(resolvers)}"

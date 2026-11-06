@@ -7,8 +7,9 @@
    An unmarked entry with an old header loads exactly as today.
 2. ``gowe_batch_ingest.py`` — early: for a marked collection it exits 2 before
    any submission unless the workflow's ``embed_shard.py`` step binds
-   ``collection_id``; every SHIPPED text is unwired until the repin step R, so
-   the wired case is a fixture text.
+   ``collection_id``. Every SHIPPED embed workflow is wired since the repin
+   step R, so the unwired case is a fixture text (the shipped text with the
+   binding removed — what an operator submitting an older checkout has).
 
 (The API's dispatch backstop, item 3, is in
 ``tests/api/test_structure_markers_api.py``.) Offline: a scratch sqlite
@@ -119,10 +120,11 @@ def test_a_junk_marker_on_the_entry_is_refused(load, capsys) -> None:  # noqa: F
 # 2. gowe_batch_ingest.py
 # --------------------------------------------------------------------------- #
 
-def _wired(text: str) -> str:
-    """A fixture: the shipped text with ``collection_id`` bound into the
-    ``in:`` of its embed_shard.py step — what the repin step R ships (the
-    tool's own input binding is R's too; the reader checks the step)."""
+def _unwired(text: str) -> str:
+    """A fixture: the shipped text with ``collection_id`` removed from the
+    ``in:`` of its embed_shard.py step — the pre-R text, i.e. what an operator
+    submitting from a checkout older than the repin step R would send (the
+    reader checks the step's ``in:``, not the tool's binding)."""
     import yaml
 
     doc = yaml.safe_load(text)
@@ -131,7 +133,7 @@ def _wired(text: str) -> str:
     for step in (steps.values() if isinstance(steps, dict) else steps):
         base = step.get("run", {}).get("baseCommand") if isinstance(step.get("run"), dict) else None
         if base and "embed_shard.py" in " ".join(base if isinstance(base, list) else [base]):
-            step["in"]["collection_id"] = "collection_id"
+            del step["in"]["collection_id"]
             n += 1
     assert n == 1
     return yaml.safe_dump(doc, sort_keys=False)
@@ -195,19 +197,19 @@ def _shipped(name: str) -> str:
 
 
 @pytest.mark.parametrize("name", EMBED_WORKFLOWS)
-def test_a_marked_entry_on_a_shipped_unwired_workflow_exits_before_any_submission(
+def test_a_marked_entry_on_an_unwired_workflow_exits_before_any_submission(
     driver, capsys, name
 ) -> None:
-    """MUTATION: drop the pre-check → a submission is built for the unwired
-    text → fails."""
-    rc, submitted = driver(_shipped(name), dict(PLAIN))
+    """The pre-R form of each shipped text. MUTATION: drop the pre-check → a
+    submission is built for the unwired text → fails."""
+    rc, submitted = driver(_unwired(_shipped(name)), dict(PLAIN))
     assert rc == 2 and submitted == []
     err = capsys.readouterr().err
     assert "collection_id" in err and "text_render" in err
 
 
 def test_the_refusal_comes_before_the_dry_run_plan(driver, capsys) -> None:
-    rc, submitted = driver(_shipped("jats-ingest.cwl"), dict(PLAIN), dry=True)
+    rc, submitted = driver(_unwired(_shipped("jats-ingest.cwl")), dict(PLAIN), dry=True)
     assert rc == 2 and submitted == []
     assert "batch(es)" not in capsys.readouterr().out
 
@@ -218,15 +220,17 @@ CUTS = {"structure_cuts": "sections/1"}
 
 
 @pytest.mark.parametrize("name", EMBED_WORKFLOWS)
-def test_a_marked_entry_on_a_wired_fixture_text_builds_a_submission(driver, name) -> None:
-    rc, submitted = driver(_wired(_shipped(name)), dict(CUTS))
+def test_a_marked_entry_on_a_shipped_wired_text_builds_a_submission(driver, name) -> None:
+    """The wired half of the pre-check on the REAL texts (repin step R).
+    MUTATION: unwire any shipped embed step → exit 2 → fails."""
+    rc, submitted = driver(_shipped(name), dict(CUTS))
     assert rc == "submitted" and len(submitted) == 1
     _cwl, inputs = submitted[0]
     assert inputs["collection_id"] == CID and inputs["shards"]
 
 
 def test_text_render_on_a_wired_glossary_free_workflow_builds_a_submission(driver) -> None:
-    rc, submitted = driver(_wired(_shipped("pdf-ingest.cwl")), dict(PLAIN))
+    rc, submitted = driver(_shipped("pdf-ingest.cwl"), dict(PLAIN))
     assert rc == "submitted" and len(submitted) == 1
 
 
@@ -236,13 +240,13 @@ def test_text_render_on_a_workflow_with_a_glossary_step_is_refused(driver, capsy
     """#828 PR 4 review B1: the glossary step hashes the RAW shard text; the
     load would refuse every file after the embeds ran. MUTATION: drop the
     glossary check → a submission is built → fails."""
-    rc, submitted = driver(_wired(_shipped(name)), dict(PLAIN))
+    rc, submitted = driver(_shipped(name), dict(PLAIN))
     assert rc == 2 and submitted == []
     assert "glossary file" in capsys.readouterr().err
 
 
 def test_an_unmarked_entry_on_an_unwired_text_is_not_refused(driver) -> None:
-    rc, submitted = driver(_shipped("jats-ingest.cwl"), {})
+    rc, submitted = driver(_unwired(_shipped("jats-ingest.cwl")), {})
     assert rc == "submitted" and len(submitted) == 1
 
 
@@ -298,7 +302,9 @@ def test_an_unreadable_embed_step_fails_closed(driver, capsys) -> None:
 
 
 def test_any_recorded_marker_counts_even_one_this_checkout_cannot_apply(driver) -> None:
-    rc, submitted = driver(_shipped("pdf-ingest.cwl"), {"structure_cuts": "sections/1"})
+    """The pre-check reads markers with ``unapplied=()``: any recorded marker
+    needs a resolving embed step, so an unwired text is refused for it too."""
+    rc, submitted = driver(_unwired(_shipped("pdf-ingest.cwl")), {"structure_cuts": "sections/1"})
     assert rc == 2 and submitted == []
 
 

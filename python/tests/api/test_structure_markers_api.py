@@ -316,10 +316,28 @@ async def _ingest(client, endpoint: str):
     return r.status_code, 200
 
 
-def _after_the_repin(monkeypatch) -> None:
+def _before_the_repin(monkeypatch) -> None:
+    """A tree whose shipped CWLs name a tools image older than the repin step R
+    (the flag's value before R). The shipped default is ``True`` since R (pinned
+    below); the refusals it controls stay in place for such a tree."""
+    from ragstack.ingestion import chunker_config
+
+    monkeypatch.setattr(chunker_config, "GOWE_STRUCTURE_MARKERS_SUPPORTED", False)
+
+
+def _the_shipped_flag(monkeypatch) -> None:
     from ragstack.ingestion import chunker_config
 
     monkeypatch.setattr(chunker_config, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)
+
+
+def test_the_shipped_tree_supports_markers_on_gowe_since_the_repin() -> None:
+    """The repin step R (#828 §12) flipped this with the CWL wiring: every
+    shipped workflow names a tools image whose shard tools apply the markers,
+    and the operator workflows' embed steps bind ``collection_id``."""
+    from ragstack.ingestion import chunker_config
+
+    assert chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED is True
 
 
 def _shipped_scatter() -> str:
@@ -346,6 +364,7 @@ async def test_before_the_repin_any_marked_entry_is_refused_at_dispatch(
     collections file, a registry shared with an in-process deployment) is
     caught here, even on a wired workflow. MUTATION: drop the
     ``GOWE_STRUCTURE_MARKERS_SUPPORTED`` check from the gate → submitted → fails."""
+    _before_the_repin(monkeypatch)
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", WIRED)
     _mark(monkeypatch, dict(PLAIN))
     status, _ok = await _ingest(client, endpoint)
@@ -364,12 +383,13 @@ async def test_before_the_repin_the_pr7_markers_are_refused_at_dispatch(
     ``embed_heading_path`` before R, on both endpoints, even on a wired
     workflow — and after R the wired workflow is dispatched. MUTATION: gate
     on ``text_render`` only → submitted → fails."""
+    _before_the_repin(monkeypatch)
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", WIRED)
     _mark(monkeypatch, dict(params))
     status, ok = await _ingest(client, endpoint)
     assert status == 422
     assert not gowe["engine"].submissions
-    _after_the_repin(monkeypatch)
+    _the_shipped_flag(monkeypatch)
     status, ok = await _ingest(client, endpoint)
     assert status == ok and gowe["engine"].submissions
 
@@ -378,6 +398,7 @@ async def test_before_the_repin_the_pr7_markers_are_refused_at_dispatch(
 async def test_an_unmarked_collection_is_dispatched_before_the_repin(
     client, gowe, monkeypatch, endpoint  # noqa: F811
 ) -> None:
+    _before_the_repin(monkeypatch)
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", UNWIRED)
     status, ok = await _ingest(client, endpoint)
     assert status == ok and gowe["engine"].submissions
@@ -389,7 +410,6 @@ async def test_after_the_repin_an_unwired_embed_workflow_is_refused(
 ) -> None:
     """MUTATION: drop the gate call from either endpoint, or its wiring check
     → the submission is made → fails."""
-    _after_the_repin(monkeypatch)
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", UNWIRED)
     _mark(monkeypatch, dict(PLAIN))
     status, _ok = await _ingest(client, endpoint)
@@ -407,7 +427,6 @@ async def test_after_the_repin_text_render_on_a_glossary_workflow_is_refused(
 ) -> None:
     """The API's own scatter workflow builds and applies a glossary file.
     MUTATION: drop the glossary check from the gate → submitted → fails."""
-    _after_the_repin(monkeypatch)
     cwl = WIRED_GLOSSARY if which == "fixture" else _shipped_scatter()
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", cwl)
     _mark(monkeypatch, dict(PLAIN))
@@ -423,7 +442,6 @@ async def test_after_the_repin_the_wiring_check_is_dormant_on_the_shipped_scatte
     """Its chunk step is ingest_shard.py: no embed step to wire. (A marker
     other than text_render, from a hand-edited entry, so the glossary check
     does not apply.)"""
-    _after_the_repin(monkeypatch)
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", _shipped_scatter())
     _mark(monkeypatch, {"structure_cuts": "sections/1"})
     status, ok = await _ingest(client, endpoint)
@@ -431,11 +449,12 @@ async def test_after_the_repin_the_wiring_check_is_dormant_on_the_shipped_scatte
 
 
 async def test_the_refusals_name_their_reason(client, gowe, monkeypatch) -> None:  # noqa: F811
+    _before_the_repin(monkeypatch)
     _mark(monkeypatch, dict(PLAIN))
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", WIRED)
     r = await _upload(client, "a.pdf")
     assert r.status_code == 422 and "repin" in r.json()["detail"]
-    _after_the_repin(monkeypatch)
+    _the_shipped_flag(monkeypatch)
     monkeypatch.setattr(gowe["backend"], "workflow_cwl", UNWIRED)
     r = await _upload(client, "a.pdf")
     assert r.status_code == 422 and "collection_id" in r.json()["detail"]
@@ -445,25 +464,30 @@ async def test_the_refusals_name_their_reason(client, gowe, monkeypatch) -> None
 
 
 # --------------------------------------------------------------------------- #
-# GoWe deployments refuse markers at create until the repin step R
+# GoWe deployments refused markers at create until the repin step R; a tree
+# whose CWLs name an older image (the flag set back to False) still does
 # --------------------------------------------------------------------------- #
 
-async def test_a_gowe_deployment_refuses_a_marker_at_create_until_the_repin(
+async def test_a_gowe_deployment_accepts_a_marker_at_create_since_the_repin(
     client, _admin, monkeypatch, tmp_path
 ) -> None:
-    """Until R, the GoWe workers' image predates the markers and would ingest a
-    marked collection unmarked. Flip ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED`` (and
-    this pin) at R. MUTATION: drop the create-time refusal → 201 → fails."""
+    """Before R, the GoWe workers' image predated the markers and would have
+    ingested a marked collection unmarked, so create refused; R flipped
+    ``chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED``. With the flag set back
+    (an older tree) the refusal still holds. MUTATION: drop the create-time
+    refusal → 201 under the old flag → fails; leave the flag False → the
+    shipped create is 400 → fails."""
     from ragstack.ingestion import chunker_config
 
-    assert chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
+    assert chunker_config.GOWE_STRUCTURE_MARKERS_SUPPORTED is True
     monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    _before_the_repin(monkeypatch)
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(PLAIN), cid="gowe-marked")
     assert r.status_code == 400, r.text
     assert "repin" in r.json()["detail"] and recorded is None
     plain_r, _ = await _create(client, monkeypatch, tmp_path, {}, cid="gowe-plain")
     assert plain_r.status_code == 201, plain_r.text
-    monkeypatch.setattr(chunker_config, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)  # what R does
+    _the_shipped_flag(monkeypatch)
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(PLAIN), cid="gowe-r")
     assert r.status_code == 201 and recorded == PLAIN
 
@@ -480,22 +504,23 @@ async def test_a_gowe_deployment_refuses_a_marker_at_create_until_the_repin(
 async def test_the_gowe_repin_refusal_covers_the_pr7_markers(
     client, _admin, monkeypatch, tmp_path, params, method, overlap
 ) -> None:
-    """Every marker key is refused on a GoWe deployment until R — PR 7's two
-    as well as text_render (and the sentence tolerance, which needs
+    """Every marker key is refused on a GoWe deployment under the pre-R flag —
+    PR 7's two as well as text_render (and the sentence tolerance, which needs
     structure_cuts). ``structure_infer`` is still refused earlier, as not yet
     applied (PR 8). MUTATION: refuse ``text_render`` only → fails."""
     from ragstack.ingestion import chunker_config as cc
 
-    assert cc.GOWE_STRUCTURE_MARKERS_SUPPORTED is False
+    assert cc.GOWE_STRUCTURE_MARKERS_SUPPORTED is True
     monkeypatch.setattr(settings, "ingest_backend", "gowe")
+    _before_the_repin(monkeypatch)
     r, recorded = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7",
                                 method=method, overlap=overlap)
     assert r.status_code == 400, r.text
     assert recorded is None
     want = "not yet applied" if "structure_infer" in params else "repin"
     assert want in r.json()["detail"]
-    # What R does: the applied markers are then accepted on GoWe.
-    monkeypatch.setattr(cc, "GOWE_STRUCTURE_MARKERS_SUPPORTED", True)
+    # What R did: the applied markers are then accepted on GoWe.
+    _the_shipped_flag(monkeypatch)
     r, _ = await _create(client, monkeypatch, tmp_path, dict(params), cid="gowe-pr7-r",
                          method=method, overlap=overlap)
     assert (r.status_code == 400) is ("structure_infer" in params), r.text

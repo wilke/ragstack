@@ -121,18 +121,62 @@ async def test_settings_default_off_and_deps_build_the_pipeline_from_it(
         assert deps.build_ingestor_for(state, _entry("fixed"))._pipeline.structure_metadata is on
 
 
-def test_no_shipped_workflow_declares_it_until_the_image_repin() -> None:
-    """ADR-0010: a CWL declares only what the image it NAMES supports (#765:
-    "this lands on the same branch as the tools-image repin"). Every shipped
-    workflow names ragstack-tools-v1.6.x, which has no ``--structure-metadata``;
-    declaring the input now would make the API send it to that image (the text
-    IS stamped) and fail every task at argparse. Flip this pin in the commit
-    that repins the tools image to a build carrying the flag."""
+#: Every shipped workflow whose steps run a shard tool (``ingest_shard.py`` or
+#: ``embed_shard.py``) — the texts that must declare ``structure_metadata``
+#: since the repin step R (#828 §12).
+SHARD_TOOL_WORKFLOWS = {
+    "embed-bulk.cwl": "embed_shard",
+    "ingest-bulk.cwl": "ingest_shard",
+    "jats-ingest.cwl": "embed",
+    "pdf-ingest-scatter.cwl": "ingest",
+    "pdf-ingest.cwl": "embed",
+}
+_SHARD_TOOLS = ("ingest_shard.py", "embed_shard.py")
+
+
+def _shard_tool_steps(doc: dict) -> list[str]:
+    return [sid for sid, step in (doc.get("steps") or {}).items()
+            if any(t in str((step.get("run") or {}).get("baseCommand")) for t in _SHARD_TOOLS)]
+
+
+def test_every_shipped_shard_tool_workflow_declares_it_since_the_image_repin() -> None:
+    """ADR-0010: a CWL declares only what the image it NAMES supports (#765).
+    The repin step R (#828 §12) moved every shipped workflow to a tools image
+    whose ``ingest_shard.py`` / ``embed_shard.py`` take ``--structure-metadata``,
+    and in the same commit every shard-tool workflow declares the input:
+    optional with NO default (the ``duplicate_policy`` pattern — null omits the
+    flag, so the tool's own default applies), bound into the shard-tool step
+    and passed as ``--structure-metadata``. No other workflow declares it.
+
+    MUTATION: drop the declaration (or the step binding, or the tool's
+    inputBinding) from any one of the five texts → fails."""
     if not CWL_DIR.is_dir():
         pytest.skip("no cwl/ in this checkout")
+    seen = set()
     for path in sorted(CWL_DIR.glob("*.cwl")):
         text = path.read_text(encoding="utf-8")
         doc = yaml.safe_load(text)
-        assert "structure_metadata" not in declared_workflow_inputs(text), path.name
-        assert "--structure-metadata" not in text, path.name
         assert isinstance(doc, dict)
+        steps = _shard_tool_steps(doc)
+        if path.name not in SHARD_TOOL_WORKFLOWS:
+            assert not steps, (path.name, steps)
+            assert "structure_metadata" not in declared_workflow_inputs(text), path.name
+            assert "--structure-metadata" not in text, path.name
+            continue
+        seen.add(path.name)
+        assert steps == [SHARD_TOOL_WORKFLOWS[path.name]], (path.name, steps)
+        decl = doc["inputs"]["structure_metadata"]
+        assert decl["type"] == ["null", "string"], path.name
+        assert "default" not in decl, path.name
+        step = doc["steps"][steps[0]]
+        assert step["in"]["structure_metadata"] == "structure_metadata", path.name
+        tool_in = step["run"]["inputs"]["structure_metadata"]
+        assert tool_in["type"] == ["null", "string"], path.name
+        assert tool_in["inputBinding"]["prefix"] == "--structure-metadata", path.name
+        positions = [i["inputBinding"]["position"] for i in step["run"]["inputs"].values()
+                     if isinstance(i, dict) and "inputBinding" in i
+                     and "position" in i["inputBinding"]]
+        positions += [a["position"] for a in step["run"].get("arguments") or []
+                      if isinstance(a, dict) and "position" in a]
+        assert positions.count(tool_in["inputBinding"]["position"]) == 1, path.name
+    assert seen == set(SHARD_TOOL_WORKFLOWS)

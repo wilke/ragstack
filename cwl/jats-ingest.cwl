@@ -147,6 +147,11 @@ inputs:
     doc: "Per-document symbol glossary passed to embed_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure stamping passed to embed_shard --structure-metadata
+      (off|on; #828 §6). Not identity: chunk metadata only. Null = the tool's
+      default (off); the API seeds it from STRUCTURE_METADATA on a stamped tree."
   max_chunks:
     type: int
     default: 0
@@ -268,8 +273,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/jats_extract.py]
       inputs:
         shard:
@@ -333,15 +338,27 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      # #828 §7 (repin step R): the embed step resolves the SAME registry entry
+      # as the load step, so it chunks from the collection's spec and records
+      # the resolved id in the embedding-file header.
+      collection_id: collection_id
+      registry_db: registry_db
+      structure_metadata: structure_metadata
     out: [embeddings, receipt]
     run:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
+        # The load step's registry wiring, verbatim: embed_shard resolves
+        # collection_id through the same sqlite store (read-only, no store contact).
+        EnvVarRequirement:
+          envDef:
+            COLLECTION_STORE_BACKEND: sqlite
+            COLLECTION_STORE_PATH: $(inputs.registry_db.path)
       baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
       inputs:
         shard:
@@ -411,6 +428,19 @@ steps:
           inputBinding:
             prefix: --tool-image-digest
             position: 16
+        collection_id:
+          type: string
+          inputBinding:
+            prefix: --collection-id
+            position: 17
+        registry_db:
+          type: File
+          doc: "Consumed via COLLECTION_STORE_PATH above, not a CLI flag."
+        structure_metadata:
+          type: ["null", string]
+          inputBinding:
+            prefix: --structure-metadata
+            position: 18
       arguments:
         - position: 11
           prefix: --out
@@ -459,8 +489,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/glossary_step.py]
@@ -522,8 +552,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/glossary_file.py, merge]
       permanentFailCodes: [2]
       inputs:
@@ -549,8 +579,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
         receipts:
@@ -608,8 +638,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
         EnvVarRequirement:

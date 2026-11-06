@@ -361,3 +361,172 @@ def test_five_pdfs_in_batches_of_two_yield_three_tasks_and_five_rows(
     packed = [c["id"] for c, vec in read_version(outdir / "3")]
     assert sorted(packed) == sorted(c for r in receipts for c in r["chunk_ids"])
     assert all(len(vec) == DIM for _, vec in read_version(outdir / "3"))
+
+
+# --------------------------------------------------------------------------- #
+# #828 repin step R: the operator workflows' embed step resolves the registry
+# --------------------------------------------------------------------------- #
+#
+# ``pdf-ingest.cwl`` and ``embed-bulk.cwl`` run ``embed_shard.py``; since R
+# their embed step binds ``collection_id`` and ``registry`` (by NAME, #563), so
+# the tool resolves the entry the load half resolves, chunks from its spec, and
+# records the id in every embedding file's header. A scratch sqlite registry
+# selected by name through the worker-side ``COLLECTION_STORE_*_<NAME>``
+# variables (passed through cwltool with ``--preserve-environment``).
+
+REG = "scratch828"
+REG_CID = "scratch-828-r"
+
+
+def _scratch_registry(tmp_path: Path) -> dict[str, str]:
+    """A sqlite registry holding ``REG_CID`` (fixed 200/20); returns the env
+    that names it ``REG``."""
+    import asyncio
+
+    from ragstack.collection_store import CollectionSpec, SqliteCollectionStore
+    from ragstack.ops.ingest_target import registry_env_suffix
+
+    db = tmp_path / "registry.db"
+    asyncio.run(SqliteCollectionStore(str(db)).put(CollectionSpec(
+        id=REG_CID, collection="store_scratch_828_r", embedding_model="fake-model",
+        embedding_model_dim=DIM, chunk_method="fixed", chunk_size=200, chunk_overlap=20)))
+    suffix = registry_env_suffix(REG)
+    return {f"COLLECTION_STORE_BACKEND_{suffix}": "sqlite",
+            f"COLLECTION_STORE_PATH_{suffix}": str(db)}
+
+
+def _localised_embed_workflow(name: str, dest: Path) -> Path:
+    """``cwl/<name>`` runnable from the checkout, offline: the embed tool on the
+    fake endpoint with char estimates, a load tool on in-memory stores, and
+    the embedding files exposed as an output so their headers can be read."""
+    wf = yaml.safe_load((REPO / "cwl" / name).read_text(encoding="utf-8"))
+    embed = None
+    for sid, step in wf["steps"].items():
+        tool = step["run"]
+        if tool.get("class") != "CommandLineTool":
+            continue
+        cmd = tool["baseCommand"]
+        assert cmd[0] == "python" and cmd[1].startswith(IMAGE_CMD), (sid, cmd)
+        script = cmd[1][len(IMAGE_CMD):]
+        tool["baseCommand"] = [sys.executable, str(PY_DIR / "scripts" / script), *cmd[2:]]
+        tool["requirements"].pop("DockerRequirement", None)
+        if not tool["requirements"]:
+            del tool["requirements"]
+        extra: list[tuple[str, str]] = []
+        if script == "embed_shard.py":
+            embed = sid
+            extra = [("--embedding-api", "openai"), ("--chunk-token-counter", "estimate")]
+        elif script == "load_embeddings.py":
+            extra = [("--vector-backend", "memory"), ("--text-backend", "memory")]
+        tool.setdefault("arguments", [])
+        tool["arguments"] += [{"position": 90 + i, "prefix": k, "valueFrom": v}
+                              for i, (k, v) in enumerate(extra)]
+    assert embed is not None
+    wf["outputs"]["r_embeddings"] = {"type": "File[]", "outputSource": f"{embed}/embeddings"}
+    dest.write_text(yaml.safe_dump(wf, sort_keys=False), encoding="utf-8")
+    return dest
+
+
+def _run_embed_workflow(name: str, tmp_path: Path, job: dict,
+                        env_extra: dict[str, str]) -> subprocess.CompletedProcess:
+    cwltool = _cwltool()
+    wf = _localised_embed_workflow(name, tmp_path / "wf.cwl")
+    job_path = tmp_path / "job.yml"
+    job_path.write_text(yaml.safe_dump(job), encoding="utf-8")
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("COLLECTION_STORE_") and k != "RAGSTACK_COLLECTION_ID"}
+    env.update({"PYTHONPATH": str(PY_DIR), **env_extra})
+    preserve = [a for k in ("PYTHONPATH", *env_extra) for a in ("--preserve-environment", k)]
+    return subprocess.run(
+        [cwltool, "--no-container", *preserve, "--outdir", str(tmp_path / "out"),
+         str(wf), str(job_path)],
+        capture_output=True, text=True, env=env, timeout=600,
+    )
+
+
+def _pdf_ingest_job(tmp_path: Path, embeddings_url: str, **over) -> dict:
+    src = tmp_path / "src"
+    src.mkdir()
+    pdfs = [_pdf(src / f"{n}.pdf", f"Paper {n} on chunking and retrieval. " * 12)
+            for n in ("a", "b")]
+    return {
+        "pdfs": [{"class": "File", "path": str(p)} for p in pdfs],
+        "collection": "store_scratch_828_r", "tenant": "acme",
+        "chunk_method": "fixed", "chunk_size": 200, "chunk_overlap": 20,
+        "embedding_url": [embeddings_url], "embedding_model": "fake-model",
+        "version": "1", "collection_id": REG_CID, "registry": REG,
+        "qdrant_url": "http://127.0.0.1:1", "es_url": "http://127.0.0.1:1",
+        **over,
+    }
+
+
+def _embed_bulk_job(tmp_path: Path, embeddings_url: str, **over) -> dict:
+    shards = []
+    for n in ("s0", "s1"):
+        p = tmp_path / f"bulk.{n}.jsonl"
+        p.write_text(json.dumps({"text": f"Shard {n} text about retrieval. " * 20,
+                                 "path": f"/d/{n}.txt", "metadata": {}}) + "\n",
+                     encoding="utf-8")
+        shards.append(p)
+    return {
+        "shards": [{"class": "File", "path": str(p)} for p in shards],
+        "tenant": "acme", "chunk_method": "fixed", "chunk_size": 200, "chunk_overlap": 20,
+        "embedding_url": [embeddings_url], "embedding_model": "fake-model",
+        **over,
+    }
+
+
+_JOBS = {"pdf-ingest.cwl": _pdf_ingest_job, "embed-bulk.cwl": _embed_bulk_job}
+
+
+@pytest.mark.parametrize("name", sorted(_JOBS))
+def test_the_embed_step_resolves_the_registry_entry_by_name(
+    tmp_path: Path, embeddings_url: str, name: str
+) -> None:
+    """Every embedding file's header names the entry the load half resolves.
+    ``embed-bulk.cwl`` takes the two inputs as OPTIONAL workflow inputs."""
+    from ragstack.ingestion.embedding_file import read_header
+
+    env = _scratch_registry(tmp_path)
+    job = _JOBS[name](tmp_path, embeddings_url, collection_id=REG_CID, registry=REG)
+    proc = _run_embed_workflow(name, tmp_path, job, env)
+    assert proc.returncode == 0, proc.stderr[-6000:]
+    out = json.loads(proc.stdout)
+    headers = [read_header(f["path"]) for f in out["r_embeddings"]]
+    assert headers
+    for h in headers:
+        c = h["chunking"]
+        assert c["collection_id"] == REG_CID, h
+        assert (c["method"], c["chunk_size"], c["chunk_overlap"]) == ("fixed", 200, 20), h
+
+
+@pytest.mark.parametrize("name", sorted(_JOBS))
+def test_a_chunking_input_contradicting_the_entry_stops_at_the_embed_step(
+    tmp_path: Path, embeddings_url: str, name: str
+) -> None:
+    """The embed step really resolves: the entry says 200, the job says 300,
+    and ``embed_shard.py`` exits 2 before any embedding. MUTATION: unwire
+    ``collection_id`` from the embed step → it embeds unresolved → the run
+    succeeds → fails."""
+    env = _scratch_registry(tmp_path)
+    job = _JOBS[name](tmp_path, embeddings_url, collection_id=REG_CID, registry=REG,
+                      chunk_size=300)
+    proc = _run_embed_workflow(name, tmp_path, job, env)
+    assert proc.returncode != 0
+    # embed_shard.py's build-spec refusal (ingest_target), before any embed.
+    assert "chunk_size: registry=200 ingest=300" in proc.stderr, proc.stderr[-6000:]
+
+
+def test_embed_bulk_without_collection_id_embeds_unresolved_as_before(
+    tmp_path: Path, embeddings_url: str
+) -> None:
+    """The two new inputs are optional: an inputs file that names neither still
+    validates and runs, and the header carries no ``collection_id``."""
+    from ragstack.ingestion.embedding_file import read_header
+
+    proc = _run_embed_workflow("embed-bulk.cwl", tmp_path,
+                               _embed_bulk_job(tmp_path, embeddings_url), {})
+    assert proc.returncode == 0, proc.stderr[-6000:]
+    out = json.loads(proc.stdout)
+    for f in out["r_embeddings"]:
+        assert "collection_id" not in read_header(f["path"])["chunking"]
