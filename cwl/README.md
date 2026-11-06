@@ -688,8 +688,9 @@ The two step tools live in the ragstack package's script tree:
   (`chars`|`tokens`, no default) bound to `--chunk-size-unit`: give `tokens` for such an
   entry and the unit check passes; omit it and the flag is not passed, so the tool's
   default (`chars`) applies and the same entry is refused exactly as before. The three
-  embed steps declare `permanentFailCodes: [2]`; GoWe parses the field but, as of v0.26.1, still retries every
-  non-zero exit, so the declaration is for when it is honoured. Before R the same run was
+  embed steps declare `permanentFailCodes: [2]`; GoWe parses the field but, as of
+  v0.26.1, still retries every non-zero exit, so the declaration is for when it is
+  honoured. Before R the same run was
   refused at `load_embeddings.py`, after the GPU work.
 
 ## Running it

@@ -805,7 +805,10 @@ chunks have to fit inside it.
     ingest (`_chunker_for`) reads it from the entry, the same way the shard
     tool does.
 
-  The GoWe workflows do not pass a unit yet.
+  Of the GoWe workflows, only `embed-bulk.cwl` passes a unit: an optional
+  `chunk_size_unit` input (`chars` or `tokens`, no default) bound to
+  `--chunk-size-unit`. `pdf-ingest.cwl` and `jats-ingest.cwl` pass none, so a
+  `size_unit=tokens` entry is refused at their embed step (`cwl/README.md`).
 
 ## Recommendations
 
