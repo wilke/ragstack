@@ -576,6 +576,36 @@ async def test_reupload_of_the_same_pmc_file_replaces_it(client) -> None:
     assert r.status_code == 409, r.text
 
 
+async def test_an_article_refused_on_a_text_label_takes_its_units_with_it(
+    client, tmp_path
+) -> None:
+    """argo N1(a), the case that survives the key change: an article with no
+    DOI article-id but a labelled ``DOI:`` in its abstract gets that DOI
+    filled on the ARTICLE record only (``fill_ids`` scans each record's own
+    text). With the DOI held by another work, the per-record guard refused
+    the article and indexed its table and figure — orphan units, item
+    ``completed``. A refused record now refuses its whole family. RED at
+    e67bd38 (2 unit records indexed). MUTATION: drop
+    ``_refuse_whole_families`` → the units are indexed."""
+    import tests.jats_support as t
+
+    r = await _upload_md(client, "held.md", f"DOI: 10.1234/held.work\n\n{BODY}")
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    (held,) = _doc_ids()
+    xml = t._article("6", t.BODY_WITH_FLOATS, pmc=False).replace(
+        '<article-id pub-id-type="doi">10.1234/synth.6</article-id>', "").replace(
+        "<p>The abstract of article 6", "<p>DOI: 10.1234/held.work The abstract of article 6")
+    src = tmp_path / "labelled.xml"
+    src.write_text(xml, encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(src)})
+    job_id = r.json()["job_id"]
+    body = await _poll(client, job_id)
+    assert body["status"] == "failed"
+    assert body["items"] == {"total": 1, "completed": 0, "failed": 1, "pending": 0}
+    assert _item(job_id).error == format_refusal(("doi", "10.1234/held.work"), held)
+    assert _doc_ids() == {held}  # no orphan unit of the refused article
+
+
 async def test_directory_ingest_of_plos_names_keeps_every_article(client, tmp_path) -> None:
     """F1(i): ``journal.pone.0012345.xml`` and ``journal.pone.0067890.xml`` both
     keyed to ``journal`` and overwrote each other. Each is keyed on its path

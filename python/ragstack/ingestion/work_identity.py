@@ -52,7 +52,8 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
+from collections import ChainMap
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -434,7 +435,10 @@ class WorkIdentityStage:
         replace, not a duplicate. ONE batched lookup per call; a lookup failure
         admits everything with a WARNING (fail-open). ``seen`` (shared across a
         job's items, :class:`DuplicateCheck`) records each ADMITTED document's
-        keys, so a later copy in the same job is refused against it."""
+        keys, so a later copy in the same job is refused against it. The
+        records of one JATS file (:func:`same_record_family`) are never
+        duplicates of each other, and under ``refuse`` they are admitted or
+        refused together (:func:`_refuse_whole_families`)."""
         if policy == POLICY_OFF or not documents:
             return list(documents)
         if policy not in POLICIES:
@@ -456,8 +460,22 @@ class WorkIdentityStage:
         sources = {doc.id: doc.source for doc in documents}
         admitted: list[Document] = []
         # No await from here on: check-and-set on ``seen`` is atomic in the loop.
+        # Pass 1 decides each document against the index and the job so far;
+        # its admissions are held in ``pending`` (visible to the later
+        # documents of this call) until pass 2 has applied the family rule.
+        pending: dict[tuple[str, str], str] = {}
+        view = ChainMap(pending, seen_here)
+        matches: list[_Match | None] = []
         for doc, keys in per_doc:
-            match = _first_match(doc, keys, found, seen_here, sources)
+            match = _first_match(doc, keys, found, view, sources)
+            if match is None or policy == POLICY_ALLOW:
+                for k in keys:
+                    if k not in view:
+                        pending[k] = doc.id
+            matches.append(match)
+        if policy == POLICY_REFUSE:
+            matches = _refuse_whole_families([doc for doc, _ in per_doc], matches)
+        for (doc, keys), match in zip(per_doc, matches, strict=True):
             if match is None or policy == POLICY_ALLOW:
                 for k in keys:
                     seen_here.setdefault(k, doc.id)
@@ -477,11 +495,38 @@ class WorkIdentityStage:
         return admitted
 
 
+def _refuse_whole_families(
+    docs: list[Document], matches: list[_Match | None],
+) -> list[_Match | None]:
+    """Under ``refuse``, one refused record of a JATS file refuses the whole
+    file (#975 round 2, argo N1a): the article and its table/figure records
+    (:func:`same_record_family`) are one work, admitted or refused together.
+    Their keys can differ — a labelled ``DOI:`` in the article's abstract
+    fills the article's ``doi`` and no unit's (:meth:`WorkIdentityStage.fill_ids`)
+    — so a per-record decision could refuse the article and index its units
+    with no article, and the item would still complete. Each sibling of a
+    refused record takes the first refusal of its family."""
+    roots = {_unit_root(d.source) for d in docs} - {""}
+    if not roots:
+        return matches
+
+    def family(d: Document) -> str:
+        root = _unit_root(d.source) or d.source
+        return root if root in roots else ""
+
+    first: dict[str, _Match] = {}
+    for d, m in zip(docs, matches, strict=True):
+        if m is not None and family(d):
+            first.setdefault(family(d), m)
+    return [m if m is not None else first.get(family(d)) for d, m in
+            zip(docs, matches, strict=True)]
+
+
 def _first_match(
     doc: Document,
     keys: list[tuple[str, str]],
     found: dict[tuple[str, str], list[DocumentSummary]],
-    seen_here: dict[tuple[str, str], str],
+    seen_here: Mapping[tuple[str, str], str],
     sources: dict[str, str] | None = None,
 ) -> _Match | None:
     """``sources`` maps the doc ids of THIS call to their sources, so a sibling
