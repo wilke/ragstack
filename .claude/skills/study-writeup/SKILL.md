@@ -161,6 +161,23 @@ not an earlier constraint.
 7. **Reproducibility** — the run package, the commit pin, the seeds, the model ids, and an
    honest statement of what a different site must supply.
 
+## The order of a study report (owner rule, 2026-11-06)
+
+Every study report reads in this order:
+
+1. **Hypothesis**: the question, why it was asked, and the hypothesis as tested (direction included).
+2. **Results summary**: a few lines, with the outcome, the key numbers and what one point means.
+3. **How it was tested**: data, arms, judge or metric, test, gates, power.
+4. **Results**: the tables, then the descriptives, each labelled tested or descriptive.
+5. **Conclusion**: what is shown, what is not, and what it means in practice.
+
+Every study also has a **test-data document** (or section). It follows the data from the source corpus to
+the analysed sample: how questions or items were made, every filter with its count, the draw rule and seed,
+and every transformation with its parameters. Each count names the committed artifact it comes from.
+
+A record file already merged in another order is not reordered (the record is immutable). Add a reader-facing
+`REPORT.md` in this order beside it that cites it.
+
 ## Reporting discipline, inherited from the pre-registration
 
 These are not style preferences. They are what makes the numbers usable.

@@ -182,11 +182,12 @@ PAGES = [
 
 # Experiment records. Any docs/plans/results/<dir>/README.md whose first line is
 #   <!-- experiment: <title> | <date> | <status> -->
-# is published under experiments/<dir>/, with its RESULTS.md, LABBOOK.md and DEVIATIONS.md when they
+# is published under experiments/<dir>/, with its REPORT.md, RESULTS.md, TEST-DATA.md, LABBOOK.md and DEVIATIONS.md when they
 # exist, and listed on experiments/index.html (one landing-page card). The record folder
 # stays the single source; nothing is copied into docs/ by hand.
 _EXPERIMENT_MARK = re.compile(r"<!--\s*experiment:\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*-->")
-_EXPERIMENT_PARTS = (("README.md", "index.html", "Experiment"), ("RESULTS.md", "results.html", "Results"),
+_EXPERIMENT_PARTS = (("README.md", "index.html", "Experiment"), ("REPORT.md", "report.html", "Report"),
+                     ("RESULTS.md", "results.html", "Results"), ("TEST-DATA.md", "test-data.html", "Test data"),
                      ("LABBOOK.md", "labbook.html", "Lab book"), ("DEVIATIONS.md", "deviations.html", "Deviations"))
 
 
