@@ -27,7 +27,16 @@ from ragstack.ingestion.work_identity import same_record_family
     ("PMC1#table-x", "PMC1", False),
     ("PMC1#table-1-part-", "PMC1", False),
     ("PMC1#tables-1", "PMC1", False),
+    # #975 round 2: a file with no PMC id is keyed on its resolved path
+    # (jats.record_key step 3), so a unit root may hold "/".
+    ("/corpus/a/paper.xml", "/corpus/a/paper.xml#table-1", True),
+    ("/corpus/a/paper.xml#figure-1", "/corpus/a/paper.xml#table-2-part-1", True),
+    ("/corpus/a/paper.xml", "/corpus/b/paper.xml#table-1", False),
+    ("/corpus/a/paper.xml", "/corpus/a/paper.xml", False),
+    ("/corpus/a/paper.pdf#page-1", "/corpus/a/paper.pdf", False),
+    ("/corpus/a/notes#x.md", "/corpus/a/notes", False),
 ])
 def test_same_record_family(a, b, expected):
     assert same_record_family(a, b) is expected
     assert same_record_family(b, a) is expected
+

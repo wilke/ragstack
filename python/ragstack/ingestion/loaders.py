@@ -572,25 +572,28 @@ class JatsLoader:
     1. the parser — :func:`ragstack.ingestion.jats.convert_file` with
        ``with_spans=True``; the record key is
        :func:`ragstack.ingestion.jats.record_key` (``PMC123.1.xml`` →
-       ``PMC123``; else the article's own PMC id; else the file name minus
-       ``.xml``), the rule ``jats_extract`` keys its records on;
+       ``PMC123``; else the article's own PMC id; else the file's resolved
+       path), the rule ``jats_extract`` keys its records on;
     2. the structure — :func:`ragstack.ingestion.jats_structure.record_structure`,
        the helper ``jats_extract`` writes the shard's ``structure`` key with;
     3. the ``Document`` — :meth:`JsonlLoader._document` of a ``JsonlLoader``
        with ``passthrough_keys=JATS_PASSTHROUGH_KEYS`` (the
        ``cwl/jats-ingest.cwl`` default): the same enrich, ``index_metadata``,
        passthrough and ``structure_from_record`` code a shard record goes
-       through. So ``Document.id`` is ``deterministic_doc_id("PMC123")`` (the
-       record ``path`` is a relative, opaque id) and ``Document.source`` is
-       ``"PMC123"`` / ``"PMC123#table-1"`` — never the file path. Two files
-       with one key (two ``PMC123.xml`` in different directories, two
-       ``paper.xml`` without a PMC id) therefore share ids, as their JSONL
-       records would; the duplicate guard refuses the second when its DOI or
-       PMCID differs (``work_identity.ID_COLLISION_ERROR``).
+       through. So a PMC-keyed file's ``Document.id`` is
+       ``deterministic_doc_id("PMC123")`` (the record ``path`` is a relative,
+       opaque id) and its ``Document.source`` is ``"PMC123"`` /
+       ``"PMC123#table-1"``. A file with no PMC id in its name or its article
+       is keyed on its resolved path: the article record's ``path`` is
+       ``/corpus/paper.xml``, an absolute path ``_document`` resolves again
+       (a no-op), so its ``Document.id`` is the id ``PdfLoader`` gives a file
+       at that path, and its units are ``/corpus/paper.xml#table-1``. Two
+       files share ids only when they name one PMC id (one work: a replace)
+       or are one file.
 
-    The key is read from the path the registry hands over — the RESOLVED path,
-    so a symlink ``PMC4.xml → store/abc123.xml`` keys on ``abc123`` unless the
-    article carries a PMC id (the API's same-document identity resolves too).
+    The key is read from the path the registry hands over — the RESOLVED,
+    confined path, so a symlink ``PMC4.xml → store/abc123.xml`` keys on
+    ``store/abc123.xml`` unless the article carries a PMC id.
 
     Units are split by CHARACTER budgets only (``count_tokens=None``):
     ``jats_extract`` defaults to an HF tokenizer budget the API image does not
@@ -599,8 +602,9 @@ class JatsLoader:
 
     A file that does not parse raises :class:`JatsParseError`
     (:data:`JATS_PARSE_ERROR`); a well-formed file whose document element is
-    not ``<article>``, or that yields no record, raises :class:`NoJatsContent`;
-    a file that cannot be read, or whose name gives an empty key, a bare
+    not ``<article>`` (a ``<pmc-articleset>`` holding exactly one is that
+    article; one holding several is refused), or that yields no record,
+    raises :class:`NoJatsContent`; a file that cannot be read, a bare
     :class:`LoaderError`. Never returns ``[]``. A record whose
     structure cannot be built is kept without one and counted in
     :attr:`dropped` (``structure_invalid``), as ``jats_extract`` counts it.
@@ -627,8 +631,6 @@ class JatsLoader:
             if why.startswith("not a JATS article"):
                 raise NoJatsContent(f"not a JATS article: '{path.name}' "
                                     f"[{NO_JATS_CONTENT_LABEL}]")
-            if "empty record key" in why:
-                raise LoaderError(f"JATS file name '{path.name}' gives an empty record key")
             raise LoaderError(f"could not read JATS XML '{path.name}'")
         docs: list[Document] = []
         for record in records:

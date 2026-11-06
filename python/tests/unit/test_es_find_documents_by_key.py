@@ -125,17 +125,3 @@ async def test_one_time_warning_when_the_id_field_is_not_keyword(caplog, ftype, 
         await ix.find_documents_by_key([("doi", DOI)], ["alice"])
     assert fake.indices.calls == 1  # type: ignore[attr-defined]
     assert ("mapped 'text', not keyword" in caplog.text) is warned
-
-
-@pytest.mark.asyncio
-async def test_a_doc_id_key_asks_what_that_id_holds() -> None:
-    """#975 F1: the guard's id-collision check asks ``("doc_id", id)`` — a
-    ``terms`` on ``doc_id`` in the same request — and gets back the document
-    under that id whatever it carries. MUTATION: drop the ``doc_id`` clause →
-    the key never matches on Elasticsearch."""
-    ix, fake = _index(RESPONSE)
-    found = await ix.find_documents_by_key([("doi", DOI), ("doc_id", "d")], ["alice"])
-    q = fake.calls[0]["query"]["bool"]
-    assert {"terms": {"doc_id": ["d"]}} in q["should"]
-    assert [s.doc_id for s in found[("doc_id", "d")]] == ["d"]
-    assert found[("doc_id", "d")][0].metadata["doi"] == "10.1000/unrelated"

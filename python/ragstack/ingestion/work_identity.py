@@ -67,7 +67,6 @@ log = logging.getLogger(__name__)
 __all__ = [
     "DUPLICATE_OF",
     "DUPLICATE_WORK",
-    "ID_COLLISION_ERROR",
     "DuplicateCheck",
     "POLICIES",
     "POLICY_ALLOW",
@@ -99,18 +98,6 @@ DUPLICATE_OF = "duplicate_of"
 #: store; it only lets the callers that hold the document list (``prepare_source``,
 #: ``run_shard``) name the refusal without a second return channel.
 _REFUSAL_KEY = "_duplicate_refusal"
-
-#: The job-item error of a document refused because its doc id already holds
-#: a DIFFERENT work (#828 PR 5a): the indexed document with that id carries a
-#: DOI or PMCID and the incoming one carries another. That is an id collision —
-#: two files keyed alike (two ``paper.xml`` without a PMC id, two ``PMC1.xml``
-#: in different directories) — not a re-ingest, which would silently replace
-#: one article with another. Constant, so it is countable; refused under
-#: ``refuse`` only (``allow``/``off`` keep the replace).
-ID_COLLISION_ERROR = "document id already holds a different work (doi or pmcid differs)"
-#: The lookup key kind :meth:`WorkIdentityStage.admit` asks the text index for
-#: to see what a doc id already holds (``("doc_id", <id>)``). Not a work key.
-DOC_ID_KEY = "doc_id"
 
 POLICY_REFUSE = "refuse"
 POLICY_ALLOW = "allow"
@@ -253,9 +240,13 @@ def ids_from_text(text: str, limit: int = HEADER_SCAN_CHARS) -> dict[str, str]:
 
 #: The unit-record ids ``jats.article_records`` emits: ``<key>#table-N``,
 #: ``<key>#figure-N``, each optionally ``-part-M`` (an oversized unit split).
-#: Nothing else is a unit — not a JSONL record ``corpus#0001``, not an uploaded
-#: file named ``PMC1#supp.pdf``.
-_JATS_UNIT = re.compile(r"^([^/]+)#(?:table|figure)-\d+(?:-part-\d+)?$")
+#: ``<key>`` is a PMC id or, for a file with none (``jats.record_key`` step
+#: 3), the file's resolved path — so it may hold ``/``
+#: (``/corpus/paper.xml#table-1``). Nothing else is a unit — not a JSONL record
+#: ``corpus#0001``, not an uploaded file named ``PMC1#supp.pdf``. A file a
+#: loader reads can never end in ``#table-N``: its resolved path carries a
+#: registered suffix (``LoaderRegistry._dispatch``).
+_JATS_UNIT = re.compile(r"^(.+)#(?:table|figure)-\d+(?:-part-\d+)?$")
 
 
 def _unit_root(source: str) -> str:
@@ -348,8 +339,6 @@ def match_summaries(
         for k in work_keys(s.metadata):
             if k in wanted:
                 out.setdefault(k, []).append(s)
-        if (DOC_ID_KEY, s.doc_id) in wanted:
-            out.setdefault((DOC_ID_KEY, s.doc_id), []).append(s)
     for hits in out.values():
         hits.sort(key=lambda s: s.doc_id)
     return out
@@ -454,10 +443,6 @@ class WorkIdentityStage:
         all_keys = list(dict.fromkeys(k for _, keys in per_doc for k in keys))
         if not all_keys:
             return list(documents)
-        if policy == POLICY_REFUSE:
-            # What each incoming id ALREADY holds: an id that holds another
-            # work is a collision, refused (ID_COLLISION_ERROR), not replaced.
-            all_keys += [(DOC_ID_KEY, doc.id) for doc, keys in per_doc if keys]
         found: dict[tuple[str, str], list[DocumentSummary]] = {}
         try:
             found = await self._text_index.find_documents_by_key(all_keys, tenants)
@@ -472,10 +457,6 @@ class WorkIdentityStage:
         admitted: list[Document] = []
         # No await from here on: check-and-set on ``seen`` is atomic in the loop.
         for doc, keys in per_doc:
-            if policy == POLICY_REFUSE and _id_collision(doc, keys, found):
-                doc.metadata[_REFUSAL_KEY] = ID_COLLISION_ERROR
-                log.info("ingest %r: refused %s — %s", source, doc.id, ID_COLLISION_ERROR)
-                continue
             match = _first_match(doc, keys, found, seen_here, sources)
             if match is None or policy == POLICY_ALLOW:
                 for k in keys:
@@ -515,26 +496,6 @@ def _first_match(
                 and not same_record_family(sources.get(other, ""), doc.source)):
             return _Match(k, other)
     return None
-
-
-def _id_collision(
-    doc: Document,
-    keys: list[tuple[str, str]],
-    found: dict[tuple[str, str], list[DocumentSummary]],
-) -> bool:
-    """Whether ``doc``'s id already holds a different work: the indexed
-    document with that id carries a ``doi`` (or ``pmcid``) and ``doc`` carries
-    another one of the same kind. A kind either side lacks decides nothing, so
-    a re-ingest that only ADDS an id is still a replace."""
-    mine = dict(keys)
-    for s in found.get((DOC_ID_KEY, doc.id), []):
-        if s.doc_id != doc.id:
-            continue
-        theirs = dict(work_keys(s.metadata))
-        for kind in ("doi", "pmcid"):
-            if mine.get(kind) and theirs.get(kind) and mine[kind] != theirs[kind]:
-                return True
-    return False
 
 
 def _name_of(doc: Document) -> str:

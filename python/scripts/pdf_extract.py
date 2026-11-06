@@ -14,7 +14,9 @@ file gives one text on both ingest paths:
 * ``.xml`` -> :class:`~ragstack.ingestion.loaders.JatsLoader` (#828 PR 5a):
   one JATS article -> several records (the article, ``PMC1``, and each table
   and figure, ``PMC1#table-1``), each with its ``jats/1`` structure. The
-  records' ``path`` is that opaque id, not the staged file's path;
+  records' ``path`` is that opaque id for a file with a PMC id in its name or
+  its article; any other file is keyed on its resolved (staged) path, as a
+  PDF is, so its ids change from run to run as a PDF's do;
 * ``.jsonl`` -> *skipped* with ``JSONL_UNSUPPORTED_ERROR``: a batch file is
   many documents behind one receipt item (use the bulk JSONL workflows);
 * any other suffix -> *skipped* with the constant ``no loader for <suffix>``

@@ -451,3 +451,36 @@ def test_no_input_selected_is_a_failure(tmp_path: Path):
     out = tmp_path / "out.jsonl"
     assert jats_extract.main(["--corpus", str(corpus), "--out", str(out)]) == 1
     assert jats_extract.main(["--out", str(out)]) == 2      # neither mode given
+
+
+# ------------------------------------------------- #975 round 2 N8: drift fixes
+
+def test_corpus_mode_walks_nxml_too(tmp_path: Path):
+    """``--corpus`` skipped ``.nxml`` (the PMC OA bulk package's suffix) while
+    the in-process route loads it. MUTATION: glob ``*.xml`` only → PMC2 is
+    missing."""
+    tree = tmp_path / "corpus" / "clean" / "ab"
+    tree.mkdir(parents=True)
+    (tree / "PMC1.xml").write_text(_article("1", "<p>One.</p>"), encoding="utf-8")
+    (tree / "PMC2.nxml").write_text(_article("2", "<p>Two.</p>"), encoding="utf-8")
+    (tree / "notes.txt").write_text("not an article", encoding="utf-8")
+    items = jats_extract.walk_corpus(tmp_path / "corpus")
+    assert [(i["pmcid"], Path(i["xml_path"]).name) for i in items] == [
+        ("PMC1", "PMC1.xml"), ("PMC2", "PMC2.nxml")]
+
+
+def test_a_bare_digit_shard_pmcid_is_written_as_before(tmp_path: Path):
+    """An explicit shard ``pmcid`` that is a PMC id in another spelling
+    (``8092463``) filled a missing ``metadata.pmcid`` before #828 PR 5a; the
+    PR's ``PMC\\d+``-only rule dropped it, changing stored metadata and the
+    duplicate keys of such shards. It is written as given again; a path key
+    (record_key step 3) is still never a PMCID. MUTATION: ``_PMC_STEM`` test
+    in merge_manifest → ``pmcid`` empty."""
+    xml = _write(tmp_path, "paper.xml", _article("8092463", "<p>Prose.</p>").replace(
+        '<article-id pub-id-type="pmc">PMC8092463</article-id>', ""))
+    recs, _ = jats.convert_file(xml, "8092463")
+    assert recs[0]["path"] == "8092463"
+    assert recs[0]["metadata"]["pmcid"] == "8092463"
+    recs, _ = jats.convert_file(xml)
+    assert recs[0]["path"] == str(xml.resolve())
+    assert recs[0]["metadata"]["pmcid"] == ""

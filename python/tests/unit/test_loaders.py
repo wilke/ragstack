@@ -416,48 +416,90 @@ def test_record_key_of_a_pmc_name_is_byte_identical_to_the_old_key(name):
 
 
 @pytest.mark.parametrize("name, xml_pmcid, key", [
-    ("journal.pone.0012345.xml", None, "journal.pone.0012345"),
     ("journal.pone.0012345.xml", "PMC77", "PMC77"),
     ("journal.pone.0012345.xml", "77", "PMC77"),
     ("journal.pone.0012345.xml", "PMC0077", "PMC77"),
-    ("10.1371_journal.pone.0012345.xml", None, "10.1371_journal.pone.0012345"),
-    ("article.nxml", None, "article"),
-    ("paper.v2.xml", "", "paper.v2"),
-    (".hidden.xml", None, ".hidden"),
-    ("x.xml.bak", None, "x.xml.bak"),
 ])
-def test_record_key_falls_back_to_the_article_id_then_the_whole_name(name, xml_pmcid, key):
-    """MUTATION: keep ``name.split('.')[0]`` → ``journal`` / ``10`` / ``""``."""
+def test_record_key_step_2_is_the_articles_pmc_id_normalised(name, xml_pmcid, key):
     from ragstack.ingestion.jats import record_key
 
     assert record_key(name, xml_pmcid) == key
 
 
-def test_record_key_is_never_empty():
+def test_record_key_step_1_is_literal():
+    """#975 round 2 (6): step 1 takes the stem as it is — case and leading
+    zeros kept — while step 2 normalises."""
     from ragstack.ingestion.jats import record_key
 
-    with pytest.raises(ValueError):
-        record_key(".xml")
-    with pytest.raises(ValueError):
-        record_key("/some/dir/.NXML")
+    assert record_key("pmc4242.xml") == "pmc4242"
+    assert record_key("PMC004242.xml", "PMC4242") == "PMC004242"
 
 
-def test_two_plos_files_get_distinct_ids(tmp_path: Path):
-    """F1(i): ``journal.pone.0012345.xml`` and ``journal.pone.0067890.xml`` both
-    keyed to ``journal`` and overwrote each other in a directory ingest."""
+@pytest.mark.parametrize("name", [
+    "journal.pone.0012345.xml", "10.1371_journal.pone.0012345.xml", "article.nxml",
+    "paper.v2.xml", ".hidden.xml", "x.xml.bak", ".xml", "main.xml",
+])
+def test_record_key_step_3_is_the_resolved_path(tmp_path: Path, name):
+    """#975 round 2: a file with no PMC id in its name or its article is keyed
+    on its RESOLVED PATH — the key a PDF at that path gets — never on a bare
+    name two different works can share (``*/main.xml``, two ``paper.xml``
+    uploads). MUTATION: step 3 back to the name minus ``.xml`` → fails."""
+    from ragstack.ingestion.jats import record_key
+
+    f = tmp_path / "d" / name
+    assert record_key(f) == str(f.resolve())
+    assert record_key(f, "") == record_key(f, "not-a-pmc-id") == str(f.resolve())
+
+
+def test_record_key_step_3_follows_a_symlinked_directory(tmp_path: Path):
+    from ragstack.ingestion.jats import record_key
+
+    (tmp_path / "real").mkdir()
+    (tmp_path / "via").symlink_to(tmp_path / "real")
+    assert record_key(tmp_path / "via" / "paper.xml") == str(tmp_path / "real" / "paper.xml")
+
+
+def test_same_name_in_two_directories_gets_distinct_ids(tmp_path: Path):
+    """``a/main.xml`` and ``b/main.xml`` (no PMC id, different works) used to
+    share every id; now each is keyed on its own path."""
     from ragstack.ingestion.loaders import JatsLoader
 
     t = _jats_fixture()
-    names = ["journal.pone.0012345.xml", "journal.pone.0067890.xml"]
-    sources = []
-    for i, name in enumerate(names, 1):
-        (tmp_path / name).write_text(
-            t._article(str(i), t.BODY_WITH_FLOATS, pmc=False), encoding="utf-8")
-        sources.append([d.source for d in JatsLoader().load(str(tmp_path / name))])
-    assert sources == [
-        ["journal.pone.0012345", "journal.pone.0012345#table-1", "journal.pone.0012345#figure-1"],
-        ["journal.pone.0067890", "journal.pone.0067890#table-1", "journal.pone.0067890#figure-1"],
-    ]
+    ids = []
+    for i, d in enumerate(("a", "b"), 1):
+        f = tmp_path / d / "main.xml"
+        f.parent.mkdir()
+        f.write_text(t._article(str(i), t.BODY_WITH_FLOATS, pmc=False), encoding="utf-8")
+        ids.append({doc.id for doc in JatsLoader().load(str(f))})
+    assert len(ids[0]) == len(ids[1]) == 3
+    assert not ids[0] & ids[1]
+
+
+def test_a_path_keyed_article_has_the_id_a_pdf_at_that_path_gets(tmp_path: Path):
+    """Step 3 through the registry: the article record's ``path`` is the
+    resolved, confined path; ``JsonlLoader._document`` resolves an absolute
+    path again (a no-op on a resolved one), so ``Document.id`` is
+    ``deterministic_doc_id(str(path.resolve()))`` — exactly PdfLoader's — and
+    the units are ``<path>#table-1``, one family with it. Through a symlinked
+    directory too (the registry hands over the resolved path)."""
+    from ragstack.ingestion.loaders import deterministic_doc_id
+    from ragstack.ingestion.work_identity import same_record_family
+
+    t = _jats_fixture()
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "via").symlink_to(real)
+    (real / "paper.xml").write_text(t._article("3", t.BODY_WITH_FLOATS, pmc=False),
+                                    encoding="utf-8")
+    key = str((real / "paper.xml").resolve())
+    docs = default_loader_registry(ingest_root=str(tmp_path)).load(
+        str(tmp_path / "via" / "paper.xml"))
+    assert [d.source for d in docs] == [key, f"{key}#table-1", f"{key}#figure-1"]
+    assert docs[0].id == deterministic_doc_id(key)
+    assert [d.id for d in docs[1:]] == [deterministic_doc_id(f"{key}#table-1"),
+                                        deterministic_doc_id(f"{key}#figure-1")]
+    assert all(same_record_family(d.source, key) for d in docs[1:])
+    assert not docs[0].metadata.get("pmcid")  # a path is not a PMCID
 
 
 def test_a_non_pmc_name_is_keyed_by_the_articles_own_pmc_id(tmp_path: Path):
@@ -473,43 +515,83 @@ def test_a_non_pmc_name_is_keyed_by_the_articles_own_pmc_id(tmp_path: Path):
     assert docs[0].id == deterministic_doc_id("PMC4242")
 
 
-def test_a_dotfile_keeps_its_units(tmp_path: Path):
-    """F1(iii): ``.hidden.xml`` keyed to ``""``, so its table/figure were refused
-    as duplicates of their own article. Now its key is ``.hidden`` and the
-    units are one family with it."""
+@pytest.mark.parametrize("ids, expected", [
+    ('<article-id pub-id-type="pmc">PMC5</article-id>'
+     '<article-id pub-id-type="pmc">PMC6</article-id>', ("PMC5", "PMC5")),
+    ('<article-id pub-id-type="pmcid">PMC7</article-id>'
+     '<article-id pub-id-type="pmc">8</article-id>', ("PMC7", "PMC7")),
+    ('<article-id pub-id-type="pmc">0042</article-id>', ("0042", "PMC42")),
+    ('<article-id pub-id-type="pmc">n/a</article-id>'
+     '<article-id pub-id-type="pmc">PMC9</article-id>', ("n/a", "")),
+])
+def test_front_meta_and_the_record_key_read_the_same_pmc_article_id(tmp_path, ids, expected):
+    """#975 round 2 N8: ``front_meta`` (``metadata.pmcid``) kept the LAST
+    ``pmc`` article-id and preferred ``pmc`` over ``pmcid``, while the record
+    key took the first: a file with two named two works. Both read the FIRST
+    now, and the streamed reader the API's pre-check uses agrees.
+    MUTATION: front_meta back to the dict's last-wins → fails."""
+    from xml.etree import ElementTree as ET
+
+    from ragstack.ingestion.jats import article_pmcid, front_meta, scan_article_pmcid
+
+    xml = f"<article><front><article-meta>{ids}</article-meta></front><body/></article>"
+    root = ET.fromstring(xml)
+    f = tmp_path / "x.xml"
+    f.write_text(xml, encoding="utf-8")
+    assert (front_meta(root)["pmcid"], article_pmcid(root)) == expected
+    assert scan_article_pmcid(f) == article_pmcid(root)
+
+
+def test_the_streamed_pmc_reader_stops_at_the_first_id(tmp_path: Path):
+    """``scan_article_pmcid`` returns at the first PMC article-id: bytes after
+    it are never parsed (here, a document that is not even well-formed)."""
+    from ragstack.ingestion.jats import scan_article_pmcid
+
+    f = tmp_path / "x.xml"
+    f.write_text('<article><front><article-meta><article-id pub-id-type="doi">10.1/x'
+                 '</article-id><article-id pub-id-type="pmc">PMC12</article-id>'
+                 "</article-meta></front><body><p>unclosed" + "x" * 200_000,
+                 encoding="utf-8")
+    assert scan_article_pmcid(f) == "PMC12"
+    f.write_text('<article><body><article-id pub-id-type="pmc">PMC1</article-id></body>'
+                 "</article>", encoding="utf-8")
+    assert scan_article_pmcid(f) == ""  # outside <article-meta>: not the article's id
+
+
+# --------------------------------------------------------------------------- #
+# #975 round 2 N4: a <pmc-articleset> holding one <article> is that article
+# --------------------------------------------------------------------------- #
+
+def test_a_pmc_articleset_with_one_article_loads_as_that_article(tmp_path: Path):
+    """NCBI ``efetch db=pmc`` wraps the article in ``<pmc-articleset>``; the
+    in-process loader refused it while ``jats_extract`` ingested it. Now it is
+    unwrapped on every route and gives exactly the records of the bare
+    article. MUTATION: drop the unwrap → NoJatsContent."""
     from ragstack.ingestion.loaders import JatsLoader
-    from ragstack.ingestion.work_identity import same_record_family
 
     t = _jats_fixture()
-    xml = tmp_path / ".hidden.xml"
-    xml.write_text(t._article("3", t.BODY_WITH_FLOATS, pmc=False), encoding="utf-8")
-    sources = [d.source for d in JatsLoader().load(str(xml))]
-    assert sources == [".hidden", ".hidden#table-1", ".hidden#figure-1"]
-    assert same_record_family(".hidden#table-1", ".hidden")
+    art = t._article("8092463", t.BODY_WITH_FLOATS)
+    bare, wrapped = tmp_path / "bare" / "PMC8092463.xml", tmp_path / "set" / "PMC8092463.xml"
+    for f, xml in ((bare, art), (wrapped, f"<pmc-articleset>{art}</pmc-articleset>")):
+        f.parent.mkdir()
+        f.write_text(xml, encoding="utf-8")
+    a, b = JatsLoader().load(str(bare)), JatsLoader().load(str(wrapped))
+    assert [(d.id, d.source, d.content, d.metadata) for d in a] == [
+        (d.id, d.source, d.content, d.metadata) for d in b]
+    assert [d.structure for d in a] == [d.structure for d in b]
 
 
-def test_a_file_named_dot_xml_fails_the_item(tmp_path: Path):
-    from ragstack.ingestion.loaders import JatsLoader
-
-    t = _jats_fixture()
-    xml = tmp_path / ".xml"
-    xml.write_text(t._article("3", "<p>Lead.</p>", pmc=False), encoding="utf-8")
-    with pytest.raises(LoaderError) as exc:
-        JatsLoader().load(str(xml))
-    assert "empty record key" in str(exc.value)
-
-
-def test_a_non_pmc_key_is_not_written_as_the_pmcid(tmp_path: Path):
-    """The key fills a missing ``pmcid`` only when it IS one: ``paper`` is a
-    record id, not a PMCID."""
-    from ragstack.ingestion.loaders import JatsLoader
+@pytest.mark.parametrize("n", [0, 2])
+def test_a_pmc_articleset_with_zero_or_several_articles_is_refused(tmp_path: Path, n):
+    from ragstack.ingestion.loaders import NO_JATS_CONTENT_ERROR, JatsLoader, NoJatsContent
 
     t = _jats_fixture()
-    xml = tmp_path / "paper.xml"
-    xml.write_text(t._article("3", "<p>Lead.</p>", pmc=False), encoding="utf-8")
-    (doc,) = JatsLoader().load(str(xml))
-    assert doc.source == "paper"
-    assert not doc.metadata.get("pmcid")
+    arts = "".join(t._article(str(i), t.BODY_WITH_FLOATS) for i in range(1, n + 1))
+    f = tmp_path / "PMC1.xml"
+    f.write_text(f"<pmc-articleset>{arts}</pmc-articleset>", encoding="utf-8")
+    with pytest.raises(NoJatsContent) as exc:
+        JatsLoader().load(str(f))
+    assert exc.value.job_error == NO_JATS_CONTENT_ERROR
 
 
 # --------------------------------------------------------------------------- #
@@ -548,6 +630,7 @@ def test_the_article_root_check_is_namespace_tolerant():
     assert is_article_root(ET.fromstring('<article xmlns="https://jats.nlm.nih.gov/ns"/>'))
     assert not is_article_root(ET.fromstring("<html><article/></html>"))
     assert not is_article_root(ET.fromstring("<pmc-articleset><article/></pmc-articleset>"))
+    # …but unwrap_articleset (convert_file) unwraps a one-article set first.
 
 
 # --------------------------------------------------------------------------- #

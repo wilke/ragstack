@@ -37,9 +37,11 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
     * ``pmcid`` (optional) — the article id; it becomes the record ``path`` and
       hence the document id. Defaults to ``jats.record_key``: the filename stem
       up to the first ``.`` when it is a PMC id (``PMC123.1.xml`` -> ``PMC123``),
-      else the article's own ``<article-id pub-id-type="pmc">``, else the file
-      name minus ``.xml`` (``journal.pone.0012345.xml`` ->
-      ``journal.pone.0012345``).
+      else the article's own ``<article-id pub-id-type="pmc">``, else the
+      file's RESOLVED path (``/corpus/clean/journal.pone.0012345.xml``) — the
+      key ``JatsLoader`` gives the same file in process, and the one a PDF at
+      that path gets. Step 1 is literal (``pmc4242.xml`` -> ``pmc4242``).
+      An explicit ``pmcid`` is taken as given (never normalised).
     * **Any other keys on the line are treated as that article's manifest row**
       (``sha256``, ``source_url``, ``doi_xml``, ``licence``, ...), so a shard is
       self-contained and a worker never has to read the ~1M-line corpus
@@ -48,7 +50,7 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
       ``find ... > shard.txt``). Blank lines are ignored.
 
 ``--corpus DIR``
-    Walk ``DIR/<--tree>/**/*.xml`` (``clean/`` is the ``<back>``-stripped tree —
+    Walk ``DIR/<--tree>/**/*.xml`` and ``*.nxml`` (``clean/`` is the ``<back>``-stripped tree —
     that is the one you ingest) and read ``DIR/manifest.jsonl`` for provenance.
     ``--limit N`` truncates the sorted walk, for previews.
 
@@ -103,6 +105,7 @@ from ragstack.ingestion.jats import (
     DEFAULT_MAX_CHARS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MIN_UNIT_CHARS,
+    JATS_SUFFIXES,
     convert_file,
     file_record_key,
     pmc_stem,
@@ -163,13 +166,16 @@ def read_shard(shard: str | Path, corpus: str | Path | None = None) -> list[dict
 
 
 def walk_corpus(corpus: str | Path, tree: str = "clean") -> list[dict]:
-    """Walk ``corpus/tree/**/*.xml`` -> shard items, sorted for determinism.
+    """Walk ``corpus/tree/**/*.xml`` and ``**/*.nxml`` (the PMC OA bulk
+    package's suffix, which the in-process route loads too) -> shard items,
+    sorted for determinism.
 
     A PMC-named file carries its key (``pmcid``) from the name; any other
     file's key is resolved by :func:`extract_articles` (``jats.record_key``)."""
     root = Path(corpus) / tree
     items: list[dict] = []
-    for f in sorted(root.rglob("*.xml")):
+    files = {f for sfx in JATS_SUFFIXES for f in root.rglob(f"*{sfx}")}
+    for f in sorted(files):
         item = {"pmcid": pmc_stem(f), "xml_path": str(f)}
         if not item["pmcid"]:
             del item["pmcid"]
@@ -232,13 +238,10 @@ def extract_articles(
     skipped: list[dict] = []
     for item in items:
         # The record key (jats.record_key): the item's explicit pmcid, else a
-        # PMC-named file's stem, else the article's own PMC id, else the file
-        # name minus .xml — the rule JatsLoader keys the in-process records on.
-        # "" (a file named ".xml") lets convert_file report the item as failed.
-        try:
-            pmcid = item.get("pmcid") or file_record_key(item["xml_path"])
-        except ValueError:
-            pmcid = ""
+        # PMC-named file's stem, else the article's own PMC id, else the
+        # file's resolved path — the rule JatsLoader keys the in-process
+        # records on.
+        pmcid = item.get("pmcid") or file_record_key(item["xml_path"])
         row = dict(manifest.get(pmcid, {}))
         row.update({k: v for k, v in item.items()
                     if k not in ("xml_path", "pmcid") and v not in (None, "")})

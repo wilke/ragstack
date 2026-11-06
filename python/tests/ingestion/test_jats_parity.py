@@ -166,21 +166,23 @@ def test_three_paths_give_the_same_documents(tmp_path, article) -> None:
     assert "ZZCELLZZ" not in a[deterministic_doc_id("PMC77")].content  # lifted out
 
 
-@pytest.mark.parametrize("name, pmc, key", [
-    ("journal.pone.0012345.xml", False, "journal.pone.0012345"),  # record_key step 3
-    ("journal.pone.0012345.xml", True, "PMC77"),                  # step 2: the article id
-    (".hidden.nxml", False, ".hidden"),
+@pytest.mark.parametrize("name, pmc", [
+    ("journal.pone.0012345.xml", False),  # record_key step 3: the resolved path
+    ("journal.pone.0012345.xml", True),   # step 2: the article id
+    (".hidden.nxml", False),
+    ("main.xml", False),
 ])
-def test_three_paths_key_a_non_pmc_name_alike(tmp_path, name, pmc, key) -> None:
-    """#975 F1: the record key of a file NOT named for a PMC id is the same on
-    all three paths — jats_extract resolves it at convert time from the
-    article's own ``<article-id pub-id-type="pmc">`` or the full file name,
-    as JatsLoader does. MUTATION: first-dot keys on any one path → the id sets
-    differ (or collapse to ``journal`` / ``""``)."""
+def test_three_paths_key_a_non_pmc_name_alike(tmp_path, name, pmc) -> None:
+    """#975 F1 + round 2: the record key of a file NOT named for a PMC id is
+    the same on all three paths — the article's own ``<article-id
+    pub-id-type="pmc">``, else the file's RESOLVED path (the key a PDF there
+    gets). MUTATION: step 3 back to the bare name, or jats_extract keying on
+    the path as given → the id sets differ."""
     src = tmp_path / "in"
     src.mkdir()
     xml = src / name
     xml.write_text(t._article("77", BODY, floats_group=t.FIG_1, pmc=pmc), encoding="utf-8")
+    key = "PMC77" if pmc else str(xml.resolve())
     ids = {deterministic_doc_id(f"{key}{sfx}") for sfx in ("", "#table-1", "#figure-1")}
     a = _by_id(_path_a(xml))
     b = _by_id(_jats_jsonl().load(str(_shard_b(xml, tmp_path / "b.jsonl"))))
@@ -190,7 +192,85 @@ def test_three_paths_key_a_non_pmc_name_alike(tmp_path, name, pmc, key) -> None:
     for doc_id, da in a.items():
         assert da.content == b[doc_id].content == c[doc_id].content
         pmcids = {d.metadata.get("pmcid") or "" for d in (da, b[doc_id], c[doc_id])}
-        assert pmcids == {"PMC77" if pmc else ""}  # a file-name key is not a PMCID
+        assert pmcids == {"PMC77" if pmc else ""}  # a path key is not a PMCID
+    if not pmc:  # the article's id is the id a PDF at that path would get
+        assert deterministic_doc_id(str(xml.resolve())) in a
+
+
+def test_three_paths_key_a_symlinked_input_on_its_target(tmp_path) -> None:
+    """argo N6: A and B hand JatsLoader the RESOLVED path, but jats_extract
+    keyed on ``xml_path`` as given — so a non-PMC link ``in/link.xml →
+    store/real.xml`` was keyed differently on C. All three key on the
+    target's path now. MUTATION: jats_extract keying on the path as given →
+    C's ids differ."""
+    store, src = tmp_path / "store", tmp_path / "in"
+    store.mkdir()
+    src.mkdir()
+    real = store / "real.xml"
+    real.write_text(t._article("77", BODY, floats_group=t.FIG_1, pmc=False), encoding="utf-8")
+    link = src / "link.xml"
+    link.symlink_to(real)
+    key = str(real.resolve())
+    ids = {deterministic_doc_id(f"{key}{sfx}") for sfx in ("", "#table-1", "#figure-1")}
+    a = _by_id(default_loader_registry(ingest_root=str(tmp_path)).load(str(link)))
+    b = _by_id(_jats_jsonl().load(str(_shard_b(link, tmp_path / "b.jsonl"))))
+    c = _by_id(_jats_jsonl().load(
+        str(_shard_c(link, tmp_path / "c.jsonl", "--no-token-budget"))))
+    assert set(a) == set(b) == set(c) == ids
+
+
+def test_three_paths_unwrap_a_one_article_pmc_articleset(tmp_path) -> None:
+    """argo N4 / Fable (2): ``<pmc-articleset><article/></pmc-articleset>``
+    (NCBI efetch) was refused in process (A, B) and ingested by jats_extract
+    (C). It is unwrapped on all three now, and gives exactly what the bare
+    article gives. MUTATION: drop the unwrap → A and B refuse it."""
+    bare_dir, set_dir = tmp_path / "bare", tmp_path / "set"
+    bare_dir.mkdir()
+    set_dir.mkdir()
+    art = t._article("77", BODY, floats_group=t.FIG_1)
+    bare, wrapped = bare_dir / "PMC77.xml", set_dir / "PMC77.xml"
+    bare.write_text(art, encoding="utf-8")
+    wrapped.write_text(f'<?xml version="1.0"?>\n<pmc-articleset>{art}</pmc-articleset>',
+                       encoding="utf-8")
+    want = _by_id(_path_a(bare))
+    a = _by_id(_path_a(wrapped))
+    b = _by_id(_jats_jsonl().load(str(_shard_b(wrapped, tmp_path / "b.jsonl"))))
+    c = _by_id(_jats_jsonl().load(
+        str(_shard_c(wrapped, tmp_path / "c.jsonl", "--no-token-budget"))))
+    assert set(a) == set(b) == set(c) == set(want) == {deterministic_doc_id(i) for i in IDS}
+    for doc_id, dw in want.items():
+        for d in (a[doc_id], b[doc_id], c[doc_id]):
+            assert d.content == dw.content
+            assert d.structure is not None and dw.structure is not None
+            assert d.structure.model_dump() == dw.structure.model_dump()
+            assert {k: d.metadata.get(k) for k in INDEX_KEYS if k not in (
+                "source_path", "filename")} == {k: dw.metadata.get(k) for k in INDEX_KEYS
+                                                if k not in ("source_path", "filename")}
+
+
+def test_three_paths_refuse_a_several_article_pmc_articleset(tmp_path) -> None:
+    """A set of two articles is one file with two record keys: refused on
+    every path (A and B: NoJatsContent; C: a failed item). MUTATION: unwrap
+    the first article only → it loads."""
+    from ragstack.ingestion.loaders import NO_JATS_CONTENT_ERROR, NoJatsContent
+
+    src = tmp_path / "in"
+    src.mkdir()
+    xml = src / "PMC77.xml"
+    xml.write_text("<pmc-articleset>" + t._article("77", BODY) + t._article("78", BODY)
+                   + "</pmc-articleset>", encoding="utf-8")
+    with pytest.raises(NoJatsContent):
+        _path_a(xml)
+    records, skipped = pdf_extract.extract_documents([str(xml)])
+    assert records == [] and [s["error"] for s in skipped] == [NO_JATS_CONTENT_ERROR]
+    out = tmp_path / "c.jsonl"
+    listing = out.with_suffix(".list")
+    listing.write_text(f"{xml}\n", encoding="utf-8")
+    jats_extract.main(["--shard", str(listing), "--out", str(out), "--no-token-budget",
+                       "--report", str(tmp_path / "c.report.json")])
+    assert _lines(out) == []
+    report = json.loads((tmp_path / "c.report.json").read_text())
+    assert "pmc-articleset" in json.dumps(report)
 
 
 def test_plain_jsonl_loader_on_b_keeps_the_index_subset_but_not_passthrough(

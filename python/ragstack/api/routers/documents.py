@@ -1,11 +1,14 @@
 """Document management endpoints."""
 from __future__ import annotations
 
+import asyncio
+import functools
 import hashlib
 import logging
 import shutil
 import unicodedata
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -80,7 +83,7 @@ from ragstack.ingestion.gowe_backend import (
     GoWeError,
     OutputStagingFailed,
 )
-from ragstack.ingestion.jats import JATS_SUFFIXES, file_record_key, record_key
+from ragstack.ingestion.jats import JATS_SUFFIXES, pmc_stem, scan_article_pmcid
 from ragstack.ingestion.loaders import (
     DEFAULT_INGEST_SUFFIXES,
     NO_LOADER_LABEL,
@@ -572,7 +575,7 @@ async def _precheck_duplicate(
     scope: list[str] | None,
     policy: str,
     *,
-    same_document: set[str] | None = None,
+    same_document: set[str] | Callable[[], Awaitable[set[str]]] | None = None,
 ) -> None:
     """The admission-time half of the duplicate guard (#747 D2): a 409 BEFORE a
     job exists, a version is reserved or a byte is written, when a file NAME
@@ -586,7 +589,10 @@ async def _precheck_duplicate(
     pre-checks. ``scope`` is :func:`_duplicate_scope` — never a tenant whose
     documents the caller cannot read (naming a foreign doc_id would be an
     existence oracle). ``same_document`` holds doc ids / source paths that are
-    THIS source (a re-ingest of the same path is a replace, not a duplicate).
+    THIS source (a re-ingest of the same path is a replace, not a duplicate)
+    — a set, or a zero-argument coroutine function returning one, awaited
+    only when the lookup actually found a document to compare (so a by-
+    reference source is read only then, :func:`_source_identity`).
     A lookup failure admits (fail-open): the job-time check still runs.
 
     The 409 ``detail`` is an object, like ``owner_quota_exceeded``:
@@ -626,10 +632,13 @@ async def _precheck_duplicate(
         log.warning("duplicate pre-check on %r skipped (%s): %s",
                     entry.id, type(e).__name__, e)
         return
-    skip = same_document or set()
+    skip: set[str] | None = None
     for name, name_keys in per_name:
         for key in name_keys:
             for existing in found.get(key, []):
+                if skip is None:
+                    skip = (await same_document() if callable(same_document)
+                            else same_document or set())
                 if existing.doc_id in skip or (existing.source and existing.source in skip):
                     continue
                 # A JATS table/figure record ("PMC1#table-1") is part of the
@@ -656,18 +665,48 @@ def _is_jats_name(source: str) -> bool:
     return Path(source).suffix.lower() in JATS_SUFFIXES
 
 
-def _source_identity(source: str) -> set[str]:
+async def _confined_article_pmcid(source: str) -> str:
+    """The article's own PMC id (``jats.record_key`` step 2) of a by-reference
+    ``source``, read the way the job will read it — or ``""``. Confined to
+    ``INGEST_ROOT`` first (``confine_to_root``, the loader's own guard) and
+    refused over ``max_document_bytes`` (the registry's cap), so the request
+    path never opens a file the job would refuse; then STREAMED
+    (``jats.scan_article_pmcid`` stops at the first PMC article-id) in a
+    worker thread, off the event loop. Any failure is ``""``: the pre-check
+    is best-effort, and the job's own check still runs."""
+    try:
+        path = confine_to_root(source, settings.ingest_root)
+        if not path.is_file():
+            return ""
+        if settings.max_document_bytes and path.stat().st_size > settings.max_document_bytes:
+            return ""
+        return await asyncio.to_thread(scan_article_pmcid, path)
+    except Exception:  # noqa: BLE001 - best-effort: the job-time check still runs
+        return ""
+
+
+async def _source_identity(source: str) -> set[str]:
     """Doc ids and paths that name a local ``source`` itself — what a
     re-ingest of the same path would replace (the PDF and text loaders key a
     file's doc id on its resolved path).
 
-    A JATS ``.xml``/``.nxml`` (#828 PR 5a) is keyed differently: ``JatsLoader``
-    keys its records on :func:`ragstack.ingestion.jats.record_key` of the path
-    the registry hands it — the RESOLVED path — so the key here is
-    :func:`~ragstack.ingestion.jats.file_record_key` of the resolved file too
-    (a symlink ``PMC4.xml → store/abc123.xml`` keys on the target, exactly as
-    the loader does; a non-PMC name reads the article's own PMC id). When the
-    file is not there to read, the name as given is keyed."""
+    A JATS ``.xml``/``.nxml`` (#828 PR 5a) is keyed by
+    :func:`ragstack.ingestion.jats.record_key` of the path the registry hands
+    ``JatsLoader`` — the RESOLVED path:
+
+    1. a PMC-named resolved file (``PMC5.v2.xml``; a symlink is keyed on its
+       target's name) is keyed on that stem — no read;
+    3. a file with no PMC id is keyed on its resolved path, which is already
+       in the set — no read;
+    2. so only a file whose NAME is not a PMC id but whose ARTICLE carries
+       one is keyed differently, and only that needs the file read
+       (:func:`_confined_article_pmcid`: confined, size-capped, streamed, off
+       the loop).
+
+    Awaited lazily by :func:`_precheck_duplicate` — only under ``refuse``,
+    only when the name carries a work id and the lookup found a document —
+    so a request that is not checked never reads the file. When the file is
+    not there, the name as given is keyed (step 1)."""
     out: set[str] = set()
     existing: Path | None = None
     for p in (Path(source), Path(settings.ingest_root or ".") / source):
@@ -678,30 +717,29 @@ def _source_identity(source: str) -> set[str]:
         out.update({str(resolved), deterministic_doc_id(str(resolved))})
         if existing is None and resolved.is_file():
             existing = resolved
-    if _is_jats_name(source) or (existing is not None and _is_jats_name(str(existing))):
-        try:
-            key = file_record_key(existing) if existing is not None else record_key(source)
-        except ValueError:
-            key = ""
-        out |= _jats_key_identity(key)
-    return out
+    if not (_is_jats_name(source) or (existing is not None and _is_jats_name(str(existing)))):
+        return out
+    stem = pmc_stem(existing if existing is not None else source)
+    if stem:
+        return out | _jats_key_identity(stem)
+    if existing is None:
+        return out
+    return out | _jats_key_identity(await _confined_article_pmcid(source))
 
 
 def _upload_identity(names: list[str]) -> set[str]:
     """:func:`_source_identity` for uploads, whose bytes are not on disk yet at
-    the pre-check: a staged PDF/text path includes the job id, so a re-upload
-    is a second copy (no identity), but a JATS file's records are keyed on its
-    name (:func:`~ragstack.ingestion.jats.record_key`, step 1 for a PMC name,
-    which is the only name the pre-check finds keys on), so a re-upload of
-    ``PMC1.xml`` replaces ``PMC1`` and its units rather than copying them."""
+    the pre-check: a staged path includes the job id, so a re-upload of a PDF,
+    a text file or a JATS file with no PMC id is a second copy (no identity —
+    the job-time guard decides on its DOI). A PMC-named JATS file's records
+    are keyed on its name (:func:`~ragstack.ingestion.jats.record_key` step
+    1), so a re-upload of ``PMC1.xml`` replaces ``PMC1`` and its units rather
+    than copying them."""
     out: set[str] = set()
     for name in names:
         if not _is_jats_name(name):
             continue
-        try:
-            out |= _jats_key_identity(record_key(name))
-        except ValueError:
-            pass
+        out |= _jats_key_identity(pmc_stem(name))
         # A name that carries a PMC token without being one (``notes_PMC12345.xml``)
         # is keyed by the article's own PMC id (record_key step 2) when, as is
         # usual, the article carries the one its name does.
@@ -1607,7 +1645,7 @@ async def ingest(
     if _is_file_name(request.source):
         await _precheck_duplicate(
             target, [Path(request.source).name], scope, policy,
-            same_document=_source_identity(request.source),
+            same_document=functools.partial(_source_identity, request.source),
         )
 
     # As above (#415): `get_collection_store(http_request)` is an add_task

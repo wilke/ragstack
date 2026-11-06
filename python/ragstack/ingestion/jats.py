@@ -740,6 +740,11 @@ def front_meta(root) -> dict:
     """
     ids = {e.get("pub-id-type"): itext(e)
            for e in root.findall(".//article-meta//article-id")}
+    # The PMC id is the FIRST ``pmc``/``pmcid`` article-id (document order),
+    # the one :func:`article_pmcid` keys the records on (record_key step 2),
+    # so ``metadata.pmcid`` and the record key never name different ids.
+    # ``doi``/``pmid`` keep the dict's last-wins choice (unchanged output).
+    pmcid = _first_pmc_article_id(root)
     authors = []
     for c in root.findall(".//article-meta//contrib"):
         if (c.get("contrib-type") or "author") != "author":
@@ -769,7 +774,7 @@ def front_meta(root) -> dict:
     return {
         "doi": ids.get("doi", ""),
         "pmid": ids.get("pmid", ""),
-        "pmcid": ids.get("pmc", "") or ids.get("pmcid", ""),
+        "pmcid": pmcid,
         "title": itext(root.find(".//article-meta//article-title")),
         "authors": "; ".join(authors),
         "keywords": "; ".join(k for k in kws if k),
@@ -788,10 +793,14 @@ def merge_manifest(meta: dict, pmcid: str, manifest: dict | None) -> dict:
     (``doi_xml`` -> ``doi``, ``licence``). ``sha256``/``source_url`` are always
     present as keys (possibly empty) so the record shape is stable.
     """
+    from ragstack.ingestion.work_identity import normalize_pmcid  # no import cycle
+
     manifest = manifest or {}
-    # Only a PMC-shaped key stands in for a missing pmcid: a key from the
-    # file name (``journal.pone.0012345``) is a record id, not a PMCID.
-    meta["pmcid"] = meta.get("pmcid") or (pmcid if _PMC_STEM.match(pmcid) else "")
+    # Only a key that IS a PMC id stands in for a missing pmcid — written as
+    # given (``PMC123``, or a shard's explicit bare ``8092463``, as before #828
+    # PR 5a). A path key (``/corpus/paper.xml``, record_key step 3) is a record
+    # id, not a PMCID, and ``normalize_pmcid`` rejects it.
+    meta["pmcid"] = meta.get("pmcid") or (pmcid if normalize_pmcid(pmcid) else "")
     for k_src, k_dst in (("sha256", "sha256"), ("source_url", "source_url"),
                          ("licence", "licence"), ("doi_xml", "doi")):
         v = manifest.get(k_src)
@@ -820,15 +829,45 @@ def pmc_stem(path: str | Path) -> str:
     return stem if _PMC_STEM.match(stem) else ""
 
 
-def article_pmcid(root) -> str:
-    """The article's own ``<article-id pub-id-type="pmc">`` as ``PMC<digits>``,
-    or ``""`` (none, or not a PMC id). Read only from ``<article-meta>``, as
-    :func:`front_meta` reads the ids."""
+_PMC_ID_TYPES = ("pmc", "pmcid")
+
+
+def _first_pmc_article_id(root) -> str:
+    """The raw text of the FIRST ``<article-id>`` in an ``<article-meta>``
+    whose ``pub-id-type`` is ``pmc``/``pmcid`` (document order), or ``""``."""
     for e in root.findall(".//article-meta//article-id"):
-        if e.get("pub-id-type") in ("pmc", "pmcid"):
-            m = _PMC_ARTICLE_ID.match(itext(e))
-            if m and int(m.group(1)) > 0:
-                return f"PMC{int(m.group(1))}"
+        if e.get("pub-id-type") in _PMC_ID_TYPES:
+            return itext(e)
+    return ""
+
+
+def _pmc_of(raw: str) -> str:
+    m = _PMC_ARTICLE_ID.match(raw or "")
+    return f"PMC{int(m.group(1))}" if m and int(m.group(1)) > 0 else ""
+
+
+def article_pmcid(root) -> str:
+    """The article's own PMC id as ``PMC<digits>``: the FIRST
+    ``<article-id pub-id-type="pmc">`` (or ``"pmcid"``) in ``<article-meta>``
+    — the one :func:`front_meta` writes to ``metadata.pmcid`` — normalised, or
+    ``""`` (none, or the first is not a PMC id)."""
+    return _pmc_of(_first_pmc_article_id(root))
+
+
+def scan_article_pmcid(path: str | Path) -> str:
+    """:func:`article_pmcid` of a file, STREAMED: ``iterparse`` stops at the
+    first ``pmc``/``pmcid`` article-id inside an ``<article-meta>``, so the
+    usual front-matter id costs a few KB, never a tree of the file. Same
+    element, same normalisation as :func:`article_pmcid` of the parsed file.
+    Raises what ``iterparse`` raises (``ET.ParseError``, ``OSError``); the
+    caller bounds the file's size."""
+    depth = 0  # how many <article-meta> elements are open
+    for event, el in ET.iterparse(str(path), events=("start", "end")):
+        if el.tag == "article-meta":
+            depth += 1 if event == "start" else -1
+        elif (event == "end" and depth and el.tag == "article-id"
+              and el.get("pub-id-type") in _PMC_ID_TYPES):
+            return _pmc_of(itext(el))
     return ""
 
 
@@ -841,50 +880,70 @@ def record_key(path: str | Path, xml_pmcid: str | None = None) -> str:
 
     1. the filename stem up to the first ``.`` when it is a PMC id
        (``PMC8092463.xml``, ``PMC8092463.nxml``, ``PMC8092463.v2.xml`` →
-       ``PMC8092463``) — byte-identical to the key every PMC-named file has
-       always had, so existing collections keep their ids;
+       ``PMC8092463``), taken LITERALLY — ``pmc4242.xml`` → ``pmc4242``, case
+       kept, leading zeros kept (step 2 normalises; step 1 never did) — so it
+       is byte-identical to the key every PMC-named file has always had and
+       existing collections keep their ids;
     2. else the article's ``<article-id pub-id-type="pmc">`` (``xml_pmcid``,
        normalised to ``PMC<digits>`` without leading zeros, as
        ``work_identity.normalize_pmcid`` does);
-    3. else the full file name minus a trailing ``.xml``/``.nxml``
-       (``journal.pone.0012345.xml`` → ``journal.pone.0012345``) — never the
-       stem up to the first dot, which folded every PLOS file to ``journal``.
+    3. else the file's RESOLVED PATH (``/corpus/plos/journal.pone.0012345.xml``)
+       — exactly the key ``PdfLoader``/``TextFileLoader`` give a file at that
+       path, so ``deterministic_doc_id`` of it is the id a PDF there would get.
 
-    Raises :class:`ValueError` when the key would be empty (a file named
-    ``.xml``)."""
+    Steps 1–2 give two files one key only when they name the same PMC id —
+    the same work, so a replace is right. Step 3 gives two files one key only
+    when they are one file. No key derived from a bare name can make two
+    different works collide (``*/main.xml``, two uploads ``paper.xml``). The
+    price, as for PDFs: a step-3 file's ids follow its path, so a moved file,
+    or a GoWe run that stages the input under a fresh path, gets new ids."""
     stem = pmc_stem(path)
     if stem:
         return stem
-    m = _PMC_ARTICLE_ID.match(xml_pmcid or "")
-    if m and int(m.group(1)) > 0:
-        return f"PMC{int(m.group(1))}"
-    name = Path(path).name
-    for sfx in JATS_SUFFIXES:
-        if name.lower().endswith(sfx):
-            name = name[: -len(sfx)]
-            break
-    if not name:
-        raise ValueError("JATS file name gives an empty record key")
-    return name
+    pmc = _pmc_of(xml_pmcid or "")
+    if pmc:
+        return pmc
+    return str(Path(path).resolve())
 
 
 def file_record_key(path: str | Path) -> str:
-    """:func:`record_key` of a file on disk: parses it for step 2 only when
-    the name is not a PMC id. An unparseable file falls through to step 3 (its
-    ingest fails on the parse anyway). Raises :class:`ValueError` as
-    :func:`record_key` does."""
+    """:func:`record_key` of a file on disk: reads it for step 2 only when
+    the name is not a PMC id (:func:`scan_article_pmcid`, streamed). An
+    unreadable/unparseable file falls through to step 3 (its ingest fails on
+    the parse anyway)."""
     if pmc_stem(path):
         return pmc_stem(path)
     try:
-        xml_pmcid = article_pmcid(ET.parse(path).getroot())
-    except Exception:  # noqa: BLE001 - unreadable/unparseable: name only
+        xml_pmcid = scan_article_pmcid(path)
+    except Exception:  # noqa: BLE001 - unreadable/unparseable: the path
         xml_pmcid = ""
     return record_key(path, xml_pmcid)
 
 
+def _local(tag) -> str:
+    return str(tag).rsplit("}", 1)[-1]
+
+
 def is_article_root(root) -> bool:
     """Whether the document element is ``<article>`` (namespace-tolerant)."""
-    return str(root.tag).rsplit("}", 1)[-1] == "article"
+    return _local(root.tag) == "article"
+
+
+def unwrap_articleset(root):
+    """``(article, None)`` for the element to convert, or ``(None, reason)``.
+
+    NCBI ``efetch db=pmc`` returns ``<pmc-articleset><article>…</article>
+    </pmc-articleset>``, commonly saved as ``PMC123.xml``. A set holding
+    exactly ONE ``<article>`` is that article (unwrapped, on every route); a
+    set holding none or several is refused (``not a JATS article (…)``) —
+    one file, one article, one record key. Any other root is returned as is."""
+    if _local(root.tag) != "pmc-articleset":
+        return root, None
+    arts = [c for c in root if _local(c.tag) == "article"]
+    if len(arts) == 1:
+        return arts[0], None
+    return None, (f"not a JATS article (<pmc-articleset> holding {len(arts)} "
+                  f"articles; one article per file)")
 
 
 # -------------------------------------------------------------------- records
@@ -1038,12 +1097,14 @@ def convert_file(
 
     An unparseable / missing / unreadable file yields ``([], [entry])`` with
     ``kind="article"`` — one bad file is reported, never raised, so it cannot sink
-    a shard; so does a file whose :func:`record_key` would be empty, and — with
-    ``require_article`` — a well-formed file whose document element is not
-    ``<article>`` (``reason`` starts ``not a JATS article``). ``pmcid`` defaults
-    to :func:`record_key` of the file (``PMC123.1.xml`` -> ``PMC123``; else the
-    article's own PMC id; else the file name minus ``.xml``). ``with_spans`` is
-    as in :func:`article_records` (a failed file's spans are ``[]``, its units
+    a shard. A ``<pmc-articleset>`` holding one ``<article>`` is converted as
+    that article, on every route; one holding none or several fails
+    (:func:`unwrap_articleset`), and — with ``require_article`` — so does any
+    other well-formed file whose document element is not ``<article>``
+    (``reason`` starts ``not a JATS article``). ``pmcid`` defaults to
+    :func:`record_key` of the file (``PMC123.1.xml`` -> ``PMC123``; else the
+    article's own PMC id; else the file's resolved path). ``with_spans`` is as
+    in :func:`article_records` (a failed file's spans are ``[]``, its units
     ``{}``).
     """
     path = Path(xml_path)
@@ -1058,16 +1119,18 @@ def convert_file(
         failed = [{"path": str(path), "pmcid": label, "kind": "article",
                    "reason": f"{type(e).__name__}: {e}"}]
     else:
-        if require_article and not is_article_root(root):
-            local = str(root.tag).rsplit("}", 1)[-1]
+        article, why = unwrap_articleset(root)
+        if article is None:
             failed = [{"path": str(path), "pmcid": label, "kind": "article",
-                       "reason": f"not a JATS article (document element <{local}>)"}]
-        elif not pmcid:
-            try:
+                       "reason": str(why)}]
+        elif require_article and not is_article_root(article):
+            failed = [{"path": str(path), "pmcid": label, "kind": "article",
+                       "reason": f"not a JATS article (document element "
+                                 f"<{_local(article.tag)}>)"}]
+        else:
+            root = article
+            if not pmcid:
                 pmcid = record_key(path, article_pmcid(root))
-            except ValueError as e:
-                failed = [{"path": str(path), "pmcid": label, "kind": "article",
-                           "reason": str(e)}]
     if failed is not None:
         return ([], failed, [], {}) if with_spans else ([], failed)
     assert pmcid
