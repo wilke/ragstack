@@ -182,11 +182,8 @@ def test_pdfloader_omits_doi_when_the_pdf_has_none(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 
 def _jats_fixture():
-    """The synthetic article of ``tests/ingestion/test_jats_extract.py``."""
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ingestion"))
-    import test_jats_extract as t  # the fixture module, not a test of this file
+    """The shared synthetic JATS fixtures (``tests/jats_support.py``)."""
+    import tests.jats_support as t
 
     return t
 
@@ -307,16 +304,55 @@ def test_jats_loader_pmcid_is_the_stem_up_to_the_first_dot(tmp_path: Path):
     assert doc.source == "PMC5" and doc.id == deterministic_doc_id("PMC5")
 
 
-def test_jats_loader_malformed_xml_is_a_loader_error(tmp_path: Path):
-    from ragstack.ingestion.loaders import JatsLoader, NoJatsContent
+def test_jats_loader_malformed_xml_is_the_constant_parse_error(tmp_path: Path):
+    """F4: a parse failure is countable — a constant ``job_error``, not the
+    class name. MUTATION: raise a bare LoaderError → job_error is None."""
+    from ragstack.ingestion.loaders import (
+        JATS_PARSE_ERROR,
+        JATS_PARSE_LABEL,
+        JatsLoader,
+        JatsParseError,
+        NoJatsContent,
+    )
 
     xml = tmp_path / "PMC9.xml"
     xml.write_text("<article><body><p>never closed", encoding="utf-8")
     with pytest.raises(LoaderError) as exc:
         JatsLoader().load(str(xml))
+    assert isinstance(exc.value, JatsParseError)
     assert not isinstance(exc.value, NoJatsContent)
-    assert getattr(exc.value, "job_error", None) is None  # class-name label, as for a PDF
-    assert str(exc.value) == "could not parse JATS XML 'PMC9.xml'"
+    assert exc.value.job_error == JATS_PARSE_ERROR == "could not parse JATS XML"
+    assert JATS_PARSE_LABEL == "jats_parse_error" and JATS_PARSE_LABEL in str(exc.value)
+    assert "'PMC9.xml'" in str(exc.value)
+
+
+def test_jats_parse_error_lands_the_constant_on_the_item(tmp_path: Path):
+    """F4 end to end below the API: the sharded ingestor records the constant
+    on the item (``sharded.py``'s ``job_error`` convention)."""
+    import asyncio
+
+    from ragstack.ingestion.backends import LocalAsyncIORunner
+    from ragstack.ingestion.manifest import build_manifest
+    from ragstack.ingestion.pipeline import IngestionPipeline
+    from ragstack.ingestion.sharded import ShardedIngestor
+    from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
+
+    class _Embedder:
+        async def embed(self, texts):
+            return [[1.0, 2.0, 3.0] for _ in texts]
+
+    f = tmp_path / "PMC9.xml"
+    f.write_text("<article><body><p>never closed", encoding="utf-8")
+    pipeline = IngestionPipeline(
+        loader=default_loader_registry(ingest_root=str(tmp_path)),
+        chunker=RecursiveCharacterChunker(chunk_size=100, chunk_overlap=0),
+        embedder=_Embedder(), vector_store=InMemoryVectorStore(),
+        text_index=InMemoryTextIndex(),
+    )
+    (result,) = asyncio.run(ShardedIngestor(pipeline, LocalAsyncIORunner(max_concurrency=1)).ingest_manifest(
+        build_manifest(str(f), ingest_root=str(tmp_path))))
+    assert result.status == "failed"
+    assert result.error == "could not parse JATS XML"
 
 
 def test_jats_loader_refuses_xml_with_no_jats_content(tmp_path: Path):
@@ -359,3 +395,226 @@ def test_jats_passthrough_keys_are_the_cwl_default():
     default = cwl.split("metadata_passthrough:", 1)[1].split("default:", 1)[1]
     default = default.split("\n", 1)[0].strip().strip('"')
     assert tuple(default.split(",")) == JATS_PASSTHROUGH_KEYS
+
+
+# --------------------------------------------------------------------------- #
+# #975 review F1: one record key, no first-dot collisions
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("name", [
+    "PMC8092463.xml", "PMC8092463.nxml", "PMC8092463.v2.xml", "PMC8092463.XML",
+])
+def test_record_key_of_a_pmc_name_is_byte_identical_to_the_old_key(name):
+    """Every PMC-named file keeps the id it always had (the first-dot stem):
+    the open-access corpus and every jats_extract collection depend on it —
+    whatever the article's own PMC id says."""
+    from ragstack.ingestion.jats import record_key
+
+    assert record_key(name) == "PMC8092463" == name.split(".")[0]
+    assert record_key(name, "PMC1") == "PMC8092463"
+    assert record_key("pmc8092463.xml") == "pmc8092463"  # the stem as it was, case kept
+
+
+@pytest.mark.parametrize("name, xml_pmcid, key", [
+    ("journal.pone.0012345.xml", None, "journal.pone.0012345"),
+    ("journal.pone.0012345.xml", "PMC77", "PMC77"),
+    ("journal.pone.0012345.xml", "77", "PMC77"),
+    ("journal.pone.0012345.xml", "PMC0077", "PMC77"),
+    ("10.1371_journal.pone.0012345.xml", None, "10.1371_journal.pone.0012345"),
+    ("article.nxml", None, "article"),
+    ("paper.v2.xml", "", "paper.v2"),
+    (".hidden.xml", None, ".hidden"),
+    ("x.xml.bak", None, "x.xml.bak"),
+])
+def test_record_key_falls_back_to_the_article_id_then_the_whole_name(name, xml_pmcid, key):
+    """MUTATION: keep ``name.split('.')[0]`` → ``journal`` / ``10`` / ``""``."""
+    from ragstack.ingestion.jats import record_key
+
+    assert record_key(name, xml_pmcid) == key
+
+
+def test_record_key_is_never_empty():
+    from ragstack.ingestion.jats import record_key
+
+    with pytest.raises(ValueError):
+        record_key(".xml")
+    with pytest.raises(ValueError):
+        record_key("/some/dir/.NXML")
+
+
+def test_two_plos_files_get_distinct_ids(tmp_path: Path):
+    """F1(i): ``journal.pone.0012345.xml`` and ``journal.pone.0067890.xml`` both
+    keyed to ``journal`` and overwrote each other in a directory ingest."""
+    from ragstack.ingestion.loaders import JatsLoader
+
+    t = _jats_fixture()
+    names = ["journal.pone.0012345.xml", "journal.pone.0067890.xml"]
+    sources = []
+    for i, name in enumerate(names, 1):
+        (tmp_path / name).write_text(
+            t._article(str(i), t.BODY_WITH_FLOATS, pmc=False), encoding="utf-8")
+        sources.append([d.source for d in JatsLoader().load(str(tmp_path / name))])
+    assert sources == [
+        ["journal.pone.0012345", "journal.pone.0012345#table-1", "journal.pone.0012345#figure-1"],
+        ["journal.pone.0067890", "journal.pone.0067890#table-1", "journal.pone.0067890#figure-1"],
+    ]
+
+
+def test_a_non_pmc_name_is_keyed_by_the_articles_own_pmc_id(tmp_path: Path):
+    """Step 2: a PLOS-named file whose article carries a PMC id keys on it —
+    the same id a ``PMC<n>.xml`` copy of that article gets."""
+    from ragstack.ingestion.loaders import JatsLoader, deterministic_doc_id
+
+    t = _jats_fixture()
+    xml = tmp_path / "journal.pone.0012345.xml"
+    xml.write_text(t._article("4242", t.BODY_WITH_FLOATS), encoding="utf-8")
+    docs = JatsLoader().load(str(xml))
+    assert [d.source for d in docs] == ["PMC4242", "PMC4242#table-1", "PMC4242#figure-1"]
+    assert docs[0].id == deterministic_doc_id("PMC4242")
+
+
+def test_a_dotfile_keeps_its_units(tmp_path: Path):
+    """F1(iii): ``.hidden.xml`` keyed to ``""``, so its table/figure were refused
+    as duplicates of their own article. Now its key is ``.hidden`` and the
+    units are one family with it."""
+    from ragstack.ingestion.loaders import JatsLoader
+    from ragstack.ingestion.work_identity import same_record_family
+
+    t = _jats_fixture()
+    xml = tmp_path / ".hidden.xml"
+    xml.write_text(t._article("3", t.BODY_WITH_FLOATS, pmc=False), encoding="utf-8")
+    sources = [d.source for d in JatsLoader().load(str(xml))]
+    assert sources == [".hidden", ".hidden#table-1", ".hidden#figure-1"]
+    assert same_record_family(".hidden#table-1", ".hidden")
+
+
+def test_a_file_named_dot_xml_fails_the_item(tmp_path: Path):
+    from ragstack.ingestion.loaders import JatsLoader
+
+    t = _jats_fixture()
+    xml = tmp_path / ".xml"
+    xml.write_text(t._article("3", "<p>Lead.</p>", pmc=False), encoding="utf-8")
+    with pytest.raises(LoaderError) as exc:
+        JatsLoader().load(str(xml))
+    assert "empty record key" in str(exc.value)
+
+
+def test_a_non_pmc_key_is_not_written_as_the_pmcid(tmp_path: Path):
+    """The key fills a missing ``pmcid`` only when it IS one: ``paper`` is a
+    record id, not a PMCID."""
+    from ragstack.ingestion.loaders import JatsLoader
+
+    t = _jats_fixture()
+    xml = tmp_path / "paper.xml"
+    xml.write_text(t._article("3", "<p>Lead.</p>", pmc=False), encoding="utf-8")
+    (doc,) = JatsLoader().load(str(xml))
+    assert doc.source == "paper"
+    assert not doc.metadata.get("pmcid")
+
+
+# --------------------------------------------------------------------------- #
+# #975 review F3: the document element must be <article>
+# --------------------------------------------------------------------------- #
+
+XHTML = (
+    '<?xml version="1.0"?>\n<html xmlns="http://www.w3.org/1999/xhtml"><head>'
+    "<title>Page</title></head><body><p>A web page paragraph that is long enough "
+    "to be prose.</p></body></html>"
+)
+
+
+def test_an_xhtml_page_is_not_a_jats_article(tmp_path: Path):
+    """An XHTML ``page.xml`` has ``<body><p>``; it ingested as an "article"
+    with ``pmcid='page'``. MUTATION: drop ``require_article`` → it loads."""
+    from ragstack.ingestion.loaders import NO_JATS_CONTENT_ERROR, JatsLoader, NoJatsContent
+
+    page = tmp_path / "page.xml"
+    page.write_text(XHTML, encoding="utf-8")
+    with pytest.raises(NoJatsContent) as exc:
+        JatsLoader().load(str(page))
+    assert exc.value.job_error == NO_JATS_CONTENT_ERROR
+    # Not namespace-stripped XHTML either:
+    page.write_text(XHTML.replace(' xmlns="http://www.w3.org/1999/xhtml"', ""), encoding="utf-8")
+    with pytest.raises(NoJatsContent):
+        JatsLoader().load(str(page))
+
+
+def test_the_article_root_check_is_namespace_tolerant():
+    from xml.etree import ElementTree as ET
+
+    from ragstack.ingestion.jats import is_article_root
+
+    assert is_article_root(ET.fromstring("<article/>"))
+    assert is_article_root(ET.fromstring('<article xmlns="https://jats.nlm.nih.gov/ns"/>'))
+    assert not is_article_root(ET.fromstring("<html><article/></html>"))
+    assert not is_article_root(ET.fromstring("<pmc-articleset><article/></pmc-articleset>"))
+
+
+# --------------------------------------------------------------------------- #
+# #975 review F7(b): a link to a suffix-less blob dispatches on the link
+# --------------------------------------------------------------------------- #
+
+def test_a_link_to_a_suffixless_blob_loads_by_the_links_suffix(tmp_path: Path):
+    """``notes.md → ../blobs/<sha256>`` (HF hub cache, git-annex, DVC) loaded
+    through the old TextFileLoader fallback; with no fallback it must dispatch
+    on the link's suffix when the target has none. MUTATION: dispatch on the
+    resolved suffix only → ``no loader for (no suffix)``."""
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    blob = blobs / ("a" * 64)
+    blob.write_text("# Notes\n\nbody text\n", encoding="utf-8")
+    link = tmp_path / "snap" / "notes.md"
+    link.parent.mkdir()
+    link.symlink_to(Path("..") / "blobs" / blob.name)
+
+    reg = default_loader_registry(ingest_root=str(tmp_path))
+    (doc,) = reg.load(str(link))
+    assert doc.content.startswith("# Notes")
+    assert isinstance(reg.loader_for(str(link)), TextFileLoader)
+    assert reg.dispatch(str(link)) == (reg.loader_for(str(link)), ".md")
+
+
+def test_dispatch_is_the_resolved_suffix_first_then_the_links(tmp_path: Path):
+    """The order: the target's suffix when it has a loader (a ``.md`` link to
+    a ``.pdf`` is a PDF), else the link's (a ``.md`` link to an ``.rst`` is
+    read as the Markdown its name declares)."""
+    from ragstack.ingestion.loaders import NoLoader
+
+    target = tmp_path / "x.rst"
+    target.write_text("Title\n=====\n", encoding="utf-8")
+    link = tmp_path / "x.md"
+    link.symlink_to(target)
+    reg = default_loader_registry(ingest_root=str(tmp_path))
+    assert isinstance(reg.loader_for(str(link)), TextFileLoader)
+    assert reg.dispatch(str(target)) == (None, ".rst")
+    pdf_target = tmp_path / "y.pdf"
+    pdf_target.write_bytes(b"%PDF-1.4 not really")
+    pdf_link = tmp_path / "y.md"
+    pdf_link.symlink_to(pdf_target)
+    assert isinstance(reg.loader_for(str(pdf_link)), PdfLoader)
+    lonely = tmp_path / "LICENSE"
+    lonely.write_text("text", encoding="utf-8")
+    with pytest.raises(NoLoader) as exc:
+        reg.load(str(lonely))
+    assert exc.value.job_error == "no loader for (no suffix)"
+
+
+# --------------------------------------------------------------------------- #
+# #975 review F9: .nxml is a JATS suffix
+# --------------------------------------------------------------------------- #
+
+def test_nxml_is_registered_and_enqueued(tmp_path: Path):
+    """MUTATION: drop the .nxml registration → NoLoader; drop it from
+    DEFAULT_INGEST_SUFFIXES → a directory ingest skips it."""
+    from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, JatsLoader
+    from ragstack.ingestion.manifest import build_manifest
+
+    t = _jats_fixture()
+    reg = default_loader_registry(ingest_root=str(tmp_path))
+    assert isinstance(reg.loader_for("PMC1.nxml"), JatsLoader)
+    assert ".nxml" in DEFAULT_INGEST_SUFFIXES
+    xml = tmp_path / "PMC8092463.nxml"
+    xml.write_text(t._article("8092463", t.BODY_WITH_FLOATS), encoding="utf-8")
+    assert [d.source for d in reg.load(str(xml))][0] == "PMC8092463"
+    manifest = build_manifest(str(tmp_path), ingest_root=str(tmp_path))
+    assert [Path(i.source).name for i in manifest.items] == ["PMC8092463.nxml"]

@@ -53,11 +53,10 @@ from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parents[1] / "scripts"))
-sys.path.insert(0, str(_HERE))
 import jats_extract  # noqa: E402
 import pdf_extract  # noqa: E402
-import test_jats_extract as t  # noqa: E402
 
+import tests.jats_support as t  # noqa: E402
 from tests.ingestion.test_extract_text_parity import (  # noqa: E402
     _chunker,
     _Embedder,
@@ -165,6 +164,33 @@ def test_three_paths_give_the_same_documents(tmp_path, article) -> None:
     assert a[deterministic_doc_id("PMC77#figure-1")].metadata["content_type"] == "figure"
     assert "ZZCELLZZ" in a[deterministic_doc_id("PMC77#table-1")].content
     assert "ZZCELLZZ" not in a[deterministic_doc_id("PMC77")].content  # lifted out
+
+
+@pytest.mark.parametrize("name, pmc, key", [
+    ("journal.pone.0012345.xml", False, "journal.pone.0012345"),  # record_key step 3
+    ("journal.pone.0012345.xml", True, "PMC77"),                  # step 2: the article id
+    (".hidden.nxml", False, ".hidden"),
+])
+def test_three_paths_key_a_non_pmc_name_alike(tmp_path, name, pmc, key) -> None:
+    """#975 F1: the record key of a file NOT named for a PMC id is the same on
+    all three paths — jats_extract resolves it at convert time from the
+    article's own ``<article-id pub-id-type="pmc">`` or the full file name,
+    as JatsLoader does. MUTATION: first-dot keys on any one path → the id sets
+    differ (or collapse to ``journal`` / ``""``)."""
+    src = tmp_path / "in"
+    src.mkdir()
+    xml = src / name
+    xml.write_text(t._article("77", BODY, floats_group=t.FIG_1, pmc=pmc), encoding="utf-8")
+    ids = {deterministic_doc_id(f"{key}{sfx}") for sfx in ("", "#table-1", "#figure-1")}
+    a = _by_id(_path_a(xml))
+    b = _by_id(_jats_jsonl().load(str(_shard_b(xml, tmp_path / "b.jsonl"))))
+    c = _by_id(_jats_jsonl().load(
+        str(_shard_c(xml, tmp_path / "c.jsonl", "--no-token-budget"))))
+    assert set(a) == set(b) == set(c) == ids
+    for doc_id, da in a.items():
+        assert da.content == b[doc_id].content == c[doc_id].content
+        pmcids = {d.metadata.get("pmcid") or "" for d in (da, b[doc_id], c[doc_id])}
+        assert pmcids == {"PMC77" if pmc else ""}  # a file-name key is not a PMCID
 
 
 def test_plain_jsonl_loader_on_b_keeps_the_index_subset_but_not_passthrough(

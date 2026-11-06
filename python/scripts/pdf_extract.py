@@ -117,9 +117,10 @@ def extract_documents(
     registration is skipped with ``no loader for <suffix>`` — the string the
     in-process paths record for it (``documents._fail_unsupported_items`` for
     an upload, :class:`~ragstack.ingestion.loaders.NoLoader` from
-    ``registry.load`` by reference). The ``loader_for`` pre-check is kept
-    although ``registry.load`` now raises the same refusal: it refuses without
-    resolving, confining or reading the file.
+    ``registry.load`` by reference). The ``registry.dispatch`` pre-check is
+    kept although ``registry.load`` now raises the same refusal: it refuses
+    without confining or reading the file, and it is the same dispatch
+    (resolved suffix, then the suffix as given).
 
     ``records`` are JSONL-ready ``{"text", "path", "metadata"}`` dicts (the shape
     ``JsonlLoader`` consumes), with a ``"structure"`` key added when the loader
@@ -137,22 +138,24 @@ def extract_documents(
     records: list[dict] = []
     skipped: list[dict] = []
     for path in paths:
-        # Resolve first: ``loader_for`` reads the suffix of the path as given,
-        # ``registry.load`` dispatches on the resolved one — resolving here makes
-        # them the same path (a symlink to another suffix cannot split them).
+        # ``registry.dispatch`` is the decision ``registry.load`` takes: the
+        # resolved path's suffix, then the suffix as given (a ``notes.md`` link
+        # to a suffix-less blob). Both get the path AS GIVEN; ``source`` (the
+        # resolved path) is only what the skip rows report.
         source = str(Path(path).resolve())
-        if Path(source).suffix.lower() == ".jsonl":
+        loader, suffix = registry.dispatch(str(path))
+        if suffix == ".jsonl":
             # A batch file is many documents behind one receipt item: it cannot
             # be accounted for per item here, and path-less records would share
             # the shard file's id. Refused, not half-ingested (#830 review).
             skipped.append(_skip(source, JSONL_UNSUPPORTED_ERROR, JSONL_UNSUPPORTED_ERROR))
             continue
-        if registry.loader_for(source) is None:
-            err = no_loader_error(Path(source).suffix)
+        if loader is None:
+            err = no_loader_error(suffix)
             skipped.append(_skip(source, err, err))
             continue
         try:
-            docs = registry.load(source)
+            docs = registry.load(str(path))
         except LoaderError as e:
             # Typed, caller-safe loader failure (no text / unreadable / not found).
             skipped.append(_skip(source, str(e), getattr(e, "job_error", None) or str(e)))

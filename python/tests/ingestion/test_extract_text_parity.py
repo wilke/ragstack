@@ -277,8 +277,7 @@ def test_jats_xml_is_extracted_and_survives_the_second_enrichment(tmp_path):
     written. The shard's metadata is ALREADY enriched (authors a list), and
     JsonlLoader enriches it again — MUTATION: drop enrich's list tolerance →
     TypeError here."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import test_jats_extract as t
+    import tests.jats_support as t
 
     xml = _write(tmp_path / "PMC1.xml", t._article("1", t.BODY_WITH_FLOATS))
     records, skipped = pdf_extract.extract_documents([xml])
@@ -324,16 +323,49 @@ def test_jsonl_is_refused_not_half_ingested(tmp_path, no_pdf_loader):
     ]
 
 
-def test_symlink_dispatches_on_its_target(tmp_path, no_pdf_loader):
-    """``loader_for`` reads the suffix as given, ``registry.load`` the resolved
-    one; the extract step resolves first, so a ``.md`` link to an ``.rst``
-    target is refused like the ``.rst`` — not read as raw text."""
-    target = _write(tmp_path / "paper.rst", "Title\n=====\n")
-    link = tmp_path / "paper.md"
-    link.symlink_to(target)
+def _blob_link(tmp_path: Path, link_name: str, text: str, target_name: str | None = None) -> Path:
+    """``<link_name> → ../blobs/<target_name or sha-like>`` — the HF hub cache /
+    git-annex / DVC layout: the link carries the name, the target none."""
+    blobs = tmp_path / "blobs"
+    blobs.mkdir(exist_ok=True)
+    target = _write(blobs / (target_name or ("b" * 64)), text)
+    link = tmp_path / "snap" / link_name
+    link.parent.mkdir(exist_ok=True)
+    link.symlink_to(Path("..") / "blobs" / target.name)
+    return link
+
+
+@pytest.mark.parametrize("link_name, target_name, outcome", [
+    ("notes.md", None, "loaded"),          # suffix-less blob: the link's .md
+    ("paper.md", "paper.rst", "loaded"),   # target has no loader: the link's .md
+    ("notes.rst", None, "no loader for .rst"),
+    ("notes.rst", "data.csv", "no loader for .csv"),
+    ("LICENSE", None, "no loader for (no suffix)"),
+])
+def test_symlink_dispatch_is_identical_in_process_and_on_the_extract_step(
+    tmp_path, no_pdf_loader, link_name, target_name, outcome
+):
+    """#975 F7(b): ``registry.load`` and the extract step's pre-check take ONE
+    dispatch decision — the resolved suffix, then the suffix as given — so a
+    ``notes.md → ../blobs/<sha256>`` link loads on both (it failed with ``no
+    loader for (no suffix)`` once the TextFileLoader fallback was removed), and
+    a refusal names the same suffix on both. MUTATION: resolve-only dispatch
+    in either place → the two sides disagree or both refuse ``notes.md``."""
+    from ragstack.ingestion.loaders import NoLoader
+
+    link = _blob_link(tmp_path, link_name, "# Notes\n\nlinked body\n", target_name)
+    registry = default_loader_registry(ingest_root=str(tmp_path))
     records, skipped = pdf_extract.extract_documents([link])  # unresolved on purpose
-    assert records == []
-    assert [(s["path"], s["error"]) for s in skipped] == [(str(target), "no loader for .rst")]
+    if outcome == "loaded":
+        (doc,) = registry.load(str(link))
+        assert skipped == []
+        assert [r["text"] for r in records] == [doc.content]
+        assert doc.content.startswith("# Notes")
+    else:
+        with pytest.raises(NoLoader) as exc:
+            registry.load(str(link))
+        assert records == []
+        assert [s["error"] for s in skipped] == [exc.value.job_error] == [outcome]
 
 
 def test_registry_loader_for_is_the_dispatch_map():
@@ -346,6 +378,7 @@ def test_registry_loader_for_is_the_dispatch_map():
     assert isinstance(reg.loader_for("a.pdf"), PdfLoader)
     assert isinstance(reg.loader_for("a.jsonl"), JsonlLoader)
     assert isinstance(reg.loader_for("a.xml"), loaders.JatsLoader)
+    assert isinstance(reg.loader_for("a.nxml"), loaders.JatsLoader)
     assert reg.loader_for("a.rst") is None
     assert reg.loader_for("LICENSE") is None
 
