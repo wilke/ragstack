@@ -1,0 +1,65 @@
+{
+ "chunk_exports_sha256": {
+  "base": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+  "neighbour": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+  "random1": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
+  "random2": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c"
+ },
+ "chunks_sha256": "6cb6c3825740db1cbfc10149fd5283e3fcbe7ab3e3e3465e528557d8556ac12f",
+ "confirmatory": {
+  "prereg": "alias-boundary-confirm-2026-11",
+  "prereg_sha256": "b3a2d9e61f42675d9dccdd84bc449a0e7507e4b9c9d15bf957b6a3613e589b0e"
+ },
+ "control_seed_sha256": "f76f96882009c11242ec79b38d2be621ffa25eab86c521537a566426237407b8",
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "exploratory": false,
+ "per_arm": {
+  "base": 117,
+  "neighbour": 117,
+  "random": 117
+ },
+ "per_stratum": {
+  "answers": 351
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "016fb61d03784e6505b43275e4ee7536a2fddec7",
+  "describe": "v1.6.25-6-g016fb61",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-06T04:54:22Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+016fb61",
+  "warnings_n": 1
+ },
+ "schema": "alias-control-retest-seed/1",
+ "seed_rows": 351,
+ "seed_sha256": "3a656ba7640f6a448247cfba0e6da6c9f385e1b2eed36499dc01224725afffa1",
+ "stage_a_pairs": 351,
+ "windows": 351,
+ "windows_reescaped": 215
+}

@@ -1,0 +1,88 @@
+{
+ "chunks_sha256": "e9f00602eca4c6676b7e5968f08d83a01fcbdf36ca910d577419f5cca8748035",
+ "confirmatory": {
+  "prereg": "alias-boundary-confirm-2026-11",
+  "prereg_sha256": "b3a2d9e61f42675d9dccdd84bc449a0e7507e4b9c9d15bf957b6a3613e589b0e"
+ },
+ "coverage_bands": {
+  "0.5-0.8": 182,
+  "<0.5": 24,
+  ">=0.8": 145
+ },
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "excluded": {},
+ "exploratory": false,
+ "n_overlapping": {
+  "1": 67,
+  "2": 217,
+  "3": 61,
+  "4": 6
+ },
+ "pairs_in": 351,
+ "pairs_mapped": 351,
+ "per_stratum": {
+  "answers": 351
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "016fb61d03784e6505b43275e4ee7536a2fddec7",
+  "describe": "v1.6.25-6-g016fb61",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-06T04:54:15Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 343,
+    "n_spans": 80362,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "run",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "1f5de213f6f54361d4aa1a0ad7862c30f779572227b296ceabe007516150c2b9",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   },
+   {
+    "kind": "sections",
+    "n_docs": 343,
+    "n_spans": 6133,
+    "producer": "ragstack.ingestion.structure.attach_structure (markdown/1, raw mode)",
+    "sha256": "344b3670eb0d60125d592f95be459aeab43f415c5bc75afd9a5c079d780fc8bc",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   },
+   {
+    "kind": "chunks",
+    "n_docs": 343,
+    "n_spans": 9150,
+    "producer": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+    "sha256": "e5f0a105eef668590ab5a4c55657d0bb0c4282840e672d69a6adbd7f4f769a1c",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+016fb61",
+  "warnings_n": 1
+ },
+ "rule": "max-overlap",
+ "sample_sha256": "227aff47835003c083c2bc222b4c049071eb3753f7d7b7cfd86c6b961b8f3061",
+ "schema": "alias-control-map/1",
+ "seed_rows": 351,
+ "seed_sha256": "f76f96882009c11242ec79b38d2be621ffa25eab86c521537a566426237407b8",
+ "tie_rule": "the earlier control chunk",
+ "token_bands": {
+  "128-511": 289,
+  "512-640": 49,
+  "<128": 13
+ }
+}
