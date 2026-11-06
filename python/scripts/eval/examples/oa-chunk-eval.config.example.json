@@ -1,0 +1,109 @@
+{
+  "_comment": "PLACEHOLDER example of the private oa_chunk_eval config. Every host, path, model, collection id and key file below is a placeholder; the real config lives outside the repo. Keys starting with '_' are ignored. Relative paths resolve against this file's directory. Keys left out take the defaults in oa_chunk_eval/config.py (DEFAULTS).",
+  "out_dir": "/path/outside/the/repo/oa-chunk-eval-out",
+  "manifest": "/path/to/oa-corpus/manifest.jsonl",
+  "include_pmcids": "/path/to/bacteria-virus-pmcids.txt",
+  "corpus_root": "/path/to/oa-corpus",
+  "extracted": ["/path/outside/the/repo/oa-chunk-eval-out/extracted/*.jsonl"],
+
+  "sample": {
+    "n_eval_articles": 2000,
+    "n_background": 20000,
+    "seed": 12345,
+    "background_pool": "included",
+    "strata": {
+      "journal_family_map": {
+        "family-a": ["\\bexample journal a\\b"],
+        "family-b": ["\\bexample journal b\\b", "\\bexample b letters\\b"]
+      },
+      "default_family": "other",
+      "length_bands": [
+        {"name": "short", "max": 15000},
+        {"name": "medium", "min": 15000, "max": 40000},
+        {"name": "long", "min": 40000}
+      ],
+      "year_bands": [
+        {"name": "pre-2015", "max": 2015},
+        {"name": "2015-2019", "min": 2015, "max": 2020},
+        {"name": "2020+", "min": 2020}
+      ]
+    }
+  },
+
+  "passages": {
+    "chars": 1200,
+    "per_article": 1,
+    "section_targets": ["results", "discussion", "methods", "introduction", "abstract"]
+  },
+
+  "writer": {
+    "url": "http://writer.example.invalid",
+    "model": "example-writer-model",
+    "api_key_file": null,
+    "n": 10,
+    "temperature": 0.8,
+    "top_p": null,
+    "max_tokens": 512,
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": false}},
+    "max_in_flight": 4
+  },
+
+  "check_writer": {
+    "url": "http://check-writer.example.invalid",
+    "model": "example-check-model",
+    "api_key_file": "/path/to/check-writer.key",
+    "n": 10,
+    "temperature": 0.8,
+    "max_tokens": 512,
+    "extra_body": {},
+    "max_in_flight": 4,
+    "fraction": 0.1
+  },
+
+  "api": {
+    "base_url": "http://ragstack-api.example.invalid",
+    "api_key_file": "/path/to/ragstack-api.key",
+    "top_k": 10,
+    "endpoint": "/v1/retrieve",
+    "_request_extra_comment": "rerank, use_graph and retrieval_mode are REQUIRED (RetrieveRequest fields); retrieve refuses without them. Set them to what the eval should measure.",
+    "request_extra": {"rerank": false, "use_graph": false, "retrieval_mode": "hybrid"},
+    "max_in_flight": 4,
+    "max_503_waits": 5,
+    "max_retry_after_s": 120
+  },
+
+  "_arms_comment": "cost_rank (optional integer, lower = cheaper; on every arm or none) orders arms for decide.tie_break paired_ladder; placeholder values.",
+  "arms": [
+    {"name": "fixed512o64", "collection_id": "example-collection-1", "cost_class": "cheap", "baseline": true, "cost_rank": 2},
+    {"name": "fixed512o0", "collection_id": "example-collection-2", "cost_class": "cheap", "baseline": false, "cost_rank": 1},
+    {"name": "sentence512", "collection_id": "example-collection-3", "cost_class": "cheap", "baseline": false, "cost_rank": 3},
+    {"name": "fixed1024o0", "collection_id": "example-collection-4", "cost_class": "mid", "baseline": false, "cost_rank": 4},
+    {"name": "semantic_pooled512", "collection_id": "example-collection-5", "cost_class": "mid", "baseline": false, "cost_rank": 5},
+    {"name": "semantic512", "collection_id": "example-collection-6", "cost_class": "expensive", "baseline": false,
+     "workflow_feasible": false, "cost_rank": 6}
+  ],
+
+  "stop": {"max_failures": 20, "max_consecutive": 5, "pause_file": "PAUSE"},
+
+  "questions": {"max_attempts": 3},
+
+  "score": {
+    "ks": [1, 5, 10],
+    "coverage": 0.9,
+    "offsets": "verify",
+    "tokenizer": null,
+    "tokenizer_label": null,
+    "max_unlocated_share": 0.01,
+    "bootstrap_iters": 10000,
+    "bootstrap_seed": 0,
+    "exclude_noise_subset": false
+  },
+
+  "_decide_comment": "stratum_correction none|bonferroni and tie_break cheapest|paired_ladder; the defaults shown keep the pre-freeze rule.",
+  "decide": {"k": 5, "min_stratum_n": 30, "stratum_correction": "none", "tie_break": "cheapest"},
+
+  "_margins_comment": "Set after the noise run (noise.json), recorded in a dated plan addendum. decide refuses to run while this is null.",
+  "margins": null,
+
+  "noise": {"n_questions": 300, "arms": null, "planned_n": 2000, "target_half_width": null}
+}
