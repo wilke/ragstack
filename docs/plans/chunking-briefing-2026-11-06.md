@@ -219,15 +219,18 @@ Shipped on `main` 23 Oct and deployed on **dev only** from 24 Oct: tools v1.6.16
 - Same direction under BM25: −2.21 [−3.64, −0.79]
 - Reading: overlap's cost is small, but the production path does not show it is free. 512/64 stays
 
-### Slide B: "OA eval: no challenger beat 512/64 in production"
+### Slide B: "512/64 kept: three arms tie, dropping overlap loses"
 | arm | hit@5 | Δ vs 512/64 [95 % CI] | ctx@5 | rule |
 |---|---|---|---|---|
 | ft512o64 | 79.0 | — | 2,316 | kept |
-| sent512 | 79.6 | +0.54 [−0.74, +1.87] | 2,182 | NI, no switch |
+| sent512 | 79.6 | +0.54 [−0.74, +1.87] | 2,182 | passed NI; tie-break kept 512/64 |
 | sempool512 | 80.3 | +1.28 [−0.20, +2.75] | 1,843 | below +2 bar |
 | sem512 | 79.2 | +0.15 [−1.38, +1.67] | 1,762 | below +4 bar |
 | ft512o0 | 77.0 | −2.06 [−3.49, −0.59] | 2,300 | fails NI |
 | ft1024o0 | 76.7 | −2.36 [−4.03, −0.79] | 4,601 | fails |
+- Three challengers score slightly higher than 512/64, but every one of their CIs includes zero: a statistical tie, not a win for either side. 512/64 is shown better only than the two no-overlap arms, whose CIs exclude zero
+- `sent512` passed its non-inferiority test (Holm p 0.001); the pre-registered paired-ladder tie-break switches only when the candidate's two-sided CI against the incumbent excludes zero (−0.74), so the baseline was kept (`settings/a-hybrid-rerank/decision.json`, `ladder.steps[0].switched` false)
+- `sempool512` and `sem512` deliver 20–24 % less context at equal hit@5 (ctx tokens estimated as chars/4)
 - Pre-registered rule, frozen 5 Nov; 6 arms × 241,930 records; Qwen3.8 gold-quote questions
 - The reranker flattens differences. Semantic chunks gain +8 points in vector-only retrieval and lose 4–6 under BM25
 - Not yet in the registry or the public record; no answer grading yet
