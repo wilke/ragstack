@@ -12,6 +12,11 @@ Offline like ``test_pdf_ingest_batch_cwl.py``: every inlined tool rewritten to
 this interpreter + the checkout's script, no container, a fake
 ``/v1/embeddings`` on 127.0.0.1, char-based chunking, in-memory stores, and a
 scratch sqlite registry row (the load resolves ``collection_id`` through it).
+
+#828 repin step R: the embed step resolves ``collection_id`` through the SAME
+``registry_db`` (the load step's ``EnvVarRequirement``, verbatim), so every
+embedding file's header names the entry, and a chunking input that contradicts
+the entry stops the run at the embed step, before any embedding.
 """
 from __future__ import annotations
 
@@ -44,6 +49,8 @@ CID = "scratch-847-jats"
 
 def _localised(dest: Path) -> Path:
     wf = yaml.safe_load(CWL.read_text(encoding="utf-8"))
+    # Test-only: expose the embedding files, so their headers can be read.
+    wf["outputs"]["embeddings"] = {"type": "File[]", "outputSource": "embed/embeddings"}
     for name, step in wf["steps"].items():
         tool = step["run"]
         cmd = tool["baseCommand"]
@@ -65,8 +72,8 @@ def _localised(dest: Path) -> Path:
     return dest
 
 
-def test_glossary_branch_joins_the_embeddings_at_load(
-        tmp_path: Path, embeddings_url: str) -> None:  # noqa: F811
+def _run(tmp_path: Path, embeddings_url: str,  # noqa: F811
+         **job_over) -> subprocess.CompletedProcess:
     cwltool = _cwltool()
     corpus = _corpus(tmp_path, ids=("1", "2", "3"))
     # Two shards, distinct basenames (#852): PMC1+PMC2, PMC3.
@@ -89,18 +96,34 @@ def test_glossary_branch_joins_the_embeddings_at_load(
         "embedding_url": [embeddings_url], "embedding_model": "fake-model",
         "qdrant_url": "http://127.0.0.1:1", "es_url": "http://127.0.0.1:1",
         "max_chunks": 0,
+        **job_over,
     }), encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(PY_DIR)}
     for k in list(env):
         if k.startswith("COLLECTION_STORE_") or k == "RAGSTACK_COLLECTION_ID":
             env.pop(k)
-    proc = subprocess.run(
+    return subprocess.run(
         [cwltool, "--no-container", "--preserve-environment", "PYTHONPATH",
          "--outdir", str(tmp_path / "out"), str(_localised(tmp_path / "wf.cwl")), str(job)],
         capture_output=True, text=True, env=env, timeout=600,
     )
+
+
+def test_glossary_branch_joins_the_embeddings_at_load(
+        tmp_path: Path, embeddings_url: str) -> None:  # noqa: F811
+    proc = _run(tmp_path, embeddings_url)
     assert proc.returncode == 0, proc.stderr[-6000:]
     out = json.loads(proc.stdout)
+
+    # #828 R: the embed step resolved the load step's entry through registry_db.
+    from ragstack.ingestion.embedding_file import read_header
+
+    headers = [read_header(e["path"]) for e in out["embeddings"]]
+    assert len(headers) == 2
+    for h in headers:
+        c = h["chunking"]
+        assert c["collection_id"] == CID, h
+        assert (c["method"], c["chunk_size"], c["chunk_overlap"]) == ("fixed", 400, 0), h
 
     from ragstack.ingestion.glossary_file import read_glossary_file
 
@@ -123,3 +146,16 @@ def test_glossary_branch_joins_the_embeddings_at_load(
     assert [Path(r["path"]).name for r in out["receipts"]] == [
         "shard-0000.receipt.json", "shard-0001.receipt.json"]
     assert all(r["provenance"]["segmenter_version"] for r in receipts)
+
+
+def test_a_chunking_input_contradicting_the_entry_stops_at_the_embed_step(
+        tmp_path: Path, embeddings_url: str) -> None:  # noqa: F811
+    """The embed step really reads ``registry_db``: the entry says 400, the job
+    says 300, and ``embed_shard.py`` refuses (exit 2) before any embedding.
+    MUTATION: unwire ``collection_id``/``registry_db`` from the embed step →
+    the embed runs unresolved, the load (memory backend: no target) accepts →
+    the run succeeds → fails."""
+    proc = _run(tmp_path, embeddings_url, chunk_size=300)
+    assert proc.returncode != 0
+    # embed_shard.py's build-spec refusal (ingest_target), before any embed.
+    assert "chunk_size: registry=400 ingest=300" in proc.stderr, proc.stderr[-6000:]

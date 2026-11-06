@@ -12,6 +12,13 @@ embedding_url:
   - http://localhost:9002
 # Bearer token for keyed endpoints (e.g. lambda13); drop for keyless.
 embedding_api_key: CHANGE-ME-EMBED-API-KEY
+# #828 repin step R (optional): resolve the registry entry in the embed step —
+# chunk from its build spec and record the id in each embedding file's header.
+# Give load-embeddings.cwl the same collection_id. registry is a NAME the
+# worker maps to COLLECTION_STORE_*_<NAME>; omit it for the unsuffixed ones.
+# collection_id: CHANGE-ME-COLLECTION-ID
+# registry: dev
+# structure_metadata: "off"
 # #847 G2b: the glossary step. "off" (the default) = rules only, offline. With
 # "on" give the endpoint, the model and every limit (the tool refuses 0 with
 # "on"); the key travels by NAME — the worker's --secret-file sets it.

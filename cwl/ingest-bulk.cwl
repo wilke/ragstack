@@ -118,6 +118,11 @@ inputs:
     doc: "Per-document symbol glossary passed to ingest_shard --symbol-glossary
       (off|rules; #754, #783). A separate BM25 field: content, the embedded text,
       the chunk ids and the collection identity are unchanged either way."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure stamping passed to ingest_shard --structure-metadata
+      (off|on; #828 §6). Not identity: chunk metadata only. Null = the tool's
+      default (off); the API seeds it from STRUCTURE_METADATA on a stamped tree."
   max_chunks:
     type: int
     default: 0
@@ -251,8 +256,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/glossary_step.py]
@@ -326,13 +331,14 @@ steps:
       workflow_id: workflow_id
       tool_image: tool_image
       tool_image_digest: tool_image_digest
+      structure_metadata: structure_metadata
     out: [receipt]
     run:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
@@ -388,6 +394,9 @@ steps:
         tool_image_digest:
           type: ["null", string]
           inputBinding: {prefix: --tool-image-digest, position: 22}
+        structure_metadata:
+          type: ["null", string]
+          inputBinding: {prefix: --structure-metadata, position: 23}
       arguments:
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
         - {position: 12, prefix: --out, valueFrom: $(inputs.shard.nameroot).receipt.json}
@@ -406,8 +415,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
         receipts:

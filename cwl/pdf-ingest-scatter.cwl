@@ -280,6 +280,11 @@ inputs:
   duplicate_policy:
     type: ["null", string]
     doc: "The duplicate-paper guard policy passed to ingest_shard --duplicate-policy (off|refuse|allow); null = the tool's default (off)."
+  structure_metadata:
+    type: ["null", string]
+    doc: "Document-structure stamping passed to ingest_shard --structure-metadata
+      (off|on; #828 §6). Not identity: chunk metadata only. Null = the tool's
+      default (off); the API seeds it from STRUCTURE_METADATA on a stamped tree."
   symbol_glossary:
     type: string
     default: "rules"
@@ -447,8 +452,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
       inputs:
         pdfs:
@@ -505,8 +510,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/glossary_step.py]
@@ -589,13 +594,14 @@ steps:
       tool_image_digest: tool_image_digest
       duplicate_policy: duplicate_policy
       symbol_glossary: symbol_glossary
+      structure_metadata: structure_metadata
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
@@ -686,6 +692,9 @@ steps:
         glossary:
           type: File
           inputBinding: {prefix: --glossary-file, position: 29}
+        structure_metadata:
+          type: ["null", string]
+          inputBinding: {prefix: --structure-metadata, position: 30}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.
@@ -726,8 +735,8 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
-          dockerPull: ragstack-tools-v1.6.20-b1.sif
-          dockerImageId: ragstack-tools-v1.6.20-b1.sif
+          dockerPull: ragstack-tools-v1.6.24-b1.sif
+          dockerImageId: ragstack-tools-v1.6.24-b1.sif
       baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
       # Exit 5 = nothing to archive (#768): every document of the run failed on
       # its own (all refused as duplicates, all scanned), the receipts name each

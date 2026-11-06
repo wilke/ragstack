@@ -221,8 +221,8 @@ it predates the image — but don't submit it to GoWe as-is.
 (and be readable by the worker host).
 
 **5. Tell the submission WHICH collection registry to resolve against (#563).**
-The steps that resolve a collection — `ingest_shard.py`, `load_embeddings.py`,
-`load_graph.py` — read the registry from their own process environment, and
+The steps that resolve a collection — `ingest_shard.py`, `embed_shard.py`
+(since #828's repin step R), `load_embeddings.py`, `load_graph.py` — read the registry from their own process environment, and
 `gowe-worker` is given that environment **once per worker group**. So a group
 served exactly one tenant: with the shared `ragstack` group pinned to the dev
 tenant's sqlite registry, every `hackathon` ingest resolved against the wrong
@@ -328,6 +328,11 @@ embedding. #141 splits the two so the GPU fleet is never blocked by the DB:
   writes a JSONL **embedding file** (`<shard>.emb.jsonl`). **No Qdrant/ES** — only
   the embedding fleet + tokenizer; the pipeline's stores are unused placeholders.
   Stateless + idempotent (deterministic ids, re-run overwrites the file).
+  With the optional `collection_id` (and `registry`) inputs (#828 repin step R)
+  it resolves the registry entry, chunks from its build spec (a contradicting
+  chunk input exits 2 before any embed) and records the id in the file header,
+  which `load_embeddings.py` checks against the same entry — give both halves
+  the same id. Without them it embeds unresolved, as before.
 - **`load-embeddings.cwl` → `python/scripts/load_embeddings.py`** — a **single**
   task (not a scatter) that reads the embedding files and upserts them via
   `IngestionPipeline.index_chunks` — the *same* delete-prior→upsert→index logic as
@@ -667,6 +672,22 @@ The two step tools live in the ragstack package's script tree:
   `gowe_batch_ingest.py` seeds `tool_image`/`tool_image_digest` from the stamped tree
   (and `workflow_id` with `--workflow-id`), and records the load's glossary counts per
   batch in its ledger.
+
+### Document structure: the repin step R (tools v1.6.24, #828)
+
+- **A marked collection needs a text naming tools v1.6.23 or later.** The API's create
+  and dispatch gates and `gowe_batch_ingest.py` refuse a marked collection (one whose
+  `chunk_params` record `text_render`, `structure_cuts` or `embed_heading_path`) when the workflow
+  text names an older or an unstamped tools image
+  (`tool_image.names_marker_capable_image`): those tools would chunk it unmarked, with
+  no error. The shipped texts are stamped to v1.6.24.
+- **`size_unit` is now refused at embed, not at load.** The operator embed workflows
+  (`pdf-ingest`, `jats-ingest`, `embed-bulk`) bind no `--chunk-size-unit`, so now that the
+  embed step resolves the entry, a `sentence`/`words` entry recording `size_unit=tokens`
+  is refused at the embed step (exit 2, before any GPU work). The three embed steps declare
+  `permanentFailCodes: [2]`; GoWe parses the field but, as of v0.26.1, still retries every
+  non-zero exit, so the declaration is for when it is honoured. Before R the same run was
+  refused at `load_embeddings.py`, after the GPU work.
 
 ## Running it
 
