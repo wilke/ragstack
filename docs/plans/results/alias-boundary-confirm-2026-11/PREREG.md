@@ -1,4 +1,4 @@
-# Pre-registration: does a boundary-respecting chunk lose *answers* labels beyond judge noise? (alias study follow-up) — DRAFT v3, 2026-11-05
+# Pre-registration: does a boundary-respecting chunk lose *answers* labels beyond judge noise? (alias study follow-up) — DRAFT v3.1, 2026-11-05
 
 **Status: DRAFT — not frozen; owner review pending.** Nothing in this text binds a run until it is frozen
 by the procedure in §9. At freeze the text is frozen **as written**, draft status line included; its sha256
@@ -17,6 +17,12 @@ detector at 0.90 × n_draw = 316, not the mean; the result sentence quotes the s
 n from a committed curve; the cache check is on the Qwen label rows that already exist (the gateway models
 have no stage-A reply to replay for these pairs); the harness is not changed; quotas, shared-window
 structure, shortfall, drift sample, Opus cap and costs are restated at 351.
+
+**v3.1 (2026-11-05)** folds in the third round of both reviews (agreeing, "freeze after fixes"): the cache
+flag rests on `reasoning_sample` identity alone, with the exploratory retest's measured base rates quoted
+(§6.9, §10.10); the floor's rounding (315.9 → 316, up); the §6 numbering; stale figures (null sizes, ρ = 1,
+the by-ρ grid, the non-zero-record expectation, cover-any costs, the Opus overlap); and the freeze
+sequencing after the §11 code PR (§9.1–9.2). No design element changed.
 
 **Tier: record** (study-writeup skill). This is a **confirmatory** follow-up to the **exploratory**
 chunk-boundary control of the alias study
@@ -125,13 +131,14 @@ already on `main`, with its `min_attainable_p`. **α = 0.05.** The test decides;
 of one record are not independent: they share the question, the glossary definitions and the judge's
 reading of that question, and a record contributes up to three pairs. A test that treats pairs as
 independent (McNemar) is then anti-conservative when within-record outcomes are positively correlated —
-the simulation of §3.2 puts its size at **.071** under the sizing correlation against **.038** for the
-sign-flip test (`power.json`, the null scenario). The sign-flip test conditions on the record scores, so
+the simulation of §3.2 puts its size at **.072** under the sizing correlation at the owner's draw against
+**.040** for the sign-flip test (`power.json`, the null scenario at 351). The sign-flip test conditions on the record scores, so
 its size holds under any within-record dependence, and it equals exact McNemar when every record gives one
 pair. **What the test is exact for:** it is exact under the sharp null of per-record sign symmetry (the two
 arms exchangeable within every record); for the weak null of §2, P(X = 1) ≤ P(Y = 1) with possibly skewed
-record scores, it is valid only asymptotically; with ≈ 333 pairs at a discordant share of ≈ .17 about 50–60
-records are expected to have a non-zero score, so the normal regime is close but not exact. Clusters above the record (passage papers: 1,050 distinct in the pool, the largest holding 15 pairs;
+record scores, it is valid only asymptotically; at ≈ 333 pairs about 30 records are expected to have a
+non-zero score under the null rates and about 45 under the planning effect (the reviewers' simulations), so
+the normal regime is approached but not reached. Clusters above the record (passage papers: 1,050 distinct in the pool, the largest holding 15 pairs;
 documents) are not modelled; the realised largest paper cluster and the number of records drawn in ≥ 2 arms
 are reported (§6).
 
@@ -180,8 +187,8 @@ the same judge, and anything that makes a pair borderline raises both flip rates
 simulated. **Within-record correlation ρ:** with probability ρ all pairs of a record share one (X, Y) draw,
 otherwise they draw independently (the intra-record correlation of X, of Y and of X − Y is then ρ).
 **ρ = 0.5 is the sizing case — assumed, not estimated** (no data on within-record agreement of the judge
-exist; half the records behaving as one unit is a stated assumption, and ρ = 1 gives ≈ .71 at the chosen
-draw); 0, 0.3 and 1.0 are sensitivities. **Not simulated:** the one-pair-per-window rule of §4.3 (shared
+exist; half the records behaving as one unit is a stated assumption, and ρ = 1 gives ≈ .70 (.696) at the
+chosen draw); 0, 0.3 and 1.0 are sensitivities. **Not simulated:** the one-pair-per-window rule of §4.3 (shared
 windows lie within an arm, and the achievable cells under the rule, 197 / 154 / 118, exceed the quotas) and
 the arm alternation of §5. **Reading two figures for one design point:** every cell of `power.json` is its
 own simulation on its own slice of the seeded stream, so the same design point simulated twice (n_draw 351
@@ -199,7 +206,8 @@ differ by sampling error (SE ≈ .0057 at power .8, ≈ .0042 at .9, 5,000 studi
 
 **90 % power is not reachable** within the 470 (record, arm) cells under the sizing assumptions
 (`feasible_90_within_availability` false). It would be reached at a draw of **450 with ρ = 0.3** or **351
-with ρ = 0** (`sizing_power_by_n_draw_by_rho`: at 351, .914 for ρ 0 and .843 for ρ 0.3). On the grid the
+with ρ = 0** (`sizing_power_by_n_draw_by_rho`: at 351, .912 for ρ 0 and .846 for ρ 0.3; the
+`scenarios[].at_n_draw_owner` runs of the same points give .914 and .843). On the grid the
 80 % target is first held from **370** upward (`n_draw_80_grid`); at the owner's **351** the sizing power is
 **≈ .79** (.790 in the grid, .785 in the owner cell: two independent estimates, SE ≈ .0057), just under
 the target, and the owner accepted that (§13).
@@ -402,15 +410,9 @@ pre-specified McNemar sensitivity's is computed, and no quantity below decides a
    agreement — **not** a byte-identical replicate here, since the prompts differ between arms. The retest
    arm's Argon rows have **no stage-A counterpart** on this pool (every pool pair has `source = agree`, so
    stage A never called Argon on it; `tiebreak_replicate` has n = 0 by construction and is not reported), and
-   the Opus drift samples of stage A and the retest arm overlap on about 2 pairs; neither gateway model is
-   where a replay could hide (§10.10).
-9. **The Qwen cache check** (§10.10): for every retest pair, the retest arm's `labels-qwen-C.jsonl` and
-   `labels-qwen-E.jsonl` rows are compared with stage A's rows of the **same pair id** (byte-identical prompt,
-   same `prompt_sha256` and `system_sha256`, checked) on the fields that already exist in both:
-   `reasoning_sample`, `texts_sample` and `ct` (completion tokens). Reported: the number of pairs whose
-   `reasoning_sample` or `texts_sample` is byte-identical to stage A's, per backend; the number with equal
-   `ct`; the share of verdict agreement (`verdicts`) per backend. At T 0.7 with thinking on, a byte-identical
-   reasoning text is a replayed response, not a resample.
+   the Opus drift samples of stage A and the retest arm overlap on about 1 pair (102 of the 1,871 pool pairs
+   were drift-sampled in stage A, so a 17-pair sample expects ≈ 0.9 of them); neither gateway model is where
+   a replay could hide (§10.10).
 5. **Opus drift reference:** agreement between each arm's final label and Opus on the 5 % sample, overall
    and per arm, the *no-reference* count. The arm-gap pause of §6.3 cannot trigger (it needs ≥ 100
    Opus-answered pairs per arm); the reference lines are printed, not gated.
@@ -429,6 +431,20 @@ pre-specified McNemar sensitivity's is computed, and no quantity below decides a
    primary-analysis convention); (b) the **adverse bound**: an unjudged control pair scored *answers*
    (X = 0) and an unjudged retest pair scored *not* (Y = 1); (c) the **favourable bound**: the reverse. If
    (b) and the primary disagree on confirmation, the sentence says so.
+9. **The Qwen cache check** (§10.10), on rows that already exist: for every retest pair, the retest arm's
+   `labels-qwen-C.jsonl` and `labels-qwen-E.jsonl` rows are compared with stage A's rows of the **same pair
+   id**. Both rows carry list fields: `reasoning_sample` (for C one reasoning text of the five samples, for E
+   the one; capped at 4,000 characters, `""` when the sample had none) and `texts_sample` (for C three of
+   the five answer texts, for E the one), plus `ct` (completion tokens) and `verdicts`. **The flag:**
+   *cache suspected* rests on **`reasoning_sample` identity only**, counted where **both** rows' reasoning
+   is non-empty (≥ 200 characters) — at T 0.7 with thinking on a byte-identical reasoning text is a replayed
+   response, not a resample; the exploratory retest (300 real resamples of stage-A windows) had **0 / 300
+   (C) and 0 / 300 (E)** identical, so the pre-specified threshold is **one pair** on either backend.
+   **Descriptives only** (not flags), each read beside its exploratory base rate: `texts_sample` identical
+   to stage A's (exploratory: 14 / 300 for E, 1 / 300 for C — a short answer text can repeat under
+   sampling), `ct` equal (exploratory: 1 / 300 for E), the verdict agreement per backend, and the number of
+   retest pairs whose `prompt_sha256` or `system_sha256` differs from stage A's (exploratory: 0 / 300; a
+   non-zero count means the retest prompt was not byte-identical and is reported as such).
 
 **Explicitly not done:** any test by arm, route, band, block or stratum; any test of the cover-any share;
 any comparison with the exploratory 300; any *not → answers* figure (none can exist in this pool); any
@@ -461,7 +477,7 @@ carried over), and *cache suspected* when the check of §10.10 fires.
 The result is **GATE-NOT-EVALUABLE** when any of these holds; a gate is read before the p is read, by the
 report, not by a person:
 
-1. **Realised n < 316** (= 0.90 × 351, rounded down; `power.json` `n_floor`) pairs with a final label in
+1. **Realised n < 316** (= 0.90 × 351 = 315.9, rounded up; `power.json` `n_floor`) pairs with a final label in
    both arms after the exclusions of §5 step 2 and the pairwise deletion of §6.8. The floor is a
    harness-failure detector, set well below the expected realised n: under the modelled 5 % loss the
    simulated realised n at 351 is 333 on average (5th–95th percentile 327–340, minimum 317 over 5,000
@@ -494,9 +510,16 @@ the `max-overlap` mapping; the judge configuration (the main judge config byte f
 and `chunk_exports`); the step order and the arm alternation of §5; the gates of §8; the wording of §7; the
 code of §11, merged and reviewed, at one `main` commit that the freeze names.
 
+**Sequencing.** The freeze comes **after** the §11 code PR is merged to `main` with its two independent
+reviews, and after this pre-registration has had its own two reviews; the commit the owner's go names, and
+the tag of §9.2 points at, is therefore a `main` commit that already contains the §11 code, this text and
+`power.json`. Nothing in §5 runs before that tag exists.
+
 ### 9.2 Freeze procedure (the alias prereg's, R10)
 
-1. The owner says go, in writing, naming the commit. The text is frozen as written.
+1. The owner says go, in writing, naming the commit — a `main` commit at or after the merge of the §11 code
+   PR (reviewed twice), so that the frozen text and the code it names are pinned together. The text is
+   frozen as written.
 2. In a clean checkout of that commit, `sha256sum PREREG.md` and a UTC timestamp go into a private
    `PREREG.sha256` kept with the outputs, **before the draw**.
 3. A **signed annotated tag `prereg-alias-boundary-confirm-2026-11`** at that commit, its message holding
@@ -557,15 +580,17 @@ is one. Re-running the draw, for any reason, is a deviation with a new seed stri
 10. **A response cache would favour the retest arm.** The retest arm's prompts are byte-identical to stage
     A's; an endpoint-side cache returning a stage-A answer would make the retest flip rate artificially low
     and the contrast artificially large. **The exposure is the Qwen primaries, not the gateway:** every pool
-    pair was decided by C and E agreeing in stage A, so stage A made no Argon call and (bar ≈ 2 drift
-    pairs) no Opus call on them — there is no stage-A gateway reply to replay. The Qwen endpoints sample at
+    pair was decided by C and E agreeing in stage A, so stage A made no Argon call and (bar ≈ 1 drift
+    pair) no Opus call on them — there is no stage-A gateway reply to replay. The Qwen endpoints sample at
     T 0.7 with thinking on (prefix caching there changes speed, not sampling), so a replay is detectable.
     **Check** (§6.9, on rows that already exist; no harness change): the retest arm's C and E rows against
-    stage A's rows of the same pair id on `reasoning_sample`, `texts_sample` and `ct`. The report carries
-    ***cache suspected*** when **any** retest pair's `reasoning_sample` or `texts_sample` is byte-identical
-    to stage A's on either backend (threshold fixed now at one pair: at T 0.7 the chance of an identical
-    multi-hundred-token reasoning text is negligible), and the sentence of §7 says so. The harness records
-    no response headers, so the report says *absent* for any cache status.
+    stage A's rows of the same pair id. The report carries ***cache suspected*** when **any** retest pair's
+    `reasoning_sample` is byte-identical to stage A's on either backend, counted where both rows' reasoning
+    is non-empty (≥ 200 characters); the exploratory retest's 300 real resamples had 0 / 300 identical on C
+    and 0 / 300 on E, so one pair is the threshold, and the sentence of §7 says so. `texts_sample` identity
+    (exploratory 14 / 300 E, 1 / 300 C: short answer texts recur under sampling) and `ct` equality
+    (1 / 300 E) are descriptives, not flags. The harness records no response headers, so the report says
+    *absent* for any cache status.
 11. **Mapping, not straddle.** A window's answer span is unknown; `max-overlap` picks one control chunk, and
     the cover-any descriptive bounds how often the evidence sits in another overlapping chunk. The primary
     endpoint is about the mapped chunk, so part of any confirmed effect is attributable to where the cut
@@ -623,8 +648,8 @@ existing subcommand's default behaviour.
 6. **Unjudged handling in the primary**: pairwise deletion with the three re-computations of §6.8. —
    Recommend as written: *unjudged = not* in a flip-to-*not* endpoint would count a gateway failure as a
    flip, so it is a sensitivity, not the primary.
-7. **Cover-any after the primary (§5 step 7)?** — Recommend yes; descriptive, ≈ 95 Qwen pairs and ≈ 18
-   gateway calls, and it is what makes "the evidence moved" or "the evidence vanished" sayable.
+7. **Cover-any after the primary (§5 step 7)?** — Recommend yes; descriptive, ≈ 90 Qwen pairs and ≈ 17
+   gateway calls (§12), and it is what makes "the evidence moved" or "the evidence vanished" sayable.
 8. **Tag name** `prereg-alias-boundary-confirm-2026-11` and the freeze set of §9.1. — Recommend as written.
 9. **When?** — After the §11 PR is merged and reviewed, in a gap on the Qwen endpoints, under one gateway
    notice; not interleaved with any other gateway work.

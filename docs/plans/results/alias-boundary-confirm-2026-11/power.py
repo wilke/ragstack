@@ -78,7 +78,7 @@ ARMS = ("base", "neighbour", "random")
 N_DRAW_GRID = (240, 260, 280, 300, 316, 334, 351, 370, 390, 410, 430, 450, 470)
 #: the owner's draw size (2026-11-05, v3; PREREG §3.3) and the harness-failure floor on the realised n
 N_DRAW_OWNER = 351
-N_FLOOR = 316  # 0.90 x 351, rounded down (PREREG §8 gate 1)
+N_FLOOR = 316  # 0.90 x 351 = 315.9, rounded up (PREREG §8 gate 1)
 #: the power-by-realised-n curve: exact realised sizes (no exclusion), for the result sentence
 REALISED_GRID = tuple(sorted(set(range(290, 356, 5)) | {N_FLOOR, 333}))
 MDE_PX_GRID = (0.100, 0.105, 0.110, 0.115, 0.120, 0.125, 0.130, 0.135, 0.140)
@@ -439,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         "n_draw_owner": N_DRAW_OWNER, "owner_decision": "n_draw 351, equal arms 117 / 117 / 117 (owner, 2026-11-05, v3)",
         "quotas_at_owner_draw": quotas(N_DRAW_OWNER, AVAILABLE),
         "owner_cell": owner_cell,
-        "n_floor": N_FLOOR, "n_floor_rule": "0.90 x n_draw, rounded down",
+        "n_floor": N_FLOOR, "n_floor_rule": "0.90 x n_draw, rounded up",
         "power_at_floor": realised_curve[str(N_FLOOR)],
         "share_realised_below_floor_at_owner_draw": owner_cell["share_realised_below_floor"],
         "power_by_realised_n": realised_curve,
