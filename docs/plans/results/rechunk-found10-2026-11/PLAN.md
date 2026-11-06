@@ -42,12 +42,16 @@ questions, gold-quote coverage).
   `{"min_piece":128,"pack":"318","size_tolerance":0.25,"size_unit":"tokens","structure_cuts":"sections/1"}`,
   Punkt `punkt-abbrev-v1`, markdown structure `markdown/1`, and the SFR tokenizer. That is the descriptor in
   the confirmatory `artifacts/chunk.json`.
-  - **Reproduction.** Run through the production ingest code on the deployed tools image `v1.6.24-b1`, it
-    reproduced the confirmatory control chunks exactly: 343 of 343 documents, 9,150 of 9,150 chunks (ids,
-    spans and content). The condition is that each record carries a precomputed `markdown/1` `structure` key.
-    Without that key, the section cuts do not happen.
-  - **Expected sizes** (offline count, the same code): base 38,548 chunks; neighbour 141,593; random-1
-    136,403; random-2 136,188 (452,732 in all).
+  - **Reproduction (feasibility check, to be re-measured).** In an offline scratch check, the production
+    ingest code on the deployed tools image `v1.6.24-b1` reproduced the confirmatory control chunks exactly:
+    343 of 343 documents, 9,150 of 9,150 chunks (ids, spans and content). The condition is that each record
+    carries a precomputed `markdown/1` `structure` key; without it, 67 of 343 documents matched. That check is
+    not a committed artifact. The build re-measures it with committed code (`rechunk_prep.py export`, whose
+    summary carries counts and a chunk sha), and `TEST-DATA.md` records the result.
+  - **Expected sizes** (offline count with the confirmatory chunker, which the check above showed identical to
+    the production pipeline on the 343 documents; re-measured at the build): base 38,548 chunks; neighbour
+    (base + added) 141,593; random-1 (base + added) 136,403; random-2 (base + added) 136,188 (452,732 in
+    all).
   - **Why labels carry over.** Chunk ids are identical, so the confirmatory labels apply unchanged:
     control 351 and cover-any 174.
 - **Collections.** Four bench collections on the non-production (dev) tenant, glossary *none*:
@@ -63,10 +67,13 @@ questions, gold-quote coverage).
 
   Every call asks for 50, and the top 10 is read.
 - **Which collection.** Each of the 218 questions is run against the collection of its pair's corpus arm. A
-  random-arm pair uses the random draw (1 or 2) that its stage-A window was retrieved from. A question with
-  pairs in several arms is run once per arm.
+  random-arm pair uses the random draw (1 or 2) whose judged stage-A leg retrieved its window. A window
+  retrieved in both draws goes to random-1 (the first in corpus-arm order), and those pairs are counted. A
+  question with pairs in several arms is run once per arm.
 - **Code.** The alias run harness (`alias_study_run.py`), in a new exploratory mode. The mode replaces its
-  gold-presence check with a check that every pair's mapped chunks are in the collection's export. Retrieval
+  gold-presence check with a check that every pair's mapped chunks are in the collection's export. It also
+  refuses when the export's chunk count differs from the collection's expected count, or when any export row's
+  chunk descriptor is not the confirmatory one; the reuse of labels by chunk id rests on this. Retrieval
   settings are unchanged, and each run records `mode`, commit and provenance.
 
 ## 4. Outcomes and analysis (all descriptive)
@@ -81,33 +88,52 @@ Per pair, under each retriever:
 - **U:** the number of top-10 chunks with no label.
 
 U bounds the answer from above: found@10 for the pair lies between "A" and "A or any unlabelled chunk in the
-top 10".
+top 10". That upper bound is loose. A pair's labels cover its max-overlap chunk and at most 6 cover-any
+chunks, so most top-10 lists hold unlabelled chunks, and the upper bound will sit near 75 of 75. It is
+reported for completeness, not read as an estimate.
+
+For the 18 *none* pairs, every own chunk is labelled *not* in both registries, so **A_own = 0 by
+construction**, and A can be true only through another pair of the same question. For them stage 1 reads M
+(is the max-overlap chunk retrieved, and at which rank) and U.
 
 Reported:
 - **Q1.** For the 53 recovered pairs, the 18 others, the 4 whose max-overlap chunk the re-read labelled *answers*
   (reported alone), and all 75: counts and Wilson 95 % intervals for A and A_own, plus the upper bound and the
-  number of distinct questions in each group. The default retriever is the headline; norerank and BM25 are shown beside it.
+  number of distinct questions in each group. The default retriever is the headline; norerank and BM25 are
+  shown beside it.
 - **Q2.** For all 351: M, the share of retrieved windows whose counterpart is retrieved, by coverage band
-  and by corpus arm; M among pairs whose window was in the same retriever's stage-A top 10 (counterpart retained); and A and A_own
+  and by corpus arm; M among pairs whose window was in the same retriever's stage-A top 10 (counterpart
+  retained); and A and A_own
   for the 276 pairs whose control chunk was labelled *answers*.
 - **Reference.** Beside each figure, whether the pair's window was in the same retriever's stage-A top 10 in
-  the same corpus arm. Base-paper windows run in the base collection; none of the 351 was found only in a
-  larger arm's legs (gold-map count 0).
+  the same corpus arm. Base-paper windows run in the base collection; the number of pairs whose window was
+  found only in a larger arm's legs is reported beside the result (`base_windows_only_in_larger_arm_legs` in
+  the gold-map summary).
 - **Gates.** A retrieval leg whose depth or reranker gate fired is refused, not reported.
 
-**No new judging in stage 1.** If U makes the Q1 upper and lower bounds differ by more than 10 pairs out of
-75, a small judging step is the stage-1b option, put to the owner:
+**No new judging in stage 1.** Because the upper bound is loose, no numeric trigger is set. The report gives
+the plain count of the 53 recovered pairs with A_own false under the default retriever, and the owner decides
+whether to run stage 1b:
 - the unlabelled top-10 chunks of the 75 questions, at most 750 pairs, with the frozen judge;
 - a gateway notice first.
 
 ## 5. What would change a conclusion
 
-- **If A is high for the 53:** the loss the confirmatory test measured is mostly a single-passage judging
-  artefact, because retrieval still delivers the answer.
-- **If A is low:** the neighbour chunk holds the answer but is not retrieved, so the chunking costs reach on
-  these questions.
-- **For the 18:** a low A is expected. These are the candidates for overlap, or for judging a chunk together
-  with its neighbours.
+The reading uses A_own (not A, which another pair's chunk can credit). It is anchored to two references,
+each under the same retriever:
+1. the share of those pairs whose window was in that retriever's stage-A top 10 in the same corpus arm;
+2. Q2's A_own on the 276 pairs whose control chunk kept *answers*.
+
+- **If A_own for the 53 is close to both references:** the confirmatory loss is mostly a single-passage
+  judging artefact, because retrieval still delivers the answer from the neighbouring chunk.
+- **If A_own is well below them:** the neighbouring chunk holds the answer but is not retrieved, so the
+  chunking costs reach on these questions. A pair whose window was not in that retriever's stage-A top 10
+  either is not counted as a chunking cost.
+- **For the 18:** A_own is 0 by construction, and M and its rank say whether the split chunk is still
+  retrieved. These are the candidates for overlap, or for judging a chunk together with its neighbours.
+
+What "close" and "well below" mean is not fixed in advance. The report gives the figures with intervals, and
+the reading stays exploratory.
 
 Stage 1 is too small for a test; it shows direction and size, labelled exploratory.
 
@@ -116,7 +142,7 @@ Stage 1 is too small for a test; it shows direction and size, labelled explorato
 - **Store.** Dev tenant only. Collections are named `bench-rechunk-*` and deleted afterwards, checked against
   a listing. The collection cap and eviction gate apply as in the alias live-ops plan, and that plan is
   coordinated with the management session.
-- **Reviews.** A Fable review and an independent argo-agent read of the live-ops plan and of the harness
+- **Reviews.** A Fable review and an independent second-model read of the live-ops plan and of the harness
   change before any create.
 - **Workflow.** The committed embed workflow cannot pass the chunk-size unit, so a token-sized collection is
   refused (exit 2). The owner chose a repo PR (2026-11-06) adding an optional `chunk_size_unit` input to
