@@ -677,15 +677,16 @@ The two step tools live in the ragstack package's script tree:
 
 - **A marked collection needs a text naming tools v1.6.23 or later.** The API's create
   and dispatch gates and `gowe_batch_ingest.py` refuse a marked collection (one whose
-  `chunk_params` record `structure_cuts` or `embed_heading_path`) when the workflow
+  `chunk_params` record `text_render`, `structure_cuts` or `embed_heading_path`) when the workflow
   text names an older or an unstamped tools image
   (`tool_image.names_marker_capable_image`): those tools would chunk it unmarked, with
   no error. The shipped texts are stamped to v1.6.24.
 - **`size_unit` is now refused at embed, not at load.** The operator embed workflows
   (`pdf-ingest`, `jats-ingest`, `embed-bulk`) bind no `--chunk-size-unit`, so now that the
   embed step resolves the entry, a `sentence`/`words` entry recording `size_unit=tokens`
-  is refused at the embed step (exit 2, before any GPU work; the three embed steps declare
-  `permanentFailCodes: [2]`, so the refusal is not retried). Before R the same run was
+  is refused at the embed step (exit 2, before any GPU work). The three embed steps declare
+  `permanentFailCodes: [2]`; GoWe parses the field but, as of v0.26.1, still retries every
+  non-zero exit, so the declaration is for when it is honoured. Before R the same run was
   refused at `load_embeddings.py`, after the GPU work.
 
 ## Running it

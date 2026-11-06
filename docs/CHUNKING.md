@@ -415,12 +415,12 @@ metadata of the rendered text is stamped on the chunks only when structure
 metadata is on.
 
 **Validation and recording.** `POST /v1/collections` refuses an unknown value
-with 400; `null` counts as not sent. The other three structure markers,
-`structure_cuts` (`sections/1`), `embed_heading_path` (`prefix/1`) and
-`structure_infer` (`text-heuristic/1`), are recognised but **refused** (400 at
-create, exit 2 on the bulk tools) until the release that applies them (#828
-PR 7 and PR 8). Accepting them now would chunk a collection without them and,
-after that release, with them. One reader,
+with 400; `null` counts as not sent. `structure_cuts` (`sections/1`) and
+`embed_heading_path` (`prefix/1`) are applied since #828 PR 7 (#938).
+`structure_infer` (`text-heuristic/1`) is recognised but **refused** (400 at
+create, exit 2 on the bulk tools) until the release that applies it (#828
+PR 8): accepting it now would chunk a collection without it and, after that
+release, with it. One reader,
 `chunker_config.structure_from_params`, serves the API, `ingest_shard.py`,
 `embed_shard.py` (with `--collection-id`), `ingest_jsonl.py`, the load-time
 check and the batch driver. There is no marker flag on the tools: the registry

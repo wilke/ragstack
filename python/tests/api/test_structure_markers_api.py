@@ -538,6 +538,9 @@ def test_tools_tag_of_reads_stamped_names_only() -> None:
     assert tools_tag_of("ragstack-tools-v1.6.x-b1.sif") is None
     assert names_marker_capable_image(WIRED)
     assert not names_marker_capable_image(_wired_naming(OLD_IMAGE))
+    # the boundary: v1.6.22 is the last tools tag without the marker reader
+    assert not names_marker_capable_image(_wired_naming("ragstack-tools-v1.6.22-b1.sif"))
+    assert tools_tag_of("ragstack-tools-v1.6.22-b1.sif") == (1, 6, 22)
     assert not names_marker_capable_image(_wired_naming(UNSTAMPED))
     assert not names_marker_capable_image("")
 
