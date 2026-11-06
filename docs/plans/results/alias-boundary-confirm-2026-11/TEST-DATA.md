@@ -57,9 +57,10 @@ committed artifacts; alias RESULTS.md.
   - **Stage A** ran 19 retrieval legs over all 1,091 records: the 5 Layer-1 attachments under each
     retriever, plus 4 noise repeats.
 - **Judging.** A retrieved (question, window) pair was judged only when needed: non-gold windows in the top
-  10 when the gold chunk was not there, plus the pairs a rank metric needed.
-  - The frozen judge reads the question and that one window, with the paper title and the window's glossary
-    entries. It answers one question: does this passage, read alone, state the core of the answer?
+  10 when the gold chunk was not there. (The pairs a rank metric needed were labelled in stage B and are not
+  in this pool.)
+  - The frozen judge reads the question (and its term) and that one window, with the paper title and the
+    window's glossary entries. It answers one question: does this passage, read alone, state the core of the answer?
   - **C** = Qwen3.6-35B-A3B (5 samples at temperature 0.7) and **E** = Qwen3.8-27B (1 sample).
   - When C and E disagree, Gemini 4 Argon breaks the tie. Claude Opus 5.5 reads a 5 % drift sample and never
     sets a label.
@@ -129,7 +130,8 @@ Source: `artifacts/chunk.json`.
   - Punkt sentence segmentation (`punkt-abbrev-v1`) over the markdown structure (`markdown/1`);
   - cuts at section boundaries;
   - a 512-token target and a hard ceiling of 640;
-  - pieces under 128 tokens merged with a sibling.
+  - pieces under 128 tokens merged with a sibling where one exists; 187 of the 9,150 chunks remain under 128
+    tokens (13 of the 351 control chunks, `map.json` `token_bands`).
 - **Output.** 9,150 chunks: mean 398 tokens, median 454, maximum 640.
 - **The P2 gate.** It passed all six checks:
   1. no chunk joins fragments of two segments;
@@ -148,7 +150,8 @@ Source: `artifacts/map.json`, `artifacts/retest-seed.json`.
   - **Coverage**, the share of the window's text inside that chunk, is recorded: ≥ 0.8 for 145 pairs, 0.5–0.8
     for 182, under 0.5 for 24.
   - 351 of 351 pairs mapped (the floor was 316).
-  - Mean length is 412 tokens for the control chunks and 467 for the windows.
+  - Mean length is 412 tokens for the control chunks and 467 for the windows (`confirm-report.json`
+    `descriptives.boundary.control_tokens` / `window_tokens`).
 - **Retest arm** (`retest-seed`). The same 351 pairs, pointed back at their own stage-A window, unchanged. The
   prompt is byte-identical to stage A's. This arm measures the judge's own test-retest noise on these exact
   pairs.
@@ -165,7 +168,19 @@ Source: `artifacts/map.json`, `artifacts/retest-seed.json`.
   - Argon: control → retest;
   - Opus: retest → control.
 
-The result is in [RESULTS.md](RESULTS.md) and [REPORT.md](REPORT.md).
+## Stage 10 — the cover-any chunks (PREREG §5 step 7, descriptive)
+
+Source: `artifacts/map-cover.json`.
+
+- **Which pairs.** The 75 pairs whose control chunk the judge labelled *not*, and not unjudged; the private
+  list was written by `confirm-report --write-flipped`.
+- **Which chunks.** For each pair, every new chunk that overlaps the original window, up to 6 per window (no
+  window reached the cap). That gives 174 chunks for the 75 pairs.
+- **Registry.** A third registry, with the same judge configuration and its own output directory, judged
+  each chunk alone, the same way as the control arm.
+
+The results are in [RESULTS.md](RESULTS.md), [REPORT.md](REPORT.md) and, for step 7, the `cover_any` block of
+`artifacts/confirm-report.json`.
 
 ## What a different site would need
 

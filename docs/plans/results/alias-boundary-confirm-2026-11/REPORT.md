@@ -4,12 +4,14 @@ Confirmatory test, alias study follow-up, run 2026-11-06. This is the reader's v
 results summary, how it was tested, results, conclusion. The record it reads from is
 [RESULTS.md](RESULTS.md) (the decision sentence, every table, the procedural notes) and
 [`artifacts/confirm-report.json`](artifacts/confirm-report.json). How the test pairs were made is in
-[TEST-DATA.md](TEST-DATA.md). Deviations are in [DEVIATIONS.md](DEVIATIONS.md).
+[TEST-DATA.md](TEST-DATA.md). Deviations are in [DEVIATIONS.md](DEVIATIONS.md). Unlike those record files, this
+report is revised in place, as a paper is, and must read as finished whenever it is read.
 
 ## 1. Hypothesis
 
 In the alias study, retrieval and judging used fixed 512-token windows, cut blind to sentences and sections.
-Future collections will be chunked within sections at sentence boundaries. An exploratory control saw the
+The chunking the project intends to adopt cuts within sections at sentence boundaries (owner, 2026-11-05).
+An exploratory control saw the
 frozen LLM judge withdraw *answers* from such a chunk far more often than from the original window: 18.7 % vs
 4.0 % on pairs both Qwen judges had agreed answer. That contrast was chosen after the fact, so it needed a
 fresh, pre-registered test.
@@ -32,6 +34,8 @@ The test was frozen before any data were drawn: PREREG v3.2, sha256 `b3a2d9e6…
 - **Where the excess sits** (descriptive, not tested): pairs whose new chunk keeps less than 80 % of the
   original window's text. Where it keeps at least 80 %, the two passages lose the label equally often (4.8 %
   vs 4.1 %).
+- **Where the answer went** (step-7 cover-any descriptive): in 53 of the 75 lost pairs (70.7 %), another
+  chunk overlapping the window still answers. In 18 (24 %), no overlapping chunk answers on its own.
 
 ## 3. How it was tested
 
@@ -90,7 +94,8 @@ pairs each).
 - **No cache reuse.** The Qwen reasoning matched stage A's word for word on 0 of 351 re-read pairs per
   backend, so the re-reads were not cached answers.
 - **Stable re-reads.** On the re-read windows, C kept its stage-A verdict on 98.3 % and E on 94.0 %.
-- **No drift with time.** The number of lost labels is the same in the first and second half of labelling.
+- **No drift with time.** Lost labels (b / c) in the first vs second half of labelling: control 33 / 5 vs
+  35 / 4, retest 37 / 4 vs 31 / 5.
 - **Opus drift reference.** It agreed with the final label on 16 of 18 control pairs and 15 of 18 retest
   pairs.
 
@@ -105,24 +110,41 @@ pairs each).
 In documents with one untitled section, where section cuts cannot move a boundary, 0 of 67 new chunks lost
 the label (re-read: 2 of 67).
 
+**Where the answer went** (step 7, cover-any; descriptive, not tested; `cover_any` in
+`confirm-report.json`). For each of the 75 pairs whose new chunk lost *answers*, the judge re-read every new
+chunk overlapping the original window (174 chunks):
+
+| outcome of the re-read | pairs |
+|---|---|
+| another overlapping chunk answers; the max-overlap chunk still does not | 53 (70.7 %, Wilson 95 % 59.6–79.8) |
+| no overlapping chunk answers on its own | 18 (24.0 %) |
+| the max-overlap chunk now answers (judge noise), no other does | 4 |
+| both | 0 |
+
+The re-read reproduced the max-overlap chunk's *not* on 71 of 75. This descriptive reads the same judge and
+single-chunk prompt; it says where the answer text sits, not whether retrieval would find it.
+
 ## 5. Conclusion
 
-- **What is shown.** Under single-passage judging, re-chunking at sentence and section boundaries makes the
-  frozen judge withdraw *answers* on about one in five passages it had confidently accepted. That is
-  16.8 points beyond its own re-read noise. The exploratory finding holds on fresh pairs, in every corpus
-  arm.
+- **What is shown.** Under single-passage judging, the control chunking as produced (its cut positions,
+  coverage and shorter chunks together) makes the frozen judge withdraw *answers* on about one in five
+  passages it had confidently accepted. That is 16.8 points beyond its own re-read noise. The exploratory
+  finding holds on fresh pairs; descriptively, the excess appears in each corpus arm.
 - **What is not shown.** The test bundles where the cut falls, how much of the window survives, and chunk
   length.
   - The descriptives point to coverage: when the new chunk keeps most of the window, little is lost beyond
     noise.
-  - So the likely mechanism is that answer-bearing text is split across chunks. Respecting boundaries is not
-    shown to make a chunk worse in itself.
-  - The step-7 cover-any descriptive (in progress) checks whether a neighbouring chunk still answers.
+  - The cover-any descriptive points the same way: in 7 of 10 lost pairs a neighbouring chunk still
+    answers, and in about a quarter no single chunk does. Answer text moved to, or split across, other
+    chunks is the reading these descriptives support. It is not tested here, and respecting boundaries is
+    not shown to make a chunk worse in itself.
 - **What it means for retrieval.**
-  - This test judged passages, not retrieval. Whether a neighbouring chunk would be retrieved in the top 10
-    is a found@10 question that needs a retrieval run on the new chunking.
+  - This test judged passages, not retrieval. Whether the neighbouring chunk that holds the answer would be
+    retrieved in the top 10 is a found@10 question that needs a retrieval run on the new chunking. It could
+    rank higher (shorter, more focused) or lower (it may lose the heading or the question's terms).
   - The labels are the judge's, not human relevance judgements. The parent study's judge-validity flag
     (owner–judge agreement 0.872 against 0.90) applies.
-- **Practical reading.** Chunking that respects boundaries changes *where* an answer sits, often splitting
-  it. Evaluations that judge single passages will register that split as a loss. Overlap between chunks, or
-  judging a chunk together with its neighbours, are the obvious mitigations to test next.
+- **Practical reading.** If re-chunking moves or splits answer text, as the descriptives suggest, an
+  evaluation that judges single passages would register it as a loss even where the answer is still in the
+  collection. Overlap between chunks, or judging a chunk together with its neighbours, are the mitigations
+  to test next, beside the retrieval run.

@@ -178,6 +178,10 @@ and every transformation with its parameters. Each count names the committed art
 A record file already merged in another order is not reordered (the record is immutable). Add a reader-facing
 `REPORT.md` in this order beside it that cites it.
 
+`REPORT.md` is **not record**. It is revised in place like a paper, and it must read as finished whenever it
+is read: no *in progress*, no *next*. New results land first as record (an artifact plus an addendum or a
+RESULTS file), and then the report is revised to include them. `TEST-DATA.md` is record.
+
 ## Reporting discipline, inherited from the pre-registration
 
 These are not style preferences. They are what makes the numbers usable.
