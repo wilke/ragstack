@@ -1,6 +1,11 @@
 # Alias study follow-up: confirmatory test of the chunk-boundary effect on judged labels
 
-**Status: DRAFT pre-registration (v3.2), not frozen, not run.** No draw, no chunk, no judge call has been
+**Status: FROZEN 2026-11-06T02:47:50Z on the owner's go of 2026-11-05 ("Go: freeze at 016fb61"); not run.**
+`PREREG.md` is frozen as written at commit `016fb61d03784e6505b43275e4ee7536a2fddec7`, sha256
+`b3a2d9e61f42675d9dccdd84bc449a0e7507e4b9c9d15bf957b6a3613e589b0e` (its own status line, which still reads
+*DRAFT*, is part of the frozen text). `power.json` sha256 `13afd2ba3e31f06455972cf001ae2b566dc4e428941bf48a0f4b8298020bc685`.
+Signed annotated tag `prereg-alias-boundary-confirm-2026-11` (verify with `git tag -v`); the sha256 and the UTC
+time are also in a private `PREREG.sha256`, written before the draw. No draw, no chunk, no judge call has been
 made for this test. There is no experiment marker in this folder until the run exists.
 
 The exploratory chunk-boundary control of the alias study
