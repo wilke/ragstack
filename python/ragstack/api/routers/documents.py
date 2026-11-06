@@ -103,6 +103,7 @@ from ragstack.ingestion.work_identity import (
     POLICY_REFUSE,
     DuplicateCheck,
     ids_from_filename,
+    same_record_family,
     work_keys,
 )
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
@@ -172,7 +173,11 @@ async def _run_ingest(
     item each, error ``no loader for <suffix>`` — instead of letting the
     manifest filter drop them into a ``completed`` job with fewer items than
     files. A directory ingest (``POST /v1/ingest``) keeps the filter: a corpus
-    tree legitimately holds files that are not documents.
+    tree legitimately holds files that are not documents. A by-reference
+    SINGLE file is never filtered (``build_manifest``): an unknown suffix
+    reaches ``LoaderRegistry.load``, which refuses it with ``NoLoader`` — the
+    item fails with the same ``no loader for <suffix>`` error, its bytes never
+    read (#833 item 1; it used to be ingested as raw text).
 
     The per-collection chunk cap (#291) is resolved here, once per job
     (:func:`_chunk_cap_for`: the registry override, else the deployment default
@@ -626,6 +631,11 @@ async def _precheck_duplicate(
             for existing in found.get(key, []):
                 if existing.doc_id in skip or (existing.source and existing.source in skip):
                     continue
+                # A JATS table/figure record ("PMC1#table-1") is part of the
+                # article record "PMC1" it was split from (#828 PR 5a): a
+                # re-ingest of PMC1.xml replaces it too.
+                if any(same_record_family(existing.source, own) for own in skip):
+                    continue
                 raise _conflict(key, existing.doc_id, (
                     f"{name!r} is {key[0]} {key[1]}, which is already indexed in "
                     f"collection {entry.id!r} as document {existing.doc_id}; "
@@ -636,8 +646,16 @@ async def _precheck_duplicate(
 
 def _source_identity(source: str) -> set[str]:
     """Doc ids and paths that name a local ``source`` itself — what a
-    re-ingest of the same path would replace (the loaders key a file's doc id
-    on its resolved path)."""
+    re-ingest of the same path would replace (the PDF and text loaders key a
+    file's doc id on its resolved path).
+
+    A JATS ``.xml`` (#828 PR 5a) is keyed differently: ``JatsLoader`` keys its
+    records on the filename stem up to the first ``.`` (``PMC1.xml`` → source
+    ``PMC1``, id ``deterministic_doc_id("PMC1")``), as ``jats_extract`` does,
+    so the stem and its id are added too. Its table/figure records
+    (``PMC1#table-1``) are matched by that stem in :func:`_precheck_duplicate`.
+    Like the ids themselves, this cannot tell two ``PMC1.xml`` files in
+    different directories apart."""
     out: set[str] = set()
     for p in (Path(source), Path(settings.ingest_root or ".") / source):
         try:
@@ -645,6 +663,10 @@ def _source_identity(source: str) -> set[str]:
         except (OSError, RuntimeError):
             continue
         out.update({resolved, deterministic_doc_id(resolved)})
+    if Path(source).suffix.lower() == ".xml":
+        stem = Path(source).name.split(".")[0]
+        if stem:
+            out.update({stem, deterministic_doc_id(stem)})
     return out
 
 
@@ -1440,7 +1462,11 @@ async def ingest(
     """Accept a file or directory for ingestion and run it in the background.
 
     `request.source` is a path the loader can read (confined to INGEST_ROOT
-    when configured). A directory is ingested recursively (.pdf/.txt/.md). Returns
+    when configured). A file is dispatched to a loader by its suffix (.pdf, .txt,
+    .md, .jsonl, and .xml as a JATS article); a directory is ingested
+    recursively and enqueues only those suffixes. A single file whose suffix
+    has no loader is still accepted and becomes a failed item, error
+    `no loader for <suffix>`, its bytes never read (#833 item 1). Returns
     immediately with a real job_id and `status="accepted"`; poll
     `GET /v1/ingest/{job_id}` for progress (including per-item counts).
 
@@ -1576,13 +1602,14 @@ _UPLOAD_CHUNK = 1 << 20  # 1 MiB read granularity while streaming to disk
 # kind → the file suffixes staged for it (the first is forced onto a name that
 # carries none of them). ``settings.upload_content_types`` (the operator
 # allowlist) selects from this table; a type absent from BOTH is 415. The
-# pdf/text/markdown suffixes are ones ``DEFAULT_INGEST_SUFFIXES`` enqueues, so
-# the local branch ingests them. XML (JATS) is accepted at the gate per #202's
-# allowlist, but ``.xml`` has no loader in the local registry yet: the staged
-# file becomes a FAILED item with the error ``no loader for .xml``
-# (_fail_unsupported_items — visible and countable, never a silent skip), and
-# the gowe scatter workflow extracts PDFs; wiring the JATS path
-# (cwl/jats-ingest.cwl) into the upload is follow-up work.
+# pdf/text/markdown/xml suffixes are ones ``DEFAULT_INGEST_SUFFIXES`` enqueues,
+# so the local branch ingests them: XML (JATS, #202's allowlist) is loaded by
+# ``JatsLoader`` since #828 PR 5a — one file, several documents (the article,
+# its tables and figures). A well-formed XML with no JATS content fails its
+# item with ``NO_JATS_CONTENT_ERROR``. On the gowe branch the extract step
+# (``scripts/pdf_extract.py``) loads ``.xml`` through the same registry, but
+# only once the workflows are repinned to a tools image carrying that change
+# (ADR-0010); until then it records ``no loader for .xml``.
 _UPLOAD_KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "application/pdf": ("pdf", (".pdf",)),
     "text/plain": ("text", (".txt", ".md")),

@@ -175,3 +175,187 @@ def test_pdfloader_omits_doi_when_the_pdf_has_none(tmp_path: Path):
     # Producer junk in `title` is deliberately NOT lifted: under the "existing
     # metadata wins" precedence it would permanently block the real remote title.
     assert "title" not in meta
+
+
+# --------------------------------------------------------------------------- #
+# #828 PR 5a / #833 items 1-2: no default loader; .xml is JATS
+# --------------------------------------------------------------------------- #
+
+def _jats_fixture():
+    """The synthetic article of ``tests/ingestion/test_jats_extract.py``."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ingestion"))
+    import test_jats_extract as t  # the fixture module, not a test of this file
+
+    return t
+
+
+@pytest.mark.parametrize("name, suffix", [
+    ("notes.rst", ".rst"), ("LICENSE", ""), ("table.CSV", ".csv"),
+])
+def test_registry_refuses_an_unknown_suffix_without_reading_it(tmp_path: Path, name, suffix):
+    """MUTATION: restore a TextFileLoader default → the .rst is read as text."""
+    from ragstack.ingestion.loaders import NO_LOADER_LABEL, NoLoader, no_loader_error
+
+    f = tmp_path / name
+    f.write_text("would be ingested as text", encoding="utf-8")
+    with pytest.raises(NoLoader) as exc:
+        default_loader_registry().load(str(f))
+    # The item error is the constant the upload and GoWe paths record.
+    assert exc.value.job_error == no_loader_error(suffix)
+    assert exc.value.job_error == (f"no loader for {suffix.lower()}" if suffix
+                                   else "no loader for (no suffix)")
+    assert isinstance(exc.value, LoaderError)
+    assert NO_LOADER_LABEL in str(exc.value)
+
+
+def test_unknown_suffix_lands_the_constant_on_the_item(tmp_path: Path):
+    """The by-reference route end to end, below the API: the sharded ingestor
+    records the refusal string on the item, not a class name.
+    MUTATION: a bare LoaderError (no job_error) → the item says 'NoLoader'."""
+    import asyncio
+
+    from ragstack.ingestion.backends import LocalAsyncIORunner
+    from ragstack.ingestion.manifest import build_manifest
+    from ragstack.ingestion.pipeline import IngestionPipeline
+    from ragstack.ingestion.sharded import ShardedIngestor
+    from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
+
+    class _Embedder:
+        async def embed(self, texts):
+            return [[1.0, 2.0, 3.0] for _ in texts]
+
+    f = tmp_path / "x.rst"
+    f.write_text("Title\n=====\n\nbody\n", encoding="utf-8")
+    pipeline = IngestionPipeline(
+        loader=default_loader_registry(ingest_root=str(tmp_path)),
+        chunker=RecursiveCharacterChunker(chunk_size=100, chunk_overlap=0),
+        embedder=_Embedder(), vector_store=InMemoryVectorStore(),
+        text_index=InMemoryTextIndex(),
+    )
+    (result,) = asyncio.run(ShardedIngestor(pipeline, LocalAsyncIORunner(max_concurrency=1)).ingest_manifest(
+        build_manifest(str(f), ingest_root=str(tmp_path))))
+    assert result.status == "failed"
+    assert result.error == "no loader for .rst"
+
+
+def test_registry_has_no_default_parameter():
+    """The fallback is gone, not just unused (#828 PR 5a decision 5)."""
+    import inspect
+
+    from ragstack.ingestion.loaders import LoaderRegistry
+
+    assert "default" not in inspect.signature(LoaderRegistry).parameters
+
+
+def test_xml_dispatches_to_the_jats_loader():
+    from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, JatsLoader
+
+    reg = default_loader_registry()
+    assert isinstance(reg.loader_for("PMC1.xml"), JatsLoader)
+    assert isinstance(reg.loader_for("PMC1.XML"), JatsLoader)
+    # MUTATION: drop .xml from DEFAULT_INGEST_SUFFIXES (registration kept) →
+    # a directory ingest silently skips every .xml.
+    assert ".xml" in DEFAULT_INGEST_SUFFIXES
+
+
+def test_jats_loader_builds_the_article_and_its_units(tmp_path: Path):
+    from ragstack.ingestion.jats_structure import ADAPTER
+    from ragstack.ingestion.loaders import deterministic_doc_id
+
+    t = _jats_fixture()
+    xml = tmp_path / "PMC1.xml"
+    xml.write_text(t._article("1", t.BODY_WITH_FLOATS), encoding="utf-8")
+    docs = default_loader_registry(ingest_root=str(tmp_path)).load(str(xml))
+
+    by_source = {d.source: d for d in docs}
+    assert list(by_source) == ["PMC1", "PMC1#table-1", "PMC1#figure-1"]
+    # Keyed on the filename stem, as jats_extract keys the record path —
+    # MUTATION: key on the resolved file path → these ids change.
+    for source, doc in by_source.items():
+        assert doc.id == deterministic_doc_id(source)
+    assert by_source["PMC1"].id == deterministic_doc_id("PMC1")
+
+    article = by_source["PMC1"]
+    assert article.structure is not None and article.structure.adapter == ADAPTER
+    assert all(d.structure is not None and d.structure.adapter == ADAPTER for d in docs)
+    meta = article.metadata
+    # Enriched: authors is a list (MUTATION: raw "; "-joined string → fails).
+    assert meta["authors"] == ["Jane Doe", "Rick Roe"]
+    assert meta["keywords"] == ["synthetic", "jats"]
+    assert meta["doi"] == "10.1234/synth.1"
+    assert meta["year"] == 2024
+    # JATS passthrough keys ride along.
+    assert meta["pmcid"] == "PMC1"
+    assert meta["content_type"] == "article"
+    assert meta["journal"] == "J Synthetic Res"
+    assert "abstract" not in meta  # heavy field, never on a chunk
+    table = by_source["PMC1#table-1"].metadata
+    assert table["content_type"] == "table" and table["section_title"] == "table-1"
+    assert by_source["PMC1#figure-1"].metadata["graphic"] == "synth-f001.jpg"
+    assert "ZZCELLZZ" not in article.content and "ZZCELLZZ" in by_source["PMC1#table-1"].content
+
+
+def test_jats_loader_pmcid_is_the_stem_up_to_the_first_dot(tmp_path: Path):
+    from ragstack.ingestion.loaders import JatsLoader, deterministic_doc_id
+
+    t = _jats_fixture()
+    xml = tmp_path / "PMC5.v2.xml"
+    xml.write_text(t._article("5", "<p>Lead paragraph only.</p>"), encoding="utf-8")
+    (doc,) = JatsLoader().load(str(xml))
+    assert doc.source == "PMC5" and doc.id == deterministic_doc_id("PMC5")
+
+
+def test_jats_loader_malformed_xml_is_a_loader_error(tmp_path: Path):
+    from ragstack.ingestion.loaders import JatsLoader, NoJatsContent
+
+    xml = tmp_path / "PMC9.xml"
+    xml.write_text("<article><body><p>never closed", encoding="utf-8")
+    with pytest.raises(LoaderError) as exc:
+        JatsLoader().load(str(xml))
+    assert not isinstance(exc.value, NoJatsContent)
+    assert getattr(exc.value, "job_error", None) is None  # class-name label, as for a PDF
+    assert str(exc.value) == "could not parse JATS XML 'PMC9.xml'"
+
+
+def test_jats_loader_refuses_xml_with_no_jats_content(tmp_path: Path):
+    """MUTATION: return [] for <config/> → no exception, a silent empty item."""
+    from ragstack.ingestion.loaders import NO_JATS_CONTENT_ERROR, JatsLoader, NoJatsContent
+
+    xml = tmp_path / "settings.xml"
+    xml.write_text("<config><option name='a'>1</option></config>", encoding="utf-8")
+    with pytest.raises(NoJatsContent) as exc:
+        JatsLoader().load(str(xml))
+    assert exc.value.job_error == NO_JATS_CONTENT_ERROR
+    assert NO_JATS_CONTENT_ERROR == "no JATS article content (not a JATS article?)"
+
+
+def test_jats_loader_counts_a_dropped_structure_and_keeps_the_document(
+    tmp_path: Path, monkeypatch
+):
+    import ragstack.ingestion.jats_structure as js
+    from ragstack.ingestion.loaders import JatsLoader
+
+    def boom(text, spans):
+        raise ValueError("synthetic")
+
+    monkeypatch.setattr(js, "article_structure", boom)
+    t = _jats_fixture()
+    xml = tmp_path / "PMC1.xml"
+    xml.write_text(t._article("1", t.BODY_WITH_FLOATS), encoding="utf-8")
+    loader = JatsLoader()
+    docs = {d.source: d for d in loader.load(str(xml))}
+    assert docs["PMC1"].structure is None
+    assert docs["PMC1#table-1"].structure is not None
+    assert loader.dropped.structure_invalid == {"ValueError": 1}
+
+
+def test_jats_passthrough_keys_are_the_cwl_default():
+    """The in-process loader stamps the keys path C (cwl/jats-ingest.cwl) does."""
+    from ragstack.ingestion.jats import JATS_PASSTHROUGH_KEYS
+
+    cwl = (Path(__file__).resolve().parents[3] / "cwl" / "jats-ingest.cwl").read_text()
+    default = cwl.split("metadata_passthrough:", 1)[1].split("default:", 1)[1]
+    default = default.split("\n", 1)[0].strip().strip('"')
+    assert tuple(default.split(",")) == JATS_PASSTHROUGH_KEYS

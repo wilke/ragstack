@@ -141,18 +141,38 @@ def resolve_profile(name: str | None) -> PublisherProfile:
     return PROFILES.get(name.strip().lower(), DEFAULT_PROFILE)
 
 
-def parse_authors(raw: str) -> list[str]:
-    """Split the extractor's ``;``-separated author string into a clean list."""
+def _clean_list(raw: list[Any] | tuple[Any, ...]) -> list[str]:
+    """An already-split list, cleaned: string items stripped, blank and
+    non-string items dropped. Never re-split — a list is the split result."""
+    return [v.strip() for v in raw if isinstance(v, str) and v.strip()]
+
+
+def parse_authors(raw: str | list[Any] | tuple[Any, ...]) -> list[str]:
+    """Split the extractor's ``;``-separated author string into a clean list.
+
+    A list (or tuple) is accepted too and returned cleaned, not re-split: it is
+    what :func:`enrich` itself emits, so a record whose metadata was enriched
+    once already (#828 PR 5a: the GoWe extract step writes a ``JatsLoader``
+    document's enriched metadata to the shard, and ``JsonlLoader`` enriches it
+    again) round-trips instead of raising ``TypeError``. A string is split
+    exactly as before."""
     if not raw:
         return []
+    if isinstance(raw, list | tuple):
+        return _clean_list(raw)
     parts = re.split(r"[;\n]", raw)
     return [a.strip() for a in parts if a.strip()]
 
 
-def split_keywords(raw: str) -> list[str]:
-    """Split a keywords string on the usual separators (``;`` / ``,``)."""
+def split_keywords(raw: str | list[Any] | tuple[Any, ...]) -> list[str]:
+    """Split a keywords string on the usual separators (``;`` / ``,``).
+
+    A list (or tuple) is returned cleaned, not re-split, as in
+    :func:`parse_authors`."""
     if not raw:
         return []
+    if isinstance(raw, list | tuple):
+        return _clean_list(raw)
     parts = re.split(r"[;,\n]", raw)
     return [k.strip() for k in parts if k.strip()]
 
