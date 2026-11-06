@@ -469,6 +469,40 @@ def test_corpus_mode_walks_nxml_too(tmp_path: Path):
         ("PMC1", "PMC1.xml"), ("PMC2", "PMC2.nxml")]
 
 
+def test_corpus_mode_matches_suffixes_case_insensitively(tmp_path: Path):
+    """argo round 3 nit 10: ``rglob("*.xml")`` is case-sensitive, so
+    ``PMC3.XML``/``PMC4.NXML`` were never walked, while ``manifest.py`` and
+    the loader registry lower-case suffixes. MUTATION: case-sensitive glob →
+    PMC3 and PMC4 missing."""
+    tree = tmp_path / "corpus" / "clean" / "ab"
+    tree.mkdir(parents=True)
+    for name in ("PMC1.xml", "PMC3.XML", "PMC4.NXml"):
+        (tree / name).write_text(_article(name[3], "<p>One.</p>"), encoding="utf-8")
+    (tree / "notes.XMLX").write_text("not an article", encoding="utf-8")
+    items = jats_extract.walk_corpus(tmp_path / "corpus")
+    assert [(i["pmcid"], Path(i["xml_path"]).name) for i in items] == [
+        ("PMC1", "PMC1.xml"), ("PMC3", "PMC3.XML"), ("PMC4", "PMC4.NXml")]
+
+
+def test_a_symlink_loop_skips_its_file_not_the_shard(tmp_path: Path):
+    """argo round 3 nit 5: a non-PMC-named file is keyed on its resolved path
+    (``jats.record_key`` step 3), and ``Path.resolve()`` raises
+    ``RuntimeError`` on a symlink loop — nothing caught it, so one bad link
+    sank the whole shard. It is now a skipped article with its reason, and
+    the other files convert. MUTATION: drop the ``try`` around the record key
+    → RuntimeError escapes ``extract_articles``."""
+    loop = tmp_path / "loop.xml"
+    loop.symlink_to(tmp_path / "loop.xml")
+    good = _write(tmp_path, "PMC5.xml", _article("5", "<p>Prose five.</p>"))
+    records, skipped = jats_extract.extract_articles(
+        [{"xml_path": str(loop)}, {"xml_path": good, "pmcid": "PMC5"}])
+    assert [r["path"] for r in records] == ["PMC5"]
+    (skip,) = skipped
+    assert skip["kind"] == "article" and skip["path"] == str(loop)
+    assert skip["pmcid"] == "loop.xml"
+    assert skip["reason"].startswith("record key: RuntimeError"), skip
+
+
 def test_a_bare_digit_shard_pmcid_is_written_as_before(tmp_path: Path):
     """An explicit shard ``pmcid`` that is a PMC id in another spelling
     (``8092463``) filled a missing ``metadata.pmcid`` before #828 PR 5a; the

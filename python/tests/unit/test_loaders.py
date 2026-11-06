@@ -558,6 +558,44 @@ def test_the_streamed_pmc_reader_stops_at_the_first_id(tmp_path: Path):
     assert scan_article_pmcid(f) == ""  # outside <article-meta>: not the article's id
 
 
+def test_the_streamed_pmc_reader_never_builds_a_tree_of_an_id_less_file(tmp_path: Path):
+    """argo round 3 nit 2: with no PMC article-id the reader parses to the
+    end, and an ``iterparse`` that never clears keeps every element — a tree
+    of the whole file (up to the 50 MB upload cap) in the API process. Each
+    finished element is now cleared and detached. ~16 MB of ``<p>`` here:
+    measured peaks 27.3 MB at 96fe2e5, 0.1 MB now, flat in the file's size.
+    MUTATIONS: no ``clear()``/detach → 27 MB; detach the parent's LAST child
+    (the parser runs a read buffer ahead, so that is rarely the element just
+    closed) → 8.1 MB; both above the bound. The answer is unchanged:
+    ``""``, and the first id still wins (the test above)."""
+    import tracemalloc
+
+    from ragstack.ingestion.jats import scan_article_pmcid
+
+    f = tmp_path / "big.xml"
+    with f.open("w", encoding="utf-8") as fh:
+        fh.write('<article><front><article-meta><article-id pub-id-type="doi">10.1/x'
+                 "</article-id></article-meta></front><body>")
+        para = "<p>" + "word " * 30 + "</p>"
+        for _ in range(100_000):
+            fh.write(para)
+        fh.write('</body><back><article-id pub-id-type="pmc">PMC3</article-id>'
+                 "</back></article>")
+    assert f.stat().st_size > 15_000_000
+    tracemalloc.start()
+    try:
+        assert scan_article_pmcid(f) == ""  # back-matter id: not in <article-meta>
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4_000_000, peak
+    # An id nested in markup is still read whole (its subtree is kept until read).
+    f.write_text('<article><front><article-meta><article-id pub-id-type="pmc">'
+                 "PMC<b>45</b>6</article-id></article-meta></front></article>",
+                 encoding="utf-8")
+    assert scan_article_pmcid(f) == "PMC456"
+
+
 # --------------------------------------------------------------------------- #
 # #975 round 2 N4: a <pmc-articleset> holding one <article> is that article
 # --------------------------------------------------------------------------- #

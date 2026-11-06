@@ -50,7 +50,7 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
       ``find ... > shard.txt``). Blank lines are ignored.
 
 ``--corpus DIR``
-    Walk ``DIR/<--tree>/**/*.xml`` and ``*.nxml`` (``clean/`` is the ``<back>``-stripped tree —
+    Walk ``DIR/<--tree>/**/*.xml`` and ``*.nxml``, any case (``clean/`` is the ``<back>``-stripped tree —
     that is the one you ingest) and read ``DIR/manifest.jsonl`` for provenance.
     ``--limit N`` truncates the sorted walk, for previews.
 
@@ -174,7 +174,10 @@ def walk_corpus(corpus: str | Path, tree: str = "clean") -> list[dict]:
     file's key is resolved by :func:`extract_articles` (``jats.record_key``)."""
     root = Path(corpus) / tree
     items: list[dict] = []
-    files = {f for sfx in JATS_SUFFIXES for f in root.rglob(f"*{sfx}")}
+    # Suffixes case-insensitively (``PMC1.XML``), as manifest.py and the
+    # loader registry match them (#975 round 3 nit 10).
+    files = {f for f in root.rglob("*")
+             if f.name.lower().endswith(JATS_SUFFIXES)}
     for f in sorted(files):
         item = {"pmcid": pmc_stem(f), "xml_path": str(f)}
         if not item["pmcid"]:
@@ -241,7 +244,16 @@ def extract_articles(
         # PMC-named file's stem, else the article's own PMC id, else the
         # file's resolved path — the rule JatsLoader keys the in-process
         # records on.
-        pmcid = item.get("pmcid") or file_record_key(item["xml_path"])
+        # A key that cannot be computed (a symlink loop: ``Path.resolve()``
+        # raises RuntimeError) skips its file, never the shard (#975 round 3
+        # nit 5).
+        try:
+            pmcid = item.get("pmcid") or file_record_key(item["xml_path"])
+        except (OSError, RuntimeError, ValueError) as e:
+            skipped.append({"path": str(item["xml_path"]),
+                            "pmcid": Path(item["xml_path"]).name, "kind": "article",
+                            "reason": f"record key: {type(e).__name__}: {e}"})
+            continue
         row = dict(manifest.get(pmcid, {}))
         row.update({k: v for k, v in item.items()
                     if k not in ("xml_path", "pmcid") and v not in (None, "")})

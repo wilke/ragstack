@@ -696,6 +696,31 @@ async def test_source_identity_keys_a_versioned_name_on_its_pmc_stem() -> None:
     assert "PMC5.v2" not in ident
 
 
+async def test_source_identity_never_raises_on_an_unstatable_or_nul_path(tmp_path) -> None:
+    """argo round 3 nit 6: ``Path.is_file()`` re-raises ``PermissionError``
+    (Python 3.12) and ``resolve()`` raises ``ValueError`` on a NUL byte; both
+    escaped ``_source_identity`` into the request (a 500). An unstatable path
+    is now no file (the name as given is keyed), a NUL path no identity.
+    MUTATION: drop ``ValueError``/``PermissionError`` from the guards → raises."""
+    import os
+
+    from ragstack.api.routers.documents import _source_identity
+    from ragstack.ingestion.loaders import deterministic_doc_id
+
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "PMC12345.xml").write_text("<article/>", encoding="utf-8")
+    locked.chmod(0)
+    try:
+        if os.geteuid() == 0:
+            pytest.skip("root reads a mode-0 directory")
+        ident = await _source_identity(str(locked / "PMC12345.xml"))
+    finally:
+        locked.chmod(0o755)
+    assert {"PMC12345", deterministic_doc_id("PMC12345")} <= ident
+    assert await _source_identity("bad\x00name.xml") == set()
+
+
 async def test_source_identity_follows_a_symlink_as_the_loader_does(tmp_path) -> None:
     """F7(a): JatsLoader gets the RESOLVED path, so ``PMC4.xml →
     store/abc123.xml`` (an article without a PMC id) is keyed on the target's

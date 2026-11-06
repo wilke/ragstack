@@ -710,12 +710,18 @@ async def _source_identity(source: str) -> set[str]:
     out: set[str] = set()
     existing: Path | None = None
     for p in (Path(source), Path(settings.ingest_root or ".") / source):
+        # ValueError: a NUL byte; RuntimeError: a symlink loop (#975 round 3
+        # nit 6: neither may 500 the request). Such a path names nothing.
         try:
             resolved = p.resolve()
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             continue
         out.update({str(resolved), deterministic_doc_id(str(resolved))})
-        if existing is None and resolved.is_file():
+        try:  # is_file() re-raises PermissionError (Python 3.12): not a file
+            is_file = resolved.is_file()
+        except (OSError, ValueError):
+            is_file = False
+        if existing is None and is_file:
             existing = resolved
     if not (_is_jats_name(source) or (existing is not None and _is_jats_name(str(existing)))):
         return out

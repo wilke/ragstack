@@ -911,17 +911,40 @@ def article_pmcid(root) -> str:
 def scan_article_pmcid(path: str | Path) -> str:
     """:func:`article_pmcid` of a file, STREAMED: ``iterparse`` stops at the
     first ``pmc``/``pmcid`` article-id inside an ``<article-meta>``, so the
-    usual front-matter id costs a few KB, never a tree of the file. Same
-    element, same normalisation as :func:`article_pmcid` of the parsed file.
-    Raises what ``iterparse`` raises (``ET.ParseError``, ``OSError``); the
-    caller bounds the file's size."""
-    depth = 0  # how many <article-meta> elements are open
+    usual front-matter id costs a few KB. Same element, same normalisation
+    as :func:`article_pmcid` of the parsed file. A file with no such id is
+    read to the end (an ``<article-meta>`` may sit in a later
+    ``<sub-article>``, and :func:`article_pmcid` would find it there), but
+    never as a tree: every finished element is cleared and detached from its
+    parent (#975 round 3 nit 2), except inside an ``<article-id>``, whose
+    text is read whole at its end. Raises what ``iterparse`` raises
+    (``ET.ParseError``, ``OSError``); the caller bounds the file's size."""
+    meta = 0  # how many <article-meta> elements are open
+    in_id = 0  # how many <article-id> elements are open
+    stack: list = []  # the open elements, root first
     for event, el in ET.iterparse(str(path), events=("start", "end")):
+        if event == "start":
+            stack.append(el)
+            if el.tag == "article-meta":
+                meta += 1
+            elif el.tag == "article-id":
+                in_id += 1
+            continue
+        stack.pop()
         if el.tag == "article-meta":
-            depth += 1 if event == "start" else -1
-        elif (event == "end" and depth and el.tag == "article-id"
-              and el.get("pub-id-type") in _PMC_ID_TYPES):
-            return _pmc_of(itext(el))
+            meta -= 1
+        elif el.tag == "article-id":
+            in_id -= 1
+            if meta and el.get("pub-id-type") in _PMC_ID_TYPES:
+                return _pmc_of(itext(el))
+        if in_id:
+            continue  # part of an article-id's text: kept until it is read
+        el.clear()
+        # Its earlier siblings were detached at their own ends, so it is its
+        # parent's FIRST child. (Not the last: the parser runs ahead of the
+        # events by a read buffer, so later siblings are already attached.)
+        if stack and len(stack[-1]) and stack[-1][0] is el:
+            del stack[-1][0]
     return ""
 
 
