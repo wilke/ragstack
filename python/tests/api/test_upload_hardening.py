@@ -259,9 +259,13 @@ async def test_text_and_markdown_are_accepted_and_ingested_local(client, rooted)
 @pytest.mark.asyncio
 async def test_xml_is_accepted_at_the_gate_and_ingested_as_jats(client, rooted):
     """JATS XML passes the allowlist, is staged as ``.xml`` and — since #828
-    PR 5a — loaded by ``JatsLoader``: the item completes (it used to fail with
-    ``no loader for .xml``, the limitation this test pinned before)."""
-    xml = b"<article><body><p>x</p></body></article>"
+    PR 5a — loaded by ``JatsLoader``: one file, the article plus its table and
+    figure as separate documents. It used to fail with ``no loader for
+    .xml``. #975 F8: assert it is JATS, not just "completed" — MUTATION:
+    register ``.xml`` to the text loader → one document, no table."""
+    import tests.jats_support as t
+
+    xml = t._article("1", t.BODY_WITH_FLOATS).encode()
     r = await client.post(
         "/v1/ingest/upload", files=_files(("PMC1.xml", xml, "application/xml"))
     )
@@ -271,16 +275,70 @@ async def test_xml_is_accepted_at_the_gate_and_ingested_as_jats(client, rooted):
     poll = await client.get(f"/v1/ingest/{job_id}")
     assert poll.json()["status"] == "completed"
     assert poll.json()["items"] == {"total": 1, "completed": 1, "failed": 0, "pending": 0}
+    chunks = app.state.text_index._chunks
+    by_type = {c.metadata.get("content_type") for c in chunks}
+    assert by_type == {"article", "table", "figure"}
+    assert {c.metadata.get("source_path") for c in chunks} == {
+        "PMC1", "PMC1#table-1", "PMC1#figure-1"}
+    assert len({c.doc_id for c in chunks}) == 3
 
     # Mixed with a text file: both complete.
     r = await client.post(
         "/v1/ingest/upload",
-        files=_files(("PMC2.xml", xml, "text/xml"), ("ok.txt", b"real text\n", "text/plain")),
+        files=_files(("PMC2.xml", t._article("2", "<p>Lead.</p>").encode(), "text/xml"),
+                     ("ok.txt", b"real text\n", "text/plain")),
     )
     assert r.status_code == 202, r.text
     poll = await client.get(f"/v1/ingest/{r.json()['job_id']}")
     assert poll.json()["status"] == "completed"
     assert poll.json()["items"] == {"total": 2, "completed": 2, "failed": 0, "pending": 0}
+
+
+@pytest.mark.asyncio
+async def test_nxml_upload_keeps_its_suffix_and_ingests(client, rooted):
+    """F9: ``.nxml`` (the PMC OA bulk suffix) is staged as itself."""
+    import tests.jats_support as t
+
+    r = await client.post("/v1/ingest/upload", files=_files(
+        ("PMC3.nxml", t._article("3", "<p>Lead.</p>").encode(), "application/xml")))
+    assert r.status_code == 202, r.text
+    assert [p.name for p in _staged(rooted)] == ["PMC3.nxml"]
+    assert (await client.get(f"/v1/ingest/{r.json()['job_id']}")).json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_an_xhtml_page_upload_is_not_a_jats_article(client, rooted):
+    """F3: an XHTML ``page.xml`` has ``<body><p>`` and used to ingest as an
+    "article" with ``pmcid='page'``. MUTATION: drop the root check → completed."""
+    from ragstack.ingestion.loaders import NO_JATS_CONTENT_ERROR
+
+    # No default namespace: the shape that reached the JATS walker (a
+    # namespaced XHTML page happens to find no <body> and failed anyway).
+    page = (b"<html><head><title>Page</title></head>"
+            b"<body><p>A web page paragraph that is long enough to be prose.</p></body></html>")
+    r = await client.post("/v1/ingest/upload",
+                          files=_files(("page.xml", page, "application/xml")))
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    assert (await client.get(f"/v1/ingest/{job_id}")).json()["status"] == "failed"
+    (item,) = app.state.job_store._items[job_id].values()
+    assert item.error == NO_JATS_CONTENT_ERROR
+    assert app.state.text_index._chunks == []
+
+
+@pytest.mark.asyncio
+async def test_unparseable_xml_upload_fails_with_the_constant(client, rooted):
+    """F4: the item error is the countable constant, not ``LoaderError``.
+    MUTATION: a bare LoaderError → the item says ``LoaderError``."""
+    from ragstack.ingestion.loaders import JATS_PARSE_ERROR
+
+    r = await client.post("/v1/ingest/upload", files=_files(
+        ("PMC9.xml", b"<article><body><p>never closed", "application/xml")))
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    assert (await client.get(f"/v1/ingest/{job_id}")).json()["status"] == "failed"
+    (item,) = app.state.job_store._items[job_id].values()
+    assert item.error == JATS_PARSE_ERROR == "could not parse JATS XML"
 
 
 @pytest.mark.asyncio

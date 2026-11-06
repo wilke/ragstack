@@ -80,6 +80,7 @@ from ragstack.ingestion.gowe_backend import (
     GoWeError,
     OutputStagingFailed,
 )
+from ragstack.ingestion.jats import JATS_SUFFIXES, file_record_key, record_key
 from ragstack.ingestion.loaders import (
     DEFAULT_INGEST_SUFFIXES,
     NO_LOADER_LABEL,
@@ -644,29 +645,67 @@ async def _precheck_duplicate(
                 ))
 
 
+def _jats_key_identity(key: str) -> set[str]:
+    """A JATS record key and its doc id (``PMC1`` → ``{"PMC1",
+    deterministic_doc_id("PMC1")}``); its unit records (``PMC1#table-1``) are
+    matched by family in :func:`_precheck_duplicate`."""
+    return {key, deterministic_doc_id(key)} if key else set()
+
+
+def _is_jats_name(source: str) -> bool:
+    return Path(source).suffix.lower() in JATS_SUFFIXES
+
+
 def _source_identity(source: str) -> set[str]:
     """Doc ids and paths that name a local ``source`` itself — what a
     re-ingest of the same path would replace (the PDF and text loaders key a
     file's doc id on its resolved path).
 
-    A JATS ``.xml`` (#828 PR 5a) is keyed differently: ``JatsLoader`` keys its
-    records on the filename stem up to the first ``.`` (``PMC1.xml`` → source
-    ``PMC1``, id ``deterministic_doc_id("PMC1")``), as ``jats_extract`` does,
-    so the stem and its id are added too. Its table/figure records
-    (``PMC1#table-1``) are matched by that stem in :func:`_precheck_duplicate`.
-    Like the ids themselves, this cannot tell two ``PMC1.xml`` files in
-    different directories apart."""
+    A JATS ``.xml``/``.nxml`` (#828 PR 5a) is keyed differently: ``JatsLoader``
+    keys its records on :func:`ragstack.ingestion.jats.record_key` of the path
+    the registry hands it — the RESOLVED path — so the key here is
+    :func:`~ragstack.ingestion.jats.file_record_key` of the resolved file too
+    (a symlink ``PMC4.xml → store/abc123.xml`` keys on the target, exactly as
+    the loader does; a non-PMC name reads the article's own PMC id). When the
+    file is not there to read, the name as given is keyed."""
     out: set[str] = set()
+    existing: Path | None = None
     for p in (Path(source), Path(settings.ingest_root or ".") / source):
         try:
-            resolved = str(p.resolve())
+            resolved = p.resolve()
         except (OSError, RuntimeError):
             continue
-        out.update({resolved, deterministic_doc_id(resolved)})
-    if Path(source).suffix.lower() == ".xml":
-        stem = Path(source).name.split(".")[0]
-        if stem:
-            out.update({stem, deterministic_doc_id(stem)})
+        out.update({str(resolved), deterministic_doc_id(str(resolved))})
+        if existing is None and resolved.is_file():
+            existing = resolved
+    if _is_jats_name(source) or (existing is not None and _is_jats_name(str(existing))):
+        try:
+            key = file_record_key(existing) if existing is not None else record_key(source)
+        except ValueError:
+            key = ""
+        out |= _jats_key_identity(key)
+    return out
+
+
+def _upload_identity(names: list[str]) -> set[str]:
+    """:func:`_source_identity` for uploads, whose bytes are not on disk yet at
+    the pre-check: a staged PDF/text path includes the job id, so a re-upload
+    is a second copy (no identity), but a JATS file's records are keyed on its
+    name (:func:`~ragstack.ingestion.jats.record_key`, step 1 for a PMC name,
+    which is the only name the pre-check finds keys on), so a re-upload of
+    ``PMC1.xml`` replaces ``PMC1`` and its units rather than copying them."""
+    out: set[str] = set()
+    for name in names:
+        if not _is_jats_name(name):
+            continue
+        try:
+            out |= _jats_key_identity(record_key(name))
+        except ValueError:
+            pass
+        # A name that carries a PMC token without being one (``notes_PMC12345.xml``)
+        # is keyed by the article's own PMC id (record_key step 2) when, as is
+        # usual, the article carries the one its name does.
+        out |= _jats_key_identity(ids_from_filename(name).get("pmcid", ""))
     return out
 
 
@@ -1497,6 +1536,7 @@ async def ingest(
         await _precheck_duplicate(
             entry, [Path(ws_path(uri)).name],
             await _duplicate_scope(entry, collections, principal, policy), policy,
+            same_document=_upload_identity([Path(ws_path(uri)).name]),
         )
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
@@ -1614,8 +1654,8 @@ _UPLOAD_KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "application/pdf": ("pdf", (".pdf",)),
     "text/plain": ("text", (".txt", ".md")),
     "text/markdown": ("markdown", (".md", ".txt")),
-    "application/xml": ("xml", (".xml",)),
-    "text/xml": ("xml", (".xml",)),
+    "application/xml": ("xml", (".xml", ".nxml")),
+    "text/xml": ("xml", (".xml", ".nxml")),
 }
 
 
@@ -1960,9 +2000,11 @@ async def ingest_upload(
         entry = await _authorize_ingest_target(collection, principal, collections)
         _refuse_unrunnable_chunk_method(entry)
         policy = _resolve_duplicate_policy(duplicate_policy)
+        names = _upload_names(files, kinds)
         await _precheck_duplicate(
-            entry, _upload_names(files, kinds),
+            entry, names,
             await _duplicate_scope(entry, collections, principal, policy), policy,
+            same_document=_upload_identity(names),
         )
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
@@ -2027,7 +2069,9 @@ async def ingest_upload(
     )
     policy = _resolve_duplicate_policy(duplicate_policy)
     scope = await _duplicate_scope(target, collections, principal, policy)
-    await _precheck_duplicate(target, _upload_names(files, kinds), scope, policy)
+    names = _upload_names(files, kinds)
+    await _precheck_duplicate(target, names, scope, policy,
+                              same_document=_upload_identity(names))
 
     # #415, and this is the site that proved a hand-rolled handler is not
     # enough: the `confine_to_root` 400 and the `mkdir` OSError below both sit

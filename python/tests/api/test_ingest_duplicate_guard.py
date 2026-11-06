@@ -349,14 +349,10 @@ async def test_shared_collection_scope_finds_the_owners_copy(
 # --------------------------------------------------------------------------- #
 
 
-def _jats_article(n: str) -> str:
-    import sys
-    from pathlib import Path
+def _jats_article(n: str, **kw) -> str:
+    import tests.jats_support as t
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ingestion"))
-    import test_jats_extract as t
-
-    return t._article(n, t.BODY_WITH_FLOATS)
+    return t._article(n, t.BODY_WITH_FLOATS, **kw)
 
 
 async def test_path_reingest_of_a_jats_file_is_not_refused_as_its_own_duplicate(
@@ -408,3 +404,208 @@ async def test_a_fresh_jats_ingest_keeps_its_tables_and_figures_under_refuse(
     body = await _poll(client, r.json()["job_id"])
     assert body["status"] == "failed"
     assert _item(r.json()["job_id"]).error.startswith("duplicate_work: key=doi:10.1234/synth.8092463")
+
+
+# --------------------------------------------------------------------------- #
+# #975 review: record keys (F1), upload identity (F6), symlinks (F7a), F8
+# --------------------------------------------------------------------------- #
+
+
+async def _upload_xml(client, name: str, xml: str, **form):
+    return await client.post(
+        "/v1/ingest/upload", files=[("files", (name, xml.encode(), "application/xml"))],
+        data=form,
+    )
+
+
+def _chunks_by_doi() -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for c in app.state.text_index._chunks:
+        out.setdefault(str(c.metadata.get("doi")), set()).add(str(c.metadata.get("source_path")))
+    return out
+
+
+async def test_same_name_different_work_is_refused_as_an_id_collision(client) -> None:
+    """F1(ii): two different works both uploaded as ``paper.xml`` (no PMC id,
+    different DOIs) share the key ``paper``. The second used to REPLACE the
+    first silently under the default ``refuse`` (job completed, article A
+    gone). Now it is refused with the constant collision error and A stays.
+    MUTATION: drop ``_id_collision`` from ``admit`` → A is replaced by B."""
+    from ragstack.ingestion.work_identity import ID_COLLISION_ERROR
+
+    r = await _upload_xml(client, "paper.xml",
+                          _jats_article("1", pmc=False, doi="10.1234/work.a"))
+    assert r.status_code == 202, r.text
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    first = _doc_ids()
+    assert _chunks_by_doi() == {"10.1234/work.a": {"paper", "paper#table-1", "paper#figure-1"}}
+
+    r = await _upload_xml(client, "paper.xml",
+                          _jats_article("2", pmc=False, doi="10.1234/work.b"))
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    body = await _poll(client, job_id)
+    assert body["status"] == "failed"
+    assert body["items"] == {"total": 1, "completed": 0, "failed": 1, "pending": 0}
+    assert _item(job_id).error == ID_COLLISION_ERROR
+    assert ID_COLLISION_ERROR == "document id already holds a different work (doi or pmcid differs)"
+    # Article A is still indexed, untouched.
+    assert _doc_ids() == first
+    assert _chunks_by_doi() == {"10.1234/work.a": {"paper", "paper#table-1", "paper#figure-1"}}
+
+
+async def test_an_id_collision_is_only_refused_under_refuse(client) -> None:
+    """Under ``allow`` the replace is kept, as it always was."""
+    r = await _upload_xml(client, "paper.xml",
+                          _jats_article("1", pmc=False, doi="10.1234/work.a"))
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    r = await _upload_xml(client, "paper.xml",
+                          _jats_article("2", pmc=False, doi="10.1234/work.b"),
+                          duplicate_policy="allow")
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    assert set(_chunks_by_doi()) == {"10.1234/work.b"}
+
+
+async def test_reupload_of_the_same_pmc_file_replaces_it(client) -> None:
+    """F6 + the reverse safety of F1(ii): re-uploading ``PMC8092463.xml`` (same
+    DOI) was a 409 at upload time (the name carries a pmcid, and only the
+    by-reference path had the JATS identity) although the job replaces. Now
+    no 409, the job completes, and the ids are the same — no second copy.
+    MUTATION: drop ``same_document`` at the local upload site → 409."""
+    xml = _jats_article("8092463")
+    r = await _upload_xml(client, "PMC8092463.xml", xml)
+    assert r.status_code == 202, r.text
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    first = _doc_ids()
+    assert len(first) == 3
+
+    r = await _upload_xml(client, "PMC8092463.xml", xml)
+    assert r.status_code == 202, r.text
+    body = await _poll(client, r.json()["job_id"])
+    assert body["status"] == "completed"
+    assert body["items"] == {"total": 1, "completed": 1, "failed": 0, "pending": 0}
+    assert _doc_ids() == first
+    assert all("duplicate_of" not in c.metadata for c in app.state.text_index._chunks)
+    # …while a Markdown file of that name is still a second copy: 409.
+    r = await _upload_md(client, "PMC8092463.md", EPMC)
+    assert r.status_code == 409, r.text
+
+
+async def test_directory_ingest_of_plos_names_keeps_every_article(client, tmp_path) -> None:
+    """F1(i): ``journal.pone.0012345.xml`` and ``journal.pone.0067890.xml`` both
+    keyed to ``journal`` and overwrote each other. MUTATION: first-dot keys →
+    3 documents, not 6."""
+    d = tmp_path / "plos"
+    d.mkdir()
+    (d / "journal.pone.0012345.xml").write_text(_jats_article("1", pmc=False), encoding="utf-8")
+    (d / "journal.pone.0067890.xml").write_text(_jats_article("2", pmc=False), encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(d)})  # refuse (default)
+    assert r.status_code == 200, r.text
+    body = await _poll(client, r.json()["job_id"])
+    assert body["status"] == "completed"
+    assert body["items"] == {"total": 2, "completed": 2, "failed": 0, "pending": 0}
+    sources = {c.metadata.get("source_path") for c in app.state.text_index._chunks}
+    assert sources == {
+        f"journal.pone.00{n}{suffix}"
+        for n in ("12345", "67890") for suffix in ("", "#table-1", "#figure-1")
+    }
+    assert len(_doc_ids()) == 6
+
+
+async def test_a_dotfile_jats_keeps_its_tables_and_figures(client, tmp_path) -> None:
+    """F1(iii): ``.hidden.xml`` keyed to ``""``, so under ``refuse`` its table
+    and figure were refused as duplicates of their own article."""
+    src = tmp_path / ".hidden.xml"
+    src.write_text(_jats_article("3", pmc=False), encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(src)})
+    body = await _poll(client, r.json()["job_id"])
+    assert body["status"] == "completed"
+    sources = {c.metadata.get("source_path") for c in app.state.text_index._chunks}
+    assert sources == {".hidden", ".hidden#table-1", ".hidden#figure-1"}
+
+
+async def test_source_identity_keys_a_versioned_name_on_its_pmc_stem() -> None:
+    """F8: ``PMC5.v2.xml`` is keyed ``PMC5`` (the first-dot stem), as
+    JatsLoader keys it. MUTATION: ``Path(...).stem`` → ``PMC5.v2``."""
+    from ragstack.api.routers.documents import _source_identity
+    from ragstack.ingestion.loaders import deterministic_doc_id
+
+    ident = _source_identity("does/not/exist/PMC5.v2.xml")
+    assert {"PMC5", deterministic_doc_id("PMC5")} <= ident
+    assert "PMC5.v2" not in ident
+
+
+async def test_source_identity_follows_a_symlink_as_the_loader_does(tmp_path) -> None:
+    """F7(a): JatsLoader gets the RESOLVED path, so ``PMC4.xml →
+    store/abc123.xml`` (an article without a PMC id) is keyed ``abc123``; the
+    API's same-document identity must name the same key, or a re-ingest of
+    the link is refused as a duplicate of itself. MUTATION: key the link's
+    own name → ``PMC4``."""
+    import tests.jats_support as t
+    from ragstack.api.routers.documents import _source_identity
+    from ragstack.ingestion.loaders import default_loader_registry
+
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "abc123.xml").write_text(t._article("4", t.BODY_WITH_FLOATS, pmc=False),
+                                      encoding="utf-8")
+    link = tmp_path / "PMC4.xml"
+    link.symlink_to(store / "abc123.xml")
+    docs = default_loader_registry(ingest_root=str(tmp_path)).load(str(link))
+    assert docs[0].source == "abc123"
+    ident = _source_identity(str(link))
+    assert docs[0].id in ident and "abc123" in ident
+    assert "PMC4" not in ident
+
+
+async def test_reingest_of_a_symlinked_jats_file_is_not_a_409(client, tmp_path) -> None:
+    """F7(a) through the API: a link named for one PMC id whose target file is
+    named for another. The records are keyed on the target (``PMC7000001``),
+    carry the article's pmcid (``PMC8092464``, what the link's name says), so
+    the pre-check finds them by the link's name — and must recognise them as
+    this source. MUTATION: key the link's own name → 409."""
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "PMC7000001.xml").write_text(_jats_article("8092464"), encoding="utf-8")
+    link = tmp_path / "PMC8092464.xml"
+    link.symlink_to(store / "PMC7000001.xml")
+    r = await client.post("/v1/ingest", json={"source": str(link)})
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    first = _doc_ids()
+    assert {c.metadata.get("source_path") for c in app.state.text_index._chunks} == {
+        "PMC7000001", "PMC7000001#table-1", "PMC7000001#figure-1"}
+    r = await client.post("/v1/ingest", json={"source": str(link)})
+    assert r.status_code == 200, r.text
+    assert (await _poll(client, r.json()["job_id"]))["status"] == "completed"
+    assert _doc_ids() == first
+
+
+async def _seed_jats_for(tenant: str, key: str = "PMC8092463") -> set[str]:
+    """Index JATS-shaped records (``key``, ``key#table-1``) for ``tenant``."""
+    from ragstack.ingestion.loaders import deterministic_doc_id
+    from ragstack.models import Chunk
+
+    chunks = [Chunk(id=f"c{i}", doc_id=deterministic_doc_id(src), content=BODY,
+                    metadata={"tenant_id": tenant, "pmcid": key, "source_path": src})
+              for i, src in enumerate((key, f"{key}#table-1"))]
+    await app.state.text_index.index(chunks)
+    return {c.doc_id for c in chunks}
+
+
+async def test_gowe_reupload_of_a_jats_file_is_not_a_409(client, gowe) -> None:  # noqa: F811
+    """F6 on the gowe upload and Workspace-reference sites: the same JATS
+    identity. MUTATION: drop ``same_document`` at either site → 409."""
+    await _seed_jats_for(TENANT)
+    r = await client.post(
+        "/v1/ingest/upload", data={"collection": "lib1"}, headers=AUTH,
+        files=[("files", ("PMC8092463.xml", _jats_article("8092463").encode(),
+                          "application/xml"))],
+    )
+    assert r.status_code == 202, r.text
+    src = f"ws:///{TENANT.split(':', 1)[1]}/home/papers/PMC8092463.xml"
+    r = await client.post("/v1/ingest", json={"source": src, "collection": "lib1"},
+                          headers=AUTH)
+    assert r.status_code in (200, 202), r.text
+    # The PDF of that name is still a second copy.
+    r = await _upload(client, "PMC8092463.pdf")
+    assert r.status_code == 409, r.text

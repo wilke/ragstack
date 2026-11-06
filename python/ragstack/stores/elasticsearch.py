@@ -838,7 +838,10 @@ class ElasticsearchTextIndex:
 
         A ``text``-mapped ``metadata.doi``/``pmcid`` does not raise — the term
         queries simply match nothing — so the first call per index checks the
-        mapping and logs a one-time WARNING (best-effort; never fails the call)."""
+        mapping and logs a one-time WARNING (best-effort; never fails the call).
+
+        A ``("doc_id", <id>)`` key matches the document with that id, whatever
+        it carries (a ``terms`` on ``doc_id``)."""
         from ragstack.ingestion.work_identity import match_summaries
 
         if not tenants or not keys:
@@ -856,6 +859,11 @@ class ElasticsearchTextIndex:
         pmids = [v for k, v in keys if k == "pmid"]
         if pmids:
             should.append({"terms": {"metadata.pmid": pmids}})
+        # ("doc_id", id): what that id already holds — the guard's id-collision
+        # check (work_identity.ID_COLLISION_ERROR, #828 PR 5a).
+        doc_ids = [v for k, v in keys if k == "doc_id"]
+        if doc_ids:
+            should.append({"terms": {"doc_id": doc_ids}})
         if not should:
             return {}
         await self._warn_if_id_fields_not_keyword()

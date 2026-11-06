@@ -128,7 +128,9 @@ class TextIndex(Protocol):
         identity ``keys`` (``("doi"|"pmcid"|"pmid", normalised value)``,
         ``ingestion.work_identity.work_keys``), grouped by the key they match
         and compared NORMALISED (a stored ``…/-/`` DOI matches its canonical
-        form). At most ``limit`` documents per call. Fails closed (``{}``) on
+        form). A ``("doc_id", id)`` key matches the document with that id,
+        whatever it carries — the guard's id-collision check (#828 PR 5a).
+        At most ``limit`` documents per call. Fails closed (``{}``) on
         an empty ``tenants`` list. The duplicate-paper guard's one lookup (#747);
         it does NOT exclude the caller's own doc_id — the guard does."""
         ...

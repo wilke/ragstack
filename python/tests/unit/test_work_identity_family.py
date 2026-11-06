@@ -15,6 +15,18 @@ from ragstack.ingestion.work_identity import same_record_family
     ("", "#x", False),
     ("/data/a#b.pdf", "/data/a", False),  # a file path is never split
     ("/data/PMC1.xml", "PMC1#table-1", False),
+    # #975 F2: only the unit grammar jats.py emits is a family member.
+    ("PMC1", "PMC1#table-2-part-3", True),
+    ("PMC1#figure-1-part-2", "PMC1#table-1", True),
+    (".hidden", ".hidden#table-1", True),
+    ("journal.pone.0012345", "journal.pone.0012345#figure-1", True),
+    ("corpus#0001", "corpus#0002", False),       # JSONL records sharing a DOI
+    ("corpus", "corpus#0001", False),
+    ("PMC1#supp.pdf", "PMC1", False),            # an uploaded file name
+    ("PMC1#supp.pdf", "PMC1#table-1", False),
+    ("PMC1#table-x", "PMC1", False),
+    ("PMC1#table-1-part-", "PMC1", False),
+    ("PMC1#tables-1", "PMC1", False),
 ])
 def test_same_record_family(a, b, expected):
     assert same_record_family(a, b) is expected
