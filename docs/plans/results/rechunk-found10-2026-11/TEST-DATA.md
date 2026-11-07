@@ -74,6 +74,6 @@ Each was checked after loading (`build-summary.json`):
 
 - The OA-1000 and added-paper texts, the confirmatory registries and the alias question records. These are
   private; their shas are pinned in the artifacts.
-- This repository at `16220f8` or later.
+- This repository at `467b1fe` or later (the build-summary generator; the report code is at `16220f8`).
 - The tools image `v1.6.24-b1` and an SFR-Embedding-Mistral endpoint.
 - A RAGStack deployment with the same retriever settings.
