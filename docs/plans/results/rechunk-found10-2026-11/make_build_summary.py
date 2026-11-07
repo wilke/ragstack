@@ -26,12 +26,30 @@ def peak(log: Path, key: str) -> int | None:
     return max(vals) if vals else None
 
 
+DERIVE_KEYS = ("derived_chunks", "host_chunks", "identical_span_content", "only_in_image", "only_in_host",
+               "docs_differing", "derived_sha256")
+
+
+def image_vs_host(derive: Path, diffd: Path) -> dict:
+    """Counts only. Refuses if a differing document carries a confirmatory pair or a label-table chunk
+    (the build script would have stopped; this guard keeps any such id out of the public file)."""
+    if not derive.exists():
+        return {"identical": True}
+    d, c = json.loads(derive.read_text()), json.loads(diffd.read_text())
+    if c.get("in_confirm_docs") or c.get("label_table_chunks_in_differing_docs"):
+        raise SystemExit("REFUSED: a differing document carries a confirmatory pair or label-table chunk")
+    out = {k: d[k] for k in DERIVE_KEYS}
+    out["docs_differing_with_confirmatory_pair"] = 0
+    out["label_table_chunks_in_differing_docs"] = 0
+    return out
+
+
 def main() -> None:
     ops, out = Path(sys.argv[1]), Path(sys.argv[2])
     cfg = json.loads((ops / "study-config.json").read_text())
-    names = [l.split("\t") for l in (ops / "names.tsv").read_text().splitlines()]
-    desc = next(l[0].split(" ", 1)[1] for l in names if l[0].startswith("#descriptor"))
-    spec = next(l[0].split(" ", 1)[1] for l in names if l[0].startswith("#spec_hash"))
+    names = [row.split("\t") for row in (ops / "names.tsv").read_text().splitlines()]
+    desc = next(r[0].split(" ", 1)[1] for r in names if r[0].startswith("#descriptor"))
+    spec = next(r[0].split(" ", 1)[1] for r in names if r[0].startswith("#spec_hash"))
     cols = {}
     for arm in ARMS:
         cid = f"bench-rechunk-{arm}"
@@ -60,8 +78,7 @@ def main() -> None:
                             "chunks_sha256": exp_host["chunks_sha256"],
                             "commit": exp_host["provenance"]["commit"], "dirty": exp_host["provenance"]["dirty"]},
             "export_used": ("host" if arm == "base" else "image-derived"),
-            "image_vs_host": (json.loads(derive.read_text()) | {"confirm_check": json.loads(diffd.read_text())})
-                             if derive.exists() else {"identical": True},
+            "image_vs_host": image_vs_host(derive, diffd),
         }
     b1 =json.loads((ops / "tools" / "B1-gate.json").read_text())
     rec = {
@@ -70,18 +87,23 @@ def main() -> None:
         "chunks_total": sum(v["chunks_loaded"] for v in cols.values()),
         "collections": cols,
         "expected_chunks_in_harness_config": {a: cfg["corpora"][a]["expected_chunks"] for a in ARMS},
+        # Operator measurement, 2026-11-06 (importlib.metadata in the host env and inside the tools image);
+        # typed in here, not read from the ops dir. DEVIATIONS D-5 cites the same values.
+        "library_versions_source": "operator measurement 2026-11-06, importlib.metadata host vs image",
         "library_versions": {
             "host_export_env": {"tokenizers": "0.22.2", "transformers": "5.12.1", "nltk": "3.9.4", "regex": "2026.6.28",
                                 "markdown-it-py": "4.2.0", "mdit-py-plugins": "0.6.1"},
             "tools_image_v1.6.24-b1": {"tokenizers": "0.23.3", "transformers": "5.22.1", "nltk": "3.10.4",
                                        "regex": "2026.9.29", "markdown-it-py": "4.2.0", "mdit-py-plugins": "0.6.1"},
         },
-        "tools_image_sha256": "ecf81440e64f9be88834e5b6911555f718ad71084f983ad41d962e962170cbf8",
+        "tools_image_sha256": "ecf81440e64f9be88834e5b6911555f718ad71084f983ad41d962e962170cbf8",  # cwl/tool-image.receipt.json
         "embed_workflow": {"pr": b1.get("pr"), "merge_commit": b1.get("merge_commit"), "cwl_sha256": b1.get("cwl_sha256")},
         "repo_head_at_run": (ops / "preflight" / "repo-head.txt").read_text().strip(),
         "provenance": experiment_provenance(),
     }
     rec["provenance"].pop("host", None)
+    w = rec["provenance"].pop("warnings", None)
+    rec["provenance"]["warnings_n"] = len(w or [])
     text = json.dumps(rec, indent=1, sort_keys=True)
     bad = FORBIDDEN.findall(text)
     if bad:
