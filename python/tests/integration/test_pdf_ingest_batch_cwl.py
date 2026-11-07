@@ -530,3 +530,51 @@ def test_embed_bulk_without_collection_id_embeds_unresolved_as_before(
     out = json.loads(proc.stdout)
     for f in out["r_embeddings"]:
         assert "collection_id" not in read_header(f["path"])["chunking"]
+
+
+def test_embed_bulk_chunk_size_unit_reaches_the_tool_and_passes_the_unit_guard(
+    tmp_path: Path, embeddings_url: str
+) -> None:
+    """``embed-bulk.cwl``'s OPTIONAL ``chunk_size_unit`` is bound to
+    ``--chunk-size-unit``. Against an entry recording ``size_unit=tokens``: with
+    no input the flag is omitted, the tool defaults to ``chars`` and
+    ``refuse_size_unit_mismatch`` exits 2 (the behaviour before the input
+    existed); with ``tokens`` the run succeeds and the header records it.
+    MUTATION: unwire ``chunk_size_unit`` from the step or the binding → the
+    second run is refused → fails."""
+    import asyncio
+
+    from ragstack.collection_store import CollectionSpec, SqliteCollectionStore
+    from ragstack.ingestion.embedding_file import read_header
+    from ragstack.ops.ingest_target import registry_env_suffix
+
+    db = tmp_path / "registry.db"
+    cid = "scratch-318-tokens"
+    asyncio.run(SqliteCollectionStore(str(db)).put(CollectionSpec(
+        id=cid, collection="store_scratch_318_tokens", embedding_model="fake-model",
+        embedding_model_dim=DIM, chunk_method="sentence", chunk_size=64,
+        chunk_overlap=0, chunk_params={"size_unit": "tokens"})))
+    suffix = registry_env_suffix(REG)
+    env = {f"COLLECTION_STORE_BACKEND_{suffix}": "sqlite",
+           f"COLLECTION_STORE_PATH_{suffix}": str(db)}
+    over = {"collection_id": cid, "registry": REG, "chunk_method": "sentence",
+            "chunk_size": 64, "chunk_overlap": 0}
+
+    absent = tmp_path / "absent"
+    absent.mkdir()
+    proc = _run_embed_workflow("embed-bulk.cwl", absent,
+                               _embed_bulk_job(absent, embeddings_url, **over), env)
+    assert proc.returncode != 0
+    assert "--chunk-size-unit chars contradicts" in proc.stderr, proc.stderr[-6000:]
+
+    given = tmp_path / "given"
+    given.mkdir()
+    proc = _run_embed_workflow(
+        "embed-bulk.cwl", given,
+        _embed_bulk_job(given, embeddings_url, chunk_size_unit="tokens", **over), env)
+    assert proc.returncode == 0, proc.stderr[-6000:]
+    headers = [read_header(f["path"]) for f in json.loads(proc.stdout)["r_embeddings"]]
+    assert headers
+    for h in headers:
+        assert h["chunking"]["collection_id"] == cid, h
+        assert h["chunking"]["size_unit"] == "tokens", h

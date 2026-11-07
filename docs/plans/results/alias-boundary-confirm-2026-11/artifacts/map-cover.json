@@ -1,0 +1,83 @@
+{
+ "chunks_sha256": "e9f00602eca4c6676b7e5968f08d83a01fcbdf36ca910d577419f5cca8748035",
+ "confirmatory": {
+  "prereg": "alias-boundary-confirm-2026-11",
+  "prereg_sha256": "b3a2d9e61f42675d9dccdd84bc449a0e7507e4b9c9d15bf957b6a3613e589b0e"
+ },
+ "cover_any_cap": 6,
+ "coverage_bands": {
+  "0.5-0.8": 56,
+  "<0.5": 111,
+  ">=0.8": 7
+ },
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "excluded": {},
+ "exploratory": false,
+ "n_overlapping": null,
+ "pairs_in": 75,
+ "pairs_mapped": 75,
+ "per_stratum": {},
+ "provenance": {
+  "citable": true,
+  "commit": "016fb61d03784e6505b43275e4ee7536a2fddec7",
+  "describe": "v1.6.25-6-g016fb61",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-06T14:42:44Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 74,
+    "n_spans": 19200,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "run",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "9ddec8aa36d4e58de39225caa3378be6dcfa23fcfcbfda2876ec66fb8c76f965",
+    "texts_sha256": "a2fc16ecfc6c5c69895e7664d39cdadb066e81cd2108e96752856bbc477c7d23"
+   },
+   {
+    "kind": "sections",
+    "n_docs": 74,
+    "n_spans": 1712,
+    "producer": "ragstack.ingestion.structure.attach_structure (markdown/1, raw mode)",
+    "sha256": "70e1bbd9ce061e8b5418ca382b3d1250c22e8e5ccf954666ad91f81b308d2bea",
+    "texts_sha256": "a2fc16ecfc6c5c69895e7664d39cdadb066e81cd2108e96752856bbc477c7d23"
+   },
+   {
+    "kind": "chunks",
+    "n_docs": 74,
+    "n_spans": 2308,
+    "producer": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+    "sha256": "e9e543db9304b0c0119ecacec4c0d28fb6f6e6c1b3f94de5320608ef69ed67b4",
+    "texts_sha256": "a2fc16ecfc6c5c69895e7664d39cdadb066e81cd2108e96752856bbc477c7d23"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+016fb61",
+  "warnings_n": 1
+ },
+ "rule": "cover-any",
+ "sample_sha256": "227aff47835003c083c2bc222b4c049071eb3753f7d7b7cfd86c6b961b8f3061",
+ "schema": "alias-control-map/1",
+ "seed_rows": 174,
+ "seed_sha256": "4167eb700a694fe5458fca8d4ddf066038c303662ad550873c834e4aa7505adb",
+ "tie_rule": "the earlier control chunk",
+ "token_bands": {
+  "128-511": 151,
+  "512-640": 22,
+  "<128": 1
+ },
+ "windows_capped": 0
+}

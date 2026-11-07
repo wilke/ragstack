@@ -22,6 +22,7 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 | [0009](0009-registry-selection-for-bulk-workers.md) | Which collection registry a bulk worker resolves against: a NAME on the submission, the DSN in the worker's secret file | Proposed |
 | [0010](0010-tool-image-binding.md) | Three artifacts, each a build of a tag — tools image, server, workflow (GoWe id = text + image name); release order is linear; identity in labels + receipt; no image override |  Accepted |
 | [0011](0011-provenance-records.md) | Provenance records: one record format (`ragstack.provenance/1`, fingerprinted core), one ambient API, written into the artifact it describes; Workflow Run RO-Crate for interchange | Accepted |
+| [0012](0012-document-chunk-registry.md) | A document and chunk registry is the system of record; the stores are projections of it | Proposed |
 
 ## Conventions
 
