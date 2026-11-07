@@ -161,6 +161,11 @@ def test_report_q1_q2_and_reference(tmp_path: Path) -> None:
     assert d["all_lost"]["M"]["k"] == 2 and d["all_lost"]["M_rank"] == {"1": 0, "2-3": 1, "4-10": 1}
     assert d["all_lost"]["records"] == 3 and d["all_lost"]["top10_lists"] == 3 and q1["all_lost"]["pairs"] == 3
     assert "wilson95" in d["all_lost"]["A_own"]
+    # lost pairs B2, B3, N1: only N1 is window-retained under default (A_own 2/3 over all of them)
+    awr = d["all_lost"]["A_own_window_retained"]
+    assert (awr["k"], awr["n"]) == (1, 1) and "wilson95" in awr
+    bwr = q1["all_lost"]["by_retriever"]["bm25"]["A_own_window_retained"]
+    assert (bwr["k"], bwr["n"]) == (0, 1)
     # bm25: N1's A comes only from B1's chunk, counted
     pb = q1["primary_only"]["by_retriever"]["bm25"]
     assert pb["A"]["k"] == 1 and pb["A_own"]["k"] == 0 and pb["A_from_other_pairs_only"]["k"] == 1
@@ -176,6 +181,17 @@ def test_report_q1_q2_and_reference(tmp_path: Path) -> None:
     wr = q2["headline"]["M_window_retained"]
     assert [(wr[r]["k"], wr[r]["n"]) for r in ("default", "bm25", "norerank")] == [(3, 3), (1, 1), (2, 2)]
     assert "wilson95" in wr["default"]
+    # A_own among the same kept pairs: default B1, N1, Q1 all own an answers chunk in the top 10 (3/3);
+    # bm25 B2 only (o2, its own answers chunk, is not in its bm25 top 10: 0/1); norerank B1, Q1 (2/2).
+    # Over all pairs these would be 4/5, 0/4 and 3/5.
+    ao = q2["headline"]["A_own_window_retained"]
+    assert [(ao[r]["k"], ao[r]["n"]) for r in ("default", "bm25", "norerank")] == [(3, 3), (0, 1), (2, 2)]
+    assert "wilson95" in ao["default"]
+    allr = q2["all_pairs"]["all"]["by_retriever"]
+    assert [(allr[r]["A_own"]["k"], allr[r]["A_own"]["n"]) for r in ("default", "bm25", "norerank")] == [
+        (4, 5), (0, 4), (3, 5)]
+    assert [(allr[r]["A_own_window_retained"]["k"], allr[r]["A_own_window_retained"]["n"])
+            for r in ("default", "bm25", "norerank")] == [(3, 3), (0, 1), (2, 2)]
     # one record (R1) in two arms: 4 records, 5 top-10 lists
     allp = q2["all_pairs"]["all"]
     assert allp["records"] == 4 and allp["top10_lists"] == 5
