@@ -52,13 +52,15 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
+from collections import ChainMap
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ragstack.documents import DocumentSummary
 from ragstack.ingestion.doi_metadata import normalize_doi
 from ragstack.ingestion.enrich import DEFAULT_PROFILE, PublisherProfile
+from ragstack.ingestion.jats import UNIT_ID, inherit_article_ids, unit_root
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
 from ragstack.models import Document
 
@@ -78,6 +80,7 @@ __all__ = [
     "ids_from_filename",
     "ids_from_text",
     "is_duplicate_refusal",
+    "same_record_family",
     "normalize_doi",
     "normalize_pmcid",
     "normalize_pmid",
@@ -237,6 +240,32 @@ def ids_from_text(text: str, limit: int = HEADER_SCAN_CHARS) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 
 
+#: The unit-record grammar and its root live in :mod:`ragstack.ingestion.jats`
+#: (``UNIT_ID``, ``unit_root``) so the DOI enricher can share them.
+_JATS_UNIT = UNIT_ID
+_unit_root = unit_root
+
+
+def same_record_family(a: str, b: str) -> bool:
+    """Whether two document sources are records of ONE JATS file: an article
+    ``PMC1`` and its table/figure records ``PMC1#table-1`` (#828 PR 5a;
+    ``JatsLoader`` and ``jats_extract`` both emit them, and every one carries
+    the article's ``doi``/``pmcid``/``pmid``). They are one work, not
+    duplicates of each other: the guard must neither refuse the units of a
+    fresh ingest against their own article nor a re-ingest against the units
+    indexed last time.
+
+    At least one side must be a unit id of the exact grammar ``jats.py`` emits
+    (:data:`_JATS_UNIT`), and the other its article (the unit's root) or a
+    sibling unit. Anything looser would admit real copies: two JSONL records
+    ``corpus#0001``/``corpus#0002`` with one DOI, or an upload named
+    ``PMC1#supp.pdf`` against ``PMC1``."""
+    ra, rb = _unit_root(a), _unit_root(b)
+    if not ra and not rb:
+        return False
+    return (ra or a) == (rb or b)
+
+
 def format_refusal(key: tuple[str, str], existing_doc_id: str) -> str:
     """``duplicate_work: key=doi:10.x/y existing_doc_id=<id> (…)`` — the one
     wire form of a refusal (job-item ``error``, receipt row ``error``, log
@@ -354,10 +383,16 @@ class WorkIdentityStage:
         A file-name DOI is deliberately NOT written here: it would pre-empt the
         enricher's frequency-ranked text scan (``document_doi`` takes a present
         ``doi`` as authoritative). The enricher applies the same filename rule
-        itself; the guard uses it only as a lookup key (:meth:`keys_for`)."""
+        itself; the guard uses it only as a lookup key (:meth:`keys_for`).
+
+        A JATS unit record (``…#table-1``) is not an identity source of its
+        own (#975 round 3, argo S1a): its text — a table of included studies,
+        a figure "adapted from" another paper — names OTHER works, so it is
+        never scanned. Once the articles are filled, each unit takes its
+        article's ids (:func:`ragstack.ingestion.jats.inherit_article_ids`)."""
         for doc in documents:
             from_name = ids_from_filename(_name_of(doc), self._profile)
-            found = {**ids_from_text(doc.content)}
+            found = {} if unit_root(doc.source) else {**ids_from_text(doc.content)}
             if "pmcid" in from_name:
                 found.setdefault("pmcid", from_name["pmcid"])
             for kind in KEY_KINDS:
@@ -366,6 +401,7 @@ class WorkIdentityStage:
                     doc.metadata[kind] = value
                     if kind == "doi":
                         doc.metadata.setdefault("doi_source", "text")
+        inherit_article_ids(documents)
 
     def keys_for(self, doc: Document) -> list[tuple[str, str]]:
         """The lookup keys of ``doc``: its metadata ids, plus the ``.pdf``
@@ -395,7 +431,10 @@ class WorkIdentityStage:
         replace, not a duplicate. ONE batched lookup per call; a lookup failure
         admits everything with a WARNING (fail-open). ``seen`` (shared across a
         job's items, :class:`DuplicateCheck`) records each ADMITTED document's
-        keys, so a later copy in the same job is refused against it."""
+        keys, so a later copy in the same job is refused against it. The
+        records of one JATS file (:func:`same_record_family`) are never
+        duplicates of each other, and under ``refuse`` they are admitted or
+        refused together (:func:`_refuse_whole_families`)."""
         if policy == POLICY_OFF or not documents:
             return list(documents)
         if policy not in POLICIES:
@@ -414,10 +453,25 @@ class WorkIdentityStage:
             )
             found = {}
         seen_here = seen if seen is not None else {}
+        sources = {doc.id: doc.source for doc in documents}
         admitted: list[Document] = []
         # No await from here on: check-and-set on ``seen`` is atomic in the loop.
+        # Pass 1 decides each document against the index and the job so far;
+        # its admissions are held in ``pending`` (visible to the later
+        # documents of this call) until pass 2 has applied the family rule.
+        pending: dict[tuple[str, str], str] = {}
+        view = ChainMap(pending, seen_here)
+        matches: list[_Match | None] = []
         for doc, keys in per_doc:
-            match = _first_match(doc, keys, found, seen_here)
+            match = _first_match(doc, keys, found, view, sources)
+            if match is None or policy == POLICY_ALLOW:
+                for k in keys:
+                    if k not in view:
+                        pending[k] = doc.id
+            matches.append(match)
+        if policy == POLICY_REFUSE:
+            matches = _refuse_whole_families([doc for doc, _ in per_doc], matches)
+        for (doc, keys), match in zip(per_doc, matches, strict=True):
             if match is None or policy == POLICY_ALLOW:
                 for k in keys:
                     seen_here.setdefault(k, doc.id)
@@ -437,18 +491,47 @@ class WorkIdentityStage:
         return admitted
 
 
+def _refuse_whole_families(
+    docs: list[Document], matches: list[_Match | None],
+) -> list[_Match | None]:
+    """Under ``refuse``, a refused ARTICLE refuses its table/figure records
+    (#975 round 2, argo N1a): they are one work (:func:`same_record_family`)
+    and must not be indexed with no article. Their keys can differ — a
+    labelled ``DOI:`` in the article's abstract fills the article's ``doi``
+    — so a per-record decision could refuse the article and index its units,
+    and the item would still complete. Each unit of a refused article takes
+    the article's refusal.
+
+    Article → units only (#975 round 3, argo S1b). A unit's verdict never
+    travels up: a refused unit refuses only itself. Units take their
+    article's ids (:meth:`WorkIdentityStage.fill_ids`), so a unit refusal
+    the article does not share means a foreign id reached the unit — that
+    must not take down the article, and it cannot erase a work."""
+    article_match = {d.source: m for d, m in zip(docs, matches, strict=True)
+                     if m is not None and d.source and not unit_root(d.source)}
+    if not article_match:
+        return matches
+    return [m if m is not None else article_match.get(unit_root(d.source))
+            for d, m in zip(docs, matches, strict=True)]
+
+
 def _first_match(
     doc: Document,
     keys: list[tuple[str, str]],
     found: dict[tuple[str, str], list[DocumentSummary]],
-    seen_here: dict[tuple[str, str], str],
+    seen_here: Mapping[tuple[str, str], str],
+    sources: dict[str, str] | None = None,
 ) -> _Match | None:
+    """``sources`` maps the doc ids of THIS call to their sources, so a sibling
+    record of the same file (:func:`same_record_family`) is not a match."""
+    sources = sources or {}
     for k in keys:  # KEY_KINDS order: a DOI match is named before a PMCID one
         for s in found.get(k, []):
-            if s.doc_id != doc.id:
+            if s.doc_id != doc.id and not same_record_family(s.source, doc.source):
                 return _Match(k, s.doc_id)
         other = seen_here.get(k)
-        if other is not None and other != doc.id:
+        if (other is not None and other != doc.id
+                and not same_record_family(sources.get(other, ""), doc.source)):
             return _Match(k, other)
     return None
 

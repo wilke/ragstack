@@ -32,7 +32,7 @@ Two things pick the path:
 | | **A. API, local (in-process)** | **B. API → GoWe/CWL** | **C. Operator bulk CWL** | **D. Legacy `ingest_jsonl.py`** |
 |---|---|---|---|---|
 | **Entrypoint** | `POST /v1/ingest` (server path) · `POST /v1/ingest/upload` (multipart), with `INGEST_BACKEND=local` | The same two routes, with `INGEST_BACKEND=gowe` → `_run_gowe_ingest` → `GoWeBackend.run_submission` (`python/ragstack/ingestion/gowe_backend.py`) → `GOWE_WORKFLOW_CWL` = `cwl/pdf-ingest-scatter.cwl` | An operator submits a workflow: `python/scripts/gowe_batch_ingest.py` over `cwl/jats-ingest.cwl`, or `cwl/ingest-bulk.cwl`, `cwl/embed-bulk.cwl` + `cwl/load-embeddings.cwl`, `cwl/pdf-ingest.cwl` (GoWe or `cwltool`) | `python/scripts/ingest_jsonl.py` (operator CLI) |
-| **Input** | A path or directory under `INGEST_ROOT` (`.pdf`/`.txt`/`.md`, plus `.jsonl` batch files: one file, many documents), **or** uploaded files staged at `{INGEST_ROOT}/uploads/{tenant}/{job_id}/` | **PDF, Markdown and plain-text files** (`.pdf`/`.md`/`.txt`) from the caller's BV-BRC Workspace; any other suffix fails as `no loader for <suffix>`, and a `.jsonl` batch file as `jsonl is not ingestable through the GoWe extract step` (#828). `/v1/ingest` takes a `ws:///<user>/home/…` reference (a server path is a 400). `/v1/ingest/upload` first writes the files into `<collection folder>/sources/` in the caller's Workspace (`_gowe_upload_sources`) | JSONL shards (`plan_shards.py` output, `{text, path, metadata}` per line), JATS XML (`jats-ingest.cwl`), or PDFs (`pdf-ingest.cwl`) | One pre-extracted JSONL file (`{text, path, metadata}` per line) |
+| **Input** | A path or directory under `INGEST_ROOT` (`.pdf`/`.txt`/`.md`; `.jsonl` batch files: one file, many documents; `.xml`/`.nxml` JATS articles: one file, several documents — the article and each table and figure), **or** uploaded files staged at `{INGEST_ROOT}/uploads/{tenant}/{job_id}/`. Any other suffix is accepted (200) and becomes a failed item `no loader for <suffix>`; its bytes are never read (#833 item 1) | **PDF, Markdown and plain-text files** (`.pdf`/`.md`/`.txt`) from the caller's BV-BRC Workspace; any other suffix fails as `no loader for <suffix>`, and a `.jsonl` batch file as `jsonl is not ingestable through the GoWe extract step` (#828). `.xml` (JATS) loads here only once the tools image carrying #828 PR 5a is repinned (ADR-0010); until then it fails as `no loader for .xml` ([Known gaps](#known-gaps)). `/v1/ingest` takes a `ws:///<user>/home/…` reference (a server path is a 400). `/v1/ingest/upload` first writes the files into `<collection folder>/sources/` in the caller's Workspace (`_gowe_upload_sources`) | JSONL shards (`plan_shards.py` output, `{text, path, metadata}` per line), JATS XML (`jats-ingest.cwl`), or PDFs (`pdf-ingest.cwl`) | One pre-extracted JSONL file (`{text, path, metadata}` per line) |
 | **Where chunking happens** | In the API process, with the collection's own chunker (`api/deps.py` `build_ingestor_for`) | **On the GoWe worker** (`ingest_shard.py` inside the scatter). The API never loads or chunks: both routes return from the GoWe branch (`api/routers/documents.py:997`, `:1428`) before `_resolve_ingest_target` (`:1060`, `:1490`) | On the worker (`ingest_shard.py` or `embed_shard.py`) | In the CLI process (its own chunker) |
 | **Execution** | `ShardedIngestor` (`ingestion/sharded.py`) + `LocalAsyncIORunner` (`ingestion/backends.py`), bounded asyncio, no broker | GoWe engine, worker group `GOWE_WORKER_GROUP`. A **batch** of staged files per task (`batch_size`, default 20): `pdf_extract.py` → `ingest_shard.py`, then one `archive_version.py` pack | GoWe engine or `cwltool`. Scatter over shards, then one un-scattered load. `gowe_batch_ingest.py` pipelines batches | One process: producer → N workers |
 | **Identity / tenant** | Any authenticated principal (API key or bearer). `resolve_tenant` sets the chunk `tenant_id`. `_authorize_ingest_target` checks the allowlist, ownership and the build spec (409) | **Submits as the caller.** `_gowe_caller` requires a BV-BRC bearer token, so an API key or a non-BV-BRC identity gets **401**. The same `_authorize_ingest_target` gates apply. The target must be a **registered** collection (`_registry_row`, 400 otherwise). The engine stages inputs and outputs with the caller's token. No task ever sees it | The operator's own engine identity. The workflow's `tenant` input **defaults to `public`**. The target is a registry entry (`--collection-id`, plus the `registry` name, ADR-0009) | `--tenant`, **default `public` = world-readable**. Target via `--collection-id` |
@@ -136,7 +136,7 @@ Where each step runs, path by path:
 
 | Step | A. API local | B. API → GoWe | C. Operator bulk CWL | D. `ingest_jsonl.py` |
 |---|---|---|---|---|
-| **1. Load** | API process: `LoaderRegistry` (PDF/text/Markdown/JSONL batch; `.xml` uploads fail as `no loader for .xml`) | Worker: `pdf_extract.py` → a JSONL batch. Despite the name it dispatches **every** staged file by suffix through the in-process `default_loader_registry` map (#828): `.md`/`.txt` → `TextFileLoader` (the same bytes as the API path), `.pdf` → `PdfLoader`, any other suffix → `no loader for <suffix>`; a `.jsonl` batch file → `JSONL_UNSUPPORTED_ERROR` (one file is many documents behind one receipt item, and path-less records would share an id — use workflow C or D for JSONL); a non-PDF under a `.pdf` name → `could not open PDF … (not a PDF)`. A scanned PDF gets the row `NO_TEXT_ERROR`; an empty text file `EMPTY_TEXT_ERROR` (`no text (empty document)`); any other exception its class name, as in-process | Worker: `jats_extract.py` / `pdf_extract.py`, or a pre-extracted shard | The JSONL file. Offline metadata recovery via `ingestion/enrich.py` (`--publisher-profile`) |
+| **1. Load** | API process: `LoaderRegistry` (PDF/text/Markdown/JSONL batch; `.xml`/`.nxml` → `JatsLoader`, one JATS article → the article record plus one per table and figure, each with its `jats/1` structure — the documents `jats_extract.py` + `JsonlLoader` produce on path C, `tests/ingestion/test_jats_parity.py`). Dispatch is on the resolved path's suffix; only a target with no suffix at all dispatches on the suffix as given (a `notes.md` link to a suffix-less blob loads as Markdown; a `.md` link to a `.docx` is `no loader for .docx`). Any other suffix → `NoLoader`: the item fails as `no loader for <suffix>` and the file is never read (#833 item 1; it used to be read as raw text) | Worker: `pdf_extract.py` → a JSONL batch. Despite the name it dispatches **every** staged file by suffix through the in-process `default_loader_registry` map (#828): `.md`/`.txt` → `TextFileLoader` (the same bytes as the API path), `.pdf` → `PdfLoader`, `.xml` → `JatsLoader` (after the next tools-image repin, ADR-0010), any other suffix → `no loader for <suffix>`; a `.jsonl` batch file → `JSONL_UNSUPPORTED_ERROR` (one file is many documents behind one receipt item, and path-less records would share an id — use workflow C or D for JSONL); a non-PDF under a `.pdf` name → `could not open PDF … (not a PDF)`. A scanned PDF gets the row `NO_TEXT_ERROR`; an empty text file `EMPTY_TEXT_ERROR` (`no text (empty document)`); any other exception its class name, as in-process | Worker: `jats_extract.py` / `pdf_extract.py`, or a pre-extracted shard | The JSONL file. Offline metadata recovery via `ingestion/enrich.py` (`--publisher-profile`) |
 | **2. DOI enrichment** (#596, ON by default since #634) | API process (`app.state.doi_enricher`), when `DOI_ENRICHMENT_ENABLED` (default `true`) | Worker: `ingest_shard --doi-enrichment`. `_gowe_inputs` sends `doi_enrichment` (+ `doi_mailto`, `doi_cache_dir`) whenever the API setting is on | **Off** unless the operator sets `doi_enrichment: true`. Only `pdf-ingest.cwl` and `pdf-ingest-scatter.cwl` declare that input. The worker tools default it off (`doi_metadata.add_doi_enrichment_args`) | **Never.** No Crossref lookup |
 | **3. Chunk** | The collection entry's method/size/overlap | `chunk_method`/`chunk_size`/`chunk_overlap` travel on the submission, **only if the entry records them**. Otherwise the CWL defaults apply (`fixed_token`/256/32). Semantic tunables come from the registry entry's `chunk_params` (`ingest_shard.py` `_semantic_params`), never from CWL inputs | CLI arguments, checked against the registry entry (`IngestTarget.check_build`) | `--chunk-method` etc., checked against the registry entry |
 | **4. Boilerplate** | `BOILERPLATE_DETECTION_ENABLED` (default on, **flag**), `BOILERPLATE_DROP` (default off), `BOILERPLATE_CONFIG_JSON` | **Always `flag`.** No boilerplate setting reaches the worker. `_gowe_inputs` sends none, the CWL declares none, and `ingest_shard --boilerplate` defaults to `flag` (**#635, open**). `BOILERPLATE_DROP=true` has no effect here | `flag` (each tool's default). No CWL exposes `--boilerplate` | `--boilerplate off\|flag\|drop`, default `flag` |
@@ -872,11 +872,71 @@ What does **not** work today, or works differently from what you might assume:
   whatever the API's own default is, and nothing records which method won (#609,
   open). Collections created through `POST /v1/collections` always record their
   method. Hand-registered or CLI-registered entries may not.
-- **Path B ingests PDFs from the Workspace only.** A server-side path is a 400 there.
-  An `.xml` (JATS) upload is accepted at the gate but is not wired into the upload
-  workflow (`cwl/jats-ingest.cwl` is operator-only). OCR for scanned PDFs does not
-  exist. They are counted per job under the constant `NO_TEXT_ERROR` on both API
+- **Path B ingests files from the Workspace only.** A server-side path is a 400 there.
+  OCR for scanned PDFs does not exist. They are counted per job under the constant `NO_TEXT_ERROR` on both API
   paths, which is the data the OCR decision (#202) needs.
+- **JATS XML (`.xml`, `.nxml`) on the API paths (#828 PR 5a).**
+  - Path A loads `.xml` and `.nxml` (the PMC OA bulk suffix) in process (`JatsLoader`). Path B's extract step loads it
+    through the same registry, but only once the tools image carrying that change is
+    repinned (ADR-0010: the server and the tools image ship separately). Between the
+    server release and the repin, path A ingests an `.xml` while path B records the
+    item as `no loader for .xml`.
+  - A directory ingest now enqueues `.xml` and `.nxml` files. A `<pmc-articleset>`
+    holding exactly one `<article>` (what NCBI `efetch db=pmc` returns) is that
+    article, on every path; one holding none or several is refused. A well-formed XML
+    file that is not a JATS article (its document element is not `<article>`, as for
+    an XHTML page, or it has no abstract or body prose and no table or figure) becomes
+    a failed item with the constant error `no JATS article content (not a JATS
+    article?)` (`NO_JATS_CONTENT_ERROR`); one that does not parse fails with the
+    constant `could not parse JATS XML` (`JATS_PARSE_ERROR`; the server log line names
+    the file and carries the `jats_parse_error` label).
+  - Document ids derive from one record key, by one rule on every path
+    (`jats.record_key`): (1) a file whose name up to the first `.` is a PMC id keys
+    on that stem, literally (`PMC1.xml`, `PMC1.nxml`, `PMC1.v2.xml` → `PMC1`;
+    `pmc4242.xml` → `pmc4242`), records `PMC1`, `PMC1#table-1`, …, as path C has
+    always keyed them; (2) else the article's own first `<article-id
+    pub-id-type="pmc">`, normalised (`PMC<digits>`); (3) else the file's resolved
+    path — the key a PDF at that path gets (`/corpus/paper.xml`,
+    `/corpus/paper.xml#table-1`). The key is read from the resolved path, so a
+    symlink keys on its target.
+  - Two files share ids only when they name one PMC id — the same work, so the
+    second replaces the first, as a re-ingest should — or are one file. Two
+    different works named `paper.xml` (in two directories, or two uploads) are
+    different documents; the duplicate guard decides on their DOIs as for any
+    other file.
+  - A path-keyed (step 3) file's ids follow its path, exactly as a PDF's do: a
+    moved file, a re-upload (each upload is staged under a new job directory) and a
+    GoWe run (the input is staged under a fresh path) all mint new ids. Whether the
+    second copy is then refused depends on the path's duplicate policy: on A
+    (`DUPLICATE_POLICY`, default `refuse`) the guard refuses it on its DOI/PMID; on
+    B only once the registered workflow declares `duplicate_policy`; on C **nothing
+    refuses it by default** (next bullet). Name a file for its PMC id, or give the
+    article a `pmc` article-id, for ids that survive.
+  - **Path C and a non-PMC corpus: a re-run indexes a second copy.** cwltool stages
+    the `corpus` Directory under a fresh `/…/stg<uuid>/` on every run, so a file with
+    no PMC id in its name, no `pmc` article-id and no `pmcid` on its shard line is
+    keyed (step 3) on a path that changes per run: new doc ids every time, and
+    delete-prior matches nothing. `cwl/jats-ingest.cwl` (`jats_extract` →
+    `embed_shard` → `load_embeddings`) runs no duplicate guard at all, and
+    `ingest_shard.py`'s `--duplicate-policy` defaults to `off`. The OA harvest is not
+    affected (`plan_shards.py` writes a `pmcid` on every line). For a custom corpus,
+    give each shard line a `pmcid` (a manifest/`plan_shards.py` id). Loading the
+    shards with `ingest_shard.py --duplicate-policy refuse` instead is not a real
+    remedy: it refuses on DOI only, and its bare `JsonlLoader()` drops the JATS
+    passthrough keys (`content_type`, `pmcid`, …; see below).
+  - A re-ingest that produces fewer or different unit ids leaves the old ones
+    indexed: a revised article that drops a table keeps its old `PMC1#table-3`, and a
+    table split as `PMC1#table-1-part-N` on path C keeps those records when it is
+    re-ingested in process as one `PMC1#table-1` (#976).
+  - In process, oversized tables are split by a character budget only. `jats_extract.py`
+    (path C) defaults to a tokenizer budget, so a dense table can be one unit on A and
+    several `PMC1#table-1-part-N` units on C. Tables under both budgets are identical.
+  - After the repin, the GoWe receipt rows for a JATS file are keyed by record
+    (`PMC1`, `PMC1#table-1`, …), not by the staged file name, so a batched GoWe
+    submission will report no receipt entry for its `.xml` items (#974).
+  - Path B's ingest step loads the extract shard with a bare `JsonlLoader()`: the
+    JATS passthrough keys (`content_type`, `pmcid`, `journal`, …) are dropped there
+    until the workflow passes `--metadata-passthrough` (#833 item 4).
 - **Provenance is null until a release is stamped (#668).** See
   [What happens to a document](#what-happens-to-a-document).
 - **Path C archives are not registry versions.** `pdf-ingest.cwl` packs an archive,

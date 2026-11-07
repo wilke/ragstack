@@ -163,6 +163,36 @@ def test_split_keywords():
     assert split_keywords("virus, hepatitis; CD8") == ["virus", "hepatitis", "CD8"]
 
 
+def test_a_string_still_splits_exactly_as_before():
+    """The list tolerance below must not touch the string path (#828 PR 5a)."""
+    assert parse_authors("A. One;\nB. Two ;; ") == ["A. One", "B. Two"]
+    assert split_keywords("a,b;\nc, ,") == ["a", "b", "c"]
+    # A string with a separator inside an item is still split on it.
+    assert parse_authors("Doe, Jane") == ["Doe, Jane"]
+    assert split_keywords("Doe, Jane") == ["Doe", "Jane"]
+
+
+def test_an_already_split_list_is_cleaned_not_re_split():
+    """A record enriched once already carries lists (the GoWe extract step
+    writes JatsLoader's enriched metadata to the shard, and JsonlLoader enriches
+    it again). MUTATION: drop the list tolerance → TypeError from re.split."""
+    assert parse_authors(["Jane Doe", " Rick Roe ", "", "  ", None, 3]) == [
+        "Jane Doe", "Rick Roe"]
+    assert split_keywords(["virus, hepatitis", " CD8 "]) == ["virus, hepatitis", "CD8"]
+    assert parse_authors(("A", "B")) == ["A", "B"]
+    assert parse_authors([]) == [] and split_keywords([]) == []
+
+
+def test_enrich_is_idempotent_on_its_own_output():
+    record = {"text": "body " * 200, "path": "PMC1",
+              "metadata": {"authors": "Jane Doe; Rick Roe", "keywords": "a; b",
+                           "title": "T", "doi": "10.1234/x.1", "year": 2024}}
+    once = index_metadata(enrich(record))
+    twice = index_metadata(enrich({**record, "metadata": once}))
+    assert twice["authors"] == once["authors"] == ["Jane Doe", "Rick Roe"]
+    assert twice["keywords"] == once["keywords"] == ["a", "b"]
+
+
 # --- citations --------------------------------------------------------------
 
 _REFS = """Some article body text here.

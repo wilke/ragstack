@@ -111,8 +111,10 @@ completed, 0 failed, 3 pending. This is what you watch; it is not instant.*
   bullets, and also most link targets, inline HTML and some code are lost.
   Once the deployment's worker image carries #828, Markdown and plain text are
   stored verbatim, as on a local backend.
-  **XML is the exception:** it passes the upload check and then fails during
-  processing with "no loader for .xml". The open-access corpora were built from
+  **XML must be a JATS article.** On a GoWe deployment it passes the upload
+  check and then fails during processing with "no loader for .xml" until the
+  worker image is updated; a local deployment ingests it as the article plus
+  one document per table and figure. The open-access corpora were built from
   JATS offline through a separate workflow, not through this endpoint.
 - **Three separate limits:** up to 50 files per upload, 50 MB per document, and
   500 MB total per upload. A single oversized file and an oversized batch are

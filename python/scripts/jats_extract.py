@@ -6,9 +6,11 @@ The XML counterpart of ``scripts/pdf_extract.py``: it runs the real
 and emits **one JSONL shard** in the exact ``{"text", "path", "metadata"}`` shape
 that ``scripts/embed_shard.py`` / ``scripts/ingest_shard.py`` consume via
 :class:`ragstack.ingestion.loaders.JsonlLoader`, plus a sidecar JSON report of
-everything that was skipped. RAGStack has no XML loader (ingest suffixes are
-``.pdf/.txt/.md/.jsonl``), so JATS has to become JSONL before it can be ingested
-at all.
+everything that was skipped. This is the bulk route (the CWL scatter, path C
+of #828 §8): since #828 PR 5a the API process also loads a single ``.xml`` in
+process through :class:`ragstack.ingestion.loaders.JatsLoader`, which builds its
+documents from the same parser, the same structure helper and the same
+record-to-``Document`` code ``JsonlLoader`` applies to this tool's shard.
 
 Ported from the validated out-of-tree converter ``/rag/oa/scripts/jats_to_jsonl.py``
 (800 articles -> 6,538 records, 0 failures; inline-table chunk contamination
@@ -16,8 +18,10 @@ Ported from the validated out-of-tree converter ``/rag/oa/scripts/jats_to_jsonl.
 record kinds, floats lifted at any depth, ``<floats-group>`` captured,
 row-splitting of oversized tables with the caption+header repeated — live in
 ``ragstack/ingestion/jats.py`` and are documented there; the structure adapter
-(``jats/1``) lives in ``ragstack/ingestion/jats_structure.py``. This file is I/O
-plus attaching and validating each record's structure.
+(``jats/1``) lives in ``ragstack/ingestion/jats_structure.py``, and so does the
+one helper that builds and validates a record's structure
+(``record_structure``). This file is I/O plus attaching that structure and
+counting its drops.
 
 INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad hoc)
 
@@ -31,8 +35,21 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
       is resolved against ``--corpus`` when given, else against the directory
       holding the shard file.
     * ``pmcid`` (optional) — the article id; it becomes the record ``path`` and
-      hence the document id. Defaults to the filename stem up to the first ``.``
-      (``PMC123.1.xml`` -> ``PMC123``).
+      hence the document id. Defaults to ``jats.record_key``: the filename stem
+      up to the first ``.`` when it is a PMC id (``PMC123.1.xml`` -> ``PMC123``),
+      else the article's own ``<article-id pub-id-type="pmc">``, else the
+      file's RESOLVED path (``/corpus/clean/journal.pone.0012345.xml``) — the
+      key ``JatsLoader`` gives the same file in process, and the one a PDF at
+      that path gets. Step 1 is literal (``pmc4242.xml`` -> ``pmc4242``).
+      An explicit ``pmcid`` is taken as given (never normalised).
+      **Re-runs of a non-PMC corpus:** a path key follows the STAGED path,
+      and cwltool stages ``corpus`` under a fresh ``stg<uuid>`` directory on
+      every run, so such a file gets new doc ids each run. jats-ingest.cwl
+      runs no duplicate guard and ``ingest_shard.py --duplicate-policy``
+      defaults to ``off``, so a re-run indexes a second copy. Give such lines
+      a ``pmcid`` (``plan_shards.py``/manifest ids). (Loading the shards with
+      ``ingest_shard.py --duplicate-policy refuse`` instead refuses on DOI
+      only and drops the JATS passthrough keys — its loader has none.)
     * **Any other keys on the line are treated as that article's manifest row**
       (``sha256``, ``source_url``, ``doi_xml``, ``licence``, ...), so a shard is
       self-contained and a worker never has to read the ~1M-line corpus
@@ -41,7 +58,7 @@ INPUT CONTRACT — two modes, ``--shard`` (the CWL scatter) or ``--corpus`` (ad 
       ``find ... > shard.txt``). Blank lines are ignored.
 
 ``--corpus DIR``
-    Walk ``DIR/<--tree>/**/*.xml`` (``clean/`` is the ``<back>``-stripped tree —
+    Walk ``DIR/<--tree>/**/*.xml`` and ``*.nxml``, any case (``clean/`` is the ``<back>``-stripped tree —
     that is the one you ingest) and read ``DIR/manifest.jsonl`` for provenance.
     ``--limit N`` truncates the sorted walk, for previews.
 
@@ -96,10 +113,12 @@ from ragstack.ingestion.jats import (
     DEFAULT_MAX_CHARS,
     DEFAULT_MAX_TOKENS,
     DEFAULT_MIN_UNIT_CHARS,
+    JATS_SUFFIXES,
     convert_file,
+    file_record_key,
+    pmc_stem,
 )
-from ragstack.ingestion.jats_structure import article_structure, unit_structure
-from ragstack.ingestion.structure import StructureInvalid, validate_structure
+from ragstack.ingestion.jats_structure import record_structure
 from ragstack.provenance import add_provenance_arguments, provenance_from_args
 
 
@@ -145,46 +164,52 @@ def read_shard(shard: str | Path, corpus: str | Path | None = None) -> list[dict
             continue
         p = Path(raw)
         row["xml_path"] = str(p if p.is_absolute() else base / p)
-        row.setdefault("pmcid", Path(row["xml_path"]).name.split(".")[0])
+        # A PMC-named file's key is its name (no parse); any other file's is
+        # left to extract_articles, which reads the article's own PMC id
+        # (jats.record_key). An explicit pmcid on the line always wins.
+        if not row.get("pmcid") and pmc_stem(row["xml_path"]):
+            row["pmcid"] = pmc_stem(row["xml_path"])
         items.append(row)
     return items
 
 
 def walk_corpus(corpus: str | Path, tree: str = "clean") -> list[dict]:
-    """Walk ``corpus/tree/**/*.xml`` -> shard items, sorted for determinism."""
+    """Walk ``corpus/tree/**/*.xml`` and ``**/*.nxml`` (the PMC OA bulk
+    package's suffix, which the in-process route loads too) -> shard items,
+    sorted for determinism.
+
+    A PMC-named file carries its key (``pmcid``) from the name; any other
+    file's key is resolved by :func:`extract_articles` (``jats.record_key``)."""
     root = Path(corpus) / tree
-    return [{"pmcid": f.name.split(".")[0], "xml_path": str(f)}
-            for f in sorted(root.rglob("*.xml"))]
+    items: list[dict] = []
+    # Suffixes case-insensitively (``PMC1.XML``), as manifest.py and the
+    # loader registry match them (#975 round 3 nit 10).
+    files = {f for f in root.rglob("*")
+             if f.name.lower().endswith(JATS_SUFFIXES)}
+    for f in sorted(files):
+        item = {"pmcid": pmc_stem(f), "xml_path": str(f)}
+        if not item["pmcid"]:
+            del item["pmcid"]
+        items.append(item)
+    return items
 
 
 def _attach_structure(record: dict, spans: list, units: dict,
                       structure_dropped: Counter[str]) -> None:
-    """Build, validate and attach one record's ``jats/1`` structure (#828 §4).
+    """Attach one record's ``jats/1`` structure (#828 §4), or count its drop.
 
-    Article records get :func:`article_structure` from the article spans, unit
-    records :func:`unit_structure` from their layout. On success the structure
-    is the record's LAST top-level key, ``structure`` (never inside
-    ``metadata``). On any failure — an adapter ``ValueError``, any other
-    exception, a :class:`StructureInvalid` — no key is written, the drop is
-    counted under the validator's reason (or the exception class name), one
-    stderr line says so, and the record is kept exactly as it was."""
-    kind = record["metadata"].get("content_type", "article")
-    text = record["text"]
-    try:
-        if kind == "article":
-            structure = article_structure(text, spans)
-        else:
-            layout, supplementary = units[record["path"]]
-            structure = unit_structure(text, layout, kind=kind, supplementary=supplementary)
-        validate_structure(structure, text)
-        dumped = structure.model_dump()
-    except StructureInvalid as e:
-        reason = e.reason
-    except Exception as e:  # noqa: BLE001 - a dropped structure, never a crashed file
-        reason = type(e).__name__
-    else:
+    The structure is built and validated by
+    :func:`ragstack.ingestion.jats_structure.record_structure` — the same
+    helper the in-process ``JatsLoader`` uses, so the two cannot disagree. On
+    success it is the record's LAST top-level key, ``structure`` (never inside
+    ``metadata``). On failure no key is written, the drop is counted under the
+    reason the helper gave (the validator's reason, or the exception class
+    name), one stderr line says so, and the record is kept exactly as it was."""
+    dumped, reason = record_structure(record, spans, units)
+    if dumped is not None:
         record["structure"] = dumped
         return
+    assert reason is not None
     structure_dropped[reason] += 1
     print(f"jats_extract: {record['path']}: structure dropped ({reason})", file=sys.stderr)
 
@@ -223,7 +248,20 @@ def extract_articles(
     records: list[dict] = []
     skipped: list[dict] = []
     for item in items:
-        pmcid = item.get("pmcid") or Path(item["xml_path"]).name.split(".")[0]
+        # The record key (jats.record_key): the item's explicit pmcid, else a
+        # PMC-named file's stem, else the article's own PMC id, else the
+        # file's resolved path — the rule JatsLoader keys the in-process
+        # records on.
+        # A key that cannot be computed (a symlink loop: ``Path.resolve()``
+        # raises RuntimeError) skips its file, never the shard (#975 round 3
+        # nit 5).
+        try:
+            pmcid = item.get("pmcid") or file_record_key(item["xml_path"])
+        except (OSError, RuntimeError, ValueError) as e:
+            skipped.append({"path": str(item["xml_path"]),
+                            "pmcid": Path(item["xml_path"]).name, "kind": "article",
+                            "reason": f"record key: {type(e).__name__}: {e}"})
+            continue
         row = dict(manifest.get(pmcid, {}))
         row.update({k: v for k, v in item.items()
                     if k not in ("xml_path", "pmcid") and v not in (None, "")})

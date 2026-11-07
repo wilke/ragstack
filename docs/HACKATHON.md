@@ -130,8 +130,12 @@ These are real and current. None of them will lose your data.
   checks the declared type, not the file extension. `curl -F files=@notes.md`
   sends `application/octet-stream` and is refused; `-F "files=@notes.md;type=text/markdown"`
   works.
-- **`.xml` is accepted and then fails** during processing with "no loader for
-  .xml". Convert to text or PDF.
+- **`.xml` (JATS) is ingested only by a server that runs the work in process.**
+  There one JATS article becomes several documents: the article and each table
+  and figure. A deployment that hands ingest to GoWe still fails the item with
+  "no loader for .xml" until its worker image is updated; convert to text or PDF
+  there. A file of any other type is accepted and then fails with
+  "no loader for <suffix>".
 - **One ingest job at a time.** Starting a second while one is running returns
   429. Wait for the first to finish.
 - **A failed ingest will not tell you why.** The status goes to `failed` with no

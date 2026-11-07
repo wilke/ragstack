@@ -144,15 +144,17 @@ All citations below are repo-relative paths at `main` 22b44be. `python/ragstack/
 **What it is:** `ragstack/ingestion/loaders.py` `LoaderRegistry` is the single ingest ingress. It confines a source path to `ingest_root` (the LFI guard), enforces a per-file size ceiling (the DoS guard), then dispatches on file suffix. It satisfies the `DocumentLoader` protocol, so it drops into `IngestionPipeline` in place of a bare loader.
 
 **Algorithm / workflow:**
-1. `LoaderRegistry.__init__` resolves `ingest_root` once, stores `max_bytes`, and defaults to `TextFileLoader`.
-2. `default_loader_registry(ingest_root, max_bytes, profile)` registers `.pdf` → `PdfLoader`, `.txt` / `.md` → one shared `TextFileLoader`, and `.jsonl` → `JsonlLoader(profile=profile)`. `DEFAULT_INGEST_SUFFIXES` is the matching tuple that a directory ingest enqueues.
+1. `LoaderRegistry.__init__` resolves `ingest_root` once and stores `max_bytes`. There is no default loader (#833 item 1).
+2. `default_loader_registry(ingest_root, max_bytes, profile)` registers `.pdf` → `PdfLoader`, `.txt` / `.md` → one shared `TextFileLoader`, `.jsonl` → `JsonlLoader(profile=profile)`, and `.xml` / `.nxml` → one shared `JatsLoader(profile=profile)` (#828 PR 5a: one JATS article → the article record plus one per table and figure, ids keyed on `jats.record_key` — a PMC-named file's stem, else the article's own PMC id, else the file's resolved path (the key a PDF there gets) — built through `JsonlLoader._document` with `JATS_PASSTHROUGH_KEYS`). `DEFAULT_INGEST_SUFFIXES` is the matching tuple that a directory ingest enqueues.
 3. `load(source)` → `_resolve(source)` → `confine_to_root(source, root)`. `Path.resolve()` collapses `..` and follows symlinks. Anything that is neither the root nor `is_relative_to(root)` raises `LoaderError("source is outside the permitted ingest root")`. Directory-manifest builds call the same function, so the guard has one home.
 4. `_resolve` then rejects non-files (`source not found`) and, when `max_bytes` is truthy, files over the limit.
-5. It looks up the loader by `path.suffix.lower()`, falling back to the default.
+5. It looks up the loader by the resolved path's lowercased suffix, or, only when that path has no suffix at all, by the suffix of the path as given (a `notes.md` link to a suffix-less blob, as in the HF hub cache, git-annex or DVC). There is no default: a source with no registered suffix raises `NoLoader(LoaderError)` before the file is read (#833 item 1). The loader always gets the resolved path.
 6. Failure classes (new since the old doc):
    - `LoaderError` carries caller-safe messages only.
    - `NoTextExtracted(LoaderError)` is raised for an image-only PDF. It carries the constant `job_error = NO_TEXT_ERROR` ("no extractable text (scanned PDF?)"), so a job can count such items with a GROUP BY.
-   - `no_loader_error(suffix)` produces a constant per-suffix string ("no loader for .xml") for staged files with no registered loader (#202).
+   - `no_loader_error(suffix)` produces a constant per-suffix string ("no loader for .rst") for files with no registered loader (#202). It is `NoLoader.job_error`, the upload staging refusal and the GoWe extract step's row error alike.
+   - `NoJatsContent(LoaderError)` is raised for a well-formed `.xml` whose document element is not `<article>`, or that has no JATS record; `job_error = NO_JATS_CONTENT_ERROR` ("no JATS article content (not a JATS article?)").
+   - `JatsParseError(LoaderError)` is raised for a `.xml` that is not well-formed; `job_error = JATS_PARSE_ERROR` ("could not parse JATS XML").
 
 **Tools & models:** stdlib only (`pathlib`, `uuid.uuid5`).
 
@@ -173,7 +175,7 @@ flowchart TD
     D -- "yes" --> G{"max_bytes set and exceeded?"}
     G -- "yes" --> H["LoaderError: too large"]
     G -- "no" --> I["lookup loader by lowercased suffix"]
-    I --> J["PdfLoader / TextFileLoader / JsonlLoader, else default TextFileLoader"]
+    I --> J["PdfLoader / TextFileLoader / JsonlLoader / JatsLoader, else NoLoader"]
     J --> K["list of Document with deterministic uuid5 ids"]
 ```
 

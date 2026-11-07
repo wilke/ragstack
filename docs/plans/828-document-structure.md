@@ -1223,6 +1223,40 @@ check real. PR 7 is the chunking change. PR 8 is the only one that can be wrong 
 document, and it lands after the thing that measures it. (The draft numbered these 1–9 with
 PR 3 absent; old PR 3 is now 4, 4a/4b are 5a/5b, and 5–9 are 6–10.)
 
+**Status of row 5a: landed** (branch `feat/828-pr5a-jats-parity`). The three-path
+parity test is `python/tests/ingestion/test_jats_parity.py`. Deviations from the row
+as written:
+
+- **The duplicate guard needed a family rule.** Every record of one JATS file
+  carries the article's DOI/PMCID, so under `duplicate_policy=refuse` a fresh
+  in-process ingest indexed only the article and refused its table and figure
+  records as duplicates of it. `work_identity.same_record_family` treats `PMC1` and
+  `PMC1#table-1` as one work.
+- **The refusal message carries a label.** `NoLoader`'s message is
+  `no loader for .rst [no_loader]` so the per-item log line is countable; the
+  item's `job_error`, the string the API and the receipt carry, is exactly
+  `no loader for .rst`.
+- **The JATS conformance case checks retrieval by `content_type=table`**, on the
+  Python keyed boot only (Go has no ingest): the table being its own document is
+  what only the JATS loader produces, so a regression to reading the XML as text
+  cannot pass it. The unknown-suffix request-level case runs on both
+  implementations.
+- **`.xml` on path B waits for the next tools-image repin** (ADR-0010); until then
+  path A ingests an `.xml` that path B refuses as `no loader for .xml`. The GoWe
+  receipt rows for a JATS file are keyed by record, not by file name (#974).
+- **One record key, not the first-dot stem** (#975 review, rounds 1–2). The stem up
+  to the first `.` folded every PLOS file (`journal.pone.….xml`) to `journal`.
+  `jats.record_key` keeps a PMC-named file's stem literally (every existing id
+  unchanged), else takes the article's own PMC id, else the file's resolved path —
+  the key a PDF at that path gets — on all three paths. A key from a bare name let
+  two different works share ids (`*/main.xml`, two `paper.xml` uploads), and the
+  round-1 id-collision refusal that tried to catch that was per document, blind
+  within a job, capped on Elasticsearch, and refused legitimate re-ingests whose
+  DOI changed; round 2 removed the cause and the refusal with it. The family rule
+  admits only the unit grammar `jats.py` emits (`#table-N`, `#figure-N`,
+  `-part-M`), with a root that may be a path. A one-article `<pmc-articleset>` is
+  unwrapped on every path. `.nxml` is registered alongside `.xml`.
+
 ---
 
 ## 13. Compatibility, stated plainly

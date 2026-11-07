@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from collections import Counter
@@ -18,9 +19,13 @@ from ragstack.ingestion.enrich import (
     enrich,
     index_metadata,
 )
+from ragstack.ingestion.jats import JATS_PASSTHROUGH_KEYS, convert_file, inherit_article_ids
+from ragstack.ingestion.jats_structure import record_structure
 from ragstack.ingestion.structure import structure_from_record
 from ragstack.models import Document
 from ragstack.protocols import DocumentLoader
+
+log = logging.getLogger(__name__)
 
 # Namespace for deriving *deterministic* document IDs. Chunk IDs — and therefore
 # the Qdrant point IDs (uuid5 of the chunk ID, see stores/qdrant.py) — are derived
@@ -69,10 +74,44 @@ NO_LOADER_LABEL = "no_loader"
 
 
 def no_loader_error(suffix: str) -> str:
-    """The per-item job error for a staged file whose suffix has no loader
-    (#202): constant per suffix, so it is countable like :data:`NO_TEXT_ERROR`
-    — ``"no loader for .xml"``."""
+    """The per-item job error for a file whose suffix has no loader (#202,
+    #833 item 1): constant per suffix, so it is countable like
+    :data:`NO_TEXT_ERROR` — ``"no loader for .rst"``. The same string on every
+    path: the upload staging refusal, :class:`NoLoader` from
+    :meth:`LoaderRegistry.load` (by-reference ingest), and the GoWe extract
+    step (``scripts/pdf_extract.py``)."""
     return f"no loader for {suffix.lower() or '(no suffix)'}"
+
+
+class NoLoader(LoaderError):
+    """A source whose suffix has no registered loader (#833 item 1).
+
+    Raised by :meth:`LoaderRegistry.load` BEFORE a byte of the file is read:
+    an unknown suffix is refused, never read as text (it used to fall back to
+    :class:`TextFileLoader`, so a by-reference ``.rst`` or ``.csv`` was
+    ingested as raw text while the upload and GoWe paths refused it). The
+    item's ``job_error`` is :func:`no_loader_error`; the message carries the
+    :data:`NO_LOADER_LABEL` too, so the per-item warning line is countable."""
+
+    job_error: str
+
+    def __init__(self, suffix: str) -> None:
+        self.suffix = suffix
+        self.job_error = no_loader_error(suffix)
+        super().__init__(f"{self.job_error} [{NO_LOADER_LABEL}]")
+
+
+#: The per-item job error for a well-formed ``.xml`` that yields no JATS
+#: record at all — no abstract/body prose and no table or figure (#828 PR 5a):
+#: most likely not a JATS article. Constant, like :data:`NO_TEXT_ERROR`.
+NO_JATS_CONTENT_ERROR = "no JATS article content (not a JATS article?)"
+NO_JATS_CONTENT_LABEL = "no_jats_content"
+
+#: The per-item job error for a ``.xml``/``.nxml`` that is not well-formed XML
+#: (#828 PR 5a). Constant (no file name — the item id names the file), so it
+#: counts like :data:`NO_TEXT_ERROR`.
+JATS_PARSE_ERROR = "could not parse JATS XML"
+JATS_PARSE_LABEL = "jats_parse_error"
 
 
 class NoTextExtracted(LoaderError):
@@ -83,6 +122,23 @@ class NoTextExtracted(LoaderError):
     job is visible (the data #202's OCR decision needs)."""
 
     job_error = NO_TEXT_ERROR
+
+
+class NoJatsContent(LoaderError):
+    """A well-formed XML file that produced no JATS record (#828 PR 5a) — a
+    document element other than ``<article>`` (``<config/>``, an XHTML page),
+    or an article with neither prose nor floats. The item records the
+    actionable :data:`NO_JATS_CONTENT_ERROR`."""
+
+    job_error = NO_JATS_CONTENT_ERROR
+
+
+class JatsParseError(LoaderError):
+    """A ``.xml``/``.nxml`` that is not well-formed XML (#828 PR 5a). The item
+    records the constant :data:`JATS_PARSE_ERROR`; the message names the file
+    and carries :data:`JATS_PARSE_LABEL` for the warning line."""
+
+    job_error = JATS_PARSE_ERROR
 
 
 def confine_to_root(source: str, root: str | Path | None) -> Path:
@@ -417,6 +473,9 @@ class JsonlLoader:
                     docs.append(doc)
         if not docs:
             raise LoaderError("no usable documents in JSONL source")
+        # A JATS unit record takes its article's ids (#975 round 3, argo S1a):
+        # ``enrich`` never derives a unit's DOI from its own text.
+        inherit_article_ids(docs)
         return docs
 
     def _metadata(self, enriched: EnrichedDoc, record: dict) -> dict[str, Any]:
@@ -505,6 +564,94 @@ class JsonlLoader:
         )
 
 
+class JatsLoader:
+    """Load one JATS XML article as its records: the article, and each table
+    and figure (#828 PR 5a, #833 item 2).
+
+    The in-process route to what ``scripts/jats_extract.py`` + ``JsonlLoader``
+    produce (path C of #828 §8), built from the same three pieces so the two
+    cannot drift:
+
+    1. the parser — :func:`ragstack.ingestion.jats.convert_file` with
+       ``with_spans=True``; the record key is
+       :func:`ragstack.ingestion.jats.record_key` (``PMC123.1.xml`` →
+       ``PMC123``; else the article's own PMC id; else the file's resolved
+       path), the rule ``jats_extract`` keys its records on;
+    2. the structure — :func:`ragstack.ingestion.jats_structure.record_structure`,
+       the helper ``jats_extract`` writes the shard's ``structure`` key with;
+    3. the ``Document`` — :meth:`JsonlLoader._document` of a ``JsonlLoader``
+       with ``passthrough_keys=JATS_PASSTHROUGH_KEYS`` (the
+       ``cwl/jats-ingest.cwl`` default): the same enrich, ``index_metadata``,
+       passthrough and ``structure_from_record`` code a shard record goes
+       through. So a PMC-keyed file's ``Document.id`` is
+       ``deterministic_doc_id("PMC123")`` (the record ``path`` is a relative,
+       opaque id) and its ``Document.source`` is ``"PMC123"`` /
+       ``"PMC123#table-1"``. A file with no PMC id in its name or its article
+       is keyed on its resolved path: the article record's ``path`` is
+       ``/corpus/paper.xml``, an absolute path ``_document`` resolves again
+       (a no-op), so its ``Document.id`` is the id ``PdfLoader`` gives a file
+       at that path, and its units are ``/corpus/paper.xml#table-1``. Two
+       files share ids only when they name one PMC id (one work: a replace)
+       or are one file.
+
+    The key is read from the path the registry hands over — the RESOLVED,
+    confined path, so a symlink ``PMC4.xml → store/abc123.xml`` keys on
+    ``store/abc123.xml`` unless the article carries a PMC id.
+
+    Units are split by CHARACTER budgets only (``count_tokens=None``):
+    ``jats_extract`` defaults to an HF tokenizer budget the API image does not
+    carry, so an oversized table can split differently (and get other unit
+    ids) on the two routes; a table under the budget is identical.
+
+    A file that does not parse raises :class:`JatsParseError`
+    (:data:`JATS_PARSE_ERROR`); a well-formed file whose document element is
+    not ``<article>`` (a ``<pmc-articleset>`` holding exactly one is that
+    article; one holding several is refused), or that yields no record,
+    raises :class:`NoJatsContent`; a file that cannot be read, a bare
+    :class:`LoaderError`. Never returns ``[]``. A record whose
+    structure cannot be built is kept without one and counted in
+    :attr:`dropped` (``structure_invalid``), as ``jats_extract`` counts it.
+    """
+
+    def __init__(self, profile: PublisherProfile | None = None) -> None:
+        self._records = JsonlLoader(profile=profile, passthrough_keys=JATS_PASSTHROUGH_KEYS)
+        #: The record loader's drop report, shared: passthrough drops and
+        #: structure drops, accumulated across ``load()`` calls.
+        self.dropped = self._records.dropped
+
+    def load(self, source: str) -> list[Document]:
+        path = Path(source)
+        records, skipped, spans, units = convert_file(
+            path, with_spans=True, require_article=True)
+        failed = next((s for s in skipped if s.get("kind") == "article"), None)
+        if failed is not None:
+            # convert_file reports a file it could not convert as a skip; here
+            # it is the item's failure. Caller-safe messages: name only.
+            why = str(failed.get("reason", ""))
+            if why.startswith("parse error"):
+                raise JatsParseError(
+                    f"{JATS_PARSE_ERROR} '{path.name}' [{JATS_PARSE_LABEL}]")
+            if why.startswith("not a JATS article"):
+                raise NoJatsContent(f"not a JATS article: '{path.name}' "
+                                    f"[{NO_JATS_CONTENT_LABEL}]")
+            raise LoaderError(f"could not read JATS XML '{path.name}'")
+        docs: list[Document] = []
+        for record in records:
+            dumped, reason = record_structure(record, spans, units)
+            if dumped is not None:
+                record["structure"] = dumped
+            else:
+                self.dropped.structure_invalid[str(reason)] += 1
+                log.warning("JatsLoader: %s: structure dropped (%s)", record["path"], reason)
+            doc = self._records._document(record)
+            if doc is not None:
+                docs.append(doc)
+        if not docs:
+            raise NoJatsContent(f"no JATS article content in '{path.name}'")
+        inherit_article_ids(docs)  # as JsonlLoader.load (#975 round 3, argo S1a)
+        return docs
+
+
 class LoaderRegistry:
     """Dispatch a source path to a loader by file extension.
 
@@ -513,37 +660,59 @@ class LoaderRegistry:
     (LFI) exposure of feeding ``request.source`` straight into ``open()`` — and
     (2) rejects oversized inputs. Satisfies the ``DocumentLoader`` protocol so it
     drops into the pipeline in place of a bare loader.
+
+    A suffix with no registration is REFUSED with :class:`NoLoader`, never read
+    (#833 item 1): there is no default loader. It used to be
+    :class:`TextFileLoader`, which ingested a by-reference ``.rst``/``.csv``
+    as raw text while the upload and GoWe paths refused it.
     """
 
-    def __init__(
-        self,
-        ingest_root: str | None = None,
-        max_bytes: int = 0,
-        default: DocumentLoader | None = None,
-    ) -> None:
+    def __init__(self, ingest_root: str | None = None, max_bytes: int = 0) -> None:
         self._root = Path(ingest_root).resolve() if ingest_root else None
         self._max_bytes = max_bytes
         self._loaders: dict[str, DocumentLoader] = {}
-        self._default: DocumentLoader = default if default is not None else TextFileLoader()
 
     def register(self, suffix: str, loader: DocumentLoader) -> None:
         self._loaders[suffix.lower()] = loader
 
+    def _dispatch(self, given: Path, resolved: Path) -> tuple[DocumentLoader | None, str]:
+        """``(loader, suffix)`` for one source: the RESOLVED path's suffix
+        decides. Only when the resolved path has NO suffix at all does the
+        suffix of the path AS GIVEN decide instead: a link to a
+        content-addressed blob (``notes.md → ../blobs/<sha256>``: the HF hub
+        cache, DVC), which a directory ingest enqueues by the link's suffix.
+        A target with a suffix of its own is dispatched on it, registered or
+        not — ``report.md → report.docx`` is ``no loader for .docx``, its
+        bytes never read as text. ``(None, suffix)`` names the suffix the
+        refusal reports: the resolved one, else the given one."""
+        sfx = (resolved.suffix or given.suffix).lower()
+        loader = self._loaders.get(sfx) if sfx else None
+        return loader, sfx
+
+    def dispatch(self, source: str) -> tuple[DocumentLoader | None, str]:
+        """:meth:`_dispatch` of ``source`` — the decision :meth:`load` takes,
+        without confinement, existence or size check (a path that cannot be
+        resolved is taken as given)."""
+        given = Path(source)
+        try:
+            resolved = given.resolve()
+        except (OSError, RuntimeError):
+            resolved = given
+        return self._dispatch(given, resolved)
+
     def loader_for(self, source: str) -> DocumentLoader | None:
-        """The loader registered for ``source``'s suffix, or ``None`` when the
-        suffix has no registration (where :meth:`load` would fall back to the
-        default loader). Dispatch only: no confinement, existence or size check.
+        """The loader :meth:`load` would dispatch ``source`` to, or ``None``
+        when its suffix has no registration (where :meth:`load` raises
+        :class:`NoLoader`). Dispatch only: no confinement, existence or size
+        check.
 
         Lets a caller outside the API process (the GoWe extract tool, #828) ask
         the SAME suffix map the in-process path loads through, instead of
         keeping its own copy that can drift — the drift that sent ``.md`` files
-        through PyMuPDF on one path and ``TextFileLoader`` on the other.
-
-        Note the suffix is read from ``source`` AS GIVEN, while :meth:`load`
-        dispatches on the suffix of the RESOLVED path — they differ for a
-        symlink whose target has another suffix. Callers that pair the two
-        (the extract tool) resolve the path first."""
-        return self._loaders.get(Path(source).suffix.lower())
+        through PyMuPDF on one path and ``TextFileLoader`` on the other. Reads
+        the same suffix as :meth:`load` (the resolved path's; the path's as
+        given only when the resolved one has none)."""
+        return self.dispatch(source)[0]
 
     def _resolve(self, source: str) -> Path:
         path = confine_to_root(source, self._root)
@@ -555,13 +724,18 @@ class LoaderRegistry:
 
     def load(self, source: str) -> list[Document]:
         path = self._resolve(source)
-        loader = self._loaders.get(path.suffix.lower(), self._default)
+        loader, suffix = self._dispatch(Path(source), path)
+        if loader is None:
+            raise NoLoader(suffix)
+        # The loader always gets the RESOLVED (confined) path.
         return loader.load(str(path))
 
 
 # Suffixes the built-in registry handles — the single source of truth for what a
-# directory ingest enqueues. Keep default_loader_registry registrations in sync.
-DEFAULT_INGEST_SUFFIXES = (".pdf", ".txt", ".md", ".jsonl")
+# directory ingest enqueues (and what the upload staging, the file-name
+# duplicate pre-check and ``work_identity.ids_from_filename`` treat as
+# ingestable). Keep default_loader_registry registrations in sync.
+DEFAULT_INGEST_SUFFIXES = (".pdf", ".txt", ".md", ".jsonl", ".xml", ".nxml")
 
 
 def default_loader_registry(
@@ -569,10 +743,12 @@ def default_loader_registry(
     max_bytes: int = 0,
     profile: PublisherProfile | None = None,
 ) -> LoaderRegistry:
-    """A registry wired with the built-in loaders (PDF + text/markdown + JSONL).
+    """A registry wired with the built-in loaders (PDF + text/markdown + JSONL +
+    JATS XML). Any other suffix is refused (:class:`NoLoader`).
 
-    ``profile`` is the publisher profile the JSONL loader enriches with (DOI
-    prefix / filename rule / front-matter set); ``None`` keeps the ASM default.
+    ``profile`` is the publisher profile the JSONL and JATS loaders enrich with
+    (DOI prefix / filename rule / front-matter set); ``None`` keeps the ASM
+    default.
 
     Note ``.jsonl`` is a *batch* format — one file yields many documents. The
     registry's ``max_bytes`` guard still applies per file, so very large corpora
@@ -586,4 +762,7 @@ def default_loader_registry(
     registry.register(".txt", text)
     registry.register(".md", text)
     registry.register(".jsonl", JsonlLoader(profile=profile))
+    jats_loader = JatsLoader(profile=profile)
+    registry.register(".xml", jats_loader)
+    registry.register(".nxml", jats_loader)  # the PMC OA bulk package's suffix
     return registry

@@ -46,11 +46,17 @@ leading label, a caption block carrying the normalised label, and a
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 from ragstack.ingestion.jats import Span, UnitLayout
-from ragstack.ingestion.structure import DECLARED_VERSION, content_sha256, normalise_label
+from ragstack.ingestion.structure import (
+    DECLARED_VERSION,
+    StructureInvalid,
+    content_sha256,
+    normalise_label,
+    validate_structure,
+)
 from ragstack.models import Block, DocumentStructure, Section
 
 #: The adapter's identity, in ``DocumentStructure.adapter`` and in
@@ -242,6 +248,47 @@ def unit_structure(text: str, layout: UnitLayout, *,
     )
 
 
+def record_structure(
+    record: Mapping[str, Any],
+    spans: Sequence[Span],
+    units: Mapping[str, tuple[UnitLayout, bool]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Build, validate and serialise one JATS record's ``jats/1`` structure.
+
+    The ONE place a JATS record gets its structure, for both carriers of it:
+    ``scripts/jats_extract.py`` writes the result as the shard record's
+    top-level ``structure`` key (#828 §4), and the in-process
+    :class:`~ragstack.ingestion.loaders.JatsLoader` (#828 PR 5a) puts it on the
+    record before building the :class:`~ragstack.models.Document` from it the
+    way :class:`~ragstack.ingestion.loaders.JsonlLoader` does.
+
+    ``record`` is one record of ``jats.convert_file(..., with_spans=True)``;
+    ``spans`` and ``units`` are the span list and unit map the same call
+    returned. Article records get :func:`article_structure` from the article
+    spans, unit records :func:`unit_structure` from their layout.
+
+    Returns ``(structure.model_dump(), None)`` on success, and
+    ``(None, reason)`` on any failure — an adapter ``ValueError``, any other
+    exception, a :class:`~ragstack.ingestion.structure.StructureInvalid` — with
+    ``reason`` the validator's reason, or the exception class name. Never
+    raises: a structure that cannot be built is dropped and counted by the
+    caller, never a crashed file."""
+    kind = record["metadata"].get("content_type", "article")
+    text = record["text"]
+    try:
+        if kind == "article":
+            structure = article_structure(text, spans)
+        else:
+            layout, supplementary = units[record["path"]]
+            structure = unit_structure(text, layout, kind=kind, supplementary=supplementary)
+        validate_structure(structure, text)
+        return structure.model_dump(), None
+    except StructureInvalid as e:
+        return None, e.reason
+    except Exception as e:  # noqa: BLE001 - a dropped structure, never a crashed file
+        return None, type(e).__name__
+
+
 def _extend_ends(sections: list[Section], parent_of: list[int | None], n: int) -> None:
     """§2 invariant 3, top-down: each section ends at its next sibling's start,
     else at its parent's already-extended end, else (level 1) at ``n``.
@@ -260,4 +307,4 @@ def _extend_ends(sections: list[Section], parent_of: list[int | None], n: int) -
 
 
 __all__ = ["ADAPTER", "DECLARED_SEC_TYPES", "LEAF_BLOCK_KINDS", "article_structure",
-           "declared_roles", "unit_structure"]
+           "declared_roles", "record_structure", "unit_structure"]

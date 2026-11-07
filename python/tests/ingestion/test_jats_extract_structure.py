@@ -25,7 +25,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from ragstack.ingestion import jats
+from ragstack.ingestion import jats, jats_structure
 from ragstack.ingestion.jats_structure import ADAPTER
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.receipts import ShardReceipt
@@ -122,7 +122,9 @@ def test_a_failed_adapter_drops_the_structure_not_the_record(tmp_path, monkeypat
     def boom(text, spans):
         raise ValueError("synthetic adapter failure")
 
-    monkeypatch.setattr(jats_extract, "article_structure", boom)
+    # The adapter is called by jats_structure.record_structure (#828 PR 5a
+    # moved the build+validate there, shared with JatsLoader): patch it there.
+    monkeypatch.setattr(jats_structure, "article_structure", boom)
     shard, report = _extract(tmp_path)
     lines = shard.read_text(encoding="utf-8").splitlines()
     recs = {json.loads(x)["path"]: x for x in lines}
@@ -137,12 +139,12 @@ def test_a_failed_adapter_drops_the_structure_not_the_record(tmp_path, monkeypat
 
 
 def test_an_invalid_structure_is_dropped_under_the_validators_reason(tmp_path, monkeypatch):
-    real = jats_extract.unit_structure
+    real = jats_structure.unit_structure
 
     def stale(text, layout, **kw):
         return real(text + "x", layout, **kw)                  # bound to another text
 
-    monkeypatch.setattr(jats_extract, "unit_structure", stale)
+    monkeypatch.setattr(jats_structure, "unit_structure", stale)
     shard, report = _extract(tmp_path)
     recs = {r["path"]: r for r in _lines(shard)}
     plain = _plain_records()

@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Re-exported: the coercions live in the dependency-free leaf so a CPU-only CWL
 # worker (ingestion/jats.py) can import them without pydantic. Kept importable
 # from here because this is where year handling has always lived.
+from ragstack.ingestion.jats import unit_root
 from ragstack.metadata_schema import (  # noqa: F401
     MIN_PLAUSIBLE_YEAR,
     coerce_year,
@@ -141,18 +142,38 @@ def resolve_profile(name: str | None) -> PublisherProfile:
     return PROFILES.get(name.strip().lower(), DEFAULT_PROFILE)
 
 
-def parse_authors(raw: str) -> list[str]:
-    """Split the extractor's ``;``-separated author string into a clean list."""
+def _clean_list(raw: list[Any] | tuple[Any, ...]) -> list[str]:
+    """An already-split list, cleaned: string items stripped, blank and
+    non-string items dropped. Never re-split — a list is the split result."""
+    return [v.strip() for v in raw if isinstance(v, str) and v.strip()]
+
+
+def parse_authors(raw: str | list[Any] | tuple[Any, ...]) -> list[str]:
+    """Split the extractor's ``;``-separated author string into a clean list.
+
+    A list (or tuple) is accepted too and returned cleaned, not re-split: it is
+    what :func:`enrich` itself emits, so a record whose metadata was enriched
+    once already (#828 PR 5a: the GoWe extract step writes a ``JatsLoader``
+    document's enriched metadata to the shard, and ``JsonlLoader`` enriches it
+    again) round-trips instead of raising ``TypeError``. A string is split
+    exactly as before."""
     if not raw:
         return []
+    if isinstance(raw, list | tuple):
+        return _clean_list(raw)
     parts = re.split(r"[;\n]", raw)
     return [a.strip() for a in parts if a.strip()]
 
 
-def split_keywords(raw: str) -> list[str]:
-    """Split a keywords string on the usual separators (``;`` / ``,``)."""
+def split_keywords(raw: str | list[Any] | tuple[Any, ...]) -> list[str]:
+    """Split a keywords string on the usual separators (``;`` / ``,``).
+
+    A list (or tuple) is returned cleaned, not re-split, as in
+    :func:`parse_authors`."""
     if not raw:
         return []
+    if isinstance(raw, list | tuple):
+        return _clean_list(raw)
     parts = re.split(r"[;,\n]", raw)
     return [k.strip() for k in parts if k.strip()]
 
@@ -439,7 +460,12 @@ def enrich(
     meta = record.get("metadata") or {}
 
     doc_type = classify(path, text, profile)
-    doi, doi_source = derive_doi(path, text, meta.get("doi", ""), profile=profile)
+    # A JATS unit record (``PMC1#table-2``) gets no DOI from its own text: a
+    # table of included studies names OTHER works (#975 round 3, argo S1a).
+    # Its record's DOI, or its article's (``jats.inherit_article_ids``,
+    # applied by the loaders), is its DOI.
+    doi, doi_source = derive_doi(path, "" if unit_root(path) else text,
+                                 meta.get("doi", ""), profile=profile)
     citations = extract_citations(text) if doc_type == ARTICLE else []
 
     return EnrichedDoc(

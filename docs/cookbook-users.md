@@ -139,8 +139,13 @@ fails.) On such a deployment, do not build a Markdown collection through GoWe.
 PDF, plain text, Markdown and XML (JATS) are accepted — the deployment's
 `UPLOAD_CONTENT_TYPES`; anything else, or a "PDF" that does not start with
 `%PDF`, is `415`. ≤ 50 MB each (`413`), ≤ 50 files and ≤ 500 MB per request.
-An `.xml` file is accepted but has no loader yet: its *item* fails with
-`no loader for .xml` (on a GoWe deployment, since #828).
+An `.xml` file must be a JATS article. A local (in-process) deployment ingests
+it as several documents — the article, plus one per table and per figure, each
+with `content_type` set (`article`/`table`/`figure`) so you can filter to tables.
+An XML file that is not a JATS article fails its item with
+`no JATS article content (not a JATS article?)`. On a GoWe deployment the item
+fails with `no loader for .xml` until the worker image carrying #828 PR 5a is
+deployed.
 
 Always pass `-F collection=…` as above. **If you omit it**, the upload goes to
 the first collection *you can write* — and if you own none, that is a `403`

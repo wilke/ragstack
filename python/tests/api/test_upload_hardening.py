@@ -257,43 +257,139 @@ async def test_text_and_markdown_are_accepted_and_ingested_local(client, rooted)
 
 
 @pytest.mark.asyncio
-async def test_xml_is_accepted_at_the_gate_but_fails_visibly_without_a_loader(
-    client, rooted, caplog
-):
-    """Pinned limitation (#202): JATS XML passes the allowlist and is staged as
-    ``.xml``, but the local loader registry has no ``.xml`` loader. The file
-    must not vanish: it becomes a FAILED item with the constant, countable
-    error ``no loader for .xml`` (and the run logs the ``no_loader`` count).
-    When a JATS loader lands this test must change to assert the item
-    completed."""
-    xml = b"<article><body><p>x</p></body></article>"
-    with caplog.at_level(logging.INFO, logger="ragstack.api.routers.documents"):
-        r = await client.post(
-            "/v1/ingest/upload", files=_files(("PMC1.xml", xml, "application/xml"))
-        )
+async def test_xml_is_accepted_at_the_gate_and_ingested_as_jats(client, rooted):
+    """JATS XML passes the allowlist, is staged as ``.xml`` and — since #828
+    PR 5a — loaded by ``JatsLoader``: one file, the article plus its table and
+    figure as separate documents. It used to fail with ``no loader for
+    .xml``. #975 F8: assert it is JATS, not just "completed" — MUTATION:
+    register ``.xml`` to the text loader → one document, no table."""
+    import tests.jats_support as t
+
+    xml = t._article("1", t.BODY_WITH_FLOATS).encode()
+    r = await client.post(
+        "/v1/ingest/upload", files=_files(("PMC1.xml", xml, "application/xml"))
+    )
     assert r.status_code == 202, r.text
     assert [p.name for p in _staged(rooted)] == ["PMC1.xml"]
     job_id = r.json()["job_id"]
     poll = await client.get(f"/v1/ingest/{job_id}")
-    assert poll.json()["status"] == "failed"  # every item failed
-    assert poll.json()["items"] == {"total": 1, "completed": 0, "failed": 1, "pending": 0}
-    (item,) = app.state.job_store._items[job_id].values()
-    assert item.status == FAILED and item.error == "no loader for .xml"
-    assert any(
-        "1 of 1 file(s) have no loader for their suffix [no_loader]" in rec.getMessage()
-        for rec in caplog.records
-    )
+    assert poll.json()["status"] == "completed"
+    assert poll.json()["items"] == {"total": 1, "completed": 1, "failed": 0, "pending": 0}
+    chunks = app.state.text_index._chunks
+    by_type = {c.metadata.get("content_type") for c in chunks}
+    assert by_type == {"article", "table", "figure"}
+    assert {c.metadata.get("source_path") for c in chunks} == {
+        "PMC1", "PMC1#table-1", "PMC1#figure-1"}
+    assert len({c.doc_id for c in chunks}) == 3
 
-    # Mixed: the supported file ingests, the unsupported one fails — the job is
-    # completed (partial failure), the counts say exactly what happened.
+    # Mixed with a text file: both complete.
     r = await client.post(
         "/v1/ingest/upload",
-        files=_files(("PMC2.xml", xml, "text/xml"), ("ok.txt", b"real text\n", "text/plain")),
+        files=_files(("PMC2.xml", t._article("2", "<p>Lead.</p>").encode(), "text/xml"),
+                     ("ok.txt", b"real text\n", "text/plain")),
     )
     assert r.status_code == 202, r.text
     poll = await client.get(f"/v1/ingest/{r.json()['job_id']}")
     assert poll.json()["status"] == "completed"
-    assert poll.json()["items"] == {"total": 2, "completed": 1, "failed": 1, "pending": 0}
+    assert poll.json()["items"] == {"total": 2, "completed": 2, "failed": 0, "pending": 0}
+
+
+@pytest.mark.asyncio
+async def test_nxml_upload_keeps_its_suffix_and_ingests(client, rooted):
+    """F9: ``.nxml`` (the PMC OA bulk suffix) is staged as itself."""
+    import tests.jats_support as t
+
+    r = await client.post("/v1/ingest/upload", files=_files(
+        ("PMC3.nxml", t._article("3", "<p>Lead.</p>").encode(), "application/xml")))
+    assert r.status_code == 202, r.text
+    assert [p.name for p in _staged(rooted)] == ["PMC3.nxml"]
+    assert (await client.get(f"/v1/ingest/{r.json()['job_id']}")).json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_an_xhtml_page_upload_is_not_a_jats_article(client, rooted):
+    """F3: an XHTML ``page.xml`` has ``<body><p>`` and used to ingest as an
+    "article" with ``pmcid='page'``. MUTATION: drop the root check → completed."""
+    from ragstack.ingestion.loaders import NO_JATS_CONTENT_ERROR
+
+    # No default namespace: the shape that reached the JATS walker (a
+    # namespaced XHTML page happens to find no <body> and failed anyway).
+    page = (b"<html><head><title>Page</title></head>"
+            b"<body><p>A web page paragraph that is long enough to be prose.</p></body></html>")
+    r = await client.post("/v1/ingest/upload",
+                          files=_files(("page.xml", page, "application/xml")))
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    assert (await client.get(f"/v1/ingest/{job_id}")).json()["status"] == "failed"
+    (item,) = app.state.job_store._items[job_id].values()
+    assert item.error == NO_JATS_CONTENT_ERROR
+    assert app.state.text_index._chunks == []
+
+
+@pytest.mark.asyncio
+async def test_unparseable_xml_upload_fails_with_the_constant(client, rooted):
+    """F4: the item error is the countable constant, not ``LoaderError``.
+    MUTATION: a bare LoaderError → the item says ``LoaderError``."""
+    from ragstack.ingestion.loaders import JATS_PARSE_ERROR
+
+    r = await client.post("/v1/ingest/upload", files=_files(
+        ("PMC9.xml", b"<article><body><p>never closed", "application/xml")))
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    assert (await client.get(f"/v1/ingest/{job_id}")).json()["status"] == "failed"
+    (item,) = app.state.job_store._items[job_id].values()
+    assert item.error == JATS_PARSE_ERROR == "could not parse JATS XML"
+
+
+@pytest.mark.asyncio
+async def test_xml_without_jats_content_fails_with_the_constant(client, rooted):
+    """A well-formed XML that is not a JATS article fails its item with the
+    actionable constant, not a class name (#828 PR 5a)."""
+    from ragstack.ingestion.loaders import NO_JATS_CONTENT_ERROR
+
+    r = await client.post(
+        "/v1/ingest/upload",
+        files=_files(("settings.xml", b"<config><a>1</a></config>", "application/xml")),
+    )
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    poll = await client.get(f"/v1/ingest/{job_id}")
+    assert poll.json()["status"] == "failed"
+    (item,) = app.state.job_store._items[job_id].values()
+    assert item.status == FAILED and item.error == NO_JATS_CONTENT_ERROR
+
+
+@pytest.mark.asyncio
+async def test_by_reference_unknown_suffix_fails_the_item_and_is_never_read(
+    client, rooted, caplog
+):
+    """#833 item 1: a by-reference single file is never suffix-filtered, so a
+    ``.rst`` used to reach the TextFileLoader fallback and be ingested as raw
+    text. Now: 200 accepted, the job ``failed``, its one item failed with the
+    constant ``no loader for .rst`` and the ``no_loader`` label in the log,
+    nothing indexed. MUTATION: restore the TextFileLoader default → the item
+    completes and the bytes are indexed."""
+    src = rooted / "notes.rst"
+    src.write_text("Title\n=====\n\nZZRSTZZ body text\n", encoding="utf-8")
+    with caplog.at_level(logging.INFO):
+        r = await client.post("/v1/ingest", json={"source": str(src)})
+    assert r.status_code == 200, r.text
+    job_id = r.json()["job_id"]
+    poll = await client.get(f"/v1/ingest/{job_id}")
+    assert poll.json()["status"] == "failed"
+    assert poll.json()["items"] == {"total": 1, "completed": 0, "failed": 1, "pending": 0}
+    (item,) = app.state.job_store._items[job_id].values()
+    assert item.status == FAILED and item.error == "no loader for .rst"
+    assert any("[no_loader]" in rec.getMessage() for rec in caplog.records)
+    assert not any("ZZRSTZZ" in c.content for c in app.state.text_index._chunks)
+
+    # The .txt control with the same bytes completes.
+    ctl = rooted / "notes.txt"
+    ctl.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    r = await client.post("/v1/ingest", json={"source": str(ctl)})
+    poll = await client.get(f"/v1/ingest/{r.json()['job_id']}")
+    assert poll.json()["status"] == "completed"
+    assert poll.json()["items"] == {"total": 1, "completed": 1, "failed": 0, "pending": 0}
 
 
 def test_sniff_is_one_helper_used_by_both_branches():
@@ -632,3 +728,24 @@ async def test_scanned_pdf_upload_yields_actionable_item_error_and_no_text_count
     ]
     assert counted and "1 of 2 item(s) failed with no extractable text (scanned PDF?)" in counted[0]
     assert job_id in counted[0]
+
+
+@pytest.mark.asyncio
+async def test_staging_refusal_still_fails_an_unregistered_suffix_visibly(caplog):
+    """No upload kind stages an unregistered suffix any more (``.xml`` was the
+    last), so ``_fail_unsupported_items`` is pinned directly: an unknown suffix
+    in the staging dir is a failed item with the constant, never a skip."""
+    from ragstack.ingestion.manifest import Manifest, WorkItem
+    from ragstack.jobstore import InMemoryJobStore
+
+    store = InMemoryJobStore()
+    job = await store.create("staging")
+    manifest = Manifest(items=[WorkItem(item_id="a", source="/s/a.rst"),
+                               WorkItem(item_id="b", source="/s/b.xml")])
+    with caplog.at_level(logging.INFO, logger="ragstack.api.routers.documents"):
+        kept = await docmod._fail_unsupported_items(store, job.job_id, manifest)
+    assert [i.source for i in kept.items] == ["/s/b.xml"]
+    (item,) = store._items[job.job_id].values()
+    assert item.status == FAILED and item.error == "no loader for .rst"
+    assert any("1 of 2 file(s) have no loader for their suffix [no_loader]"
+               in rec.getMessage() for rec in caplog.records)

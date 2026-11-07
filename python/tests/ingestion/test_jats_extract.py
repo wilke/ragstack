@@ -31,86 +31,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import jats_extract  # noqa: E402
 
 from ragstack.ingestion import jats  # noqa: E402
-
-FRONT = """
-  <front>
-    <journal-meta>
-      <journal-title-group><journal-title>J Synthetic Res</journal-title></journal-title-group>
-      <publisher><publisher-name>Test Publisher</publisher-name></publisher>
-    </journal-meta>
-    <article-meta>
-      <article-id pub-id-type="pmc">PMC{n}</article-id>
-      <article-id pub-id-type="pmid">99{n}</article-id>
-      <article-id pub-id-type="doi">10.1234/synth.{n}</article-id>
-      <title-group><article-title>A synthetic article {n}</article-title></title-group>
-      <contrib-group>
-        <contrib contrib-type="author">
-          <name><surname>Doe</surname><given-names>Jane</given-names></name>
-        </contrib>
-        <contrib contrib-type="author">
-          <name><surname>Roe</surname><given-names>Rick</given-names></name>
-        </contrib>
-      </contrib-group>
-      <pub-date pub-type="epub"><year>2024</year></pub-date>
-      <permissions>
-        <license xlink:href="https://creativecommons.org/licenses/by/4.0/">
-          <license-p>Open Access under CC BY 4.0.</license-p>
-        </license>
-      </permissions>
-      <abstract><p>The abstract of article {n} describes the synthetic study.</p></abstract>
-      <kwd-group><kwd>synthetic</kwd><kwd>jats</kwd></kwd-group>
-    </article-meta>
-  </front>
-"""
-
-TABLE_1 = """
-      <table-wrap id="T1">
-        <label>Table 1</label>
-        <caption><p>Counts by treatment group.</p></caption>
-        <table>
-          <thead><tr><th>Group</th><th>Count</th></tr></thead>
-          <tbody>
-            <tr><td>ZZCELLZZ</td><td>17</td></tr>
-            <tr><td>control</td><td>19</td></tr>
-          </tbody>
-        </table>
-        <table-wrap-foot><p>Values are ZZFOOTZZ counts.</p></table-wrap-foot>
-      </table-wrap>
-"""
-
-FIG_1 = """
-      <fig id="F1">
-        <label>Figure 1</label>
-        <caption><p>Survival of the synthetic cohort over twelve months of follow-up.</p></caption>
-        <graphic xlink:href="synth-f001.jpg"/>
-      </fig>
-"""
-
-
-def _article(n: str = "1", body: str = "", floats_group: str = "") -> str:
-    """Wrap a body (and optional floats-group) in a minimal but realistic JATS doc."""
-    fg = f"<floats-group>{floats_group}</floats-group>" if floats_group else ""
-    return (
-        '<article xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article">'
-        + FRONT.format(n=n)
-        + f"<body>{body}</body>{fg}</article>"
-    )
+from tests.jats_support import (  # noqa: E402,F401 - re-exported for older importers
+    BODY_WITH_FLOATS,
+    FIG_1,
+    FRONT,
+    TABLE_1,
+    _article,
+    _big_table,
+)
 
 
 def _write(tmp_path: Path, name: str, xml: str) -> Path:
     p = tmp_path / name
     p.write_text(xml, encoding="utf-8")
     return p
-
-
-BODY_WITH_FLOATS = f"""
-    <sec>
-      <title>Results</title>
-      <p>The prose sentence lives here and mentions QQPROSEQQ once.</p>
-      <p>An inline paragraph that legally nests a float: {TABLE_1}</p>
-      {FIG_1}
-    </sec>
-"""
 
 
 # --------------------------------------------------------------- record kinds
@@ -218,23 +152,6 @@ def test_metadata_from_xml_and_manifest(tmp_path: Path):
 
 
 # ------------------------------------------------------------------ splitting
-
-def _big_table(n_rows: int = 60) -> str:
-    rows = "".join(
-        f"<tr><td>subject-{i:03d}</td><td>{i}</td><td>value-{i:03d}</td></tr>"
-        for i in range(n_rows)
-    )
-    return f"""
-      <table-wrap id="TBIG">
-        <label>Table 9</label>
-        <caption><p>A large table.</p></caption>
-        <table>
-          <thead><tr><th>Subject</th><th>N</th><th>Value</th></tr></thead>
-          <tbody>{rows}</tbody>
-        </table>
-      </table-wrap>
-    """
-
 
 def test_oversized_table_split_by_rows_with_header_repeated(tmp_path: Path):
     cap = 400
@@ -534,3 +451,70 @@ def test_no_input_selected_is_a_failure(tmp_path: Path):
     out = tmp_path / "out.jsonl"
     assert jats_extract.main(["--corpus", str(corpus), "--out", str(out)]) == 1
     assert jats_extract.main(["--out", str(out)]) == 2      # neither mode given
+
+
+# ------------------------------------------------- #975 round 2 N8: drift fixes
+
+def test_corpus_mode_walks_nxml_too(tmp_path: Path):
+    """``--corpus`` skipped ``.nxml`` (the PMC OA bulk package's suffix) while
+    the in-process route loads it. MUTATION: glob ``*.xml`` only → PMC2 is
+    missing."""
+    tree = tmp_path / "corpus" / "clean" / "ab"
+    tree.mkdir(parents=True)
+    (tree / "PMC1.xml").write_text(_article("1", "<p>One.</p>"), encoding="utf-8")
+    (tree / "PMC2.nxml").write_text(_article("2", "<p>Two.</p>"), encoding="utf-8")
+    (tree / "notes.txt").write_text("not an article", encoding="utf-8")
+    items = jats_extract.walk_corpus(tmp_path / "corpus")
+    assert [(i["pmcid"], Path(i["xml_path"]).name) for i in items] == [
+        ("PMC1", "PMC1.xml"), ("PMC2", "PMC2.nxml")]
+
+
+def test_corpus_mode_matches_suffixes_case_insensitively(tmp_path: Path):
+    """argo round 3 nit 10: ``rglob("*.xml")`` is case-sensitive, so
+    ``PMC3.XML``/``PMC4.NXML`` were never walked, while ``manifest.py`` and
+    the loader registry lower-case suffixes. MUTATION: case-sensitive glob →
+    PMC3 and PMC4 missing."""
+    tree = tmp_path / "corpus" / "clean" / "ab"
+    tree.mkdir(parents=True)
+    for name in ("PMC1.xml", "PMC3.XML", "PMC4.NXml"):
+        (tree / name).write_text(_article(name[3], "<p>One.</p>"), encoding="utf-8")
+    (tree / "notes.XMLX").write_text("not an article", encoding="utf-8")
+    items = jats_extract.walk_corpus(tmp_path / "corpus")
+    assert [(i["pmcid"], Path(i["xml_path"]).name) for i in items] == [
+        ("PMC1", "PMC1.xml"), ("PMC3", "PMC3.XML"), ("PMC4", "PMC4.NXml")]
+
+
+def test_a_symlink_loop_skips_its_file_not_the_shard(tmp_path: Path):
+    """argo round 3 nit 5: a non-PMC-named file is keyed on its resolved path
+    (``jats.record_key`` step 3), and ``Path.resolve()`` raises
+    ``RuntimeError`` on a symlink loop — nothing caught it, so one bad link
+    sank the whole shard. It is now a skipped article with its reason, and
+    the other files convert. MUTATION: drop the ``try`` around the record key
+    → RuntimeError escapes ``extract_articles``."""
+    loop = tmp_path / "loop.xml"
+    loop.symlink_to(tmp_path / "loop.xml")
+    good = _write(tmp_path, "PMC5.xml", _article("5", "<p>Prose five.</p>"))
+    records, skipped = jats_extract.extract_articles(
+        [{"xml_path": str(loop)}, {"xml_path": good, "pmcid": "PMC5"}])
+    assert [r["path"] for r in records] == ["PMC5"]
+    (skip,) = skipped
+    assert skip["kind"] == "article" and skip["path"] == str(loop)
+    assert skip["pmcid"] == "loop.xml"
+    assert skip["reason"].startswith("record key: RuntimeError"), skip
+
+
+def test_a_bare_digit_shard_pmcid_is_written_as_before(tmp_path: Path):
+    """An explicit shard ``pmcid`` that is a PMC id in another spelling
+    (``8092463``) filled a missing ``metadata.pmcid`` before #828 PR 5a; the
+    PR's ``PMC\\d+``-only rule dropped it, changing stored metadata and the
+    duplicate keys of such shards. It is written as given again; a path key
+    (record_key step 3) is still never a PMCID. MUTATION: ``_PMC_STEM`` test
+    in merge_manifest → ``pmcid`` empty."""
+    xml = _write(tmp_path, "paper.xml", _article("8092463", "<p>Prose.</p>").replace(
+        '<article-id pub-id-type="pmc">PMC8092463</article-id>', ""))
+    recs, _ = jats.convert_file(xml, "8092463")
+    assert recs[0]["path"] == "8092463"
+    assert recs[0]["metadata"]["pmcid"] == "8092463"
+    recs, _ = jats.convert_file(xml)
+    assert recs[0]["path"] == str(xml.resolve())
+    assert recs[0]["metadata"]["pmcid"] == ""

@@ -217,6 +217,30 @@ func TestIngestEndpoint(t *testing.T) {
 	}
 }
 
+// TestIngestUnknownSuffixIsAccepted pins the request-level half of #828 PR 5a:
+// a source whose suffix has no loader (.rst, or none at all) is accepted 200 —
+// the refusal is a failed item in the background job, never a 415/422 here.
+func TestIngestUnknownSuffixIsAccepted(t *testing.T) {
+	for _, src := range []string{"/tmp/test.rst", "/tmp/LICENSE", "/tmp/PMC1.xml"} {
+		r := newRouter()
+		req := httptest.NewRequest(http.MethodPost, "/v1/ingest",
+			strings.NewReader(`{"source":"`+src+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", src, w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("%s: decode: %v", src, err)
+		}
+		if body["status"] != "accepted" {
+			t.Fatalf("%s: expected status accepted, got %v", src, body["status"])
+		}
+	}
+}
+
 // TestIngestDuplicatePolicy pins Go's parity for #747: the stub runs no ingest,
 // so it accepts the contract's enum (and null) and refuses anything else 422.
 func TestIngestDuplicatePolicy(t *testing.T) {

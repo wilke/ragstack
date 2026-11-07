@@ -9,6 +9,14 @@ import (
 )
 
 // HandleIngest accepts a document for ingestion.
+//
+// Phase 1 scaffold: it validates the request and answers 200 "accepted"; it runs
+// no loader and no job. The contract's suffix rule (#828 PR 5a) — a file whose
+// suffix has no loader is accepted and becomes a failed item with
+// "no loader for <suffix>", never text — is a per-item, background outcome, so
+// its only request-level consequence is the one this stub already honours: the
+// suffix of `source` is never a reason to refuse the request (no 415/422).
+// TestIngestUnknownSuffixIsAccepted pins that.
 func HandleIngest(w http.ResponseWriter, r *http.Request) {
 	var req IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
