@@ -1,0 +1,6543 @@
+{
+ "base_windows_only_in_larger_arm_legs": 0,
+ "corpus_arm_rule": "base/neighbour: own arm; random: the draw whose judged stage-A leg retrieved the window (both: the first in corpus-arm order)",
+ "exploratory": true,
+ "interval": "Wilson 95 %, rounded outward",
+ "label_rule": "answers if any registry's final label is answers; not if judged and none answers; else unjudged",
+ "label_table_sha256": "62e63538710a46c84963e6be9826b60f174f4d90b0750c00444b9d444e16158b",
+ "measures": {
+  "A": "a chunk labelled answers for the record (control or cover-any registry) is in the top 10",
+  "A_from_other_pairs_only": "A without A_own: the answers chunk was mapped for another pair of the same record",
+  "A_or_unlabelled": "A, or any unlabelled chunk in the top 10 (upper bound)",
+  "A_own": "one of this pair's own mapped chunks (max-overlap or cover-any) is labelled answers and in the top 10",
+  "A_own_window_retained": "A_own among the same pairs as M_window_retained",
+  "M": "the pair's max-overlap chunk is in the top 10 (rank bands beside)",
+  "M_window_retained": "M among the pairs whose stage-A window was in the same retriever's same-arm stage-A top 10",
+  "U": "top-10 chunks with no label for the record (unjudged or never judged)"
+ },
+ "pairs": 351,
+ "pairs_by_corpus_arm": {
+  "base": 117,
+  "neighbour": 117,
+  "random1": 64,
+  "random2": 53
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "16220f89c27518572e7d59da2784436b42441514",
+  "describe": "v1.6.25-59-g16220f8",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-07T01:46:59Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+16220f8",
+  "warnings_n": 1
+ },
+ "q1_lost_pairs": {
+  "all_lost": {
+   "by_retriever": {
+    "bm25": {
+     "A": {
+      "k": 28,
+      "n": 75,
+      "rate": 0.3733,
+      "wilson95": [
+       0.2725,
+       0.4865
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 2,
+      "n": 75,
+      "rate": 0.0267,
+      "wilson95": [
+       0.0073,
+       0.0922
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "wilson95": [
+       0.9512,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 26,
+      "n": 75,
+      "rate": 0.3467,
+      "wilson95": [
+       0.2488,
+       0.4595
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 21,
+      "n": 41,
+      "rate": 0.5122,
+      "wilson95": [
+       0.3648,
+       0.6575
+      ]
+     },
+     "M": {
+      "k": 13,
+      "n": 75,
+      "rate": 0.1733,
+      "wilson95": [
+       0.1041,
+       0.2744
+      ]
+     },
+     "M_rank": {
+      "1": 2,
+      "2-3": 3,
+      "4-10": 8
+     },
+     "M_window_retained": {
+      "k": 12,
+      "n": 41,
+      "rate": 0.2927,
+      "wilson95": [
+       0.176,
+       0.4448
+      ]
+     },
+     "U_any": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "wilson95": [
+       0.9512,
+       1.0
+      ]
+     },
+     "U_mean": 9.4267,
+     "failed": 0,
+     "n": 75,
+     "pairs": 75,
+     "records": 69,
+     "top10_lists": 75
+    },
+    "default": {
+     "A": {
+      "k": 42,
+      "n": 75,
+      "rate": 0.56,
+      "wilson95": [
+       0.4474,
+       0.6667
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 3,
+      "n": 75,
+      "rate": 0.04,
+      "wilson95": [
+       0.0136,
+       0.1112
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "wilson95": [
+       0.9512,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 39,
+      "n": 75,
+      "rate": 0.52,
+      "wilson95": [
+       0.4087,
+       0.6294
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 36,
+      "n": 59,
+      "rate": 0.6102,
+      "wilson95": [
+       0.4826,
+       0.7243
+      ]
+     },
+     "M": {
+      "k": 20,
+      "n": 75,
+      "rate": 0.2667,
+      "wilson95": [
+       0.1797,
+       0.3764
+      ]
+     },
+     "M_rank": {
+      "1": 1,
+      "2-3": 4,
+      "4-10": 15
+     },
+     "M_window_retained": {
+      "k": 18,
+      "n": 59,
+      "rate": 0.3051,
+      "wilson95": [
+       0.2025,
+       0.4315
+      ]
+     },
+     "U_any": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "wilson95": [
+       0.9512,
+       1.0
+      ]
+     },
+     "U_mean": 9.16,
+     "failed": 0,
+     "n": 75,
+     "pairs": 75,
+     "records": 69,
+     "top10_lists": 75
+    },
+    "norerank": {
+     "A": {
+      "k": 37,
+      "n": 75,
+      "rate": 0.4933,
+      "wilson95": [
+       0.3833,
+       0.6041
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 3,
+      "n": 75,
+      "rate": 0.04,
+      "wilson95": [
+       0.0136,
+       0.1112
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "wilson95": [
+       0.9512,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 34,
+      "n": 75,
+      "rate": 0.4533,
+      "wilson95": [
+       0.3456,
+       0.5656
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 29,
+      "n": 53,
+      "rate": 0.5472,
+      "wilson95": [
+       0.4145,
+       0.6735
+      ]
+     },
+     "M": {
+      "k": 20,
+      "n": 75,
+      "rate": 0.2667,
+      "wilson95": [
+       0.1797,
+       0.3764
+      ]
+     },
+     "M_rank": {
+      "1": 2,
+      "2-3": 6,
+      "4-10": 12
+     },
+     "M_window_retained": {
+      "k": 19,
+      "n": 53,
+      "rate": 0.3585,
+      "wilson95": [
+       0.243,
+       0.4931
+      ]
+     },
+     "U_any": {
+      "k": 75,
+      "n": 75,
+      "rate": 1.0,
+      "wilson95": [
+       0.9512,
+       1.0
+      ]
+     },
+     "U_mean": 9.2133,
+     "failed": 0,
+     "n": 75,
+     "pairs": 75,
+     "records": 69,
+     "top10_lists": 75
+    }
+   },
+   "pairs": 75,
+   "records": 69,
+   "reference": {
+    "base_windows_only_in_larger_arm_legs": 0,
+    "draw_stratum": {
+     "answers": 75
+    },
+    "stage_a_judged_legs": {
+     "base|merged|default": 19,
+     "base|merged|norerank": 17,
+     "base|none|default": 19,
+     "base|none|default#2": 19,
+     "base|none|norerank": 17,
+     "neighbour|none|default": 25,
+     "neighbour|none|default#2": 25,
+     "neighbour|none|norerank": 30,
+     "random1|none|default": 27,
+     "random1|none|default#2": 27,
+     "random1|none|norerank": 26,
+     "random2|none|default": 28,
+     "random2|none|default#2": 28,
+     "random2|none|norerank": 22
+    },
+    "window_in_stage_a_top10_same_arm": {
+     "bm25": {
+      "k": 41,
+      "n": 75,
+      "rate": 0.5467,
+      "wilson95": [
+       0.4344,
+       0.6544
+      ]
+     },
+     "default": {
+      "k": 59,
+      "n": 75,
+      "rate": 0.7867,
+      "wilson95": [
+       0.6812,
+       0.8642
+      ]
+     },
+     "norerank": {
+      "k": 53,
+      "n": 75,
+      "rate": 0.7067,
+      "wilson95": [
+       0.5955,
+       0.7976
+      ]
+     }
+    }
+   },
+   "top10_lists": 75
+  },
+  "cover_class": {
+   "both": 0,
+   "none": 18,
+   "other_only": 53,
+   "primary_only": 4
+  },
+  "definitions": {
+   "A_vs_A_own": "A counts any chunk labelled answers for the record, including chunks mapped for another pair of the same record; A_own only this pair's max-overlap and cover-any chunks",
+   "all_lost": "every lost pair (control chunk judged not), whatever its cover-any class",
+   "base_windows": "a base-paper window is always run in the base collection, even when its stage-A window was retrieved only in a larger arm's leg (less competition than in stage A; its same-arm stage-A reference is 0)",
+   "others": [
+    "none"
+   ],
+   "primary_only": [
+    "primary_only"
+   ],
+   "primary_only_note": "the control registry judged the max-overlap chunk not, and the cover-any re-read answers on the same chunk; the combined label is answers, so A (and A_own) for these pairs rests on that conflicting re-read",
+   "recovered": [
+    "other_only",
+    "both"
+   ]
+  },
+  "lost_pairs": 75,
+  "lost_without_cover": 0,
+  "others": {
+   "by_retriever": {
+    "bm25": {
+     "A": {
+      "k": 1,
+      "n": 18,
+      "rate": 0.0556,
+      "wilson95": [
+       0.0098,
+       0.2576
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 1,
+      "n": 18,
+      "rate": 0.0556,
+      "wilson95": [
+       0.0098,
+       0.2576
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "wilson95": [
+       0.8241,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 0,
+      "n": 18,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.1759
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 0,
+      "n": 9,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.2992
+      ]
+     },
+     "M": {
+      "k": 3,
+      "n": 18,
+      "rate": 0.1667,
+      "wilson95": [
+       0.0583,
+       0.3923
+      ]
+     },
+     "M_rank": {
+      "1": 0,
+      "2-3": 1,
+      "4-10": 2
+     },
+     "M_window_retained": {
+      "k": 3,
+      "n": 9,
+      "rate": 0.3333,
+      "wilson95": [
+       0.1205,
+       0.6458
+      ]
+     },
+     "U_any": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "wilson95": [
+       0.8241,
+       1.0
+      ]
+     },
+     "U_mean": 9.6111,
+     "failed": 0,
+     "n": 18,
+     "pairs": 18,
+     "records": 18,
+     "top10_lists": 18
+    },
+    "default": {
+     "A": {
+      "k": 1,
+      "n": 18,
+      "rate": 0.0556,
+      "wilson95": [
+       0.0098,
+       0.2576
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 1,
+      "n": 18,
+      "rate": 0.0556,
+      "wilson95": [
+       0.0098,
+       0.2576
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "wilson95": [
+       0.8241,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 0,
+      "n": 18,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.1759
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 0,
+      "n": 15,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.2039
+      ]
+     },
+     "M": {
+      "k": 5,
+      "n": 18,
+      "rate": 0.2778,
+      "wilson95": [
+       0.1249,
+       0.5088
+      ]
+     },
+     "M_rank": {
+      "1": 0,
+      "2-3": 1,
+      "4-10": 4
+     },
+     "M_window_retained": {
+      "k": 3,
+      "n": 15,
+      "rate": 0.2,
+      "wilson95": [
+       0.0704,
+       0.4519
+      ]
+     },
+     "U_any": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "wilson95": [
+       0.8241,
+       1.0
+      ]
+     },
+     "U_mean": 9.4444,
+     "failed": 0,
+     "n": 18,
+     "pairs": 18,
+     "records": 18,
+     "top10_lists": 18
+    },
+    "norerank": {
+     "A": {
+      "k": 2,
+      "n": 18,
+      "rate": 0.1111,
+      "wilson95": [
+       0.031,
+       0.328
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 2,
+      "n": 18,
+      "rate": 0.1111,
+      "wilson95": [
+       0.031,
+       0.328
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "wilson95": [
+       0.8241,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 0,
+      "n": 18,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.1759
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 0,
+      "n": 8,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.3245
+      ]
+     },
+     "M": {
+      "k": 4,
+      "n": 18,
+      "rate": 0.2222,
+      "wilson95": [
+       0.09,
+       0.4522
+      ]
+     },
+     "M_rank": {
+      "1": 0,
+      "2-3": 0,
+      "4-10": 4
+     },
+     "M_window_retained": {
+      "k": 3,
+      "n": 8,
+      "rate": 0.375,
+      "wilson95": [
+       0.1368,
+       0.6943
+      ]
+     },
+     "U_any": {
+      "k": 18,
+      "n": 18,
+      "rate": 1.0,
+      "wilson95": [
+       0.8241,
+       1.0
+      ]
+     },
+     "U_mean": 9.3889,
+     "failed": 0,
+     "n": 18,
+     "pairs": 18,
+     "records": 18,
+     "top10_lists": 18
+    }
+   },
+   "pairs": 18,
+   "records": 18,
+   "reference": {
+    "base_windows_only_in_larger_arm_legs": 0,
+    "draw_stratum": {
+     "answers": 18
+    },
+    "stage_a_judged_legs": {
+     "base|none|default": 1,
+     "base|none|default#2": 1,
+     "neighbour|none|default": 7,
+     "neighbour|none|default#2": 7,
+     "neighbour|none|norerank": 6,
+     "random1|none|default": 5,
+     "random1|none|default#2": 5,
+     "random1|none|norerank": 1,
+     "random2|none|default": 4,
+     "random2|none|default#2": 4,
+     "random2|none|norerank": 1
+    },
+    "window_in_stage_a_top10_same_arm": {
+     "bm25": {
+      "k": 9,
+      "n": 18,
+      "rate": 0.5,
+      "wilson95": [
+       0.2903,
+       0.7097
+      ]
+     },
+     "default": {
+      "k": 15,
+      "n": 18,
+      "rate": 0.8333,
+      "wilson95": [
+       0.6077,
+       0.9417
+      ]
+     },
+     "norerank": {
+      "k": 8,
+      "n": 18,
+      "rate": 0.4444,
+      "wilson95": [
+       0.2455,
+       0.6629
+      ]
+     }
+    }
+   },
+   "top10_lists": 18
+  },
+  "primary_only": {
+   "by_retriever": {
+    "bm25": {
+     "A": {
+      "k": 1,
+      "n": 4,
+      "rate": 0.25,
+      "wilson95": [
+       0.0455,
+       0.6994
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 0,
+      "n": 4,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.4899
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 1,
+      "n": 4,
+      "rate": 0.25,
+      "wilson95": [
+       0.0455,
+       0.6994
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 1,
+      "n": 2,
+      "rate": 0.5,
+      "wilson95": [
+       0.0945,
+       0.9055
+      ]
+     },
+     "M": {
+      "k": 1,
+      "n": 4,
+      "rate": 0.25,
+      "wilson95": [
+       0.0455,
+       0.6994
+      ]
+     },
+     "M_rank": {
+      "1": 1,
+      "2-3": 0,
+      "4-10": 0
+     },
+     "M_window_retained": {
+      "k": 1,
+      "n": 2,
+      "rate": 0.5,
+      "wilson95": [
+       0.0945,
+       0.9055
+      ]
+     },
+     "U_any": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "U_mean": 9.75,
+     "failed": 0,
+     "n": 4,
+     "pairs": 4,
+     "records": 4,
+     "top10_lists": 4
+    },
+    "default": {
+     "A": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 0,
+      "n": 4,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.4899
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "M": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "M_rank": {
+      "1": 0,
+      "2-3": 0,
+      "4-10": 4
+     },
+     "M_window_retained": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "U_any": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "U_mean": 8.75,
+     "failed": 0,
+     "n": 4,
+     "pairs": 4,
+     "records": 4,
+     "top10_lists": 4
+    },
+    "norerank": {
+     "A": {
+      "k": 3,
+      "n": 4,
+      "rate": 0.75,
+      "wilson95": [
+       0.3006,
+       0.9545
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 0,
+      "n": 4,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.4899
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 3,
+      "n": 4,
+      "rate": 0.75,
+      "wilson95": [
+       0.3006,
+       0.9545
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 3,
+      "n": 3,
+      "rate": 1.0,
+      "wilson95": [
+       0.4385,
+       1.0
+      ]
+     },
+     "M": {
+      "k": 3,
+      "n": 4,
+      "rate": 0.75,
+      "wilson95": [
+       0.3006,
+       0.9545
+      ]
+     },
+     "M_rank": {
+      "1": 0,
+      "2-3": 1,
+      "4-10": 2
+     },
+     "M_window_retained": {
+      "k": 3,
+      "n": 3,
+      "rate": 1.0,
+      "wilson95": [
+       0.4385,
+       1.0
+      ]
+     },
+     "U_any": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "U_mean": 9.25,
+     "failed": 0,
+     "n": 4,
+     "pairs": 4,
+     "records": 4,
+     "top10_lists": 4
+    }
+   },
+   "pairs": 4,
+   "records": 4,
+   "reference": {
+    "base_windows_only_in_larger_arm_legs": 0,
+    "draw_stratum": {
+     "answers": 4
+    },
+    "stage_a_judged_legs": {
+     "base|merged|default": 1,
+     "base|none|default": 1,
+     "base|none|default#2": 1,
+     "neighbour|none|default": 1,
+     "neighbour|none|default#2": 1,
+     "neighbour|none|norerank": 1,
+     "random2|none|default": 2,
+     "random2|none|default#2": 2,
+     "random2|none|norerank": 2
+    },
+    "window_in_stage_a_top10_same_arm": {
+     "bm25": {
+      "k": 2,
+      "n": 4,
+      "rate": 0.5,
+      "wilson95": [
+       0.15,
+       0.85
+      ]
+     },
+     "default": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "norerank": {
+      "k": 3,
+      "n": 4,
+      "rate": 0.75,
+      "wilson95": [
+       0.3006,
+       0.9545
+      ]
+     }
+    }
+   },
+   "top10_lists": 4
+  },
+  "recovered": {
+   "by_retriever": {
+    "bm25": {
+     "A": {
+      "k": 26,
+      "n": 53,
+      "rate": 0.4906,
+      "wilson95": [
+       0.3612,
+       0.6212
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 1,
+      "n": 53,
+      "rate": 0.0189,
+      "wilson95": [
+       0.0033,
+       0.0995
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 53,
+      "n": 53,
+      "rate": 1.0,
+      "wilson95": [
+       0.9324,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 25,
+      "n": 53,
+      "rate": 0.4717,
+      "wilson95": [
+       0.3438,
+       0.6034
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 20,
+      "n": 30,
+      "rate": 0.6667,
+      "wilson95": [
+       0.4878,
+       0.8077
+      ]
+     },
+     "M": {
+      "k": 9,
+      "n": 53,
+      "rate": 0.1698,
+      "wilson95": [
+       0.0919,
+       0.2923
+      ]
+     },
+     "M_rank": {
+      "1": 1,
+      "2-3": 2,
+      "4-10": 6
+     },
+     "M_window_retained": {
+      "k": 8,
+      "n": 30,
+      "rate": 0.2667,
+      "wilson95": [
+       0.1418,
+       0.4445
+      ]
+     },
+     "U_any": {
+      "k": 53,
+      "n": 53,
+      "rate": 1.0,
+      "wilson95": [
+       0.9324,
+       1.0
+      ]
+     },
+     "U_mean": 9.3396,
+     "failed": 0,
+     "n": 53,
+     "pairs": 53,
+     "records": 49,
+     "top10_lists": 53
+    },
+    "default": {
+     "A": {
+      "k": 37,
+      "n": 53,
+      "rate": 0.6981,
+      "wilson95": [
+       0.5646,
+       0.8049
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 2,
+      "n": 53,
+      "rate": 0.0377,
+      "wilson95": [
+       0.0104,
+       0.1276
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 53,
+      "n": 53,
+      "rate": 1.0,
+      "wilson95": [
+       0.9324,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 35,
+      "n": 53,
+      "rate": 0.6604,
+      "wilson95": [
+       0.5259,
+       0.7732
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 32,
+      "n": 40,
+      "rate": 0.8,
+      "wilson95": [
+       0.6524,
+       0.8951
+      ]
+     },
+     "M": {
+      "k": 11,
+      "n": 53,
+      "rate": 0.2075,
+      "wilson95": [
+       0.12,
+       0.3346
+      ]
+     },
+     "M_rank": {
+      "1": 1,
+      "2-3": 3,
+      "4-10": 7
+     },
+     "M_window_retained": {
+      "k": 11,
+      "n": 40,
+      "rate": 0.275,
+      "wilson95": [
+       0.161,
+       0.4284
+      ]
+     },
+     "U_any": {
+      "k": 53,
+      "n": 53,
+      "rate": 1.0,
+      "wilson95": [
+       0.9324,
+       1.0
+      ]
+     },
+     "U_mean": 9.0943,
+     "failed": 0,
+     "n": 53,
+     "pairs": 53,
+     "records": 49,
+     "top10_lists": 53
+    },
+    "norerank": {
+     "A": {
+      "k": 32,
+      "n": 53,
+      "rate": 0.6038,
+      "wilson95": [
+       0.4694,
+       0.7242
+      ]
+     },
+     "A_from_other_pairs_only": {
+      "k": 1,
+      "n": 53,
+      "rate": 0.0189,
+      "wilson95": [
+       0.0033,
+       0.0995
+      ]
+     },
+     "A_or_unlabelled": {
+      "k": 53,
+      "n": 53,
+      "rate": 1.0,
+      "wilson95": [
+       0.9324,
+       1.0
+      ]
+     },
+     "A_own": {
+      "k": 31,
+      "n": 53,
+      "rate": 0.5849,
+      "wilson95": [
+       0.4509,
+       0.7074
+      ]
+     },
+     "A_own_window_retained": {
+      "k": 26,
+      "n": 42,
+      "rate": 0.619,
+      "wilson95": [
+       0.4681,
+       0.7501
+      ]
+     },
+     "M": {
+      "k": 13,
+      "n": 53,
+      "rate": 0.2453,
+      "wilson95": [
+       0.1493,
+       0.3757
+      ]
+     },
+     "M_rank": {
+      "1": 2,
+      "2-3": 5,
+      "4-10": 6
+     },
+     "M_window_retained": {
+      "k": 13,
+      "n": 42,
+      "rate": 0.3095,
+      "wilson95": [
+       0.1907,
+       0.4603
+      ]
+     },
+     "U_any": {
+      "k": 53,
+      "n": 53,
+      "rate": 1.0,
+      "wilson95": [
+       0.9324,
+       1.0
+      ]
+     },
+     "U_mean": 9.1509,
+     "failed": 0,
+     "n": 53,
+     "pairs": 53,
+     "records": 49,
+     "top10_lists": 53
+    }
+   },
+   "pairs": 53,
+   "records": 49,
+   "reference": {
+    "base_windows_only_in_larger_arm_legs": 0,
+    "draw_stratum": {
+     "answers": 53
+    },
+    "stage_a_judged_legs": {
+     "base|merged|default": 18,
+     "base|merged|norerank": 17,
+     "base|none|default": 17,
+     "base|none|default#2": 17,
+     "base|none|norerank": 17,
+     "neighbour|none|default": 17,
+     "neighbour|none|default#2": 17,
+     "neighbour|none|norerank": 23,
+     "random1|none|default": 22,
+     "random1|none|default#2": 22,
+     "random1|none|norerank": 25,
+     "random2|none|default": 22,
+     "random2|none|default#2": 22,
+     "random2|none|norerank": 19
+    },
+    "window_in_stage_a_top10_same_arm": {
+     "bm25": {
+      "k": 30,
+      "n": 53,
+      "rate": 0.566,
+      "wilson95": [
+       0.4326,
+       0.6905
+      ]
+     },
+     "default": {
+      "k": 40,
+      "n": 53,
+      "rate": 0.7547,
+      "wilson95": [
+       0.6243,
+       0.8507
+      ]
+     },
+     "norerank": {
+      "k": 42,
+      "n": 53,
+      "rate": 0.7925,
+      "wilson95": [
+       0.6654,
+       0.88
+      ]
+     }
+    }
+   },
+   "top10_lists": 53
+  }
+ },
+ "q2_all_pairs": {
+  "all_pairs": {
+   "all": {
+    "by_retriever": {
+     "bm25": {
+      "A": {
+       "k": 177,
+       "n": 351,
+       "rate": 0.5043,
+       "wilson95": [
+        0.4522,
+        0.5563
+       ]
+      },
+      "A_from_other_pairs_only": {
+       "k": 13,
+       "n": 351,
+       "rate": 0.037,
+       "wilson95": [
+        0.0217,
+        0.0624
+       ]
+      },
+      "A_or_unlabelled": {
+       "k": 351,
+       "n": 351,
+       "rate": 1.0,
+       "wilson95": [
+        0.9891,
+        1.0
+       ]
+      },
+      "A_own": {
+       "k": 164,
+       "n": 351,
+       "rate": 0.4672,
+       "wilson95": [
+        0.4156,
+        0.5196
+       ]
+      },
+      "A_own_window_retained": {
+       "k": 152,
+       "n": 210,
+       "rate": 0.7238,
+       "wilson95": [
+        0.6597,
+        0.7799
+       ]
+      },
+      "M": {
+       "k": 151,
+       "n": 351,
+       "rate": 0.4302,
+       "wilson95": [
+        0.3794,
+        0.4825
+       ]
+      },
+      "M_rank": {
+       "1": 29,
+       "2-3": 39,
+       "4-10": 83
+      },
+      "M_window_retained": {
+       "k": 143,
+       "n": 210,
+       "rate": 0.681,
+       "wilson95": [
+        0.6151,
+        0.7403
+       ]
+      },
+      "U_any": {
+       "k": 351,
+       "n": 351,
+       "rate": 1.0,
+       "wilson95": [
+        0.9891,
+        1.0
+       ]
+      },
+      "U_mean": 9.4131,
+      "failed": 0,
+      "n": 351,
+      "pairs": 351,
+      "records": 218,
+      "top10_lists": 351
+     },
+     "default": {
+      "A": {
+       "k": 232,
+       "n": 351,
+       "rate": 0.661,
+       "wilson95": [
+        0.6099,
+        0.7086
+       ]
+      },
+      "A_from_other_pairs_only": {
+       "k": 15,
+       "n": 351,
+       "rate": 0.0427,
+       "wilson95": [
+        0.026,
+        0.0694
+       ]
+      },
+      "A_or_unlabelled": {
+       "k": 351,
+       "n": 351,
+       "rate": 1.0,
+       "wilson95": [
+        0.9891,
+        1.0
+       ]
+      },
+      "A_own": {
+       "k": 217,
+       "n": 351,
+       "rate": 0.6182,
+       "wilson95": [
+        0.5663,
+        0.6676
+       ]
+      },
+      "A_own_window_retained": {
+       "k": 208,
+       "n": 276,
+       "rate": 0.7536,
+       "wilson95": [
+        0.6995,
+        0.8008
+       ]
+      },
+      "M": {
+       "k": 198,
+       "n": 351,
+       "rate": 0.5641,
+       "wilson95": [
+        0.5118,
+        0.6151
+       ]
+      },
+      "M_rank": {
+       "1": 23,
+       "2-3": 68,
+       "4-10": 107
+      },
+      "M_window_retained": {
+       "k": 190,
+       "n": 276,
+       "rate": 0.6884,
+       "wilson95": [
+        0.6314,
+        0.7402
+       ]
+      },
+      "U_any": {
+       "k": 351,
+       "n": 351,
+       "rate": 1.0,
+       "wilson95": [
+        0.9891,
+        1.0
+       ]
+      },
+      "U_mean": 9.208,
+      "failed": 0,
+      "n": 351,
+      "pairs": 351,
+      "records": 218,
+      "top10_lists": 351
+     },
+     "norerank": {
+      "A": {
+       "k": 203,
+       "n": 351,
+       "rate": 0.5783,
+       "wilson95": [
+        0.5261,
+        0.6289
+       ]
+      },
+      "A_from_other_pairs_only": {
+       "k": 14,
+       "n": 351,
+       "rate": 0.0399,
+       "wilson95": [
+        0.0239,
+        0.0659
+       ]
+      },
+      "A_or_unlabelled": {
+       "k": 351,
+       "n": 351,
+       "rate": 1.0,
+       "wilson95": [
+        0.9891,
+        1.0
+       ]
+      },
+      "A_own": {
+       "k": 189,
+       "n": 351,
+       "rate": 0.5385,
+       "wilson95": [
+        0.4861,
+        0.59
+       ]
+      },
+      "A_own_window_retained": {
+       "k": 175,
+       "n": 258,
+       "rate": 0.6783,
+       "wilson95": [
+        0.619,
+        0.7324
+       ]
+      },
+      "M": {
+       "k": 175,
+       "n": 351,
+       "rate": 0.4986,
+       "wilson95": [
+        0.4465,
+        0.5507
+       ]
+      },
+      "M_rank": {
+       "1": 30,
+       "2-3": 47,
+       "4-10": 98
+      },
+      "M_window_retained": {
+       "k": 165,
+       "n": 258,
+       "rate": 0.6395,
+       "wilson95": [
+        0.5792,
+        0.6957
+       ]
+      },
+      "U_any": {
+       "k": 351,
+       "n": 351,
+       "rate": 1.0,
+       "wilson95": [
+        0.9891,
+        1.0
+       ]
+      },
+      "U_mean": 9.3162,
+      "failed": 0,
+      "n": 351,
+      "pairs": 351,
+      "records": 218,
+      "top10_lists": 351
+     }
+    },
+    "pairs": 351,
+    "records": 218,
+    "reference": {
+     "base_windows_only_in_larger_arm_legs": 0,
+     "draw_stratum": {
+      "answers": 351
+     },
+     "stage_a_judged_legs": {
+      "base|merged|default": 92,
+      "base|merged|norerank": 89,
+      "base|none|default": 94,
+      "base|none|default#2": 94,
+      "base|none|norerank": 88,
+      "neighbour|none|default": 150,
+      "neighbour|none|default#2": 150,
+      "neighbour|none|norerank": 143,
+      "random1|none|default": 120,
+      "random1|none|default#2": 120,
+      "random1|none|norerank": 110,
+      "random2|none|default": 121,
+      "random2|none|default#2": 121,
+      "random2|none|norerank": 106
+     },
+     "window_in_stage_a_top10_same_arm": {
+      "bm25": {
+       "k": 210,
+       "n": 351,
+       "rate": 0.5983,
+       "wilson95": [
+        0.5462,
+        0.6483
+       ]
+      },
+      "default": {
+       "k": 276,
+       "n": 351,
+       "rate": 0.7863,
+       "wilson95": [
+        0.7404,
+        0.826
+       ]
+      },
+      "norerank": {
+       "k": 258,
+       "n": 351,
+       "rate": 0.735,
+       "wilson95": [
+        0.6865,
+        0.7785
+       ]
+      }
+     }
+    },
+    "top10_lists": 351
+   },
+   "by_corpus_arm": {
+    "base": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 63,
+        "n": 117,
+        "rate": 0.5385,
+        "wilson95": [
+         0.4483,
+         0.6262
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 117,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.0318
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 63,
+        "n": 117,
+        "rate": 0.5385,
+        "wilson95": [
+         0.4483,
+         0.6262
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 57,
+        "n": 78,
+        "rate": 0.7308,
+        "wilson95": [
+         0.6232,
+         0.8167
+        ]
+       },
+       "M": {
+        "k": 55,
+        "n": 117,
+        "rate": 0.4701,
+        "wilson95": [
+         0.382,
+         0.5601
+        ]
+       },
+       "M_rank": {
+        "1": 13,
+        "2-3": 19,
+        "4-10": 23
+       },
+       "M_window_retained": {
+        "k": 52,
+        "n": 78,
+        "rate": 0.6667,
+        "wilson95": [
+         0.5564,
+         0.7613
+        ]
+       },
+       "U_any": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "U_mean": 9.4188,
+       "failed": 0,
+       "n": 117,
+       "pairs": 117,
+       "records": 117,
+       "top10_lists": 117
+      },
+      "default": {
+       "A": {
+        "k": 86,
+        "n": 117,
+        "rate": 0.735,
+        "wilson95": [
+         0.6485,
+         0.8067
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 117,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.0318
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 86,
+        "n": 117,
+        "rate": 0.735,
+        "wilson95": [
+         0.6485,
+         0.8067
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 83,
+        "n": 94,
+        "rate": 0.883,
+        "wilson95": [
+         0.8024,
+         0.9334
+        ]
+       },
+       "M": {
+        "k": 77,
+        "n": 117,
+        "rate": 0.6581,
+        "wilson95": [
+         0.5683,
+         0.7379
+        ]
+       },
+       "M_rank": {
+        "1": 14,
+        "2-3": 26,
+        "4-10": 37
+       },
+       "M_window_retained": {
+        "k": 75,
+        "n": 94,
+        "rate": 0.7979,
+        "wilson95": [
+         0.7057,
+         0.8667
+        ]
+       },
+       "U_any": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "U_mean": 9.1966,
+       "failed": 0,
+       "n": 117,
+       "pairs": 117,
+       "records": 117,
+       "top10_lists": 117
+      },
+      "norerank": {
+       "A": {
+        "k": 76,
+        "n": 117,
+        "rate": 0.6496,
+        "wilson95": [
+         0.5596,
+         0.7301
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 117,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.0318
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 76,
+        "n": 117,
+        "rate": 0.6496,
+        "wilson95": [
+         0.5596,
+         0.7301
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 69,
+        "n": 88,
+        "rate": 0.7841,
+        "wilson95": [
+         0.6872,
+         0.8572
+        ]
+       },
+       "M": {
+        "k": 68,
+        "n": 117,
+        "rate": 0.5812,
+        "wilson95": [
+         0.4906,
+         0.6667
+        ]
+       },
+       "M_rank": {
+        "1": 15,
+        "2-3": 15,
+        "4-10": 38
+       },
+       "M_window_retained": {
+        "k": 64,
+        "n": 88,
+        "rate": 0.7273,
+        "wilson95": [
+         0.6261,
+         0.8094
+        ]
+       },
+       "U_any": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "U_mean": 9.3077,
+       "failed": 0,
+       "n": 117,
+       "pairs": 117,
+       "records": 117,
+       "top10_lists": 117
+      }
+     },
+     "pairs": 117,
+     "records": 117,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 117
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 92,
+       "base|merged|norerank": 89,
+       "base|none|default": 94,
+       "base|none|default#2": 94,
+       "base|none|norerank": 88,
+       "neighbour|none|default": 62,
+       "neighbour|none|default#2": 62,
+       "neighbour|none|norerank": 56,
+       "random1|none|default": 69,
+       "random1|none|default#2": 69,
+       "random1|none|norerank": 65,
+       "random2|none|default": 74,
+       "random2|none|default#2": 74,
+       "random2|none|norerank": 63
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 78,
+        "n": 117,
+        "rate": 0.6667,
+        "wilson95": [
+         0.5771,
+         0.7456
+        ]
+       },
+       "default": {
+        "k": 94,
+        "n": 117,
+        "rate": 0.8034,
+        "wilson95": [
+         0.7222,
+         0.8653
+        ]
+       },
+       "norerank": {
+        "k": 88,
+        "n": 117,
+        "rate": 0.7521,
+        "wilson95": [
+         0.6667,
+         0.8216
+        ]
+       }
+      }
+     },
+     "top10_lists": 117
+    },
+    "neighbour": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 55,
+        "n": 117,
+        "rate": 0.4701,
+        "wilson95": [
+         0.382,
+         0.5601
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 4,
+        "n": 117,
+        "rate": 0.0342,
+        "wilson95": [
+         0.0133,
+         0.0847
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 51,
+        "n": 117,
+        "rate": 0.4359,
+        "wilson95": [
+         0.3494,
+         0.5264
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 48,
+        "n": 67,
+        "rate": 0.7164,
+        "wilson95": [
+         0.599,
+         0.8103
+        ]
+       },
+       "M": {
+        "k": 51,
+        "n": 117,
+        "rate": 0.4359,
+        "wilson95": [
+         0.3494,
+         0.5264
+        ]
+       },
+       "M_rank": {
+        "1": 6,
+        "2-3": 13,
+        "4-10": 32
+       },
+       "M_window_retained": {
+        "k": 48,
+        "n": 67,
+        "rate": 0.7164,
+        "wilson95": [
+         0.599,
+         0.8103
+        ]
+       },
+       "U_any": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "U_mean": 9.4188,
+       "failed": 0,
+       "n": 117,
+       "pairs": 117,
+       "records": 117,
+       "top10_lists": 117
+      },
+      "default": {
+       "A": {
+        "k": 69,
+        "n": 117,
+        "rate": 0.5897,
+        "wilson95": [
+         0.4991,
+         0.6747
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 6,
+        "n": 117,
+        "rate": 0.0513,
+        "wilson95": [
+         0.0237,
+         0.1074
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 63,
+        "n": 117,
+        "rate": 0.5385,
+        "wilson95": [
+         0.4483,
+         0.6262
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 59,
+        "n": 88,
+        "rate": 0.6705,
+        "wilson95": [
+         0.5669,
+         0.7598
+        ]
+       },
+       "M": {
+        "k": 59,
+        "n": 117,
+        "rate": 0.5043,
+        "wilson95": [
+         0.4149,
+         0.5933
+        ]
+       },
+       "M_rank": {
+        "1": 6,
+        "2-3": 21,
+        "4-10": 32
+       },
+       "M_window_retained": {
+        "k": 55,
+        "n": 88,
+        "rate": 0.625,
+        "wilson95": [
+         0.5206,
+         0.719
+        ]
+       },
+       "U_any": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "U_mean": 9.2479,
+       "failed": 0,
+       "n": 117,
+       "pairs": 117,
+       "records": 117,
+       "top10_lists": 117
+      },
+      "norerank": {
+       "A": {
+        "k": 60,
+        "n": 117,
+        "rate": 0.5128,
+        "wilson95": [
+         0.4232,
+         0.6016
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 7,
+        "n": 117,
+        "rate": 0.0598,
+        "wilson95": [
+         0.0292,
+         0.1184
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 53,
+        "n": 117,
+        "rate": 0.453,
+        "wilson95": [
+         0.3657,
+         0.5433
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 51,
+        "n": 87,
+        "rate": 0.5862,
+        "wilson95": [
+         0.4812,
+         0.684
+        ]
+       },
+       "M": {
+        "k": 52,
+        "n": 117,
+        "rate": 0.4444,
+        "wilson95": [
+         0.3575,
+         0.5349
+        ]
+       },
+       "M_rank": {
+        "1": 10,
+        "2-3": 14,
+        "4-10": 28
+       },
+       "M_window_retained": {
+        "k": 49,
+        "n": 87,
+        "rate": 0.5632,
+        "wilson95": [
+         0.4585,
+         0.6626
+        ]
+       },
+       "U_any": {
+        "k": 117,
+        "n": 117,
+        "rate": 1.0,
+        "wilson95": [
+         0.9682,
+         1.0
+        ]
+       },
+       "U_mean": 9.359,
+       "failed": 0,
+       "n": 117,
+       "pairs": 117,
+       "records": 117,
+       "top10_lists": 117
+      }
+     },
+     "pairs": 117,
+     "records": 117,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 117
+      },
+      "stage_a_judged_legs": {
+       "neighbour|none|default": 88,
+       "neighbour|none|default#2": 88,
+       "neighbour|none|norerank": 87
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 67,
+        "n": 117,
+        "rate": 0.5726,
+        "wilson95": [
+         0.4821,
+         0.6586
+        ]
+       },
+       "default": {
+        "k": 88,
+        "n": 117,
+        "rate": 0.7521,
+        "wilson95": [
+         0.6667,
+         0.8216
+        ]
+       },
+       "norerank": {
+        "k": 87,
+        "n": 117,
+        "rate": 0.7436,
+        "wilson95": [
+         0.6576,
+         0.8141
+        ]
+       }
+      }
+     },
+     "top10_lists": 117
+    },
+    "random1": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 33,
+        "n": 64,
+        "rate": 0.5156,
+        "wilson95": [
+         0.3958,
+         0.6337
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 4,
+        "n": 64,
+        "rate": 0.0625,
+        "wilson95": [
+         0.0245,
+         0.15
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 64,
+        "n": 64,
+        "rate": 1.0,
+        "wilson95": [
+         0.9433,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 29,
+        "n": 64,
+        "rate": 0.4531,
+        "wilson95": [
+         0.3372,
+         0.5743
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 27,
+        "n": 39,
+        "rate": 0.6923,
+        "wilson95": [
+         0.5357,
+         0.8144
+        ]
+       },
+       "M": {
+        "k": 24,
+        "n": 64,
+        "rate": 0.375,
+        "wilson95": [
+         0.2666,
+         0.4975
+        ]
+       },
+       "M_rank": {
+        "1": 5,
+        "2-3": 5,
+        "4-10": 14
+       },
+       "M_window_retained": {
+        "k": 23,
+        "n": 39,
+        "rate": 0.5897,
+        "wilson95": [
+         0.4341,
+         0.7293
+        ]
+       },
+       "U_any": {
+        "k": 64,
+        "n": 64,
+        "rate": 1.0,
+        "wilson95": [
+         0.9433,
+         1.0
+        ]
+       },
+       "U_mean": 9.4062,
+       "failed": 0,
+       "n": 64,
+       "pairs": 64,
+       "records": 64,
+       "top10_lists": 64
+      },
+      "default": {
+       "A": {
+        "k": 38,
+        "n": 64,
+        "rate": 0.5938,
+        "wilson95": [
+         0.4714,
+         0.7055
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 3,
+        "n": 64,
+        "rate": 0.0469,
+        "wilson95": [
+         0.016,
+         0.129
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 64,
+        "n": 64,
+        "rate": 1.0,
+        "wilson95": [
+         0.9433,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 35,
+        "n": 64,
+        "rate": 0.5469,
+        "wilson95": [
+         0.4257,
+         0.6628
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 35,
+        "n": 51,
+        "rate": 0.6863,
+        "wilson95": [
+         0.5497,
+         0.7968
+        ]
+       },
+       "M": {
+        "k": 31,
+        "n": 64,
+        "rate": 0.4844,
+        "wilson95": [
+         0.3663,
+         0.6042
+        ]
+       },
+       "M_rank": {
+        "1": 1,
+        "2-3": 12,
+        "4-10": 18
+       },
+       "M_window_retained": {
+        "k": 31,
+        "n": 51,
+        "rate": 0.6078,
+        "wilson95": [
+         0.4708,
+         0.7298
+        ]
+       },
+       "U_any": {
+        "k": 64,
+        "n": 64,
+        "rate": 1.0,
+        "wilson95": [
+         0.9433,
+         1.0
+        ]
+       },
+       "U_mean": 9.2344,
+       "failed": 0,
+       "n": 64,
+       "pairs": 64,
+       "records": 64,
+       "top10_lists": 64
+      },
+      "norerank": {
+       "A": {
+        "k": 34,
+        "n": 64,
+        "rate": 0.5312,
+        "wilson95": [
+         0.4107,
+         0.6483
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 2,
+        "n": 64,
+        "rate": 0.0312,
+        "wilson95": [
+         0.0086,
+         0.107
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 64,
+        "n": 64,
+        "rate": 1.0,
+        "wilson95": [
+         0.9433,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 32,
+        "n": 64,
+        "rate": 0.5,
+        "wilson95": [
+         0.381,
+         0.619
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 29,
+        "n": 45,
+        "rate": 0.6444,
+        "wilson95": [
+         0.4983,
+         0.7679
+        ]
+       },
+       "M": {
+        "k": 29,
+        "n": 64,
+        "rate": 0.4531,
+        "wilson95": [
+         0.3372,
+         0.5743
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 8,
+        "4-10": 19
+       },
+       "M_window_retained": {
+        "k": 27,
+        "n": 45,
+        "rate": 0.6,
+        "wilson95": [
+         0.4545,
+         0.7298
+        ]
+       },
+       "U_any": {
+        "k": 64,
+        "n": 64,
+        "rate": 1.0,
+        "wilson95": [
+         0.9433,
+         1.0
+        ]
+       },
+       "U_mean": 9.3438,
+       "failed": 0,
+       "n": 64,
+       "pairs": 64,
+       "records": 64,
+       "top10_lists": 64
+      }
+     },
+     "pairs": 64,
+     "records": 64,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 64
+      },
+      "stage_a_judged_legs": {
+       "random1|none|default": 51,
+       "random1|none|default#2": 51,
+       "random1|none|norerank": 45,
+       "random2|none|default": 4,
+       "random2|none|default#2": 4,
+       "random2|none|norerank": 5
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 39,
+        "n": 64,
+        "rate": 0.6094,
+        "wilson95": [
+         0.4869,
+         0.7195
+        ]
+       },
+       "default": {
+        "k": 51,
+        "n": 64,
+        "rate": 0.7969,
+        "wilson95": [
+         0.6828,
+         0.8773
+        ]
+       },
+       "norerank": {
+        "k": 45,
+        "n": 64,
+        "rate": 0.7031,
+        "wilson95": [
+         0.5822,
+         0.801
+        ]
+       }
+      }
+     },
+     "top10_lists": 64
+    },
+    "random2": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 26,
+        "n": 53,
+        "rate": 0.4906,
+        "wilson95": [
+         0.3612,
+         0.6212
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 53,
+        "rate": 0.0943,
+        "wilson95": [
+         0.0409,
+         0.2026
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 53,
+        "n": 53,
+        "rate": 1.0,
+        "wilson95": [
+         0.9324,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 21,
+        "n": 53,
+        "rate": 0.3962,
+        "wilson95": [
+         0.2758,
+         0.5306
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 20,
+        "n": 26,
+        "rate": 0.7692,
+        "wilson95": [
+         0.5794,
+         0.8897
+        ]
+       },
+       "M": {
+        "k": 21,
+        "n": 53,
+        "rate": 0.3962,
+        "wilson95": [
+         0.2758,
+         0.5306
+        ]
+       },
+       "M_rank": {
+        "1": 5,
+        "2-3": 2,
+        "4-10": 14
+       },
+       "M_window_retained": {
+        "k": 20,
+        "n": 26,
+        "rate": 0.7692,
+        "wilson95": [
+         0.5794,
+         0.8897
+        ]
+       },
+       "U_any": {
+        "k": 53,
+        "n": 53,
+        "rate": 1.0,
+        "wilson95": [
+         0.9324,
+         1.0
+        ]
+       },
+       "U_mean": 9.3962,
+       "failed": 0,
+       "n": 53,
+       "pairs": 53,
+       "records": 53,
+       "top10_lists": 53
+      },
+      "default": {
+       "A": {
+        "k": 39,
+        "n": 53,
+        "rate": 0.7358,
+        "wilson95": [
+         0.6041,
+         0.8357
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 6,
+        "n": 53,
+        "rate": 0.1132,
+        "wilson95": [
+         0.0529,
+         0.2258
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 53,
+        "n": 53,
+        "rate": 1.0,
+        "wilson95": [
+         0.9324,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 33,
+        "n": 53,
+        "rate": 0.6226,
+        "wilson95": [
+         0.488,
+         0.7407
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 31,
+        "n": 43,
+        "rate": 0.7209,
+        "wilson95": [
+         0.573,
+         0.8326
+        ]
+       },
+       "M": {
+        "k": 31,
+        "n": 53,
+        "rate": 0.5849,
+        "wilson95": [
+         0.4509,
+         0.7074
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 9,
+        "4-10": 20
+       },
+       "M_window_retained": {
+        "k": 29,
+        "n": 43,
+        "rate": 0.6744,
+        "wilson95": [
+         0.5251,
+         0.7951
+        ]
+       },
+       "U_any": {
+        "k": 53,
+        "n": 53,
+        "rate": 1.0,
+        "wilson95": [
+         0.9324,
+         1.0
+        ]
+       },
+       "U_mean": 9.1132,
+       "failed": 0,
+       "n": 53,
+       "pairs": 53,
+       "records": 53,
+       "top10_lists": 53
+      },
+      "norerank": {
+       "A": {
+        "k": 33,
+        "n": 53,
+        "rate": 0.6226,
+        "wilson95": [
+         0.488,
+         0.7407
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 53,
+        "rate": 0.0943,
+        "wilson95": [
+         0.0409,
+         0.2026
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 53,
+        "n": 53,
+        "rate": 1.0,
+        "wilson95": [
+         0.9324,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 28,
+        "n": 53,
+        "rate": 0.5283,
+        "wilson95": [
+         0.3966,
+         0.6562
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 26,
+        "n": 38,
+        "rate": 0.6842,
+        "wilson95": [
+         0.5254,
+         0.8092
+        ]
+       },
+       "M": {
+        "k": 26,
+        "n": 53,
+        "rate": 0.4906,
+        "wilson95": [
+         0.3612,
+         0.6212
+        ]
+       },
+       "M_rank": {
+        "1": 3,
+        "2-3": 10,
+        "4-10": 13
+       },
+       "M_window_retained": {
+        "k": 25,
+        "n": 38,
+        "rate": 0.6579,
+        "wilson95": [
+         0.4989,
+         0.7879
+        ]
+       },
+       "U_any": {
+        "k": 53,
+        "n": 53,
+        "rate": 1.0,
+        "wilson95": [
+         0.9324,
+         1.0
+        ]
+       },
+       "U_mean": 9.2075,
+       "failed": 0,
+       "n": 53,
+       "pairs": 53,
+       "records": 53,
+       "top10_lists": 53
+      }
+     },
+     "pairs": 53,
+     "records": 53,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 53
+      },
+      "stage_a_judged_legs": {
+       "random2|none|default": 43,
+       "random2|none|default#2": 43,
+       "random2|none|norerank": 38
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 26,
+        "n": 53,
+        "rate": 0.4906,
+        "wilson95": [
+         0.3612,
+         0.6212
+        ]
+       },
+       "default": {
+        "k": 43,
+        "n": 53,
+        "rate": 0.8113,
+        "wilson95": [
+         0.6864,
+         0.8942
+        ]
+       },
+       "norerank": {
+        "k": 38,
+        "n": 53,
+        "rate": 0.717,
+        "wilson95": [
+         0.5842,
+         0.8204
+        ]
+       }
+      }
+     },
+     "top10_lists": 53
+    }
+   },
+   "by_coverage_band": {
+    "0.5-0.8": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 89,
+        "n": 182,
+        "rate": 0.489,
+        "wilson95": [
+         0.4173,
+         0.5612
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 7,
+        "n": 182,
+        "rate": 0.0385,
+        "wilson95": [
+         0.0187,
+         0.0773
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 182,
+        "n": 182,
+        "rate": 1.0,
+        "wilson95": [
+         0.9793,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 82,
+        "n": 182,
+        "rate": 0.4505,
+        "wilson95": [
+         0.38,
+         0.5232
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 74,
+        "n": 109,
+        "rate": 0.6789,
+        "wilson95": [
+         0.5864,
+         0.7592
+        ]
+       },
+       "M": {
+        "k": 73,
+        "n": 182,
+        "rate": 0.4011,
+        "wilson95": [
+         0.3326,
+         0.4737
+        ]
+       },
+       "M_rank": {
+        "1": 16,
+        "2-3": 21,
+        "4-10": 36
+       },
+       "M_window_retained": {
+        "k": 67,
+        "n": 109,
+        "rate": 0.6147,
+        "wilson95": [
+         0.5208,
+         0.7007
+        ]
+       },
+       "U_any": {
+        "k": 182,
+        "n": 182,
+        "rate": 1.0,
+        "wilson95": [
+         0.9793,
+         1.0
+        ]
+       },
+       "U_mean": 9.4121,
+       "failed": 0,
+       "n": 182,
+       "pairs": 182,
+       "records": 143,
+       "top10_lists": 182
+      },
+      "default": {
+       "A": {
+        "k": 125,
+        "n": 182,
+        "rate": 0.6868,
+        "wilson95": [
+         0.6161,
+         0.7498
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 10,
+        "n": 182,
+        "rate": 0.0549,
+        "wilson95": [
+         0.0301,
+         0.0982
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 182,
+        "n": 182,
+        "rate": 1.0,
+        "wilson95": [
+         0.9793,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 115,
+        "n": 182,
+        "rate": 0.6319,
+        "wilson95": [
+         0.5597,
+         0.6986
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 110,
+        "n": 156,
+        "rate": 0.7051,
+        "wilson95": [
+         0.6293,
+         0.7711
+        ]
+       },
+       "M": {
+        "k": 99,
+        "n": 182,
+        "rate": 0.544,
+        "wilson95": [
+         0.4714,
+         0.6147
+        ]
+       },
+       "M_rank": {
+        "1": 9,
+        "2-3": 37,
+        "4-10": 53
+       },
+       "M_window_retained": {
+        "k": 96,
+        "n": 156,
+        "rate": 0.6154,
+        "wilson95": [
+         0.5371,
+         0.6881
+        ]
+       },
+       "U_any": {
+        "k": 182,
+        "n": 182,
+        "rate": 1.0,
+        "wilson95": [
+         0.9793,
+         1.0
+        ]
+       },
+       "U_mean": 9.1758,
+       "failed": 0,
+       "n": 182,
+       "pairs": 182,
+       "records": 143,
+       "top10_lists": 182
+      },
+      "norerank": {
+       "A": {
+        "k": 103,
+        "n": 182,
+        "rate": 0.5659,
+        "wilson95": [
+         0.4932,
+         0.6359
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 7,
+        "n": 182,
+        "rate": 0.0385,
+        "wilson95": [
+         0.0187,
+         0.0773
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 182,
+        "n": 182,
+        "rate": 1.0,
+        "wilson95": [
+         0.9793,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 96,
+        "n": 182,
+        "rate": 0.5275,
+        "wilson95": [
+         0.4551,
+         0.5987
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 91,
+        "n": 138,
+        "rate": 0.6594,
+        "wilson95": [
+         0.5769,
+         0.7333
+        ]
+       },
+       "M": {
+        "k": 88,
+        "n": 182,
+        "rate": 0.4835,
+        "wilson95": [
+         0.412,
+         0.5558
+        ]
+       },
+       "M_rank": {
+        "1": 17,
+        "2-3": 27,
+        "4-10": 44
+       },
+       "M_window_retained": {
+        "k": 85,
+        "n": 138,
+        "rate": 0.6159,
+        "wilson95": [
+         0.5326,
+         0.693
+        ]
+       },
+       "U_any": {
+        "k": 182,
+        "n": 182,
+        "rate": 1.0,
+        "wilson95": [
+         0.9793,
+         1.0
+        ]
+       },
+       "U_mean": 9.2802,
+       "failed": 0,
+       "n": 182,
+       "pairs": 182,
+       "records": 143,
+       "top10_lists": 182
+      }
+     },
+     "pairs": 182,
+     "records": 143,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 182
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 50,
+       "base|merged|norerank": 47,
+       "base|none|default": 52,
+       "base|none|default#2": 52,
+       "base|none|norerank": 49,
+       "neighbour|none|default": 84,
+       "neighbour|none|default#2": 84,
+       "neighbour|none|norerank": 76,
+       "random1|none|default": 65,
+       "random1|none|default#2": 65,
+       "random1|none|norerank": 57,
+       "random2|none|default": 76,
+       "random2|none|default#2": 76,
+       "random2|none|norerank": 64
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 109,
+        "n": 182,
+        "rate": 0.5989,
+        "wilson95": [
+         0.5263,
+         0.6674
+        ]
+       },
+       "default": {
+        "k": 156,
+        "n": 182,
+        "rate": 0.8571,
+        "wilson95": [
+         0.7989,
+         0.9007
+        ]
+       },
+       "norerank": {
+        "k": 138,
+        "n": 182,
+        "rate": 0.7582,
+        "wilson95": [
+         0.6911,
+         0.8147
+        ]
+       }
+      }
+     },
+     "top10_lists": 182
+    },
+    "<0.5": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 11,
+        "n": 24,
+        "rate": 0.4583,
+        "wilson95": [
+         0.2789,
+         0.6493
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 24,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.138
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+         0.862,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 11,
+        "n": 24,
+        "rate": 0.4583,
+        "wilson95": [
+         0.2789,
+         0.6493
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 8,
+        "n": 11,
+        "rate": 0.7273,
+        "wilson95": [
+         0.4343,
+         0.9026
+        ]
+       },
+       "M": {
+        "k": 6,
+        "n": 24,
+        "rate": 0.25,
+        "wilson95": [
+         0.1199,
+         0.449
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 2,
+        "4-10": 2
+       },
+       "M_window_retained": {
+        "k": 5,
+        "n": 11,
+        "rate": 0.4545,
+        "wilson95": [
+         0.2127,
+         0.72
+        ]
+       },
+       "U_any": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+         0.862,
+         1.0
+        ]
+       },
+       "U_mean": 9.4583,
+       "failed": 0,
+       "n": 24,
+       "pairs": 24,
+       "records": 24,
+       "top10_lists": 24
+      },
+      "default": {
+       "A": {
+        "k": 17,
+        "n": 24,
+        "rate": 0.7083,
+        "wilson95": [
+         0.5083,
+         0.8509
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 2,
+        "n": 24,
+        "rate": 0.0833,
+        "wilson95": [
+         0.0231,
+         0.2585
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+         0.862,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 15,
+        "n": 24,
+        "rate": 0.625,
+        "wilson95": [
+         0.427,
+         0.7885
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 15,
+        "n": 20,
+        "rate": 0.75,
+        "wilson95": [
+         0.5312,
+         0.8882
+        ]
+       },
+       "M": {
+        "k": 10,
+        "n": 24,
+        "rate": 0.4167,
+        "wilson95": [
+         0.2446,
+         0.6117
+        ]
+       },
+       "M_rank": {
+        "1": 1,
+        "2-3": 5,
+        "4-10": 4
+       },
+       "M_window_retained": {
+        "k": 10,
+        "n": 20,
+        "rate": 0.5,
+        "wilson95": [
+         0.2992,
+         0.7008
+        ]
+       },
+       "U_any": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+         0.862,
+         1.0
+        ]
+       },
+       "U_mean": 9.1667,
+       "failed": 0,
+       "n": 24,
+       "pairs": 24,
+       "records": 24,
+       "top10_lists": 24
+      },
+      "norerank": {
+       "A": {
+        "k": 15,
+        "n": 24,
+        "rate": 0.625,
+        "wilson95": [
+         0.427,
+         0.7885
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 2,
+        "n": 24,
+        "rate": 0.0833,
+        "wilson95": [
+         0.0231,
+         0.2585
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+         0.862,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 13,
+        "n": 24,
+        "rate": 0.5417,
+        "wilson95": [
+         0.3507,
+         0.7211
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 9,
+        "n": 14,
+        "rate": 0.6429,
+        "wilson95": [
+         0.3876,
+         0.8366
+        ]
+       },
+       "M": {
+        "k": 7,
+        "n": 24,
+        "rate": 0.2917,
+        "wilson95": [
+         0.1491,
+         0.4917
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 2,
+        "4-10": 3
+       },
+       "M_window_retained": {
+        "k": 5,
+        "n": 14,
+        "rate": 0.3571,
+        "wilson95": [
+         0.1634,
+         0.6124
+        ]
+       },
+       "U_any": {
+        "k": 24,
+        "n": 24,
+        "rate": 1.0,
+        "wilson95": [
+         0.862,
+         1.0
+        ]
+       },
+       "U_mean": 9.25,
+       "failed": 0,
+       "n": 24,
+       "pairs": 24,
+       "records": 24,
+       "top10_lists": 24
+      }
+     },
+     "pairs": 24,
+     "records": 24,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 24
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 9,
+       "base|merged|norerank": 7,
+       "base|none|default": 12,
+       "base|none|default#2": 12,
+       "base|none|norerank": 7,
+       "neighbour|none|default": 7,
+       "neighbour|none|default#2": 7,
+       "neighbour|none|norerank": 4,
+       "random1|none|default": 10,
+       "random1|none|default#2": 10,
+       "random1|none|norerank": 7,
+       "random2|none|default": 10,
+       "random2|none|default#2": 10,
+       "random2|none|norerank": 5
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 11,
+        "n": 24,
+        "rate": 0.4583,
+        "wilson95": [
+         0.2789,
+         0.6493
+        ]
+       },
+       "default": {
+        "k": 20,
+        "n": 24,
+        "rate": 0.8333,
+        "wilson95": [
+         0.6414,
+         0.9333
+        ]
+       },
+       "norerank": {
+        "k": 14,
+        "n": 24,
+        "rate": 0.5833,
+        "wilson95": [
+         0.3883,
+         0.7554
+        ]
+       }
+      }
+     },
+     "top10_lists": 24
+    },
+    ">=0.8": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 77,
+        "n": 145,
+        "rate": 0.531,
+        "wilson95": [
+         0.45,
+         0.6105
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 6,
+        "n": 145,
+        "rate": 0.0414,
+        "wilson95": [
+         0.0191,
+         0.0874
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 145,
+        "n": 145,
+        "rate": 1.0,
+        "wilson95": [
+         0.9741,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 71,
+        "n": 145,
+        "rate": 0.4897,
+        "wilson95": [
+         0.4096,
+         0.5703
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 70,
+        "n": 90,
+        "rate": 0.7778,
+        "wilson95": [
+         0.6815,
+         0.8513
+        ]
+       },
+       "M": {
+        "k": 72,
+        "n": 145,
+        "rate": 0.4966,
+        "wilson95": [
+         0.4163,
+         0.577
+        ]
+       },
+       "M_rank": {
+        "1": 11,
+        "2-3": 16,
+        "4-10": 45
+       },
+       "M_window_retained": {
+        "k": 71,
+        "n": 90,
+        "rate": 0.7889,
+        "wilson95": [
+         0.6936,
+         0.8605
+        ]
+       },
+       "U_any": {
+        "k": 145,
+        "n": 145,
+        "rate": 1.0,
+        "wilson95": [
+         0.9741,
+         1.0
+        ]
+       },
+       "U_mean": 9.4069,
+       "failed": 0,
+       "n": 145,
+       "pairs": 145,
+       "records": 117,
+       "top10_lists": 145
+      },
+      "default": {
+       "A": {
+        "k": 90,
+        "n": 145,
+        "rate": 0.6207,
+        "wilson95": [
+         0.5395,
+         0.6956
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 3,
+        "n": 145,
+        "rate": 0.0207,
+        "wilson95": [
+         0.007,
+         0.0591
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 145,
+        "n": 145,
+        "rate": 1.0,
+        "wilson95": [
+         0.9741,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 87,
+        "n": 145,
+        "rate": 0.6,
+        "wilson95": [
+         0.5186,
+         0.6762
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 83,
+        "n": 100,
+        "rate": 0.83,
+        "wilson95": [
+         0.7445,
+         0.8911
+        ]
+       },
+       "M": {
+        "k": 89,
+        "n": 145,
+        "rate": 0.6138,
+        "wilson95": [
+         0.5325,
+         0.6892
+        ]
+       },
+       "M_rank": {
+        "1": 13,
+        "2-3": 26,
+        "4-10": 50
+       },
+       "M_window_retained": {
+        "k": 84,
+        "n": 100,
+        "rate": 0.84,
+        "wilson95": [
+         0.7557,
+         0.8991
+        ]
+       },
+       "U_any": {
+        "k": 145,
+        "n": 145,
+        "rate": 1.0,
+        "wilson95": [
+         0.9741,
+         1.0
+        ]
+       },
+       "U_mean": 9.2552,
+       "failed": 0,
+       "n": 145,
+       "pairs": 145,
+       "records": 117,
+       "top10_lists": 145
+      },
+      "norerank": {
+       "A": {
+        "k": 85,
+        "n": 145,
+        "rate": 0.5862,
+        "wilson95": [
+         0.5048,
+         0.6632
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 145,
+        "rate": 0.0345,
+        "wilson95": [
+         0.0148,
+         0.0782
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 145,
+        "n": 145,
+        "rate": 1.0,
+        "wilson95": [
+         0.9741,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 80,
+        "n": 145,
+        "rate": 0.5517,
+        "wilson95": [
+         0.4704,
+         0.6303
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 75,
+        "n": 106,
+        "rate": 0.7075,
+        "wilson95": [
+         0.6149,
+         0.7857
+        ]
+       },
+       "M": {
+        "k": 80,
+        "n": 145,
+        "rate": 0.5517,
+        "wilson95": [
+         0.4704,
+         0.6303
+        ]
+       },
+       "M_rank": {
+        "1": 11,
+        "2-3": 18,
+        "4-10": 51
+       },
+       "M_window_retained": {
+        "k": 75,
+        "n": 106,
+        "rate": 0.7075,
+        "wilson95": [
+         0.6149,
+         0.7857
+        ]
+       },
+       "U_any": {
+        "k": 145,
+        "n": 145,
+        "rate": 1.0,
+        "wilson95": [
+         0.9741,
+         1.0
+        ]
+       },
+       "U_mean": 9.3724,
+       "failed": 0,
+       "n": 145,
+       "pairs": 145,
+       "records": 117,
+       "top10_lists": 145
+      }
+     },
+     "pairs": 145,
+     "records": 117,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 145
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 33,
+       "base|merged|norerank": 35,
+       "base|none|default": 30,
+       "base|none|default#2": 30,
+       "base|none|norerank": 32,
+       "neighbour|none|default": 59,
+       "neighbour|none|default#2": 59,
+       "neighbour|none|norerank": 63,
+       "random1|none|default": 45,
+       "random1|none|default#2": 45,
+       "random1|none|norerank": 46,
+       "random2|none|default": 35,
+       "random2|none|default#2": 35,
+       "random2|none|norerank": 37
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 90,
+        "n": 145,
+        "rate": 0.6207,
+        "wilson95": [
+         0.5395,
+         0.6956
+        ]
+       },
+       "default": {
+        "k": 100,
+        "n": 145,
+        "rate": 0.6897,
+        "wilson95": [
+         0.6102,
+         0.7593
+        ]
+       },
+       "norerank": {
+        "k": 106,
+        "n": 145,
+        "rate": 0.731,
+        "wilson95": [
+         0.6535,
+         0.7966
+        ]
+       }
+      }
+     },
+     "top10_lists": 145
+    }
+   }
+  },
+  "control_answers_pairs": {
+   "all": {
+    "by_retriever": {
+     "bm25": {
+      "A": {
+       "k": 149,
+       "n": 276,
+       "rate": 0.5399,
+       "wilson95": [
+        0.4809,
+        0.5978
+       ]
+      },
+      "A_from_other_pairs_only": {
+       "k": 11,
+       "n": 276,
+       "rate": 0.0399,
+       "wilson95": [
+        0.0223,
+        0.07
+       ]
+      },
+      "A_or_unlabelled": {
+       "k": 276,
+       "n": 276,
+       "rate": 1.0,
+       "wilson95": [
+        0.9862,
+        1.0
+       ]
+      },
+      "A_own": {
+       "k": 138,
+       "n": 276,
+       "rate": 0.5,
+       "wilson95": [
+        0.4414,
+        0.5586
+       ]
+      },
+      "A_own_window_retained": {
+       "k": 131,
+       "n": 169,
+       "rate": 0.7751,
+       "wilson95": [
+        0.7064,
+        0.8316
+       ]
+      },
+      "M": {
+       "k": 138,
+       "n": 276,
+       "rate": 0.5,
+       "wilson95": [
+        0.4414,
+        0.5586
+       ]
+      },
+      "M_rank": {
+       "1": 27,
+       "2-3": 36,
+       "4-10": 75
+      },
+      "M_window_retained": {
+       "k": 131,
+       "n": 169,
+       "rate": 0.7751,
+       "wilson95": [
+        0.7064,
+        0.8316
+       ]
+      },
+      "U_any": {
+       "k": 276,
+       "n": 276,
+       "rate": 1.0,
+       "wilson95": [
+        0.9862,
+        1.0
+       ]
+      },
+      "U_mean": 9.4094,
+      "failed": 0,
+      "n": 276,
+      "pairs": 276,
+      "records": 183,
+      "top10_lists": 276
+     },
+     "default": {
+      "A": {
+       "k": 190,
+       "n": 276,
+       "rate": 0.6884,
+       "wilson95": [
+        0.6314,
+        0.7402
+       ]
+      },
+      "A_from_other_pairs_only": {
+       "k": 12,
+       "n": 276,
+       "rate": 0.0435,
+       "wilson95": [
+        0.025,
+        0.0745
+       ]
+      },
+      "A_or_unlabelled": {
+       "k": 276,
+       "n": 276,
+       "rate": 1.0,
+       "wilson95": [
+        0.9862,
+        1.0
+       ]
+      },
+      "A_own": {
+       "k": 178,
+       "n": 276,
+       "rate": 0.6449,
+       "wilson95": [
+        0.5868,
+        0.6991
+       ]
+      },
+      "A_own_window_retained": {
+       "k": 172,
+       "n": 217,
+       "rate": 0.7926,
+       "wilson95": [
+        0.7338,
+        0.8413
+       ]
+      },
+      "M": {
+       "k": 178,
+       "n": 276,
+       "rate": 0.6449,
+       "wilson95": [
+        0.5868,
+        0.6991
+       ]
+      },
+      "M_rank": {
+       "1": 22,
+       "2-3": 64,
+       "4-10": 92
+      },
+      "M_window_retained": {
+       "k": 172,
+       "n": 217,
+       "rate": 0.7926,
+       "wilson95": [
+        0.7338,
+        0.8413
+       ]
+      },
+      "U_any": {
+       "k": 276,
+       "n": 276,
+       "rate": 1.0,
+       "wilson95": [
+        0.9862,
+        1.0
+       ]
+      },
+      "U_mean": 9.221,
+      "failed": 0,
+      "n": 276,
+      "pairs": 276,
+      "records": 183,
+      "top10_lists": 276
+     },
+     "norerank": {
+      "A": {
+       "k": 166,
+       "n": 276,
+       "rate": 0.6014,
+       "wilson95": [
+        0.5426,
+        0.6575
+       ]
+      },
+      "A_from_other_pairs_only": {
+       "k": 11,
+       "n": 276,
+       "rate": 0.0399,
+       "wilson95": [
+        0.0223,
+        0.07
+       ]
+      },
+      "A_or_unlabelled": {
+       "k": 276,
+       "n": 276,
+       "rate": 1.0,
+       "wilson95": [
+        0.9862,
+        1.0
+       ]
+      },
+      "A_own": {
+       "k": 155,
+       "n": 276,
+       "rate": 0.5616,
+       "wilson95": [
+        0.5026,
+        0.6189
+       ]
+      },
+      "A_own_window_retained": {
+       "k": 146,
+       "n": 205,
+       "rate": 0.7122,
+       "wilson95": [
+        0.6467,
+        0.7699
+       ]
+      },
+      "M": {
+       "k": 155,
+       "n": 276,
+       "rate": 0.5616,
+       "wilson95": [
+        0.5026,
+        0.6189
+       ]
+      },
+      "M_rank": {
+       "1": 28,
+       "2-3": 41,
+       "4-10": 86
+      },
+      "M_window_retained": {
+       "k": 146,
+       "n": 205,
+       "rate": 0.7122,
+       "wilson95": [
+        0.6467,
+        0.7699
+       ]
+      },
+      "U_any": {
+       "k": 276,
+       "n": 276,
+       "rate": 1.0,
+       "wilson95": [
+        0.9862,
+        1.0
+       ]
+      },
+      "U_mean": 9.3442,
+      "failed": 0,
+      "n": 276,
+      "pairs": 276,
+      "records": 183,
+      "top10_lists": 276
+     }
+    },
+    "pairs": 276,
+    "records": 183,
+    "reference": {
+     "base_windows_only_in_larger_arm_legs": 0,
+     "draw_stratum": {
+      "answers": 276
+     },
+     "stage_a_judged_legs": {
+      "base|merged|default": 73,
+      "base|merged|norerank": 72,
+      "base|none|default": 75,
+      "base|none|default#2": 75,
+      "base|none|norerank": 71,
+      "neighbour|none|default": 125,
+      "neighbour|none|default#2": 125,
+      "neighbour|none|norerank": 113,
+      "random1|none|default": 93,
+      "random1|none|default#2": 93,
+      "random1|none|norerank": 84,
+      "random2|none|default": 93,
+      "random2|none|default#2": 93,
+      "random2|none|norerank": 84
+     },
+     "window_in_stage_a_top10_same_arm": {
+      "bm25": {
+       "k": 169,
+       "n": 276,
+       "rate": 0.6123,
+       "wilson95": [
+        0.5536,
+        0.6679
+       ]
+      },
+      "default": {
+       "k": 217,
+       "n": 276,
+       "rate": 0.7862,
+       "wilson95": [
+        0.7341,
+        0.8305
+       ]
+      },
+      "norerank": {
+       "k": 205,
+       "n": 276,
+       "rate": 0.7428,
+       "wilson95": [
+        0.688,
+        0.7908
+       ]
+      }
+     }
+    },
+    "top10_lists": 276
+   },
+   "by_corpus_arm": {
+    "base": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 50,
+        "n": 93,
+        "rate": 0.5376,
+        "wilson95": [
+         0.4368,
+         0.6355
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 93,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.0397
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 93,
+        "n": 93,
+        "rate": 1.0,
+        "wilson95": [
+         0.9603,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 50,
+        "n": 93,
+        "rate": 0.5376,
+        "wilson95": [
+         0.4368,
+         0.6355
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 47,
+        "n": 63,
+        "rate": 0.746,
+        "wilson95": [
+         0.6265,
+         0.8372
+        ]
+       },
+       "M": {
+        "k": 50,
+        "n": 93,
+        "rate": 0.5376,
+        "wilson95": [
+         0.4368,
+         0.6355
+        ]
+       },
+       "M_rank": {
+        "1": 12,
+        "2-3": 17,
+        "4-10": 21
+       },
+       "M_window_retained": {
+        "k": 47,
+        "n": 63,
+        "rate": 0.746,
+        "wilson95": [
+         0.6265,
+         0.8372
+        ]
+       },
+       "U_any": {
+        "k": 93,
+        "n": 93,
+        "rate": 1.0,
+        "wilson95": [
+         0.9603,
+         1.0
+        ]
+       },
+       "U_mean": 9.4624,
+       "failed": 0,
+       "n": 93,
+       "pairs": 93,
+       "records": 93,
+       "top10_lists": 93
+      },
+      "default": {
+       "A": {
+        "k": 68,
+        "n": 93,
+        "rate": 0.7312,
+        "wilson95": [
+         0.6332,
+         0.8108
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 93,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.0397
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 93,
+        "n": 93,
+        "rate": 1.0,
+        "wilson95": [
+         0.9603,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 68,
+        "n": 93,
+        "rate": 0.7312,
+        "wilson95": [
+         0.6332,
+         0.8108
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 66,
+        "n": 75,
+        "rate": 0.88,
+        "wilson95": [
+         0.7874,
+         0.9356
+        ]
+       },
+       "M": {
+        "k": 68,
+        "n": 93,
+        "rate": 0.7312,
+        "wilson95": [
+         0.6332,
+         0.8108
+        ]
+       },
+       "M_rank": {
+        "1": 13,
+        "2-3": 25,
+        "4-10": 30
+       },
+       "M_window_retained": {
+        "k": 66,
+        "n": 75,
+        "rate": 0.88,
+        "wilson95": [
+         0.7874,
+         0.9356
+        ]
+       },
+       "U_any": {
+        "k": 93,
+        "n": 93,
+        "rate": 1.0,
+        "wilson95": [
+         0.9603,
+         1.0
+        ]
+       },
+       "U_mean": 9.2688,
+       "failed": 0,
+       "n": 93,
+       "pairs": 93,
+       "records": 93,
+       "top10_lists": 93
+      },
+      "norerank": {
+       "A": {
+        "k": 63,
+        "n": 93,
+        "rate": 0.6774,
+        "wilson95": [
+         0.577,
+         0.7638
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 93,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.0397
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 93,
+        "n": 93,
+        "rate": 1.0,
+        "wilson95": [
+         0.9603,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 63,
+        "n": 93,
+        "rate": 0.6774,
+        "wilson95": [
+         0.577,
+         0.7638
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 59,
+        "n": 71,
+        "rate": 0.831,
+        "wilson95": [
+         0.7274,
+         0.9006
+        ]
+       },
+       "M": {
+        "k": 63,
+        "n": 93,
+        "rate": 0.6774,
+        "wilson95": [
+         0.577,
+         0.7638
+        ]
+       },
+       "M_rank": {
+        "1": 14,
+        "2-3": 13,
+        "4-10": 36
+       },
+       "M_window_retained": {
+        "k": 59,
+        "n": 71,
+        "rate": 0.831,
+        "wilson95": [
+         0.7274,
+         0.9006
+        ]
+       },
+       "U_any": {
+        "k": 93,
+        "n": 93,
+        "rate": 1.0,
+        "wilson95": [
+         0.9603,
+         1.0
+        ]
+       },
+       "U_mean": 9.3226,
+       "failed": 0,
+       "n": 93,
+       "pairs": 93,
+       "records": 93,
+       "top10_lists": 93
+      }
+     },
+     "pairs": 93,
+     "records": 93,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 93
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 73,
+       "base|merged|norerank": 72,
+       "base|none|default": 75,
+       "base|none|default#2": 75,
+       "base|none|norerank": 71,
+       "neighbour|none|default": 52,
+       "neighbour|none|default#2": 52,
+       "neighbour|none|norerank": 44,
+       "random1|none|default": 56,
+       "random1|none|default#2": 56,
+       "random1|none|norerank": 50,
+       "random2|none|default": 59,
+       "random2|none|default#2": 59,
+       "random2|none|norerank": 49
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 63,
+        "n": 93,
+        "rate": 0.6774,
+        "wilson95": [
+         0.577,
+         0.7638
+        ]
+       },
+       "default": {
+        "k": 75,
+        "n": 93,
+        "rate": 0.8065,
+        "wilson95": [
+         0.7146,
+         0.874
+        ]
+       },
+       "norerank": {
+        "k": 71,
+        "n": 93,
+        "rate": 0.7634,
+        "wilson95": [
+         0.6677,
+         0.8383
+        ]
+       }
+      }
+     },
+     "top10_lists": 93
+    },
+    "neighbour": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 50,
+        "n": 94,
+        "rate": 0.5319,
+        "wilson95": [
+         0.4317,
+         0.6296
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 4,
+        "n": 94,
+        "rate": 0.0426,
+        "wilson95": [
+         0.0166,
+         0.1044
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 94,
+        "n": 94,
+        "rate": 1.0,
+        "wilson95": [
+         0.9607,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 46,
+        "n": 94,
+        "rate": 0.4894,
+        "wilson95": [
+         0.3907,
+         0.5889
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 44,
+        "n": 55,
+        "rate": 0.8,
+        "wilson95": [
+         0.6763,
+         0.8845
+        ]
+       },
+       "M": {
+        "k": 46,
+        "n": 94,
+        "rate": 0.4894,
+        "wilson95": [
+         0.3907,
+         0.5889
+        ]
+       },
+       "M_rank": {
+        "1": 6,
+        "2-3": 12,
+        "4-10": 28
+       },
+       "M_window_retained": {
+        "k": 44,
+        "n": 55,
+        "rate": 0.8,
+        "wilson95": [
+         0.6763,
+         0.8845
+        ]
+       },
+       "U_any": {
+        "k": 94,
+        "n": 94,
+        "rate": 1.0,
+        "wilson95": [
+         0.9607,
+         1.0
+        ]
+       },
+       "U_mean": 9.4043,
+       "failed": 0,
+       "n": 94,
+       "pairs": 94,
+       "records": 94,
+       "top10_lists": 94
+      },
+      "default": {
+       "A": {
+        "k": 59,
+        "n": 94,
+        "rate": 0.6277,
+        "wilson95": [
+         0.5267,
+         0.7186
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 94,
+        "rate": 0.0532,
+        "wilson95": [
+         0.0229,
+         0.1186
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 94,
+        "n": 94,
+        "rate": 1.0,
+        "wilson95": [
+         0.9607,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 54,
+        "n": 94,
+        "rate": 0.5745,
+        "wilson95": [
+         0.4735,
+         0.6696
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 52,
+        "n": 73,
+        "rate": 0.7123,
+        "wilson95": [
+         0.5999,
+         0.8035
+        ]
+       },
+       "M": {
+        "k": 54,
+        "n": 94,
+        "rate": 0.5745,
+        "wilson95": [
+         0.4735,
+         0.6696
+        ]
+       },
+       "M_rank": {
+        "1": 6,
+        "2-3": 20,
+        "4-10": 28
+       },
+       "M_window_retained": {
+        "k": 52,
+        "n": 73,
+        "rate": 0.7123,
+        "wilson95": [
+         0.5999,
+         0.8035
+        ]
+       },
+       "U_any": {
+        "k": 94,
+        "n": 94,
+        "rate": 1.0,
+        "wilson95": [
+         0.9607,
+         1.0
+        ]
+       },
+       "U_mean": 9.234,
+       "failed": 0,
+       "n": 94,
+       "pairs": 94,
+       "records": 94,
+       "top10_lists": 94
+      },
+      "norerank": {
+       "A": {
+        "k": 50,
+        "n": 94,
+        "rate": 0.5319,
+        "wilson95": [
+         0.4317,
+         0.6296
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 94,
+        "rate": 0.0532,
+        "wilson95": [
+         0.0229,
+         0.1186
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 94,
+        "n": 94,
+        "rate": 1.0,
+        "wilson95": [
+         0.9607,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 45,
+        "n": 94,
+        "rate": 0.4787,
+        "wilson95": [
+         0.3805,
+         0.5786
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 43,
+        "n": 69,
+        "rate": 0.6232,
+        "wilson95": [
+         0.5052,
+         0.7282
+        ]
+       },
+       "M": {
+        "k": 45,
+        "n": 94,
+        "rate": 0.4787,
+        "wilson95": [
+         0.3805,
+         0.5786
+        ]
+       },
+       "M_rank": {
+        "1": 9,
+        "2-3": 14,
+        "4-10": 22
+       },
+       "M_window_retained": {
+        "k": 43,
+        "n": 69,
+        "rate": 0.6232,
+        "wilson95": [
+         0.5052,
+         0.7282
+        ]
+       },
+       "U_any": {
+        "k": 94,
+        "n": 94,
+        "rate": 1.0,
+        "wilson95": [
+         0.9607,
+         1.0
+        ]
+       },
+       "U_mean": 9.383,
+       "failed": 0,
+       "n": 94,
+       "pairs": 94,
+       "records": 94,
+       "top10_lists": 94
+      }
+     },
+     "pairs": 94,
+     "records": 94,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 94
+      },
+      "stage_a_judged_legs": {
+       "neighbour|none|default": 73,
+       "neighbour|none|default#2": 73,
+       "neighbour|none|norerank": 69
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 55,
+        "n": 94,
+        "rate": 0.5851,
+        "wilson95": [
+         0.484,
+         0.6795
+        ]
+       },
+       "default": {
+        "k": 73,
+        "n": 94,
+        "rate": 0.7766,
+        "wilson95": [
+         0.6824,
+         0.849
+        ]
+       },
+       "norerank": {
+        "k": 69,
+        "n": 94,
+        "rate": 0.734,
+        "wilson95": [
+         0.6368,
+         0.8129
+        ]
+       }
+      }
+     },
+     "top10_lists": 94
+    },
+    "random1": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 25,
+        "n": 48,
+        "rate": 0.5208,
+        "wilson95": [
+         0.3832,
+         0.6553
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 2,
+        "n": 48,
+        "rate": 0.0417,
+        "wilson95": [
+         0.0115,
+         0.1398
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 48,
+        "n": 48,
+        "rate": 1.0,
+        "wilson95": [
+         0.9258,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 23,
+        "n": 48,
+        "rate": 0.4792,
+        "wilson95": [
+         0.3447,
+         0.6168
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 22,
+        "n": 30,
+        "rate": 0.7333,
+        "wilson95": [
+         0.5555,
+         0.8582
+        ]
+       },
+       "M": {
+        "k": 23,
+        "n": 48,
+        "rate": 0.4792,
+        "wilson95": [
+         0.3447,
+         0.6168
+        ]
+       },
+       "M_rank": {
+        "1": 5,
+        "2-3": 5,
+        "4-10": 13
+       },
+       "M_window_retained": {
+        "k": 22,
+        "n": 30,
+        "rate": 0.7333,
+        "wilson95": [
+         0.5555,
+         0.8582
+        ]
+       },
+       "U_any": {
+        "k": 48,
+        "n": 48,
+        "rate": 1.0,
+        "wilson95": [
+         0.9258,
+         1.0
+        ]
+       },
+       "U_mean": 9.4167,
+       "failed": 0,
+       "n": 48,
+       "pairs": 48,
+       "records": 48,
+       "top10_lists": 48
+      },
+      "default": {
+       "A": {
+        "k": 29,
+        "n": 48,
+        "rate": 0.6042,
+        "wilson95": [
+         0.4631,
+         0.7298
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 1,
+        "n": 48,
+        "rate": 0.0208,
+        "wilson95": [
+         0.0036,
+         0.109
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 48,
+        "n": 48,
+        "rate": 1.0,
+        "wilson95": [
+         0.9258,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 28,
+        "n": 48,
+        "rate": 0.5833,
+        "wilson95": [
+         0.4428,
+         0.7116
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 28,
+        "n": 37,
+        "rate": 0.7568,
+        "wilson95": [
+         0.5988,
+         0.8664
+        ]
+       },
+       "M": {
+        "k": 28,
+        "n": 48,
+        "rate": 0.5833,
+        "wilson95": [
+         0.4428,
+         0.7116
+        ]
+       },
+       "M_rank": {
+        "1": 1,
+        "2-3": 10,
+        "4-10": 17
+       },
+       "M_window_retained": {
+        "k": 28,
+        "n": 37,
+        "rate": 0.7568,
+        "wilson95": [
+         0.5988,
+         0.8664
+        ]
+       },
+       "U_any": {
+        "k": 48,
+        "n": 48,
+        "rate": 1.0,
+        "wilson95": [
+         0.9258,
+         1.0
+        ]
+       },
+       "U_mean": 9.2708,
+       "failed": 0,
+       "n": 48,
+       "pairs": 48,
+       "records": 48,
+       "top10_lists": 48
+      },
+      "norerank": {
+       "A": {
+        "k": 26,
+        "n": 48,
+        "rate": 0.5417,
+        "wilson95": [
+         0.4029,
+         0.6743
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 1,
+        "n": 48,
+        "rate": 0.0208,
+        "wilson95": [
+         0.0036,
+         0.109
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 48,
+        "n": 48,
+        "rate": 1.0,
+        "wilson95": [
+         0.9258,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 25,
+        "n": 48,
+        "rate": 0.5208,
+        "wilson95": [
+         0.3832,
+         0.6553
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 23,
+        "n": 34,
+        "rate": 0.6765,
+        "wilson95": [
+         0.5084,
+         0.8087
+        ]
+       },
+       "M": {
+        "k": 25,
+        "n": 48,
+        "rate": 0.5208,
+        "wilson95": [
+         0.3832,
+         0.6553
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 6,
+        "4-10": 17
+       },
+       "M_window_retained": {
+        "k": 23,
+        "n": 34,
+        "rate": 0.6765,
+        "wilson95": [
+         0.5084,
+         0.8087
+        ]
+       },
+       "U_any": {
+        "k": 48,
+        "n": 48,
+        "rate": 1.0,
+        "wilson95": [
+         0.9258,
+         1.0
+        ]
+       },
+       "U_mean": 9.4167,
+       "failed": 0,
+       "n": 48,
+       "pairs": 48,
+       "records": 48,
+       "top10_lists": 48
+      }
+     },
+     "pairs": 48,
+     "records": 48,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 48
+      },
+      "stage_a_judged_legs": {
+       "random1|none|default": 37,
+       "random1|none|default#2": 37,
+       "random1|none|norerank": 34,
+       "random2|none|default": 2,
+       "random2|none|default#2": 2,
+       "random2|none|norerank": 4
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 30,
+        "n": 48,
+        "rate": 0.625,
+        "wilson95": [
+         0.4836,
+         0.7479
+        ]
+       },
+       "default": {
+        "k": 37,
+        "n": 48,
+        "rate": 0.7708,
+        "wilson95": [
+         0.6346,
+         0.867
+        ]
+       },
+       "norerank": {
+        "k": 34,
+        "n": 48,
+        "rate": 0.7083,
+        "wilson95": [
+         0.5682,
+         0.8176
+        ]
+       }
+      }
+     },
+     "top10_lists": 48
+    },
+    "random2": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 24,
+        "n": 41,
+        "rate": 0.5854,
+        "wilson95": [
+         0.4336,
+         0.7225
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 41,
+        "rate": 0.122,
+        "wilson95": [
+         0.0532,
+         0.2555
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 41,
+        "n": 41,
+        "rate": 1.0,
+        "wilson95": [
+         0.9143,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 19,
+        "n": 41,
+        "rate": 0.4634,
+        "wilson95": [
+         0.3205,
+         0.6126
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 18,
+        "n": 21,
+        "rate": 0.8571,
+        "wilson95": [
+         0.6536,
+         0.9502
+        ]
+       },
+       "M": {
+        "k": 19,
+        "n": 41,
+        "rate": 0.4634,
+        "wilson95": [
+         0.3205,
+         0.6126
+        ]
+       },
+       "M_rank": {
+        "1": 4,
+        "2-3": 2,
+        "4-10": 13
+       },
+       "M_window_retained": {
+        "k": 18,
+        "n": 21,
+        "rate": 0.8571,
+        "wilson95": [
+         0.6536,
+         0.9502
+        ]
+       },
+       "U_any": {
+        "k": 41,
+        "n": 41,
+        "rate": 1.0,
+        "wilson95": [
+         0.9143,
+         1.0
+        ]
+       },
+       "U_mean": 9.2927,
+       "failed": 0,
+       "n": 41,
+       "pairs": 41,
+       "records": 41,
+       "top10_lists": 41
+      },
+      "default": {
+       "A": {
+        "k": 34,
+        "n": 41,
+        "rate": 0.8293,
+        "wilson95": [
+         0.6873,
+         0.9148
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 6,
+        "n": 41,
+        "rate": 0.1463,
+        "wilson95": [
+         0.0688,
+         0.2845
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 41,
+        "n": 41,
+        "rate": 1.0,
+        "wilson95": [
+         0.9143,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 28,
+        "n": 41,
+        "rate": 0.6829,
+        "wilson95": [
+         0.5301,
+         0.8044
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 26,
+        "n": 32,
+        "rate": 0.8125,
+        "wilson95": [
+         0.6469,
+         0.9112
+        ]
+       },
+       "M": {
+        "k": 28,
+        "n": 41,
+        "rate": 0.6829,
+        "wilson95": [
+         0.5301,
+         0.8044
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 9,
+        "4-10": 17
+       },
+       "M_window_retained": {
+        "k": 26,
+        "n": 32,
+        "rate": 0.8125,
+        "wilson95": [
+         0.6469,
+         0.9112
+        ]
+       },
+       "U_any": {
+        "k": 41,
+        "n": 41,
+        "rate": 1.0,
+        "wilson95": [
+         0.9143,
+         1.0
+        ]
+       },
+       "U_mean": 9.0244,
+       "failed": 0,
+       "n": 41,
+       "pairs": 41,
+       "records": 41,
+       "top10_lists": 41
+      },
+      "norerank": {
+       "A": {
+        "k": 27,
+        "n": 41,
+        "rate": 0.6585,
+        "wilson95": [
+         0.5054,
+         0.7845
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 41,
+        "rate": 0.122,
+        "wilson95": [
+         0.0532,
+         0.2555
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 41,
+        "n": 41,
+        "rate": 1.0,
+        "wilson95": [
+         0.9143,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 22,
+        "n": 41,
+        "rate": 0.5366,
+        "wilson95": [
+         0.3874,
+         0.6795
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 21,
+        "n": 31,
+        "rate": 0.6774,
+        "wilson95": [
+         0.5014,
+         0.8144
+        ]
+       },
+       "M": {
+        "k": 22,
+        "n": 41,
+        "rate": 0.5366,
+        "wilson95": [
+         0.3874,
+         0.6795
+        ]
+       },
+       "M_rank": {
+        "1": 3,
+        "2-3": 8,
+        "4-10": 11
+       },
+       "M_window_retained": {
+        "k": 21,
+        "n": 31,
+        "rate": 0.6774,
+        "wilson95": [
+         0.5014,
+         0.8144
+        ]
+       },
+       "U_any": {
+        "k": 41,
+        "n": 41,
+        "rate": 1.0,
+        "wilson95": [
+         0.9143,
+         1.0
+        ]
+       },
+       "U_mean": 9.2195,
+       "failed": 0,
+       "n": 41,
+       "pairs": 41,
+       "records": 41,
+       "top10_lists": 41
+      }
+     },
+     "pairs": 41,
+     "records": 41,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 41
+      },
+      "stage_a_judged_legs": {
+       "random2|none|default": 32,
+       "random2|none|default#2": 32,
+       "random2|none|norerank": 31
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 21,
+        "n": 41,
+        "rate": 0.5122,
+        "wilson95": [
+         0.3648,
+         0.6575
+        ]
+       },
+       "default": {
+        "k": 32,
+        "n": 41,
+        "rate": 0.7805,
+        "wilson95": [
+         0.6329,
+         0.88
+        ]
+       },
+       "norerank": {
+        "k": 31,
+        "n": 41,
+        "rate": 0.7561,
+        "wilson95": [
+         0.6065,
+         0.8618
+        ]
+       }
+      }
+     },
+     "top10_lists": 41
+    }
+   },
+   "by_coverage_band": {
+    "0.5-0.8": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 68,
+        "n": 126,
+        "rate": 0.5397,
+        "wilson95": [
+         0.4527,
+         0.6243
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 6,
+        "n": 126,
+        "rate": 0.0476,
+        "wilson95": [
+         0.022,
+         0.1001
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 126,
+        "n": 126,
+        "rate": 1.0,
+        "wilson95": [
+         0.9704,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 62,
+        "n": 126,
+        "rate": 0.4921,
+        "wilson95": [
+         0.4063,
+         0.5783
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 57,
+        "n": 77,
+        "rate": 0.7403,
+        "wilson95": [
+         0.6325,
+         0.8252
+        ]
+       },
+       "M": {
+        "k": 62,
+        "n": 126,
+        "rate": 0.4921,
+        "wilson95": [
+         0.4063,
+         0.5783
+        ]
+       },
+       "M_rank": {
+        "1": 14,
+        "2-3": 19,
+        "4-10": 29
+       },
+       "M_window_retained": {
+        "k": 57,
+        "n": 77,
+        "rate": 0.7403,
+        "wilson95": [
+         0.6325,
+         0.8252
+        ]
+       },
+       "U_any": {
+        "k": 126,
+        "n": 126,
+        "rate": 1.0,
+        "wilson95": [
+         0.9704,
+         1.0
+        ]
+       },
+       "U_mean": 9.4048,
+       "failed": 0,
+       "n": 126,
+       "pairs": 126,
+       "records": 106,
+       "top10_lists": 126
+      },
+      "default": {
+       "A": {
+        "k": 93,
+        "n": 126,
+        "rate": 0.7381,
+        "wilson95": [
+         0.655,
+         0.8071
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 9,
+        "n": 126,
+        "rate": 0.0714,
+        "wilson95": [
+         0.038,
+         0.1302
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 126,
+        "n": 126,
+        "rate": 1.0,
+        "wilson95": [
+         0.9704,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 84,
+        "n": 126,
+        "rate": 0.6667,
+        "wilson95": [
+         0.5805,
+         0.743
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 81,
+        "n": 111,
+        "rate": 0.7297,
+        "wilson95": [
+         0.6404,
+         0.8037
+        ]
+       },
+       "M": {
+        "k": 84,
+        "n": 126,
+        "rate": 0.6667,
+        "wilson95": [
+         0.5805,
+         0.743
+        ]
+       },
+       "M_rank": {
+        "1": 8,
+        "2-3": 34,
+        "4-10": 42
+       },
+       "M_window_retained": {
+        "k": 81,
+        "n": 111,
+        "rate": 0.7297,
+        "wilson95": [
+         0.6404,
+         0.8037
+        ]
+       },
+       "U_any": {
+        "k": 126,
+        "n": 126,
+        "rate": 1.0,
+        "wilson95": [
+         0.9704,
+         1.0
+        ]
+       },
+       "U_mean": 9.1746,
+       "failed": 0,
+       "n": 126,
+       "pairs": 126,
+       "records": 106,
+       "top10_lists": 126
+      },
+      "norerank": {
+       "A": {
+        "k": 74,
+        "n": 126,
+        "rate": 0.5873,
+        "wilson95": [
+         0.4999,
+         0.6695
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 126,
+        "rate": 0.0397,
+        "wilson95": [
+         0.017,
+         0.0896
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 126,
+        "n": 126,
+        "rate": 1.0,
+        "wilson95": [
+         0.9704,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 69,
+        "n": 126,
+        "rate": 0.5476,
+        "wilson95": [
+         0.4605,
+         0.6319
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 67,
+        "n": 96,
+        "rate": 0.6979,
+        "wilson95": [
+         0.5999,
+         0.7807
+        ]
+       },
+       "M": {
+        "k": 69,
+        "n": 126,
+        "rate": 0.5476,
+        "wilson95": [
+         0.4605,
+         0.6319
+        ]
+       },
+       "M_rank": {
+        "1": 15,
+        "2-3": 21,
+        "4-10": 33
+       },
+       "M_window_retained": {
+        "k": 67,
+        "n": 96,
+        "rate": 0.6979,
+        "wilson95": [
+         0.5999,
+         0.7807
+        ]
+       },
+       "U_any": {
+        "k": 126,
+        "n": 126,
+        "rate": 1.0,
+        "wilson95": [
+         0.9704,
+         1.0
+        ]
+       },
+       "U_mean": 9.3413,
+       "failed": 0,
+       "n": 126,
+       "pairs": 126,
+       "records": 106,
+       "top10_lists": 126
+      }
+     },
+     "pairs": 126,
+     "records": 106,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 126
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 34,
+       "base|merged|norerank": 32,
+       "base|none|default": 38,
+       "base|none|default#2": 38,
+       "base|none|norerank": 34,
+       "neighbour|none|default": 65,
+       "neighbour|none|default#2": 65,
+       "neighbour|none|norerank": 53,
+       "random1|none|default": 43,
+       "random1|none|default#2": 43,
+       "random1|none|norerank": 34,
+       "random2|none|default": 53,
+       "random2|none|default#2": 53,
+       "random2|none|norerank": 44
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 77,
+        "n": 126,
+        "rate": 0.6111,
+        "wilson95": [
+         0.5239,
+         0.6918
+        ]
+       },
+       "default": {
+        "k": 111,
+        "n": 126,
+        "rate": 0.881,
+        "wilson95": [
+         0.8128,
+         0.9266
+        ]
+       },
+       "norerank": {
+        "k": 96,
+        "n": 126,
+        "rate": 0.7619,
+        "wilson95": [
+         0.6804,
+         0.8279
+        ]
+       }
+      }
+     },
+     "top10_lists": 126
+    },
+    "<0.5": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 6,
+        "n": 12,
+        "rate": 0.5,
+        "wilson95": [
+         0.2537,
+         0.7463
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 0,
+        "n": 12,
+        "rate": 0.0,
+        "wilson95": [
+         0.0,
+         0.2425
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 12,
+        "n": 12,
+        "rate": 1.0,
+        "wilson95": [
+         0.7575,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 6,
+        "n": 12,
+        "rate": 0.5,
+        "wilson95": [
+         0.2537,
+         0.7463
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 5,
+        "n": 6,
+        "rate": 0.8333,
+        "wilson95": [
+         0.4364,
+         0.97
+        ]
+       },
+       "M": {
+        "k": 6,
+        "n": 12,
+        "rate": 0.5,
+        "wilson95": [
+         0.2537,
+         0.7463
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 2,
+        "4-10": 2
+       },
+       "M_window_retained": {
+        "k": 5,
+        "n": 6,
+        "rate": 0.8333,
+        "wilson95": [
+         0.4364,
+         0.97
+        ]
+       },
+       "U_any": {
+        "k": 12,
+        "n": 12,
+        "rate": 1.0,
+        "wilson95": [
+         0.7575,
+         1.0
+        ]
+       },
+       "U_mean": 9.4167,
+       "failed": 0,
+       "n": 12,
+       "pairs": 12,
+       "records": 12,
+       "top10_lists": 12
+      },
+      "default": {
+       "A": {
+        "k": 10,
+        "n": 12,
+        "rate": 0.8333,
+        "wilson95": [
+         0.5519,
+         0.9531
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 1,
+        "n": 12,
+        "rate": 0.0833,
+        "wilson95": [
+         0.0148,
+         0.3539
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 12,
+        "n": 12,
+        "rate": 1.0,
+        "wilson95": [
+         0.7575,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 9,
+        "n": 12,
+        "rate": 0.75,
+        "wilson95": [
+         0.4676,
+         0.9111
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 9,
+        "n": 10,
+        "rate": 0.9,
+        "wilson95": [
+         0.5958,
+         0.9822
+        ]
+       },
+       "M": {
+        "k": 9,
+        "n": 12,
+        "rate": 0.75,
+        "wilson95": [
+         0.4676,
+         0.9111
+        ]
+       },
+       "M_rank": {
+        "1": 1,
+        "2-3": 5,
+        "4-10": 3
+       },
+       "M_window_retained": {
+        "k": 9,
+        "n": 10,
+        "rate": 0.9,
+        "wilson95": [
+         0.5958,
+         0.9822
+        ]
+       },
+       "U_any": {
+        "k": 12,
+        "n": 12,
+        "rate": 1.0,
+        "wilson95": [
+         0.7575,
+         1.0
+        ]
+       },
+       "U_mean": 9.0833,
+       "failed": 0,
+       "n": 12,
+       "pairs": 12,
+       "records": 12,
+       "top10_lists": 12
+      },
+      "norerank": {
+       "A": {
+        "k": 8,
+        "n": 12,
+        "rate": 0.6667,
+        "wilson95": [
+         0.3906,
+         0.8619
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 1,
+        "n": 12,
+        "rate": 0.0833,
+        "wilson95": [
+         0.0148,
+         0.3539
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 12,
+        "n": 12,
+        "rate": 1.0,
+        "wilson95": [
+         0.7575,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 7,
+        "n": 12,
+        "rate": 0.5833,
+        "wilson95": [
+         0.3195,
+         0.8068
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 5,
+        "n": 8,
+        "rate": 0.625,
+        "wilson95": [
+         0.3057,
+         0.8632
+        ]
+       },
+       "M": {
+        "k": 7,
+        "n": 12,
+        "rate": 0.5833,
+        "wilson95": [
+         0.3195,
+         0.8068
+        ]
+       },
+       "M_rank": {
+        "1": 2,
+        "2-3": 2,
+        "4-10": 3
+       },
+       "M_window_retained": {
+        "k": 5,
+        "n": 8,
+        "rate": 0.625,
+        "wilson95": [
+         0.3057,
+         0.8632
+        ]
+       },
+       "U_any": {
+        "k": 12,
+        "n": 12,
+        "rate": 1.0,
+        "wilson95": [
+         0.7575,
+         1.0
+        ]
+       },
+       "U_mean": 9.1667,
+       "failed": 0,
+       "n": 12,
+       "pairs": 12,
+       "records": 12,
+       "top10_lists": 12
+      }
+     },
+     "pairs": 12,
+     "records": 12,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 12
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 6,
+       "base|merged|norerank": 5,
+       "base|none|default": 7,
+       "base|none|default#2": 7,
+       "base|none|norerank": 5,
+       "neighbour|none|default": 4,
+       "neighbour|none|default#2": 4,
+       "neighbour|none|norerank": 2,
+       "random1|none|default": 6,
+       "random1|none|default#2": 6,
+       "random1|none|norerank": 4,
+       "random2|none|default": 5,
+       "random2|none|default#2": 5,
+       "random2|none|norerank": 3
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 6,
+        "n": 12,
+        "rate": 0.5,
+        "wilson95": [
+         0.2537,
+         0.7463
+        ]
+       },
+       "default": {
+        "k": 10,
+        "n": 12,
+        "rate": 0.8333,
+        "wilson95": [
+         0.5519,
+         0.9531
+        ]
+       },
+       "norerank": {
+        "k": 8,
+        "n": 12,
+        "rate": 0.6667,
+        "wilson95": [
+         0.3906,
+         0.8619
+        ]
+       }
+      }
+     },
+     "top10_lists": 12
+    },
+    ">=0.8": {
+     "by_retriever": {
+      "bm25": {
+       "A": {
+        "k": 75,
+        "n": 138,
+        "rate": 0.5435,
+        "wilson95": [
+         0.4603,
+         0.6243
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 138,
+        "rate": 0.0362,
+        "wilson95": [
+         0.0155,
+         0.0821
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 138,
+        "n": 138,
+        "rate": 1.0,
+        "wilson95": [
+         0.9729,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 70,
+        "n": 138,
+        "rate": 0.5072,
+        "wilson95": [
+         0.4247,
+         0.5894
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 69,
+        "n": 86,
+        "rate": 0.8023,
+        "wilson95": [
+         0.706,
+         0.8728
+        ]
+       },
+       "M": {
+        "k": 70,
+        "n": 138,
+        "rate": 0.5072,
+        "wilson95": [
+         0.4247,
+         0.5894
+        ]
+       },
+       "M_rank": {
+        "1": 11,
+        "2-3": 15,
+        "4-10": 44
+       },
+       "M_window_retained": {
+        "k": 69,
+        "n": 86,
+        "rate": 0.8023,
+        "wilson95": [
+         0.706,
+         0.8728
+        ]
+       },
+       "U_any": {
+        "k": 138,
+        "n": 138,
+        "rate": 1.0,
+        "wilson95": [
+         0.9729,
+         1.0
+        ]
+       },
+       "U_mean": 9.413,
+       "failed": 0,
+       "n": 138,
+       "pairs": 138,
+       "records": 113,
+       "top10_lists": 138
+      },
+      "default": {
+       "A": {
+        "k": 87,
+        "n": 138,
+        "rate": 0.6304,
+        "wilson95": [
+         0.5473,
+         0.7065
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 2,
+        "n": 138,
+        "rate": 0.0145,
+        "wilson95": [
+         0.0039,
+         0.0513
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 138,
+        "n": 138,
+        "rate": 1.0,
+        "wilson95": [
+         0.9729,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 85,
+        "n": 138,
+        "rate": 0.6159,
+        "wilson95": [
+         0.5326,
+         0.693
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 82,
+        "n": 96,
+        "rate": 0.8542,
+        "wilson95": [
+         0.7699,
+         0.9111
+        ]
+       },
+       "M": {
+        "k": 85,
+        "n": 138,
+        "rate": 0.6159,
+        "wilson95": [
+         0.5326,
+         0.693
+        ]
+       },
+       "M_rank": {
+        "1": 13,
+        "2-3": 25,
+        "4-10": 47
+       },
+       "M_window_retained": {
+        "k": 82,
+        "n": 96,
+        "rate": 0.8542,
+        "wilson95": [
+         0.7699,
+         0.9111
+        ]
+       },
+       "U_any": {
+        "k": 138,
+        "n": 138,
+        "rate": 1.0,
+        "wilson95": [
+         0.9729,
+         1.0
+        ]
+       },
+       "U_mean": 9.2754,
+       "failed": 0,
+       "n": 138,
+       "pairs": 138,
+       "records": 113,
+       "top10_lists": 138
+      },
+      "norerank": {
+       "A": {
+        "k": 84,
+        "n": 138,
+        "rate": 0.6087,
+        "wilson95": [
+         0.5253,
+         0.6862
+        ]
+       },
+       "A_from_other_pairs_only": {
+        "k": 5,
+        "n": 138,
+        "rate": 0.0362,
+        "wilson95": [
+         0.0155,
+         0.0821
+        ]
+       },
+       "A_or_unlabelled": {
+        "k": 138,
+        "n": 138,
+        "rate": 1.0,
+        "wilson95": [
+         0.9729,
+         1.0
+        ]
+       },
+       "A_own": {
+        "k": 79,
+        "n": 138,
+        "rate": 0.5725,
+        "wilson95": [
+         0.489,
+         0.652
+        ]
+       },
+       "A_own_window_retained": {
+        "k": 74,
+        "n": 101,
+        "rate": 0.7327,
+        "wilson95": [
+         0.639,
+         0.8093
+        ]
+       },
+       "M": {
+        "k": 79,
+        "n": 138,
+        "rate": 0.5725,
+        "wilson95": [
+         0.489,
+         0.652
+        ]
+       },
+       "M_rank": {
+        "1": 11,
+        "2-3": 18,
+        "4-10": 50
+       },
+       "M_window_retained": {
+        "k": 74,
+        "n": 101,
+        "rate": 0.7327,
+        "wilson95": [
+         0.639,
+         0.8093
+        ]
+       },
+       "U_any": {
+        "k": 138,
+        "n": 138,
+        "rate": 1.0,
+        "wilson95": [
+         0.9729,
+         1.0
+        ]
+       },
+       "U_mean": 9.3623,
+       "failed": 0,
+       "n": 138,
+       "pairs": 138,
+       "records": 113,
+       "top10_lists": 138
+      }
+     },
+     "pairs": 138,
+     "records": 113,
+     "reference": {
+      "base_windows_only_in_larger_arm_legs": 0,
+      "draw_stratum": {
+       "answers": 138
+      },
+      "stage_a_judged_legs": {
+       "base|merged|default": 33,
+       "base|merged|norerank": 35,
+       "base|none|default": 30,
+       "base|none|default#2": 30,
+       "base|none|norerank": 32,
+       "neighbour|none|default": 56,
+       "neighbour|none|default#2": 56,
+       "neighbour|none|norerank": 58,
+       "random1|none|default": 44,
+       "random1|none|default#2": 44,
+       "random1|none|norerank": 46,
+       "random2|none|default": 35,
+       "random2|none|default#2": 35,
+       "random2|none|norerank": 37
+      },
+      "window_in_stage_a_top10_same_arm": {
+       "bm25": {
+        "k": 86,
+        "n": 138,
+        "rate": 0.6232,
+        "wilson95": [
+         0.54,
+         0.6997
+        ]
+       },
+       "default": {
+        "k": 96,
+        "n": 138,
+        "rate": 0.6957,
+        "wilson95": [
+         0.6144,
+         0.7663
+        ]
+       },
+       "norerank": {
+        "k": 101,
+        "n": 138,
+        "rate": 0.7319,
+        "wilson95": [
+         0.6524,
+         0.7988
+        ]
+       }
+      }
+     },
+     "top10_lists": 138
+    }
+   }
+  },
+  "control_label": {
+   "answers": 276,
+   "not": 75
+  },
+  "headline": {
+   "A_control_answers_pairs": {
+    "bm25": {
+     "k": 149,
+     "n": 276,
+     "rate": 0.5399,
+     "wilson95": [
+      0.4809,
+      0.5978
+     ]
+    },
+    "default": {
+     "k": 190,
+     "n": 276,
+     "rate": 0.6884,
+     "wilson95": [
+      0.6314,
+      0.7402
+     ]
+    },
+    "norerank": {
+     "k": 166,
+     "n": 276,
+     "rate": 0.6014,
+     "wilson95": [
+      0.5426,
+      0.6575
+     ]
+    }
+   },
+   "A_own_control_answers_pairs": {
+    "bm25": {
+     "k": 138,
+     "n": 276,
+     "rate": 0.5,
+     "wilson95": [
+      0.4414,
+      0.5586
+     ]
+    },
+    "default": {
+     "k": 178,
+     "n": 276,
+     "rate": 0.6449,
+     "wilson95": [
+      0.5868,
+      0.6991
+     ]
+    },
+    "norerank": {
+     "k": 155,
+     "n": 276,
+     "rate": 0.5616,
+     "wilson95": [
+      0.5026,
+      0.6189
+     ]
+    }
+   },
+   "A_own_window_retained": {
+    "bm25": {
+     "k": 152,
+     "n": 210,
+     "rate": 0.7238,
+     "wilson95": [
+      0.6597,
+      0.7799
+     ]
+    },
+    "default": {
+     "k": 208,
+     "n": 276,
+     "rate": 0.7536,
+     "wilson95": [
+      0.6995,
+      0.8008
+     ]
+    },
+    "norerank": {
+     "k": 175,
+     "n": 258,
+     "rate": 0.6783,
+     "wilson95": [
+      0.619,
+      0.7324
+     ]
+    }
+   },
+   "M_all_pairs": {
+    "bm25": {
+     "k": 151,
+     "n": 351,
+     "rate": 0.4302,
+     "wilson95": [
+      0.3794,
+      0.4825
+     ]
+    },
+    "default": {
+     "k": 198,
+     "n": 351,
+     "rate": 0.5641,
+     "wilson95": [
+      0.5118,
+      0.6151
+     ]
+    },
+    "norerank": {
+     "k": 175,
+     "n": 351,
+     "rate": 0.4986,
+     "wilson95": [
+      0.4465,
+      0.5507
+     ]
+    }
+   },
+   "M_window_retained": {
+    "bm25": {
+     "k": 143,
+     "n": 210,
+     "rate": 0.681,
+     "wilson95": [
+      0.6151,
+      0.7403
+     ]
+    },
+    "default": {
+     "k": 190,
+     "n": 276,
+     "rate": 0.6884,
+     "wilson95": [
+      0.6314,
+      0.7402
+     ]
+    },
+    "norerank": {
+     "k": 165,
+     "n": 258,
+     "rate": 0.6395,
+     "wilson95": [
+      0.5792,
+      0.6957
+     ]
+    }
+   }
+  }
+ },
+ "random_both_draws": 6,
+ "records": 218,
+ "runs": {
+  "base": {
+   "citable": true,
+   "collection_build": {
+    "glossary_file_sha256": "d7c9936eddfb2c3adf9d04037dadc3d6e9eb57ed863bfe4a71baf37f83882e8b",
+    "load_receipt_sha256": "9173e1915712255b10d578794688a7da97882898ff078cdd236069350a13a86e",
+    "n_chunks": 38548
+   },
+   "export_sha256": [
+    "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58"
+   ],
+   "gates": {
+    "base": null,
+    "bm25": null,
+    "norerank": null
+   },
+   "mapped_chunks": 148,
+   "provenance": {
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false
+   },
+   "rows_sha256": "7abf068efc5d396b28970cdba818e8eeb1004624e935528841638cc6032c894d",
+   "status": "complete",
+   "summary_sha256": "4ebd768fc1c1b580bd817100bf24324f6dfff0aca377a345abe85403d413204d"
+  },
+  "neighbour": {
+   "citable": true,
+   "collection_build": {
+    "glossary_file_sha256": "5f6d355a28e3f15ffa2073de673011d54a0932ff64d517e248e042d2eb5d6735",
+    "load_receipt_sha256": "25d122e425410128fb1d8a573bab0b02c62b7cc4d8d0b26533cb8302fdbb4c4e",
+    "n_chunks": 141592
+   },
+   "export_sha256": [
+    "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+    "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687"
+   ],
+   "gates": {
+    "base": null,
+    "bm25": null,
+    "norerank": null
+   },
+   "mapped_chunks": 146,
+   "provenance": {
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false
+   },
+   "rows_sha256": "f1331d345b267839c4220e3071c9df96a245384f0c1708661274df52a2e15a31",
+   "status": "complete",
+   "summary_sha256": "05b11e47d53e890a98fbe472504259c794ab43f6d65b387d413e1e06993742b3"
+  },
+  "random1": {
+   "citable": true,
+   "collection_build": {
+    "glossary_file_sha256": "7b02e6b3e95c3ec058b8fe5b93480d651afc7d92449f8c76f1f96a56aa90a889",
+    "load_receipt_sha256": "d280b6211f9917948379bbf31941293e2e878a6ae9382ba17c39c8885e1d2d98",
+    "n_chunks": 136402
+   },
+   "export_sha256": [
+    "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+    "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026"
+   ],
+   "gates": {
+    "base": null,
+    "bm25": null,
+    "norerank": null
+   },
+   "mapped_chunks": 87,
+   "provenance": {
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false
+   },
+   "rows_sha256": "6d79986836582f1828f8b33850240faffd1abc9b8612dcf947c7dfc20d666f9a",
+   "status": "complete",
+   "summary_sha256": "cc1456ceccd933643aefc5a26134faf334b7f924b74d41f9ed95aeaa0d8023e1"
+  },
+  "random2": {
+   "citable": true,
+   "collection_build": {
+    "glossary_file_sha256": "8ccaca8f5e60d66ba9fb5e95141ed8222c75517ee332ae02a108042fdaf9dfe7",
+    "load_receipt_sha256": "7f736b2301a6ce29398522a1efa7d911f028b738c0805da5050e6ae0afa0fc19",
+    "n_chunks": 136187
+   },
+   "export_sha256": [
+    "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+    "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c"
+   ],
+   "gates": {
+    "base": null,
+    "bm25": null,
+    "norerank": null
+   },
+   "mapped_chunks": 69,
+   "provenance": {
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false
+   },
+   "rows_sha256": "ea4654a49377a3d368f483ce732836b6ec62283487113ecd6a2a89f252ab2bfe",
+   "status": "complete",
+   "summary_sha256": "4983af32f36c935e904d582268ffbd749c7190cf1743334780897779c6dcbc23"
+  }
+ },
+ "schema": "rechunk-stage1/1",
+ "top_k": 10
+}

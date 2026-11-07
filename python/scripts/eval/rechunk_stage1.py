@@ -182,8 +182,8 @@ def same_arm_leg(pair: Mapping[str, Any], retriever: str) -> str:
 def aggregate(scored: Sequence[Mapping[str, Any]], retriever: str) -> dict[str, Any]:
     """The figures of one group under one retriever (Wilson 95 %, ``alias_control_chunks.wilson``).
     ``records`` and ``top10_lists`` count the distinct records and (record, corpus arm) lists
-    behind ``n``; ``M_window_retained`` is ``M`` among the pairs whose stage-A window was in this
-    retriever's same-arm stage-A top 10."""
+    behind ``n``; ``M_window_retained`` and ``A_own_window_retained`` are ``M`` and ``A_own`` among
+    the pairs whose stage-A window was in this retriever's same-arm stage-A top 10."""
     items = [x for x in scored if not x["by"][retriever]["failed"]]
     ok = [x["by"][retriever] for x in items]
     n = len(ok)
@@ -197,6 +197,7 @@ def aggregate(scored: Sequence[Mapping[str, Any]], retriever: str) -> dict[str, 
             "A_from_other_pairs_only": acc.wilson(sum(x["A"] and not x["A_own"] for x in ok), n),
             "M": acc.wilson(len(ranks), n), "M_rank": rank_bands(ranks),
             "M_window_retained": acc.wilson(sum(x["M"] for x in kept), len(kept)),
+            "A_own_window_retained": acc.wilson(sum(x["A_own"] for x in kept), len(kept)),
             "U_mean": round(sum(us) / n, 4) if n else None,
             "U_any": acc.wilson(sum(u > 0 for u in us), n),
             "A_or_unlabelled": acc.wilson(sum(x["A_or_unlabelled"] for x in ok), n)}
@@ -266,6 +267,8 @@ def q2(scored: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     return {"headline": {"M_all_pairs": {r: aggregate(scored, r)["M"] for r in RETRIEVERS},
                          "M_window_retained": {r: aggregate(scored, r)["M_window_retained"] for r in RETRIEVERS},
+                         "A_own_window_retained": {r: aggregate(scored, r)["A_own_window_retained"]
+                                                   for r in RETRIEVERS},
                          "A_control_answers_pairs": {r: aggregate(answers, r)["A"] for r in RETRIEVERS},
                          "A_own_control_answers_pairs": {r: aggregate(answers, r)["A_own"] for r in RETRIEVERS}},
             "all_pairs": {"all": group(scored), "by_coverage_band": split(scored, band, bands),
@@ -295,6 +298,7 @@ def run(runs: Path, table_path: Path, out: Path) -> dict[str, Any]:
                                                    "of the same record",
                         "M_window_retained": "M among the pairs whose stage-A window was in the same retriever's "
                                              "same-arm stage-A top 10",
+                        "A_own_window_retained": "A_own among the same pairs as M_window_retained",
                         "M": "the pair's max-overlap chunk is in the top 10 (rank bands beside)",
                         "U": "top-10 chunks with no label for the record (unjudged or never judged)",
                         "A_or_unlabelled": "A, or any unlabelled chunk in the top 10 (upper bound)"},

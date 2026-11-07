@@ -1,0 +1,235 @@
+{
+ "chunk_descriptor": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+ "chunks_total": 452729,
+ "collections": {
+  "base": {
+   "census": {
+    "stamps": {
+     "alias-none/1+attach=mention@file/1": 38548
+    },
+    "total": 38548
+   },
+   "census_ok": true,
+   "chunks_loaded": 38548,
+   "collection": "bench-rechunk-base",
+   "d_check_ok": true,
+   "documents": 12560,
+   "documents_unverified": 0,
+   "documents_verified": 12560,
+   "documents_verified_ws": 0,
+   "embed_retry_max": 0,
+   "embed_tasks": 4,
+   "embedding_files": 1,
+   "export_used": "host",
+   "failed_shards": 0,
+   "host_export": {
+    "chunks": 38548,
+    "chunks_sha256": "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false,
+    "documents": 12560
+   },
+   "image_vs_host": {
+    "identical": true
+   },
+   "load_receipt_sha256": "9173e1915712255b10d578794688a7da97882898ff078cdd236069350a13a86e",
+   "load_retry_max": 0,
+   "peak_es_old_gen_pct": 25,
+   "spec_hash": "13cd978e"
+  },
+  "neighbour": {
+   "census": {
+    "stamps": {
+     "alias-none/1+attach=mention@file/1": 141592
+    },
+    "total": 141592
+   },
+   "census_ok": true,
+   "chunks_loaded": 141592,
+   "collection": "bench-rechunk-neighbour",
+   "d_check_ok": true,
+   "documents": 42968,
+   "documents_unverified": 0,
+   "documents_verified": 42968,
+   "documents_verified_ws": 0,
+   "embed_retry_max": 0,
+   "embed_tasks": 54,
+   "embedding_files": 26,
+   "export_used": "image-derived",
+   "failed_shards": 0,
+   "host_export": {
+    "chunks": 103045,
+    "chunks_sha256": "d646ac202181f3d62d97f2525c897f1c26c8d53b0a6ed2d4d15bf8ec640ed00d",
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false,
+    "documents": 30408
+   },
+   "image_vs_host": {
+    "derived_chunks": 103044,
+    "derived_sha256": "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
+    "docs_differing": 3,
+    "docs_differing_with_confirmatory_pair": 0,
+    "host_chunks": 103045,
+    "identical_span_content": 102996,
+    "label_table_chunks_in_differing_docs": 0,
+    "only_in_host": 49,
+    "only_in_image": 48
+   },
+   "load_receipt_sha256": "25d122e425410128fb1d8a573bab0b02c62b7cc4d8d0b26533cb8302fdbb4c4e",
+   "load_retry_max": 0,
+   "peak_es_old_gen_pct": 25,
+   "spec_hash": "13cd978e"
+  },
+  "random1": {
+   "census": {
+    "stamps": {
+     "alias-none/1+attach=mention@file/1": 136402
+    },
+    "total": 136402
+   },
+   "census_ok": true,
+   "chunks_loaded": 136402,
+   "collection": "bench-rechunk-random1",
+   "d_check_ok": true,
+   "documents": 45231,
+   "documents_unverified": 0,
+   "documents_verified": 45231,
+   "documents_verified_ws": 0,
+   "embed_retry_max": 0,
+   "embed_tasks": 54,
+   "embedding_files": 26,
+   "export_used": "image-derived",
+   "failed_shards": 0,
+   "host_export": {
+    "chunks": 97855,
+    "chunks_sha256": "5cc70782c2f19bb7eceba07f980e824854b910ae504cdbf1fa6012ebcbdd4abc",
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false,
+    "documents": 32671
+   },
+   "image_vs_host": {
+    "derived_chunks": 97854,
+    "derived_sha256": "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
+    "docs_differing": 8,
+    "docs_differing_with_confirmatory_pair": 0,
+    "host_chunks": 97855,
+    "identical_span_content": 97746,
+    "label_table_chunks_in_differing_docs": 0,
+    "only_in_host": 109,
+    "only_in_image": 108
+   },
+   "load_receipt_sha256": "d280b6211f9917948379bbf31941293e2e878a6ae9382ba17c39c8885e1d2d98",
+   "load_retry_max": 0,
+   "peak_es_old_gen_pct": 25,
+   "spec_hash": "13cd978e"
+  },
+  "random2": {
+   "census": {
+    "stamps": {
+     "alias-none/1+attach=mention@file/1": 136187
+    },
+    "total": 136187
+   },
+   "census_ok": true,
+   "chunks_loaded": 136187,
+   "collection": "bench-rechunk-random2",
+   "d_check_ok": true,
+   "documents": 45969,
+   "documents_unverified": 0,
+   "documents_verified": 45969,
+   "documents_verified_ws": 0,
+   "embed_retry_max": 0,
+   "embed_tasks": 54,
+   "embedding_files": 26,
+   "export_used": "image-derived",
+   "failed_shards": 0,
+   "host_export": {
+    "chunks": 97640,
+    "chunks_sha256": "392b2306c71269253294c0aa8dd62bca10f2a5dc7e219b96a20d542120581bd3",
+    "commit": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+    "dirty": false,
+    "documents": 33409
+   },
+   "image_vs_host": {
+    "derived_chunks": 97639,
+    "derived_sha256": "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c",
+    "docs_differing": 8,
+    "docs_differing_with_confirmatory_pair": 0,
+    "host_chunks": 97640,
+    "identical_span_content": 97534,
+    "label_table_chunks_in_differing_docs": 0,
+    "only_in_host": 106,
+    "only_in_image": 105
+   },
+   "load_receipt_sha256": "7f736b2301a6ce29398522a1efa7d911f028b738c0805da5050e6ae0afa0fc19",
+   "load_retry_max": 0,
+   "peak_es_old_gen_pct": 25,
+   "spec_hash": "13cd978e"
+  }
+ },
+ "embed_workflow": {
+  "cwl_sha256": "ca751f3286fc2b8ba8d53d96653714fb8f199e4ccd5f7d6085cc385b54c6c1a4",
+  "merge_commit": "a75d0666563589f6eec3f0f78770b4e99f44dfba",
+  "pr": 983
+ },
+ "expected_chunks_in_harness_config": {
+  "base": 38548,
+  "neighbour": 141592,
+  "random1": 136402,
+  "random2": 136187
+ },
+ "exploratory": true,
+ "library_versions": {
+  "host_export_env": {
+   "markdown-it-py": "4.2.0",
+   "mdit-py-plugins": "0.6.1",
+   "nltk": "3.9.4",
+   "regex": "2026.6.28",
+   "tokenizers": "0.22.2",
+   "transformers": "5.12.1"
+  },
+  "tools_image_v1.6.24-b1": {
+   "markdown-it-py": "4.2.0",
+   "mdit-py-plugins": "0.6.1",
+   "nltk": "3.10.4",
+   "regex": "2026.9.29",
+   "tokenizers": "0.23.3",
+   "transformers": "5.22.1"
+  }
+ },
+ "library_versions_source": "operator measurement 2026-11-06, importlib.metadata host vs image",
+ "provenance": {
+  "citable": true,
+  "commit": "467b1fef05db2a32e3baa927ea218cfdcff1a41e",
+  "describe": "v1.6.25-61-g467b1fe",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-07T01:56:14Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+467b1fe",
+  "warnings_n": 1
+ },
+ "repo_head_at_run": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
+ "schema": "rechunk-build-summary/1",
+ "spec_hash": "13cd978e",
+ "tools_image_sha256": "ecf81440e64f9be88834e5b6911555f718ad71084f983ad41d962e962170cbf8"
+}
