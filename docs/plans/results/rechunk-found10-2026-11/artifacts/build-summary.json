@@ -65,17 +65,13 @@
     "documents": 30408
    },
    "image_vs_host": {
-    "confirm_check": {
-     "differing_docs": 3,
-     "in_confirm_docs": [],
-     "label_table_chunks_in_differing_docs": []
-    },
     "derived_chunks": 103044,
     "derived_sha256": "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
     "docs_differing": 3,
+    "docs_differing_with_confirmatory_pair": 0,
     "host_chunks": 103045,
     "identical_span_content": 102996,
-    "metadata_keyset_or_row_mismatch_on_same_id": 102996,
+    "label_table_chunks_in_differing_docs": 0,
     "only_in_host": 49,
     "only_in_image": 48
    },
@@ -112,17 +108,13 @@
     "documents": 32671
    },
    "image_vs_host": {
-    "confirm_check": {
-     "differing_docs": 8,
-     "in_confirm_docs": [],
-     "label_table_chunks_in_differing_docs": []
-    },
     "derived_chunks": 97854,
     "derived_sha256": "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
     "docs_differing": 8,
+    "docs_differing_with_confirmatory_pair": 0,
     "host_chunks": 97855,
     "identical_span_content": 97746,
-    "metadata_keyset_or_row_mismatch_on_same_id": 97746,
+    "label_table_chunks_in_differing_docs": 0,
     "only_in_host": 109,
     "only_in_image": 108
    },
@@ -159,17 +151,13 @@
     "documents": 33409
    },
    "image_vs_host": {
-    "confirm_check": {
-     "differing_docs": 8,
-     "in_confirm_docs": [],
-     "label_table_chunks_in_differing_docs": []
-    },
     "derived_chunks": 97639,
     "derived_sha256": "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c",
     "docs_differing": 8,
+    "docs_differing_with_confirmatory_pair": 0,
     "host_chunks": 97640,
     "identical_span_content": 97534,
-    "metadata_keyset_or_row_mismatch_on_same_id": 97534,
+    "label_table_chunks_in_differing_docs": 0,
     "only_in_host": 106,
     "only_in_image": 105
    },
@@ -209,16 +197,17 @@
    "transformers": "5.22.1"
   }
  },
+ "library_versions_source": "operator measurement 2026-11-06, importlib.metadata host vs image",
  "provenance": {
   "citable": true,
-  "commit": "16220f89c27518572e7d59da2784436b42441514",
-  "describe": "v1.6.25-59-g16220f8",
+  "commit": "467b1fef05db2a32e3baa927ea218cfdcff1a41e",
+  "describe": "v1.6.25-61-g467b1fe",
   "dirty": false,
   "image": null,
   "in_image": false,
   "installed_distribution": null,
   "python": "3.12.13",
-  "recorded_at": "2026-11-07T01:47:04Z",
+  "recorded_at": "2026-11-07T01:56:14Z",
   "schema": 1,
   "segmentation": [
    {
@@ -236,10 +225,8 @@
   ],
   "source": "git",
   "untracked": 0,
-  "version": "v1.6.25+16220f8",
-  "warnings": [
-   "not in an image: no RELEASE file at /opt/ragstack/RELEASE; a versioned ragstack-tools image is the preferred way to run"
-  ]
+  "version": "v1.6.25+467b1fe",
+  "warnings_n": 1
  },
  "repo_head_at_run": "002e98a31d07880c9e6aba6e0909f8882f8bb677",
  "schema": "rechunk-build-summary/1",

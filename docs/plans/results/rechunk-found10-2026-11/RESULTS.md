@@ -3,7 +3,8 @@
 Every figure is descriptive and exploratory; no test was planned (PLAN §5). Numbers are read from
 [`artifacts/stage1.json`](artifacts/stage1.json) (the stage-1 report) and
 [`artifacts/build-summary.json`](artifacts/build-summary.json) (the collections as built). Both were written
-by committed code at `16220f8` from a clean tree (`citable: true`).
+by committed code from a clean tree (`citable: true`): `stage1.json` at `16220f8` and `build-summary.json` at
+`467b1fe`.
 
 - **Plan:** [PLAN.md](PLAN.md).
 - **Deviations:** [DEVIATIONS.md](DEVIATIONS.md).
@@ -61,15 +62,15 @@ over pairs that cluster by question; the record counts are given.
 | norerank | 31 / 53 (58.5 %; 45.1–70.7) | 32 / 53 | 26 / 42 (61.9 %) | 13 / 53 |
 | bm25 | 25 / 53 (47.2 %; 34.4–60.3) | 26 / 53 | 20 / 30 (66.7 %) | 9 / 53 |
 
-**Others (18 pairs):** no overlapping chunk answers. A_own is 0 by construction, so stage 1 reads M.
+**Others (18 pairs, 18 questions):** no overlapping chunk answers. A_own is 0 by construction, so stage 1 reads M.
 - default: M 5 / 18 (27.8 %; 12.5–50.9); A 1 / 18, credited through another pair of the same question.
 - norerank: M 4 / 18.
 - bm25: M 3 / 18.
 
-**Primary-only (4 pairs):** the re-read labelled the max-overlap chunk *answers*. A_own: default 4 / 4,
+**Primary-only (4 pairs, 4 questions):** the re-read labelled the max-overlap chunk *answers*. A_own: default 4 / 4,
 norerank 3 / 4, bm25 1 / 4.
 
-**All 75, default:** A_own 39 / 75 (52.0 %; 40.9–62.9) and A 42 / 75. A comes from another pair's chunk only
+**All 75 (69 questions), default:** A_own 39 / 75 (52.0 %; 40.9–62.9) and A 42 / 75. A comes from another pair's chunk only
 on 3 of 75.
 
 **The upper bound** "A or any unlabelled chunk" is 75 / 75 under every retriever. The plan called it loose
@@ -106,12 +107,23 @@ under the default retriever.
 **Reference 1** (PLAN §5): of the 53 recovered pairs, 40 had their window in the default retriever's
 same-arm stage-A top 10 (75.5 %).
 
+**Reference 2 among retained windows** (`q2_all_pairs.control_answers_pairs.all`): A_own on the 276
+control-*answers* pairs whose window was retained:
+
+| retriever | A_own |
+|---|---|
+| default | **172 / 217 (79.3 %; 73.4–84.1)** |
+| norerank | 146 / 205 (71.2 %) |
+| bm25 | 131 / 169 (77.5 %) |
+
+The Q2 table's last column instead covers all 351 pairs, so it includes the lost pairs themselves.
+
 ## Reading (PLAN §5, exploratory)
 
 **Recovered pairs.** Under the default retriever, the recovered pairs' own answering chunk is in the top 10
 at about the rate of pairs that never lost the label:
 - all pairs: 66.0 % against 64.5 % on the 276;
-- among retained windows: 80.0 % against 75.4 %.
+- among retained windows: 80.0 % against 79.3 % (172 / 217).
 
 The plan's reading for that case applies. For these pairs, the confirmatory loss is mostly a single-passage
 judging artefact: retrieval still delivers the answer, from the neighbouring chunk. This is descriptive, the

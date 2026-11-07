@@ -27,12 +27,13 @@ judge labelled *answers* in the top 10? It is read for the 53 recovered pairs ag
 
 Under production retrieval (hybrid search with the reranker):
 - **The 53 recovered pairs.** Their own answering chunk is in the top 10 for **35 of 53 (66 %, 95 % interval
-  53–77 %)**. That is the same rate as the 276 pairs whose new chunk kept *answers*: 178 of 276 (64.5 %,
+  53–77 %)**. That is about the same rate as the 276 pairs whose new chunk kept *answers*: 178 of 276 (64.5 %,
   59–70 %).
-- **Among windows that stage A had retrieved,** the figures are 32 of 40 (80 %) against 75 %.
+- **Among windows that stage A had retrieved,** the figures are 32 of 40 (80 %) against 172 of 217 (79 %).
 
-So for most lost pairs the answer is still retrieved, from the neighbouring chunk. The loss the confirmatory
-test measured there comes from judging single passages.
+So for most of the 53 recovered pairs the answer is still retrieved, from the neighbouring chunk. Over all 75
+lost pairs, the pair's own answering chunk is retrieved for about half: 39 of 75. For the recovered pairs,
+the loss the confirmatory test measured comes from judging single passages.
 
 The 18 lost pairs whose answer is split across chunks cannot be credited by any single chunk; their split
 chunk is retrieved for 5 of 18. All figures are descriptive.
@@ -76,10 +77,10 @@ Wilson 95 % intervals; pairs of one question share one top-10 list.
 
 **References** (default retriever):
 - the 276 pairs whose new chunk kept *answers*: A_own **178 / 276 (64.5 %)**; among retained windows,
-  208 / 276 (75.4 %);
+  172 / 217 (79.3 %);
 - recovered windows that stage A had in the same top 10: 40 / 53 (75.5 %).
 
-**Other retrievers.** They lower every figure by about the same amount:
+**Other retrievers.** They lower both the recovered figure and the reference:
 - recovered: 31 / 53 without the reranker, 25 / 53 with BM25;
 - reference: 155 / 276 and 138 / 276.
 
