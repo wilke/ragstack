@@ -16,7 +16,7 @@ import (
 // the drivers' roots is qdrant_data_dir_outside_roots; and the dir is under the
 // permission checks.
 func TestQdrantDataDirChecks(t *testing.T) {
-	qdirCodes := []string{QdrantDataDirMissing, QdrantDataDirSymlink, QdrantDataDirOutsideRoots}
+	qdirCodes := []string{QdrantDataDirMissing, QdrantDataDirSymlink, QdrantDataDirOutsideRoots, QdrantDataDirRootNotMounted}
 
 	// No field, nothing raised.
 	w := newWorld(t)
@@ -86,8 +86,35 @@ func TestQdrantDataDirChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.tenant.Stores.Qdrant.DataDir = outside
-	f, ok = byCode(w.run(t))[QdrantDataDirOutsideRoots]
+	got = byCode(w.run(t))
+	f, ok = got[QdrantDataDirOutsideRoots]
+	if !ok || f.Level != model.LevelWarn || !strings.Contains(f.Detail, outside) {
+		t.Fatalf("outside roots: %+v (present=%v), want a warn naming the dir", f, ok)
+	}
+	// Outside /rag and the deepest mount holding it is "/" (the fake's mount
+	// table is empty): the store filesystem is not mounted.
+	f, ok = got[QdrantDataDirRootNotMounted]
 	if !ok || f.Level != model.LevelError || !strings.Contains(f.Detail, outside) {
-		t.Fatalf("outside roots: %+v (present=%v)", f, ok)
+		t.Fatalf("root fs: %+v (present=%v), want an error naming the dir", f, ok)
+	}
+	// The same dir on a mounted store filesystem: no finding.
+	w.host.Mounts = map[string]string{"/": "ext4", filepath.Dir(filepath.Dir(outside)): "xfs"}
+	if f, ok := byCode(w.run(t))[QdrantDataDirRootNotMounted]; ok {
+		t.Errorf("a dir on a mounted filesystem raised %s: %s", QdrantDataDirRootNotMounted, f.Detail)
+	}
+}
+
+// A moved dir inside the /rag tree is on /rag's own mount, which every unit is
+// already conditioned on: the mount check does not apply, even when the mount
+// table says "/" (as the test host's does for a TempDir).
+func TestQdrantDataDirUnderRagSkipsTheMountCheck(t *testing.T) {
+	w := newWorld(t)
+	qdir := filepath.Join(w.roots.DataDir, "qdrant-stores", "dev")
+	if err := os.MkdirAll(filepath.Join(qdir, "storage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.tenant.Stores.Qdrant.DataDir = qdir
+	if f, ok := byCode(w.run(t))[QdrantDataDirRootNotMounted]; ok {
+		t.Errorf("a dir under the rag root raised %s: %s", QdrantDataDirRootNotMounted, f.Detail)
 	}
 }

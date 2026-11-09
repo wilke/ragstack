@@ -2,7 +2,6 @@
 Description=ragstack tenant sandbox — qdrant (:24081)
 PartOf=ragstack-sandbox.target
 ConditionPathIsMountPoint=/rag
-ConditionPathIsMountPoint=/data2
 ConditionPathIsDirectory=/data2/qdrant/sandbox/storage
 StartLimitIntervalSec=300
 StartLimitBurst=3

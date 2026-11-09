@@ -178,6 +178,12 @@ type Host interface {
 	// read its mountinfo, which is exactly the account that runs the
 	// confirmation (--direct, as the owner of the tree).
 	StorageBinds(pid int) ([]StorageBind, error)
+	// MountOf is the deepest mount in THIS process's /proc/self/mountinfo
+	// whose mount point contains path (lexically; path need not exist), with
+	// its filesystem type. "/" means the path is on the root filesystem.
+	// doctor uses it to tell a moved qdrant data dir that sits on a mounted
+	// store filesystem from one that would land on the root fs.
+	MountOf(path string) (mountPoint, fsType string, err error)
 	// Linger reports whether /var/lib/systemd/linger/<user> exists.
 	Linger(user string) bool
 	// RuntimeDir reports whether /run/user/<uid> exists.

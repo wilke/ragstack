@@ -1145,10 +1145,18 @@ func (d *run) qdrantDataDirChecks(t *registry.Tenant) {
 		}
 	}
 	if !inRoots {
-		d.add(model.LevelError, QdrantDataDirOutsideRoots, t.Name, fmt.Sprintf(
+		d.add(model.LevelWarn, QdrantDataDirOutsideRoots, t.Name, fmt.Sprintf(
 			"stores.qdrant.data_dir %s is outside the ctl's approved roots (%s, %s, %s, %s, %s): the instance driver "+
 				"would refuse its bind and the files driver would refuse to move a snapshot out of it",
 			q, d.roots.DataDir, d.roots.CtlConfigDir, d.roots.CtlStateDir, d.roots.BackupsDir, d.roots.ReposDir))
+	}
+	if rag := filepath.Clean(d.roots.RagRoot); d.roots.RagRoot != "" && !under(q, rag) {
+		if mp, fs, err := d.host.MountOf(q); err == nil && mp == "/" {
+			d.add(model.LevelError, QdrantDataDirRootNotMounted, t.Name, fmt.Sprintf(
+				"stores.qdrant.data_dir %s is outside %s and the deepest mount holding it is the root filesystem "+
+					"(/, %s): the store filesystem it was moved to is not mounted, and a qdrant started there would "+
+					"write onto the root fs", q, rag, fs))
+		}
 	}
 	storage := filepath.Join(q, "storage")
 	for _, p := range []string{q, storage} {

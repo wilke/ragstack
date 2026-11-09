@@ -20,11 +20,14 @@ import (
 // Every field is a plain map or slice so a test can state exactly the fact it
 // is about and leave the rest at the zero value (which reads as "absent").
 type Fake struct {
-	Self        string // Username(); "" ⇒ "wilke"
-	Ports       []Listener
-	Env         map[int]map[string]string // pid → already SAFE_ENV-filtered env
-	Procs       map[int]ProcOwnership     // pid → what /proc/<pid> says about its account
-	Binds       map[int][]StorageBind     // pid → the host dirs it has mounted
+	Self  string // Username(); "" ⇒ "wilke"
+	Ports []Listener
+	Env   map[int]map[string]string // pid → already SAFE_ENV-filtered env
+	Procs map[int]ProcOwnership     // pid → what /proc/<pid> says about its account
+	Binds map[int][]StorageBind     // pid → the host dirs it has mounted
+	// Mounts is this process's mount table for MountOf: mount point →
+	// fstype. "/" is implied (fstype "ext4") when absent.
+	Mounts      map[string]string
 	Lingering   map[string]bool
 	RuntimeDirs map[int]bool
 	DropIns     map[int]DropIn
@@ -83,6 +86,14 @@ func (f *Fake) StorageBinds(pid int) ([]StorageBind, error) {
 		return nil, err
 	}
 	return append([]StorageBind(nil), f.Binds[pid]...), nil
+}
+
+// MountOf answers the deepest recorded mount point containing path.
+func (f *Fake) MountOf(path string) (string, string, error) {
+	if err := f.Errs["mountof"]; err != nil {
+		return "", "", err
+	}
+	return deepestMount(path, f.Mounts)
 }
 
 var (

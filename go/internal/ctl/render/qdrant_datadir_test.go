@@ -24,7 +24,7 @@ func TestQdrantDataDirUnitAndScripts(t *testing.T) {
 	golden(t, "units-qdrant-data-dir/ragstack-sandbox-qdrant.service", q)
 	s := string(q)
 	for _, w := range []string{
-		"ConditionPathIsMountPoint=/rag\nConditionPathIsMountPoint=/data2\nConditionPathIsDirectory=" + qdir + "/storage\n",
+		"ConditionPathIsMountPoint=/rag\nConditionPathIsDirectory=" + qdir + "/storage\n",
 		"--bind " + qdir + "/storage:/qdrant/storage",
 		"--bind " + qdir + "/snapshots:/qdrant/snapshots",
 		"StandardOutput=append:/rag/data/tenants/sandbox/logs/qdrant-sandbox.log",
@@ -74,16 +74,14 @@ func TestQdrantDataDirUnitAndScripts(t *testing.T) {
 	}
 }
 
-// A data dir on the mount the unit already requires gets no second line; one
-// under another top-level directory gets that directory.
-func TestQdrantMountCondition(t *testing.T) {
-	for dir, want := range map[string]string{
-		"":                                   "",
-		"/rag/data/qdrant-stores/sandbox":    "",
-		"/rag/data/tenants/sandbox/qdrant-b": "",
-		"/data2/qdrant/sandbox":              "ConditionPathIsMountPoint=/data2\n",
-		"/scratch/q":                         "ConditionPathIsMountPoint=/scratch\n",
-	} {
+// PR1 emits no mount condition for the moved dir's filesystem: the store
+// roots that would name it are not configured until PR2, and guessing one (the
+// top-level directory) could condition a unit on a path that is not a mount
+// point, so it would never start. ConditionPathIsDirectory on the moved
+// storage/ is what refuses an unmounted store (doctor reports the mount:
+// qdrant_data_dir_root_not_mounted).
+func TestQdrantDataDirUnitHasOnlyTheRagMountCondition(t *testing.T) {
+	for _, dir := range []string{"", "/rag/data/qdrant-stores/sandbox", "/data2/qdrant/sandbox", "/scratch/q"} {
 		tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
 		tn.Stores.Qdrant.DataDir = dir
 		units, err := Units(tn, UnitConfig{})
@@ -91,13 +89,8 @@ func TestQdrantMountCondition(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := string(units["ragstack-sandbox-qdrant.service"])
-		got := strings.Count(s, "ConditionPathIsMountPoint=")
-		wantN := 1
-		if want != "" {
-			wantN = 2
-		}
-		if got != wantN || (want != "" && !strings.Contains(s, want)) {
-			t.Errorf("%q: %d mount conditions, want %d (%q):\n%s", dir, got, wantN, want, s)
+		if n := strings.Count(s, "ConditionPathIsMountPoint="); n != 1 || !strings.Contains(s, "ConditionPathIsMountPoint=/rag\n") {
+			t.Errorf("%q: %d mount conditions, want exactly ConditionPathIsMountPoint=/rag:\n%s", dir, n, s)
 		}
 	}
 }

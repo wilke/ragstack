@@ -502,9 +502,20 @@ const (
 	// the ctl drivers' approved roots (the tenants data dir, the ctl config
 	// and state dirs, the backups dir, the repos dir). The instance driver
 	// refuses a bind outside them and the files driver refuses to move a
-	// snapshot out of one, so start and backup would both fail. Error.
-	// (Configurable store roots are a later PR.)
+	// snapshot out of one, so start (in instance mode) and backup would both
+	// fail. WARN in PR1: the field is new and hand-set, and the driver's own
+	// refusal is the hard stop; configurable store roots are a later PR.
 	QdrantDataDirOutsideRoots = "qdrant_data_dir_outside_roots"
+
+	// QdrantDataDirRootNotMounted: the row's qdrant data dir is outside the
+	// /rag tree and the deepest mount containing it (this process's
+	// /proc/self/mountinfo) is the root filesystem itself. A dir moved off
+	// /rag is moved onto a store filesystem; landing on `/` means that
+	// filesystem is not mounted (or was never set up), and a qdrant started
+	// there writes its collections onto the root fs. Error. PR2 emits a unit
+	// mount condition from configured store roots; until then this is the
+	// check.
+	QdrantDataDirRootNotMounted = "qdrant_data_dir_root_not_mounted"
 )
 
 // The two names a handover's postgres migration leaves in

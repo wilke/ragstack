@@ -516,6 +516,42 @@ func (r *Real) StorageBinds(pid int) ([]StorageBind, error) {
 	return out, nil
 }
 
+// MountOf is the deepest self-mount containing path.
+func (r *Real) MountOf(path string) (string, string, error) {
+	self, err := r.mountEntries(os.Getpid())
+	if err != nil {
+		return "", "", fmt.Errorf("reading this process's own mounts: %w", err)
+	}
+	m := map[string]string{}
+	for _, e := range self {
+		m[e.mountPoint] = e.fsType // a later (over)mount of the same point wins, as in the kernel
+	}
+	return deepestMount(path, m)
+}
+
+// deepestMount picks, from mount point → fstype, the longest mount point that
+// is path or a parent of it. "/" (fstype from the table, or ext4) is the floor.
+func deepestMount(path string, mounts map[string]string) (string, string, error) {
+	if !filepath.IsAbs(path) {
+		return "", "", fmt.Errorf("hostfacts: %q is not absolute", path)
+	}
+	path = filepath.Clean(path)
+	best, fs := "/", "ext4"
+	if t, ok := mounts["/"]; ok {
+		fs = t
+	}
+	for mp, t := range mounts {
+		mp = filepath.Clean(mp)
+		if mp == "/" || len(mp) <= len(best) {
+			continue
+		}
+		if path == mp || strings.HasPrefix(path, mp+"/") {
+			best, fs = mp, t
+		}
+	}
+	return best, fs, nil
+}
+
 // resolveMountRoot maps a target mount's root onto this host through the
 // self-mounts of the same device.
 func resolveMountRoot(m mountEntry, selfMounts []mountEntry) (string, bool) {
