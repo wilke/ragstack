@@ -343,6 +343,27 @@ func TestRegistryRepairIsAVerbNotASideEffect(t *testing.T) {
 	if rc, _, _ := capture(t, "registry"); rc != exitUsage {
 		t.Error("`registry` with no verb should be a usage error")
 	}
+
+	// `registry validate` reads, checks and writes nothing.
+	regBefore, _ := os.ReadFile(reg)
+	if rc, out, errs := capture(t, "registry", "validate", "--registry", reg, "--rag-root", dir); rc != exitOK ||
+		!strings.Contains(out, "valid") {
+		t.Errorf("registry validate: rc %d out %q err %q", rc, out, errs)
+	}
+	bad := filepath.Join(dir, "bad-registry.json")
+	edited := bytes.Replace(regBefore, []byte(`"schema_version": 1`), []byte(`"schema_version": 99`), 1)
+	if bytes.Equal(edited, regBefore) {
+		t.Fatal("test setup: schema_version not found")
+	}
+	if err := os.WriteFile(bad, edited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _, _ := capture(t, "registry", "validate", "--registry", bad, "--rag-root", dir); rc == exitOK {
+		t.Error("registry validate accepted a registry the loader refuses")
+	}
+	if now, _ := os.ReadFile(reg); !bytes.Equal(now, regBefore) {
+		t.Error("registry validate rewrote the registry")
+	}
 }
 
 // TestRenderScriptsUseTheRegistryRow is item 5 of the PR-A review.

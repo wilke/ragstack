@@ -478,18 +478,59 @@ default is spelled only by absence: the contract refuses a row that names
 under another tenant's `data_dir` or qdrant dir. A row without the field
 serialises byte-identically, so an older daemon still reads the registry.
 
-A dir off the `/rag` mount adds a second `ConditionPathIsMountPoint=` (its
-top-level directory, e.g. `/data2`) to the qdrant unit. `doctor` raises
-`qdrant_data_dir_missing` (no `<dir>/storage`; red for start/restart),
-`qdrant_data_dir_symlink` and `qdrant_data_dir_outside_roots` (the drivers'
-approved roots do not cover it yet — configurable store roots and the verb
-that moves a store are later PRs). Nothing sets the field today; it is
-hand-edited only after the data has been moved with the store stopped.
+The contract also refuses a dir under `<data_dir>/qdrant` or inside any
+directory the row's own layout provisions (`elasticsearch/data`, `state`,
+`postgres/data`, …); a sibling such as `<data_dir>/qdrant-b` is legal.
+
+**Setting it (PR1: hand-edit only).** Nothing sets the field today. Set it
+only after **every** ctl binary on the host — the daemon, the CLI, and anything
+cron runs — is a build that knows the field: an older binary refuses a
+registry carrying an unknown member, which would take the whole control plane
+down. Stop the store, move `storage/` and `snapshots/`, hand-edit the row, then
+check the edit with `ragstack-ctl registry validate` (read-only: it loads the
+file the way every reader does and writes nothing) before starting anything.
+In PR1 the dir must also be under one of the ctl's approved roots (the tenants
+data dir, the ctl config/state dirs, the backups dir, the repos dir): the
+instance driver refuses a bind outside them and the files driver refuses to
+move a backup snapshot out of one. `doctor` reports that case as
+`qdrant_data_dir_outside_roots` (a **warn** in PR1 — the driver's refusal is
+the hard stop); configurable store roots are PR2.
+
+The qdrant unit keeps its single `ConditionPathIsMountPoint=/rag` and its
+`ConditionPathIsDirectory=<dir>/storage`; PR1 emits no mount condition for the
+moved dir's own filesystem (PR2 will, from configured store roots). Instead
+`doctor` raises `qdrant_data_dir_root_not_mounted` (error) when the dir is
+outside `/rag` and the deepest mount holding it is the root filesystem. Other
+findings: `qdrant_data_dir_missing` (no `<dir>/storage`; red for
+start/restart), `qdrant_data_dir_symlink` (error), and, on a re-adoption whose
+qdrant leg is no longer exclusive, `qdrant_data_dir_dropped` (warn: the field
+is not carried over and the dir is no longer named).
+
+`tenant decommission` **refuses** a row that sets the field (the quarantine
+renames the data tree and would strand the moved dir); move the store back
+and remove the field first. Supporting it is a later PR.
+
+**restore.sh and a tenant's own `bin/up.sh`.** `restore.sh` starts a moved
+qdrant from the row (`$qdir/storage`, `$qdir/snapshots`) and refuses it unless
+the dir and its `storage/` are real directories (not symlinks). The postgres
+leg of a `--postgres local` tenant is started through the tenant's
+provision-time `bin/up.sh`, because that script holds the generated password —
+and that same script also starts qdrant bound to `$TDIR/qdrant`. On a row with
+`stores.qdrant.data_dir`, `restore.sh` therefore **refuses to run an up.sh that
+still binds `$TDIR/qdrant`** (postgres is reported NOT started, the run exits
+nonzero): run blindly, it would bring qdrant up on the empty default dir
+whenever the moved leg had not started. Regenerate that tenant's up.sh to bind
+`$QDIR` (the renderer does this for a row with the field) before relying on a
+reboot.
 
 The SHARED qdrant (:6333) and qdrant2 (:6343) dirs are `restore.sh`'s:
 `SHARED_QDRANT_DIR` / `SHARED_QDRANT2_DIR` from the environment, else from the
 optional `/rag/config/stores.env` (KEY=VALUE, parsed — never sourced), else
-`/rag/data/qdrant` and `/rag/data/qdrant2`.
+`/rag/data/qdrant` and `/rag/data/qdrant2`. `stores.env` must be a regular
+readable file owned by the account running `restore.sh` (or root) and not
+group- or world-writable; anything else that exists at that path, a malformed
+line, or a value that is not a plain absolute path stops the run (exit 2). An
+absent file means the defaults.
 
 ---
 
