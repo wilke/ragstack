@@ -65,6 +65,10 @@ const ScriptGenerator = "apptainer/new-tenant.sh"
 // heapPattern is the JVM -Xmx grammar subset new-tenant.sh accepts in practice.
 var heapPattern = regexp.MustCompile(`^[1-9][0-9]*[kmgKMG]$`)
 
+// absPathPattern is the registry contract's absolute-path pattern: nothing a
+// shell would expand inside the double quotes up.sh puts a path in.
+var absPathPattern = regexp.MustCompile(`^/[A-Za-z0-9._/-]*$`)
+
 // A DSN host/port is interpolated into an unquoted env value and a URL.
 var (
 	pgHostPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`)
@@ -216,6 +220,10 @@ func (o StoreOptions) postgresLocal() bool { return o.StoreKind == StorePostgres
 
 type upData struct {
 	Name, IMG, TDir, ESHeap string
+	// QDir is the row's stores.qdrant.data_dir, "" for the default
+	// $TDIR/qdrant. The script spells QDIR only when it is set, so a default
+	// row renders byte-identically to new-tenant.sh (parity_test.go).
+	QDir                    string
 	Ports                   registry.Ports
 	PostgresLocal           bool
 	PGPassword              string
@@ -234,7 +242,8 @@ var upTmpl = template.Must(template.New("up.sh").Parse(`#!/usr/bin/env bash
 {{end}}set -euo pipefail
 IMG="{{.IMG}}"
 TDIR="{{.TDir}}"
-
+{{if .QDir}}QDIR="{{.QDir}}"
+{{end}}
 require_sif() {
     [[ -f "$1" ]] || { echo "ERROR: missing $1 — run apptainer/pull.sh"; exit 1; }
 }
@@ -279,8 +288,8 @@ fi
 # Apptainer has no --cwd flag and qdrant's CMD is CWD-relative — cd first.
 # Ports via double-underscore envs (safe: no dots for the shell to mangle).
 start qdrant-{{.Name}} "$IMG/qdrant.sif" \
-    --bind "$TDIR/qdrant/storage:/qdrant/storage" \
-    --bind "$TDIR/qdrant/snapshots:/qdrant/snapshots" \
+    --bind "{{if .QDir}}$QDIR{{else}}$TDIR/qdrant{{end}}/storage:/qdrant/storage" \
+    --bind "{{if .QDir}}$QDIR{{else}}$TDIR/qdrant{{end}}/snapshots:/qdrant/snapshots" \
     --env QDRANT__SERVICE__HTTP_PORT={{.Ports.QdrantHTTP}} \
     --env QDRANT__SERVICE__GRPC_PORT={{.Ports.QdrantGRPC}} \
     -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
@@ -362,6 +371,12 @@ func UpSh(t *registry.Tenant, o StoreOptions) ([]byte, error) {
 		return nil, fmt.Errorf("unknown store kind %q", kind)
 	}
 	d := upData{Name: t.Name, IMG: o.Images, TDir: t.DataDir, ESHeap: heap, Ports: t.Ports, PostgresLocal: o.postgresLocal()}
+	if q := t.Stores.Qdrant.DataDir; q != "" {
+		if !absPathPattern.MatchString(q) {
+			return nil, fmt.Errorf("tenant %s: unsafe qdrant data_dir %q", t.Name, q)
+		}
+		d.QDir = q
+	}
 	if d.PostgresLocal {
 		d.PGPassword = o.PGPassword
 		if o.DryRun {

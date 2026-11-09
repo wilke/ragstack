@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
@@ -142,7 +143,7 @@ func Units(t *registry.Tenant, cfg UnitConfig) (map[string][]byte, error) {
 Description=ragstack tenant %[1]s — qdrant (:%[2]d)
 PartOf=%[3]s
 ConditionPathIsMountPoint=%[4]s
-ConditionPathIsDirectory=%[5]s
+%[11]sConditionPathIsDirectory=%[5]s
 StartLimitIntervalSec=300
 StartLimitBurst=3
 
@@ -160,7 +161,7 @@ RestartSec=5
 StandardOutput=append:%[9]s/qdrant-%[10]s.log
 StandardError=append:%[9]s/qdrant-%[10]s.log
 `, t.Name, t.Ports.QdrantHTTP, target, cfg.MountPoint, tp.QdrantStorage, cfg.CtlStateDir, cfg.ApptainerBin,
-			st.CommandLine(), tp.LogsDir, t.ManifestName))
+			st.CommandLine(), tp.LogsDir, t.ManifestName, qdrantMountCondition(cfg, tp)))
 	}
 
 	if e := &t.Stores.Elasticsearch; e.Ownership == registry.OwnershipExclusive {
@@ -360,4 +361,40 @@ Wants=%[2]s
 ConditionPathIsMountPoint=%[3]s
 %[4]s`, t.Name, strings.Join(wants, " "), cfg.MountPoint, install))
 	return out, nil
+}
+
+// qdrantMountCondition is the extra `ConditionPathIsMountPoint=` line a qdrant
+// unit gets when the row moved its data dir (stores.qdrant.data_dir) OFF the
+// mount every unit is already conditioned on. systemd ANDs repeated
+// conditions, so the unit starts only when BOTH filesystems are there — a
+// qdrant started against an unmounted store root would create an empty
+// storage/ on the parent filesystem and serve no collections, the silent
+// failure the first condition exists to prevent.
+//
+// The store root is the top-level directory of the data dir (`/data2` for
+// `/data2/qdrant/dev`): in PR1 there is no configured list of store roots
+// (CTL_STORE_DATA_ROOTS is a later PR), and the host's extra data
+// filesystems are mounted at the top level. A data dir inside the
+// MountPoint needs no second line — it is on the mount the unit already
+// requires. Empty for the default layout, so default units are unchanged.
+func qdrantMountCondition(cfg UnitConfig, tp paths.Tenant) string {
+	if !tp.QdrantOffLayout() {
+		return ""
+	}
+	root := qdrantStoreRoot(tp.QdrantDir)
+	mp := filepath.Clean(cfg.MountPoint)
+	if root == "" || tp.QdrantDir == mp || strings.HasPrefix(tp.QdrantDir, mp+"/") || root == mp {
+		return ""
+	}
+	return "ConditionPathIsMountPoint=" + root + "\n"
+}
+
+// qdrantStoreRoot is the top-level directory of an absolute path ("" for "/").
+func qdrantStoreRoot(dir string) string {
+	rest := strings.TrimPrefix(filepath.Clean(dir), "/")
+	if rest == "" {
+		return ""
+	}
+	first, _, _ := strings.Cut(rest, "/")
+	return "/" + first
 }
