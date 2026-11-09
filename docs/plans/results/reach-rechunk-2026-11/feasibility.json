@@ -1,0 +1,381 @@
+{
+ "blinding": "W side only; no S-side retrieval output was read",
+ "eligibility": {
+  "eligible_papers": 408,
+  "non_verbatim_raw": 26,
+  "non_verbatim_whitespace_normalised": 2,
+  "papers": 408,
+  "papers_by_eligible_records": {
+   "1": 25,
+   "2": 85,
+   "3": 298
+  },
+  "papers_by_raw_verbatim_records": {
+   "1": 27,
+   "2": 93,
+   "3": 284
+  },
+  "papers_by_records_all": {
+   "1": 25,
+   "2": 83,
+   "3": 300
+  },
+  "records": 1091,
+  "verbatim_raw": 1065,
+  "verbatim_whitespace_normalised": 1089
+ },
+ "provenance": {
+  "commit": "414ae12f9587bd0ef57d57d77f69e692e8f31a9c",
+  "dirty": false,
+  "implementation": "cpython",
+  "inputs_sha256": {
+   "corpus_neighbour": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+   "corpus_random1": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
+   "corpus_random2": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c",
+   "judge_final": "4e36010ccfacd389141508b6decf5d57a786902f19d26a3a29d1fed43515eecb",
+   "oa_chunks": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+   "records": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f",
+   "runs_base": "6826ededf081ab9609723b24e346b2def66a38ef7d4dd8f78892f012372720ed",
+   "runs_neighbour": "4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882",
+   "runs_random1": "4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e",
+   "runs_random2": "ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87"
+  },
+  "python": "3.8.5",
+  "reach_quote_sha256": "8f9e7e5d63ad689ac6b6a683e6e83781d8d8b4d78f249f741444eaf5c7bc1e84",
+  "script_sha256": "11484433ad05e067e089f68f42d3a8529c992467cffbdc5b26470bbd7150e91d"
+ },
+ "registry": {
+  "label_rows_with_record_and_chunk": 24559,
+  "labelled_pairs": 24559
+ },
+ "s_side_estimate": {
+  "assumption": "S lists without a quote hit = W's, per retriever and corpus; 10 slots each; S unique pairs = S slots x W's unique-per-slot ratio; no reuse of W labels counted for S (the content-hash rule can only lower this)",
+  "by_retriever": {
+   "bm25": {
+    "lists_without_hit": 976,
+    "slots": 9760
+   },
+   "default": {
+    "lists_without_hit": 421,
+    "slots": 4210
+   },
+   "norerank": {
+    "lists_without_hit": 888,
+    "slots": 8880
+   }
+  },
+  "calls": {
+   "both": {
+    "argon_calls": {
+     "12%": 1477,
+     "17%": 2093,
+     "7%": 862
+    },
+    "opus_calls_5%": 616,
+    "pairs": 12310
+   },
+   "s_side_default_retriever_only": {
+    "argon_calls": {
+     "12%": 378,
+     "17%": 535,
+     "7%": 220
+    },
+    "note": "if J were judged for the default retriever only (owner Q3 chose all three)",
+    "opus_calls_5%": 157,
+    "pairs": 3149
+   },
+   "s_side_unique_new": {
+    "argon_calls": {
+     "12%": 1477,
+     "17%": 2093,
+     "7%": 862
+    },
+    "opus_calls_5%": 616,
+    "pairs": 12310
+   },
+   "w_side_unique_unlabelled": {
+    "argon_calls": {
+     "12%": 0,
+     "17%": 0,
+     "7%": 0
+    },
+    "opus_calls_5%": 0,
+    "pairs": 0
+   }
+  },
+  "escalation_rates": [
+   0.07,
+   0.12,
+   0.17
+  ],
+  "opus_rate": 0.05,
+  "qwen_judge_calls_est": {
+   "note": "C and E each judge every new pair",
+   "s_side": 24620,
+   "w_side": 0
+  },
+  "slots": 22850,
+  "unique_pairs_est": 12310,
+  "unique_per_slot_from_w": 0.5387
+ },
+ "schema": "reach-rechunk-feasibility/1",
+ "scorer": {
+  "hit_threshold": 0.9,
+  "min_match": 20,
+  "module": "reach_quote",
+  "top_k": 10
+ },
+ "unresolved_chunk_texts": 0,
+ "w_miss_correlation": {
+  "indicator": "default retriever quote@10 miss on W, Q-eligible records",
+  "miss_rate": 0.0966,
+  "other_record_same_paper": {
+   "ordered_pairs": 31328,
+   "r": 0.0047
+  },
+  "same_record_other_corpus": {
+   "ordered_pairs": 13068,
+   "r": 0.7414
+  }
+ },
+ "w_side": {
+  "base": {
+   "bm25": {
+    "failed": 0,
+    "hits": 898,
+    "hits_eligible": 896,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 193,
+    "quote10": 0.8231,
+    "quote10_eligible": 0.8228,
+    "short_lists": 0,
+    "slots": 1930,
+    "slots_labelled": 1930,
+    "unique_pairs": 1930,
+    "unique_pairs_labelled": 1930,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 1028,
+    "hits_eligible": 1026,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 63,
+    "quote10": 0.9423,
+    "quote10_eligible": 0.9421,
+    "short_lists": 0,
+    "slots": 630,
+    "slots_labelled": 630,
+    "unique_pairs": 630,
+    "unique_pairs_labelled": 630,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 947,
+    "hits_eligible": 945,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 144,
+    "quote10": 0.868,
+    "quote10_eligible": 0.8678,
+    "short_lists": 0,
+    "slots": 1440,
+    "slots_labelled": 1440,
+    "unique_pairs": 1440,
+    "unique_pairs_labelled": 1440,
+    "unique_pairs_unlabelled": 0
+   }
+  },
+  "neighbour": {
+   "bm25": {
+    "failed": 0,
+    "hits": 805,
+    "hits_eligible": 803,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 286,
+    "quote10": 0.7379,
+    "quote10_eligible": 0.7374,
+    "short_lists": 0,
+    "slots": 2860,
+    "slots_labelled": 2860,
+    "unique_pairs": 2860,
+    "unique_pairs_labelled": 2860,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 957,
+    "hits_eligible": 955,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 134,
+    "quote10": 0.8772,
+    "quote10_eligible": 0.877,
+    "short_lists": 0,
+    "slots": 1340,
+    "slots_labelled": 1340,
+    "unique_pairs": 1340,
+    "unique_pairs_labelled": 1340,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 808,
+    "hits_eligible": 806,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 283,
+    "quote10": 0.7406,
+    "quote10_eligible": 0.7401,
+    "short_lists": 0,
+    "slots": 2830,
+    "slots_labelled": 2830,
+    "unique_pairs": 2830,
+    "unique_pairs_labelled": 2830,
+    "unique_pairs_unlabelled": 0
+   }
+  },
+  "random1": {
+   "bm25": {
+    "failed": 0,
+    "hits": 843,
+    "hits_eligible": 841,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 248,
+    "quote10": 0.7727,
+    "quote10_eligible": 0.7723,
+    "short_lists": 0,
+    "slots": 2480,
+    "slots_labelled": 2480,
+    "unique_pairs": 2480,
+    "unique_pairs_labelled": 2480,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 982,
+    "hits_eligible": 980,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 109,
+    "quote10": 0.9001,
+    "quote10_eligible": 0.8999,
+    "short_lists": 0,
+    "slots": 1090,
+    "slots_labelled": 1090,
+    "unique_pairs": 1090,
+    "unique_pairs_labelled": 1090,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 860,
+    "hits_eligible": 858,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 231,
+    "quote10": 0.7883,
+    "quote10_eligible": 0.7879,
+    "short_lists": 0,
+    "slots": 2310,
+    "slots_labelled": 2310,
+    "unique_pairs": 2310,
+    "unique_pairs_labelled": 2310,
+    "unique_pairs_unlabelled": 0
+   }
+  },
+  "random2": {
+   "bm25": {
+    "failed": 0,
+    "hits": 842,
+    "hits_eligible": 840,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 249,
+    "quote10": 0.7718,
+    "quote10_eligible": 0.7713,
+    "short_lists": 0,
+    "slots": 2490,
+    "slots_labelled": 2490,
+    "unique_pairs": 2490,
+    "unique_pairs_labelled": 2490,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 976,
+    "hits_eligible": 974,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 115,
+    "quote10": 0.8946,
+    "quote10_eligible": 0.8944,
+    "short_lists": 0,
+    "slots": 1150,
+    "slots_labelled": 1150,
+    "unique_pairs": 1150,
+    "unique_pairs_labelled": 1150,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 861,
+    "hits_eligible": 859,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 230,
+    "quote10": 0.7892,
+    "quote10_eligible": 0.7888,
+    "short_lists": 0,
+    "slots": 2300,
+    "slots_labelled": 2300,
+    "unique_pairs": 2300,
+    "unique_pairs_labelled": 2300,
+    "unique_pairs_unlabelled": 0
+   }
+  }
+ },
+ "w_side_totals": {
+  "by_retriever": {
+   "bm25": {
+    "hits": 3388,
+    "lists": 4364,
+    "lists_without_hit": 976,
+    "slots": 9760,
+    "slots_labelled": 9760,
+    "unique_pairs_over_corpora": 6850,
+    "unique_pairs_over_corpora_labelled": 6850
+   },
+   "default": {
+    "hits": 3943,
+    "lists": 4364,
+    "lists_without_hit": 421,
+    "slots": 4210,
+    "slots_labelled": 4210,
+    "unique_pairs_over_corpora": 3149,
+    "unique_pairs_over_corpora_labelled": 3149
+   },
+   "norerank": {
+    "hits": 3476,
+    "lists": 4364,
+    "lists_without_hit": 888,
+    "slots": 8880,
+    "slots_labelled": 8880,
+    "unique_pairs_over_corpora": 6609,
+    "unique_pairs_over_corpora_labelled": 6609
+   }
+  },
+  "slots": 22850,
+  "slots_labelled": 22850,
+  "slots_unlabelled": 0,
+  "unique_pairs": 12310,
+  "unique_pairs_labelled": 12310,
+  "unique_pairs_unlabelled": 0,
+  "unique_per_slot": 0.5387
+ }
+}
