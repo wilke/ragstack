@@ -8,7 +8,7 @@ the confirmatory boundary test, and the private label table the stage-1 report r
     rechunk_prep.py gold-map --sample sample.jsonl --pairs-seed pairs-seed.jsonl \\
                              --pairs-seed-cover pairs-seed-cover.jsonl --control-final judge-control/final.jsonl \\
                              --cover-final judge-cover/final.jsonl --stage-a-runs RUNS_DIR --out TABLE.jsonl \\
-                             [--summary S.json] [--extra-final F.jsonl ...]
+                             [--summary S.json] [--extra-final F.jsonl ... [--allow-relabel]]
     rechunk_prep.py stage1b-seed --label-table TABLE.jsonl --runs RUNS_DIR [--retriever base] \\
                                  --export E.jsonl [--export E2.jsonl ...] --out-seed SEED.jsonl \\
                                  --out-export X.jsonl --summary S.json
@@ -60,11 +60,15 @@ The ``stratum`` kept on a pair row is the confirmatory **draw stratum** (the sam
 stage-A judge's route or label source, which the gold-map inputs do not carry.
 
 ``--extra-final`` (repeatable; stage 1b): a further judge run's ``final.jsonl`` (rows with
-``record_id``, ``chunk_id``, ``label``, ``source``; a row without the ids, such as a batch row, is
-skipped and counted). Its labels join the table as registry ``stage1b`` under the same combine rule
-(answers if any registry says answers); disagreements are counted in the summary's ``stage1b``
-block (within the stage-1b files, and against the confirm registries). Without the flag, table and
-summary are byte-identical to a run without stage 1b.
+``record_id``, ``chunk_id``, ``label``, ``source``). Only batch rows (``k`` starting ``batch|``)
+are skipped (counted); any other row without the ids (a ``pair|`` row among them) is refused, and
+so is a file that contributes no label. Its labels join the table as registry ``stage1b`` under the
+same combine rule (answers if any registry says answers); disagreements are counted in the
+summary's ``stage1b`` block (within the stage-1b files, and against the confirm registries).
+Stage 1b judges only chunks with no label row, so a stage-1b label for a (record, chunk) that
+already has one (``labels_already_judged``) is refused unless ``--allow-relabel`` is given; its use
+is recorded (``stage1b.allow_relabel`` in the summary, ``allow_relabel`` in the table's meta row).
+Without ``--extra-final``, table and summary are byte-identical to a run without stage 1b.
 
 The judge files are read without repair (a torn tail is refused, never truncated). The labels
 reuse ``alias_control_chunks``' helpers (``cover_labels``, ``cover_split``, ``label_of``,
@@ -78,15 +82,20 @@ seed; a chunk labelled ``unjudged`` is counted, not seeded. Deduplicated per (re
 
 - ``--out-seed``: one row per seed in the shape ``alias_study_judge.py build-control --seed-pairs``
   reads (``control_of``, ``record_id``, ``chunk_id``), with the cover-any seed rows' companions
-  (``stage_a_chunk_id``, ``doc_id`` = the seed chunk's own document, ``arm``, ``stratum``) and
-  ``pair_id``, ``corpus_arm``, ``best_rank``, ``lost_pairs_with_chunk``, ``same_paper_as_window``,
-  ``stage`` = ``stage1b``. ``control_of`` and ``stage_a_chunk_id`` are those of the lost pair (of
-  the same question) whose top 10 held the chunk: when several did, the first by pair id among
-  those whose stage-A window lies in the chunk's paper, else the first by pair id.
-  **build-control limit:** ``build_control_pairs`` refuses a seed whose chunk's paper (path root)
-  is not its stage-A pair's ``c_paper`` (the window's paper). A top-10 chunk from another paper
-  has no such stage-A pair among the lost pairs, so those rows (``same_paper_as_window`` false,
-  counted as ``seeds_other_paper``) cannot go through ``build-control`` unchanged.
+  (``stage_a_chunk_id``, ``doc_id`` = the seed chunk's own document, ``stratum``) and
+  ``window_arm`` (the arm group of the lost pair's stage-A window, *not* the chunk's arm, which
+  ``build-control --any-paper`` derives from the chunk's own paper; ``build-control`` reads no
+  arm from a seed row), ``pair_id``, ``corpus_arm``, ``best_rank``, ``lost_pairs_with_chunk``,
+  ``same_paper_as_window``, ``stage`` = ``stage1b``. ``control_of`` and ``stage_a_chunk_id`` are
+  those of the lost pair (of the same question) whose top 10 held the chunk: when several did, the
+  first by pair id among those whose stage-A window lies in the chunk's paper, else the first by
+  pair id.
+  **build-control:** without ``--any-paper``, ``build_control_pairs`` refuses a seed whose chunk's
+  paper (path root) is not its stage-A pair's ``c_paper`` (the window's paper). A top-10 chunk
+  from another paper has no such stage-A pair among the lost pairs, so those rows
+  (``same_paper_as_window`` false, counted as ``seeds_other_paper``) need ``alias_study_judge.py
+  build-control --any-paper``, which takes the passage side (``c_paper``, ``arm``) from the chunk's
+  own paper; every seed's paper then needs a chunk in a corpus arm's export.
 - ``--out-export``: the export rows of exactly the seed chunks, from the ``--export`` files,
   unchanged (re-serialized ASCII-escaped only when the line is not pure ASCII); a seed chunk in no
   export, or seen with conflicting content, is refused.
@@ -519,43 +528,56 @@ def base_only_in_larger_arm(pair: Mapping[str, Any]) -> bool:
 
 def extra_labels(finals: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[dict[tuple[str, str], str], dict[str, int]]:
     """``(record, chunk) -> label word`` of the additional registries' ``final.jsonl`` rows (the
-    stage-1b judge runs; :data:`EXTRA_REGISTRY`), and their counts. A row without ``record_id`` or
-    ``chunk_id`` (a batch row) is skipped and counted; a ``pair_id`` that is not
-    ``sha256(record|chunk)[:16]`` is refused. One (record, chunk) seen in several rows (or files)
-    takes :func:`combine` over them, and a disagreement between judged labels is counted."""
+    stage-1b judge runs; :data:`EXTRA_REGISTRY`), and their counts. Only a batch row (``k``
+    starting ``batch|``) is skipped (counted); every other row must carry ``record_id`` and
+    ``chunk_id`` (a ``pair|`` row without them, or any other row without them, is refused), and a
+    ``pair_id`` that is not ``sha256(record|chunk)[:16]`` is refused. A file that contributes no
+    label row is refused (a wrong or empty file never passes silently). One (record, chunk) seen in
+    several rows (or files) takes :func:`combine` over them, and a disagreement between judged
+    labels is counted."""
     import alias_study_judge as aj
 
     per: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
     counts: Counter[str] = Counter()
     for fi, rows in enumerate(finals):
+        used = 0
         for j, r in enumerate(rows):
+            k = str(r.get("k", ""))
+            if k.startswith("batch|"):
+                counts["batch_rows_skipped"] += 1
+                continue
             rid, cid = r.get("record_id"), r.get("chunk_id")
             if not rid or not cid:
-                counts["rows_skipped_without_ids"] += 1
-                continue
+                kind = "a pair| row" if k.startswith("pair|") else "a row that is not a batch| row"
+                raise SystemExit(f"--extra-final #{fi + 1}: {kind} without record_id/chunk_id (row {j + 1})")
             if r.get("pair_id") is not None and r["pair_id"] != aj.pair_id(rid, cid):
                 raise SystemExit(f"--extra-final #{fi + 1}: a row's pair_id is not sha256(record|chunk)[:16]")
             w = label_word(r)
             assert w is not None
             per[(rid, cid)][f"{fi}:{j}"] = w
             counts["rows"] += 1
+            used += 1
+        if not used:
+            raise SystemExit(f"--extra-final #{fi + 1}: the file contributes no label (no pair row with ids)")
     out: dict[tuple[str, str], str] = {}
     for key, ws in per.items():
         judged = {v for v in ws.values() if v != "unjudged"}
         counts["conflicts_within"] += int(len(judged) > 1)
         out[key] = combine(ws)
     counts["labels"] = len(out)
-    return out, {k: counts[k] for k in ("rows", "rows_skipped_without_ids", "labels", "conflicts_within")}
+    return out, {k: counts[k] for k in ("rows", "batch_rows_skipped", "labels", "conflicts_within")}
 
 
 def gold_map(sample:Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, Any]],
              cover_seeds: Sequence[Mapping[str, Any]], cfinal: Mapping[str, Mapping[str, Any]],
              vfinal: Mapping[str, Mapping[str, Any]], hits: Mapping[tuple[str, str], Sequence[str]],
-             extra: Mapping[tuple[str, str], str] | None = None
+             extra: Mapping[tuple[str, str], str] | None = None, *, allow_relabel: bool = False
              ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The label-table rows and their counts (a pure function; SystemExit on inconsistent inputs).
     ``extra`` (:func:`extra_labels`) adds the :data:`EXTRA_REGISTRY` registry's labels under the
-    same combine rule; ``None`` leaves rows and counts exactly as without it."""
+    same combine rule; ``None`` leaves rows and counts exactly as without it. An ``extra`` label
+    for a (record, chunk) that already has a label row (``labels_already_judged``; stage 1b seeds
+    only chunks without one) is refused unless ``allow_relabel``, whose use the counts record."""
     import alias_study_judge as aj
 
     by_pid: dict[str, Mapping[str, Any]] = {}
@@ -657,6 +679,10 @@ def gold_map(sample:Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, An
             extra_counts["conflicts_with_confirm_registries"] += int(
                 w != "unjudged" and bool(judged_prior) and judged_prior != {w})
             labels[(rid, cid)][EXTRA_REGISTRY] = w
+        if extra_counts["labels_already_judged"] and not allow_relabel:
+            raise SystemExit(f"REFUSED: --extra-final labels {extra_counts['labels_already_judged']} (record, chunk) "
+                             "key(s) that already have a label row in the confirm registries (stage 1b judges only "
+                             "unlabelled chunks); pass --allow-relabel to merge them anyway; nothing written")
 
     label_rows = []
     conflicts = 0
@@ -682,8 +708,9 @@ def gold_map(sample:Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, An
         "label_source": dict(Counter(r["source"] for r in label_rows)), "registry_conflicts": conflicts,
         "no_final_row": dict(missing), "cover_any_chunks": sum(len(v) for v in covers.values())}
     if extra is not None:
-        out_counts[EXTRA_REGISTRY] = {k: extra_counts[k] for k in ("labels_new", "labels_already_judged",
-                                                                   "conflicts_with_confirm_registries")}
+        out_counts[EXTRA_REGISTRY] = {**{k: extra_counts[k] for k in ("labels_new", "labels_already_judged",
+                                                                      "conflicts_with_confirm_registries")},
+                                      "allow_relabel": allow_relabel}
     return [*pairs, *label_rows], out_counts
 
 
@@ -732,13 +759,16 @@ def read_label_table(path: str | Path) -> LabelTable:
 
 
 def run_gold_map(sample: Path, seeds: Path, cover_seeds: Path, cfinal: Path, vfinal: Path, runs: Path, out: Path,
-                 summary: Path | None = None, extra_final: Sequence[Path] | None = None) -> dict[str, Any]:
+                 summary: Path | None = None, extra_final: Sequence[Path] | None = None,
+                 allow_relabel: bool = False) -> dict[str, Any]:
     refuse_in_repo(out, "--out")
+    if allow_relabel and not extra_final:
+        raise SystemExit("--allow-relabel needs --extra-final")
     samp = read_rows(sample)
     hits, leg_shas = stage_a_hits(runs, {(s["record_id"], s["chunk_id"]) for s in samp})
     extra, extra_counts = (None, None) if not extra_final else extra_labels([read_rows(f) for f in extra_final])
     rows, counts = gold_map(samp, read_rows(seeds), read_rows(cover_seeds), final_rows(cfinal), final_rows(vfinal),
-                            hits, extra)
+                            hits, extra, allow_relabel=allow_relabel)
     if extra_counts is not None:
         counts[EXTRA_REGISTRY] = {**extra_counts, **counts[EXTRA_REGISTRY], "files": len(extra_final or [])}
     meta = {"kind": "meta", "schema": SCHEMA["table"], "pairs": counts["pairs"], "labels": counts["labels"],
@@ -748,6 +778,8 @@ def run_gold_map(sample: Path, seeds: Path, cover_seeds: Path, cfinal: Path, vfi
                                "window (both: the first in corpus-arm order)"}
     if extra_final:
         meta["extra_registries"] = [EXTRA_REGISTRY]
+    if allow_relabel:
+        meta["allow_relabel"] = True
     sha = acc.write_private(out, acc.jsonl_bytes([meta, *rows]), "the rechunk label table")
     inputs = {"sample": sample, "pairs_seed": seeds, "pairs_seed_cover": cover_seeds, "control_final": cfinal,
               "cover_final": vfinal}
@@ -917,9 +949,11 @@ def stage1b_seeds(cand: Mapping[tuple[str, str], Sequence[tuple[Mapping[str, Any
     ``control_of`` / ``stage_a_chunk_id`` are those of a lost pair of the same question whose top 10
     held the chunk: the first by pair id among those whose stage-A window lies in the chunk's
     paper (the window's paper is its max-overlap chunk's, ``paper_of``), else the first by pair id.
-    ``build_control_pairs`` refuses a seed whose chunk's paper (path root) is not the stage-A
-    pair's ``c_paper`` (the window's paper): those rows carry ``same_paper_as_window`` false and are
-    counted, never dropped."""
+    Without ``--any-paper``, ``build_control_pairs`` refuses a seed whose chunk's paper (path
+    root) is not the stage-A pair's ``c_paper`` (the window's paper): those rows carry
+    ``same_paper_as_window`` false, are counted, never dropped, and go through ``build-control
+    --any-paper``. ``window_arm`` is the stage-A window's arm group, named so that it is never read
+    as the chunk's arm (``build-control`` reads no arm from a seed row)."""
     import alias_study_judge as aj
 
     seeds = []
@@ -929,7 +963,7 @@ def stage1b_seeds(cand: Mapping[tuple[str, str], Sequence[tuple[Mapping[str, Any
         pick = pairs[(same or sorted(pairs))[0]]
         seeds.append({"control_of": pick["pair_id"], "record_id": rid, "chunk_id": cid,
                       "pair_id": aj.pair_id(rid, cid), "doc_id": doc_of[cid], "stage_a_chunk_id": pick["stage_a_chunk_id"],
-                      "arm": pick["arm"], "corpus_arm": pick["corpus_arm"], "stratum": pick.get("draw_stratum"),
+                      "window_arm": pick["arm"], "corpus_arm": pick["corpus_arm"], "stratum": pick.get("draw_stratum"),
                       "best_rank": min(r for _, r in hits), "lost_pairs_with_chunk": sorted(pairs),
                       "same_paper_as_window": bool(same), "stage": EXTRA_REGISTRY})
     counts = {"seeds": len(seeds), "seed_records": len({s["record_id"] for s in seeds}),
@@ -987,8 +1021,10 @@ def run_stage1b_seed(table_path: Path, runs: Path, exports: Sequence[Path], out_
                    "is counted (top10_slots_by_label), not seeded",
            "control_of_rule": "a lost pair of the same question whose top 10 held the chunk: first by pair id among "
                               "those whose stage-A window is in the chunk's paper, else first by pair id",
-           "build_control_note": "alias_study_judge.build_control_pairs refuses a seed whose chunk's paper is not the "
-                                 "stage-A pair's c_paper; seeds_other_paper counts those rows",
+           "build_control_note": "without --any-paper, alias_study_judge.build_control_pairs refuses a seed whose "
+                                 "chunk's paper is not the stage-A pair's c_paper (seeds_other_paper counts those "
+                                 "rows); run them through alias_study_judge.py build-control --any-paper, which takes "
+                                 "c_paper and arm from the chunk's own paper",
            "inputs_sha256": {"label_table": table.sha256, "exports": [asc.sha256_file(x) for x in exports],
                              "runs": {c: {k: v[k] for k in ("rows_sha256", "summary_sha256")}
                                       for c, v in sorted(info.items())}},
@@ -1030,6 +1066,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     g.add_argument("--summary", type=Path, default=None)
     g.add_argument("--extra-final", action="append", type=Path, default=None,
                    help="a stage-1b judge run's final.jsonl (repeatable): its labels join as registry 'stage1b'")
+    g.add_argument("--allow-relabel", action="store_true",
+                   help="with --extra-final: merge labels for (record, chunk) keys that already have a label row "
+                        "(refused otherwise; recorded in the summary and the table's meta row)")
     b = sub.add_parser("stage1b-seed", help="seed rows of the unlabelled top-10 chunks of the lost pairs")
     b.add_argument("--label-table", required=True, type=Path)
     b.add_argument("--runs", required=True, type=Path, help="the rechunk run's out dir (read only)")
@@ -1055,7 +1094,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({k: rec[k] for k in ("documents", "chunks", "chunks_sha256")}))
     else:
         rec = run_gold_map(args.sample, args.pairs_seed, args.pairs_seed_cover, args.control_final,
-                           args.cover_final, args.stage_a_runs, args.out, args.summary, args.extra_final)
+                           args.cover_final, args.stage_a_runs, args.out, args.summary, args.extra_final,
+                           allow_relabel=args.allow_relabel)
         print(json.dumps({k: rec[k] for k in ("pairs", "records", "by_corpus_arm", "lost", "cover_class",
                                               "table_sha256")}))
     return 0

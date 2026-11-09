@@ -566,9 +566,10 @@ def test_control_config_still_enforces_the_prereg_sha(judged: Path, tmp_path: Pa
 
 # ------------------------------------------------------------------ build-control --any-paper (stage 1b)
 
-#: the last commit whose alias_study_judge.py predates ``--any-paper``: the default build is compared
-#: byte for byte against it
-PRE_STAGE1B_COMMIT = "26088496"
+#: the branch's merge-base on main (PR #975's merge), whose alias_study_judge.py predates
+#: ``--any-paper``: the default build is compared byte for byte against it. Pinned to a commit on
+#: main so it survives a rebase or squash of the feature branch.
+PRE_STAGE1B_COMMIT = "f758b064ad3ad79866e77afcf781e46c0b27e111"
 FIXED_T = "2026-11-09T00:00:00+00:00"
 
 
@@ -702,30 +703,74 @@ def test_any_paper_prompt_title_and_definitions_come_from_the_chunks_own_paper(j
         assert "(none listed)" in world.prompt(reg[w["other"][w["n"]]])[0]
 
 
-def test_definitions_never_depend_on_the_glossary_arm(judged: Path, tmp_path: Path) -> None:
-    """The premise 'none-arm pairs had empty definitions' does not hold in the main study: a
-    registry row carries no glossary arm, and :class:`StudyWorld` reads the merged glossary for
-    every pair (§5.3, §6.2). A pair demanded only by a ``none`` leg gets its passage paper's
-    definitions; a stage-1b row with the same record, chunk and paper gets the same prompt."""
-    main = judged / "work" / "judge-config.json"
-    cfg = aj.load_config(main)
+#: the registry-row fields an ``--any-paper`` row must share with the ``build_pairs`` row of the same
+#: (record, chunk): pair identity, the passage side, the record side and the seeded order
+SAME_AS_BUILD_PAIRS = ("pair_id", "record_id", "chunk_id", "c_paper", "arm", "content_sha256", "question", "term",
+                       "q_paper", "record_kind", "order")
+
+
+def test_any_paper_row_equals_the_build_pairs_row_of_the_same_record_and_chunk(judged: Path,
+                                                                              tmp_path: Path) -> None:
+    """For a (record, chunk) whose stage-A pair's window lies in another paper, the ``--any-paper``
+    row is the row ``build_pairs`` registers when a leg retrieves that chunk for that record: the
+    same ``c_paper``, ``arm``, ``content_sha256``, ``question``, ``term``, ``q_paper`` (and pair id,
+    kind, order), and the identical prompt. The leg is a ``none``-glossary leg: a registry row
+    carries no glossary arm, and the prompt reads the chunk's own paper's merged glossary.
+
+    Two kinds of chunk: corpus-arm chunks of another base and a neighbour paper (``build_pairs``
+    takes their arm from ``arm_of`` directly), and the control-export-only chunks a stage-1b export
+    holds (``build_pairs`` given the arm the paper's corpus-arm chunks carry)."""
+    w = stage1b_world(judged, tmp_path)
+    cfg = aj.load_config(w["cp"])
     chunks, arm_of = aj.chunk_arms(cfg)
-    gl = aj.read_glossaries(aj.glossary_paths(cfg))
+    control_ids = set(asc.read_chunk_exports([cfg["chunk_exports"][aj.CONTROL_EXPORT]]))
     recs = asc.load_records(cfg["records"])
-    rec = next(r for r in recs if gl.get(r["paper"]))
-    paper = rec["paper"]
-    cid = next(c for c, ch in chunks.items() if ch["paper"] == paper and c != rec["gold_chunks"][0])
-    alias = gl[paper][0]["alias"]
-    chunks = {**chunks, cid: {**chunks[cid], "content": chunks[cid]["content"] + f" The {alias} rose."}}
+    a = w["a"]
+    rec = next(r for r in recs if r["record_id"] == a["record_id"])
     none_leg = asc.leg_id("base", "none", "default")
-    row = {"record_id": rec["record_id"], "condition": "base", "failed": False, "ranked_chunk_ids": [cid]}
-    (pair,), _ = aj.build_pairs(recs, [(none_leg, row)], chunks, arm_of)
-    assert "glossary" not in json.dumps(sorted(pair))  # no glossary arm on the row
-    world = aj.StudyWorld({"out_dir": str(tmp_path)}, chunks, gl, [pair])
-    prompt, _ = world.prompt(pair)
-    assert f'- "{alias}" stands for' in prompt and "(none listed)" not in prompt
-    s1b = {**pair, "stage": aj.CONTROL_STAGE, "control_of": ["x"]}
-    assert world.prompt(s1b) == (prompt, 0)
+    win_alias = w["win_alias"]
+
+    def both(cid: str, chunks_x: dict[str, Any], arm_bp: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
+        row = {"record_id": rec["record_id"], "condition": "base", "failed": False, "ranked_chunk_ids": [cid]}
+        (bp,), _ = aj.build_pairs(recs, [(none_leg, row)], chunks_x, arm_bp)
+        seed = [{"control_of": a["pair_id"], "record_id": a["record_id"], "chunk_id": cid}]
+        (cr,), counts = aj.build_control_pairs(seed, w["stage_a"], chunks_x, control_ids | {cid}, any_paper=True,
+                                               arm_of=arm_of)
+        assert counts["passage_paper_not_stage_a_window_paper"] == 1
+        return bp, cr
+
+    def same_prompt(bp: dict[str, Any], cr: dict[str, Any], chunks_x: dict[str, Any], paper: str) -> None:
+        assert "glossary" not in json.dumps(sorted(bp)) and "glossary" not in json.dumps(sorted(cr))
+        world = aj.StudyWorld({"out_dir": str(tmp_path)}, chunks_x, w["gl"], [bp])
+        prompt = world.prompt(bp)
+        assert world.prompt(cr) == prompt
+        assert f"PASSAGE'S PAPER TITLE: {w['titles'][paper]}\n" in prompt[0]
+        # the window paper's alias is in the passage, its glossary is not read
+        assert f'"{win_alias}" stands for' not in prompt[0]
+        own = (w["gl"].get(paper) or [None])[0]
+        if own is not None:
+            assert f'- "{own["alias"]}" stands for' in prompt[0]
+
+    compared = []
+    for paper in (w["q"], w["n"]):
+        assert paper not in (str(a["c_paper"]), str(a["q_paper"]))
+        cid = next(c for c in sorted(arm_of) if chunks[c]["paper"] == paper and c not in rec["gold_chunks"])
+        own = (w["gl"].get(paper) or [{"alias": "NOALIAS"}])[0]["alias"]
+        text = chunks[cid]["content"] + f" The {own} and the {win_alias} rose."
+        chunks_x = {**chunks, cid: {**chunks[cid], "content": text}}
+        bp, cr = both(cid, chunks_x, arm_of)
+        assert {k: cr[k] for k in SAME_AS_BUILD_PAIRS} == {k: bp[k] for k in SAME_AS_BUILD_PAIRS}
+        assert cr["c_paper"] == paper != a["c_paper"] and cr["arm"] == arm_of[cid]
+        same_prompt(bp, cr, chunks_x, paper)
+        compared.append(arm_of[cid])
+    for paper, cid in w["other"].items():
+        assert cid not in arm_of
+        twin = next(arm_of[c] for c in sorted(arm_of) if chunks[c]["paper"] == paper)
+        bp, cr = both(cid, dict(chunks), {**arm_of, cid: twin})
+        assert {k: cr[k] for k in SAME_AS_BUILD_PAIRS} == {k: bp[k] for k in SAME_AS_BUILD_PAIRS}
+        same_prompt(bp, cr, dict(chunks), paper)
+        compared.append(twin)
+    assert sorted(compared) == ["base", "base", "neighbour", "neighbour"]
 
 
 def test_same_paper_seeds_give_identical_rows_and_prompts_in_both_modes(judged: Path, tmp_path: Path) -> None:
@@ -769,12 +814,18 @@ def _pre_stage1b_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     import subprocess
 
     repo = _HERE.parents[2]
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    # with git present a missing commit is a failure, never a skip: a shallow or foreign checkout
+    # would otherwise pass this byte-identity check by not running it
     try:
         src = subprocess.run(["git", "-C", str(repo), "show",
                               f"{PRE_STAGE1B_COMMIT}:python/scripts/eval/alias_study_judge.py"],
                              check=True, capture_output=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"git or commit {PRE_STAGE1B_COMMIT} unavailable")
+    except (OSError, subprocess.CalledProcessError) as e:
+        stderr = getattr(e, "stderr", b"") or b""
+        pytest.fail(f"git is available but commit {PRE_STAGE1B_COMMIT[:8]} (the merge-base on main) or its "
+                    f"alias_study_judge.py cannot be read: {stderr.decode(errors='replace').strip() or e}")
     assert b"any_paper" not in src
     # deep enough that the module's out_dir-inside-the-repository check (its directory's
     # parents[2]) is pre1b/, which holds no out_dir

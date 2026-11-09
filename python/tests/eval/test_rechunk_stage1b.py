@@ -108,9 +108,26 @@ def world(tmp: Path) -> dict[str, Path]:
     # one non-ASCII line (re-serialized ASCII-escaped in the output) and one blank line
     with e2.open("a", encoding="utf-8") as fh:
         fh.write("\n" + json.dumps(export_row(cid("fillc3"), "PMC7", "naïve text"), ensure_ascii=False) + "\n")
+    # the main judge's corpus-arm exports (the stage-A chunking: other chunk ids): every paper a seed
+    # chunk lies in has a chunk there, so build-control --any-paper can place each seed's arm
+    cb, cn = corpus_exports(tmp / "in", CORPUS_PAPERS)
     out = tmp / "out"
     return {"table": table, "runs": runs, "e1": e1, "e2": e2, "seed": out / "seed.jsonl",
-            "export": out / "export.jsonl", "summary": out / "summary.json"}
+            "export": out / "export.jsonl", "summary": out / "summary.json", "cb": cb, "cn": cn}
+
+
+#: paper -> corpus arm group of the main judge's exports in :func:`world`
+CORPUS_PAPERS = {"PMC1": "base", "PMC2": "base", "PMC5": "base", "PMC9": "base",
+                 "PMC3": "neighbour", "PMC4": "neighbour", "PMC7": "neighbour"}
+
+
+def corpus_exports(d: Path, papers: dict[str, str]) -> tuple[Path, Path]:
+    """The base and neighbour exports of the main judge: one stage-A-chunking chunk per paper."""
+    rows: dict[str, list[dict[str, Any]]] = {"base": [], "neighbour": []}
+    for paper, arm in sorted(papers.items()):
+        rows[arm].append(export_row(f"old-{paper}", paper))
+    return (rfx.write_jsonl(d / "corpus-base.jsonl", rows["base"]),
+            rfx.write_jsonl(d / "corpus-neighbour.jsonl", rows["neighbour"]))
 
 
 def seed_args(w: dict[str, Path]) -> list[str]:
@@ -147,7 +164,9 @@ def test_stage1b_seed_rows(tmp_path: Path) -> None:
     for s in seeds:
         assert s["pair_id"] == aj.pair_id(s["record_id"], s["chunk_id"])
         assert s["stage_a_chunk_id"] == (cid("w2") if s["control_of"] == p2 else cid("w3"))
-        assert s["stage"] == "stage1b" and s["arm"] == asc.arm_group(s["corpus_arm"])
+        # the window's arm is named window_arm: no seed row carries an "arm" a reader could take for
+        # the chunk's (build-control --any-paper derives that from the chunk's own paper)
+        assert s["stage"] == "stage1b" and s["window_arm"] == asc.arm_group(s["corpus_arm"]) and "arm" not in s
     assert rec["lost_pairs"] == 3 and rec["lost_pairs_read"] == 2 and rec["lost_pairs_failed"] == 1
     assert rec["questions"] == 2 and rec["top10_lists"] == 2 and rec["top10_slots"] == 20
     assert rec["top10_slots_by_label"] == {"answers": 1, "not": 2, "unjudged": 1, "no_label_row": 16}
@@ -197,24 +216,79 @@ def test_stage1b_summary_is_counts_only(tmp_path: Path) -> None:
     assert "PMC" not in raw and "-0000" not in raw and "alias-O-" not in raw
 
 
+#: the main run's stage-A pairs of the lost pairs P2 and P3 (:func:`table_rows`)
+MAIN_PAIRS = [{"pair_id": aj.pair_id(R2, cid(f"w{t}")), "record_id": R2, "chunk_id": cid(f"w{t}"),
+               "question": f"q{t}", "term": f"x{t}", "q_paper": "PMC0", "c_paper": paper, "record_kind": "O",
+               "arm": arm, "stage": "A", "need": "found10"}
+              for t, paper, arm in (("2", "PMC2", "base"), ("3", "PMC3", "neighbour"))]
+
+
+def build_control_inputs(w: dict[str, Path]) -> tuple[dict[str, Any], dict[str, str], set[str]]:
+    """What ``Pipeline.build_control`` hands ``build_control_pairs``: ``chunk_arms`` over the main
+    judge's corpus-arm exports plus the stage-1b export as the control export, and the control ids."""
+    cfg = {"chunk_exports": {"base": str(w["cb"]), "neighbour": str(w["cn"]), aj.CONTROL_EXPORT: str(w["export"])}}
+    chunks, arm_of = aj.chunk_arms(cfg)
+    return chunks, arm_of, set(asc.read_chunk_exports([w["export"]]))
+
+
 def test_stage1b_seeds_and_build_control(tmp_path: Path) -> None:
-    """The seed rows go through ``alias_study_judge.build_control_pairs`` as they are, except a row
-    whose chunk lies in another paper than its stage-A pair's window (``c_paper``): build-control
-    refuses those, and the summary counts them (``seeds_other_paper``)."""
+    """Without ``--any-paper`` the same-paper seed rows go through ``build_control_pairs`` as they
+    are, and a row whose chunk lies in another paper than its stage-A pair's window is refused (the
+    summary counts those, ``seeds_other_paper``)."""
     w = world(tmp_path)
     run_seed(w)
     seeds = asc.read_jsonl(w["seed"])
-    chunks = asc.read_chunk_exports([w["export"]])
-    main_pairs = [{"pair_id": aj.pair_id(R2, cid(f"w{t}")), "record_id": R2, "chunk_id": cid(f"w{t}"),
-                   "question": "q", "term": "x", "q_paper": "PMC0", "c_paper": paper, "record_kind": "O",
-                   "arm": arm, "stage": "A", "need": "found10"}
-                  for t, paper, arm in (("2", "PMC2", "base"), ("3", "PMC3", "neighbour"))]
+    chunks, _, control_ids = build_control_inputs(w)
     same = [s for s in seeds if s["same_paper_as_window"]]
-    pairs, counts = aj.build_control_pairs(same, main_pairs, chunks, set(chunks))
+    pairs, counts = aj.build_control_pairs(same, MAIN_PAIRS, chunks, control_ids)
     assert counts["pairs"] == len(same) == 7 and {p["chunk_id"] for p in pairs} == {s["chunk_id"] for s in same}
     assert all(p["pair_id"] == aj.pair_id(R2, p["chunk_id"]) for p in pairs)
     with pytest.raises(SystemExit, match="paper is not the stage-A passage's"):
-        aj.build_control_pairs(seeds, main_pairs, chunks, set(chunks))
+        aj.build_control_pairs(seeds, MAIN_PAIRS, chunks, control_ids)
+
+
+def test_stage1b_seed_output_through_build_control_any_paper(tmp_path: Path) -> None:
+    """End to end: every ``stage1b-seed`` row (other-paper ones included) goes through
+    ``build_control_pairs(any_paper=True)`` unchanged. The passage side is the chunk's own paper and
+    that paper's corpus arm (never the seed's ``window_arm``), the record side the stage-A pair's."""
+    w = world(tmp_path)
+    rec = run_seed(w)
+    seeds = asc.read_jsonl(w["seed"])
+    chunks, arm_of, control_ids = build_control_inputs(w)
+    assert not control_ids & set(arm_of)  # the stage-1b chunks are control-export only: arm via their paper
+    pairs, counts = aj.build_control_pairs(seeds, MAIN_PAIRS, chunks, control_ids, any_paper=True, arm_of=arm_of)
+    by = {p["chunk_id"]: p for p in pairs}
+    main = {p["pair_id"]: p for p in MAIN_PAIRS}
+    assert sorted(by) == sorted(s["chunk_id"] for s in seeds) and counts["pairs"] == rec["seeds"] == 14
+    for s in seeds:
+        p, a = by[s["chunk_id"]], main[s["control_of"]]
+        paper = chunks[s["chunk_id"]]["paper"]
+        assert p["pair_id"] == s["pair_id"] and p["control_of"] == [s["control_of"]]
+        assert (p["c_paper"], p["arm"]) == (paper, CORPUS_PAPERS[paper])
+        assert (p["c_paper"] == a["c_paper"]) is s["same_paper_as_window"]
+        assert (p["record_id"], p["question"], p["term"], p["q_paper"], p["record_kind"]) == \
+            (a["record_id"], a["question"], a["term"], a["q_paper"], a["record_kind"])
+        assert p["content_sha256"] == asc.sha_text(chunks[s["chunk_id"]]["content"])
+    assert counts["passage_paper_not_stage_a_window_paper"] == rec["seeds_other_paper"] == 7
+    # y (PMC9, a base paper) takes base whatever lost pair (and window arm) it was assigned to
+    y = next(s for s in seeds if s["chunk_id"] == cid("y"))
+    assert by[cid("y")]["arm"] == "base" and y["window_arm"] in ("base", "neighbour")
+    assert counts["per_arm"] == {"base": 7, "neighbour": 7}
+
+
+def test_stage1b_any_paper_refuses_a_seed_paper_without_a_corpus_arm(tmp_path: Path) -> None:
+    """A seed chunk whose paper has no chunk in any corpus arm's export has no arm: refused."""
+    w = world(tmp_path)
+    run_seed(w)
+    seeds = asc.read_jsonl(w["seed"])
+    corpus_exports(tmp_path / "in", {k: v for k, v in CORPUS_PAPERS.items() if k != "PMC9"})
+    chunks, arm_of, control_ids = build_control_inputs(w)
+    with pytest.raises(SystemExit, match="no chunk in any corpus arm's export"):
+        aj.build_control_pairs(seeds, MAIN_PAIRS, chunks, control_ids, any_paper=True, arm_of=arm_of)
+    # the seeds of the papers that do have one still go through
+    ok = [s for s in seeds if chunks[s["chunk_id"]]["paper"] != "PMC9"]
+    pairs, _ = aj.build_control_pairs(ok, MAIN_PAIRS, chunks, control_ids, any_paper=True, arm_of=arm_of)
+    assert len(pairs) == len(ok) == 13
 
 
 def test_stage1b_refusals(tmp_path: Path) -> None:
@@ -261,12 +335,19 @@ def test_stage1b_cli_and_write_once(tmp_path: Path, capsys: pytest.CaptureFixtur
 
 # ------------------------------------------------------------------ gold-map --extra-final
 
-def gold(tmp: Path, extra: list[Path] | None = None, name: str = "labels.jsonl") -> tuple[dict[str, Any], Path]:
+def gold(tmp: Path, extra: list[Path] | None = None, name: str = "labels.jsonl",
+         allow_relabel: bool = False) -> tuple[dict[str, Any], Path]:
     w = rfx.GoldWorld(tmp / "in")
     out = tmp / "private" / name
     rec = rp.run_gold_map(w.paths["sample"], w.paths["pairs_seed"], w.paths["pairs_seed_cover"],
-                          w.paths["control_final"], w.paths["cover_final"], w.runs, out, extra_final=extra)
+                          w.paths["control_final"], w.paths["cover_final"], w.runs, out, extra_final=extra,
+                          allow_relabel=allow_relabel)
     return rec, out
+
+
+def fin(rec: str, chunk: str, label: int | None) -> dict[str, Any]:
+    """A stage-1b judge run's final ``pair|`` row."""
+    return {**rfx.final(aj.pair_id(rec, chunk), label), "record_id": rec, "chunk_id": chunk}
 
 
 #: the table ``gold-map`` wrote on this fixture before ``--extra-final`` existed (commit f758b064),
@@ -295,10 +376,6 @@ def test_gold_map_extra_final_merges(tmp_path: Path) -> None:
     w = rfx.GoldWorld(tmp_path / "w")
     p = {x.tag: x for x in w.pairs}
     r2, r3, r4 = p["2"].record, p["3"].record, p["4"].record
-
-    def fin(rec: str, chunk: str, label: int | None) -> dict[str, Any]:
-        return {**rfx.final(aj.pair_id(rec, chunk), label), "record_id": rec, "chunk_id": chunk}
-
     f1 = rfx.write_jsonl(tmp_path / "f1.jsonl", [
         {"k": "batch|1", "n": 4},
         fin(r2, cid("new2"), 1),            # new, answers
@@ -308,9 +385,13 @@ def test_gold_map_extra_final_merges(tmp_path: Path) -> None:
     f2 = rfx.write_jsonl(tmp_path / "f2.jsonl", [
         fin(r2, cid("new2"), 0),            # disagrees with f1 within stage 1b: answers wins
         fin(r3, cid("new3b"), 0)])
-    rec, out = gold(tmp_path, [f1, f2])
+    # two of these keys already have a label row: refused without --allow-relabel, nothing written
+    with pytest.raises(SystemExit, match=r"2 \(record, chunk\) key\(s\) that already have a label row"):
+        gold(tmp_path, [f1, f2])
+    assert not (tmp_path / "private" / "labels.jsonl").exists()
+    rec, out = gold(tmp_path, [f1, f2], allow_relabel=True)
     t = rp.read_label_table(out)
-    assert t.meta["extra_registries"] == ["stage1b"]
+    assert t.meta["extra_registries"] == ["stage1b"] and t.meta["allow_relabel"] is True
     assert t.label(r2, cid("new2")) == "answers" and t.labels[(r2, cid("new2"))]["registries"] == {"stage1b": "answers"}
     assert t.labels[(r2, cid("new2"))]["source"] == "stage1b"
     assert t.label(r2, p["2"].control) == "answers"
@@ -319,16 +400,30 @@ def test_gold_map_extra_final_merges(tmp_path: Path) -> None:
     assert t.label(r4, cid("o4a")) == "not" and t.label(r3, cid("new3")) == "unjudged"
     assert t.label(r3, cid("new3b")) == "not"
     assert rec["labels"] == 12 + 3 and rec["label"] == {"answers": 7, "not": 6, "unjudged": 2}
-    assert rec["stage1b"] == {"rows": 6, "rows_skipped_without_ids": 1, "labels": 5, "conflicts_within": 1,
+    assert rec["stage1b"] == {"rows": 6, "batch_rows_skipped": 1, "labels": 5, "conflicts_within": 1,
                               "labels_new": 3, "labels_already_judged": 2, "conflicts_with_confirm_registries": 1,
-                              "files": 2}
+                              "allow_relabel": True, "files": 2}
     assert rec["registry_conflicts"] == 2  # the confirm conflict of pair 3, and pair 2's control chunk
     summ = json.loads(out.with_name(out.name + ".summary.json").read_text())
     assert summ["inputs_sha256"]["extra_final"] == [asc.sha256_file(f1), asc.sha256_file(f2)]
     assert asc.public_problems(summ, t.forbidden()) == []
+    assert summ["stage1b"]["allow_relabel"] is True
     # pair rows are untouched by the merge
     _, base = gold(tmp_path / "plain")
-    assert rp.read_label_table(base).pairs == t.pairs
+    t0 = rp.read_label_table(base)
+    assert t0.pairs == t.pairs
+    # the relabel flipped pair 2's control chunk from not to answers: the report refuses the table
+    with pytest.raises(SystemExit, match="combined label"):
+        rs.check_merged(t0, t)
+
+
+def test_gold_map_extra_final_new_keys_only_need_no_flag(tmp_path: Path) -> None:
+    w = rfx.GoldWorld(tmp_path / "w")
+    r2 = w.pairs[1].record
+    f = rfx.write_jsonl(tmp_path / "f.jsonl", [{"k": "batch|1"}, fin(r2, cid("new2"), 1)])
+    rec, out = gold(tmp_path, [f])
+    assert rec["stage1b"]["labels_already_judged"] == 0 and rec["stage1b"]["allow_relabel"] is False
+    assert "allow_relabel" not in rp.read_label_table(out).meta
 
 
 def test_gold_map_extra_final_refusals(tmp_path: Path) -> None:
@@ -345,6 +440,29 @@ def test_gold_map_extra_final_refusals(tmp_path: Path) -> None:
     torn.write_text('{"record_id": "r", "chunk_id": "c", "label": 1}\n{"record_id": "r", "chu\n')
     with pytest.raises(SystemExit, match="nothing is repaired"):
         gold(tmp_path / "z", [torn])
+    good = fin(r2, cid("new"), 1)
+    # only batch| rows are skipped: a pair| row without its ids is refused, as is any other id-less row
+    no_ids = rfx.write_jsonl(tmp_path / "d.jsonl", [good, {k: v for k, v in good.items() if k != "chunk_id"}])
+    with pytest.raises(SystemExit, match="a pair\\| row without record_id/chunk_id"):
+        gold(tmp_path / "d", [no_ids])
+    no_k = rfx.write_jsonl(tmp_path / "e.jsonl", [good, {"label": 1, "source": "agree"}])
+    with pytest.raises(SystemExit, match="not a batch\\| row without record_id/chunk_id"):
+        gold(tmp_path / "e", [no_k])
+    # a file that contributes no label: batch rows only, or empty
+    batch_only = rfx.write_jsonl(tmp_path / "f.jsonl", [{"k": "batch|1", "n": 0}])
+    empty = tmp_path / "g.jsonl"
+    empty.write_text("")
+    for i, f in enumerate((batch_only, empty)):
+        with pytest.raises(SystemExit, match="#2: the file contributes no label"):
+            gold(tmp_path / f"h{i}", [rfx.write_jsonl(tmp_path / f"ok{i}.jsonl", [good]), f])
+    # an already-labelled key (pair 2's control chunk) without --allow-relabel
+    p2 = {x.tag: x for x in rfx.GoldWorld(tmp_path / "w").pairs}["2"]
+    relabel = rfx.write_jsonl(tmp_path / "i.jsonl", [fin(p2.record, p2.control, 0)])
+    with pytest.raises(SystemExit, match="--allow-relabel"):
+        gold(tmp_path / "i", [relabel])
+    with pytest.raises(SystemExit, match="--allow-relabel needs --extra-final"):
+        gold(tmp_path / "j", None, allow_relabel=True)
+    assert not list(tmp_path.glob("*/private/labels.jsonl"))
 
 
 def test_gold_map_cli_extra_final(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -358,6 +476,15 @@ def test_gold_map_cli_extra_final(tmp_path: Path, capsys: pytest.CaptureFixture[
     capsys.readouterr()
     t = rp.read_label_table(out)
     assert t.label(r2, cid("n")) == "answers" and t.label(r2, cid("n2")) == "not"
+    p2 = {x.tag: x for x in w.pairs}["2"]
+    h = rfx.write_jsonl(tmp_path / "h.jsonl", [fin(p2.record, p2.control, 0)])
+    out2 = tmp_path / "labels-relabel.jsonl"
+    with pytest.raises(SystemExit, match="--allow-relabel"):
+        rp.main([*w.args(out2), "--extra-final", str(h)])
+    assert rp.main([*w.args(out2), "--extra-final", str(h), "--allow-relabel"]) == 0
+    capsys.readouterr()
+    summ = json.loads(out2.with_name(out2.name + ".summary.json").read_text())
+    assert summ["stage1b"]["allow_relabel"] is True and summ["stage1b"]["labels_already_judged"] == 1
 
 
 # ------------------------------------------------------------------ the report on a merged table
@@ -427,3 +554,18 @@ def test_check_merged_refuses_a_table_that_is_not_an_extension(tmp_path: Path) -
     t3 = rp.read_label_table(rfx.write_label_table(tmp_path / "t3.jsonl", pairs,
                                                    [*labels, rfx.label_row(R2, cid("new"), "not", "stage1b")]))
     assert rs.check_merged(t0, t3)["labels_added"] == 1
+    # only the combined label flips: every registry of the run table's row is kept unchanged and one
+    # is added, but the row's label goes from not to answers
+    flipped = [dict(x) for x in labels]
+    m2 = flipped[1]
+    assert (m2["chunk_id"], m2["label"]) == (cid("m2"), "not")
+    flipped[1] = {**m2, "label": "answers", "registries": {**m2["registries"], "stage1b": "answers"},
+                  "source": m2["source"] + "+stage1b"}
+    t4 = rp.read_label_table(rfx.write_label_table(tmp_path / "t4.jsonl", pairs, flipped))
+    with pytest.raises(SystemExit, match="combined label of a --run-label-table row differs"):
+        rs.check_merged(t0, t4)
+    # an added registry that keeps the combined label is accepted
+    kept = [dict(x) for x in labels]
+    kept[1] = {**m2, "registries": {**m2["registries"], "stage1b": "not"}}
+    t5 = rp.read_label_table(rfx.write_label_table(tmp_path / "t5.jsonl", pairs, kept))
+    assert rs.check_merged(t0, t5)["labels_added"] == 0

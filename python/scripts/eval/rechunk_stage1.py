@@ -11,12 +11,14 @@ public JSON of counts, rates and Wilson 95 % intervals only.
 table with another sha is refused. A merged table (``rechunk_prep.py gold-map --extra-final``)
 has another sha, so it is read with ``--run-label-table`` naming the run's table: the summaries
 are checked against that one, and the merged table must carry the same pair rows and every label
-of it unchanged (registries may only be added). The scoring is unchanged: a stage-1b label counts
+of it unchanged (registries may only be added, and the combined label of every existing row must
+stay the same). The scoring is unchanged: a stage-1b label counts
 in ``A`` and ``U`` like any other (``A_own`` still reads only the pair's own mapped chunks).
 
 **Per retriever and pair** (each pair read in its corpus arm's run, its question's top 10):
 
-- ``A``: a chunk labelled *answers* for the pair's record (either registry) is in the top 10. The
+- ``A``: a chunk labelled *answers* for the pair's record (any registry of the label table:
+  control, cover-any, and on a merged table stage1b) is in the top 10. The
   labels are per record: a chunk mapped and judged for *another* pair of the same record counts;
 - ``A_own``: one of *this* pair's own mapped chunks (its max-overlap chunk or a cover-any chunk)
   is labelled *answers* and in the top 10; ``A`` without ``A_own`` (``A_from_other_pairs_only``)
@@ -299,7 +301,9 @@ def report(table: rp.LabelTable, rows: Mapping[str, Mapping[tuple[str, str], Map
 def check_merged(run_table: rp.LabelTable, table: rp.LabelTable) -> dict[str, Any]:
     """``table`` extends ``run_table`` (the table the run was made against) by labels only, as
     ``gold-map --extra-final`` does: the same pair rows, and every label row of ``run_table``
-    present with the same per-registry labels (registries may be added). SystemExit otherwise."""
+    present with the same per-registry labels (registries may be added) **and the same combined
+    ``label``**: an added registry may never flip a label the run's figures were read against.
+    SystemExit otherwise."""
     if table.pairs != run_table.pairs:
         raise SystemExit("REFUSED: --label-table has other pair rows than --run-label-table (not a merged table)")
     for key, r in run_table.labels.items():
@@ -307,6 +311,9 @@ def check_merged(run_table: rp.LabelTable, table: rp.LabelTable) -> dict[str, An
         regs = (m or {}).get("registries") or {}
         if m is None or any(regs.get(k) != v for k, v in (r.get("registries") or {}).items()):
             raise SystemExit("REFUSED: a label row of --run-label-table is missing or changed in --label-table")
+        if m.get("label") != r.get("label"):
+            raise SystemExit("REFUSED: the combined label of a --run-label-table row differs in --label-table "
+                             "(an added registry relabelled an already-labelled chunk)")
     return {"run_label_table_sha256": run_table.sha256, "labels_added": len(table.labels) - len(run_table.labels),
             "extra_registries": table.meta.get("extra_registries") or []}
 
@@ -324,7 +331,8 @@ def run(runs: Path, table_path: Path, out: Path, run_table_path: Path | None = N
         forbidden_extra = run_table.forbidden()
     rows, info = read_runs(runs, table, None if merged is None else merged["run_label_table_sha256"])
     rec = {"schema": SCHEMA, "exploratory": True,
-           "measures": {"A": "a chunk labelled answers for the record (control or cover-any registry) is in the top 10",
+           "measures": {"A": "a chunk labelled answers for the record (any registry in the label table: control, "
+                             "cover-any, stage1b) is in the top 10",
                         "A_own": "one of this pair's own mapped chunks (max-overlap or cover-any) is labelled "
                                  "answers and in the top 10",
                         "A_from_other_pairs_only": "A without A_own: the answers chunk was mapped for another pair "
