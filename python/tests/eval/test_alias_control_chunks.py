@@ -11,7 +11,7 @@ import json
 import math
 import shutil
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -562,6 +562,300 @@ def test_control_config_still_enforces_the_prereg_sha(judged: Path, tmp_path: Pa
     with pytest.raises(SystemExit, match="HARD STOP: the prereg file's sha256"):
         aj.main(["--config", str(cp), "build-control", "--seed-pairs", str(seed_p), "--main-config", str(main)],
                 prov={})
+
+
+# ------------------------------------------------------------------ build-control --any-paper (stage 1b)
+
+#: the branch's merge-base on main (PR #975's merge), whose alias_study_judge.py predates
+#: ``--any-paper``: the default build is compared byte for byte against it. Pinned to a commit on
+#: main so it survives a rebase or squash of the feature branch.
+PRE_STAGE1B_COMMIT = "f758b064ad3ad79866e77afcf781e46c0b27e111"
+FIXED_T = "2026-11-09T00:00:00+00:00"
+
+
+def build_cmd(cp: Path, seed_p: Path, main: Path, *extra: str) -> list[str]:
+    return ["--config", str(cp), "build-control", "--seed-pairs", str(seed_p), "--main-config", str(main), *extra]
+
+
+def second_control_config(cp: Path, name: str) -> Path:
+    """The same control config with another (new) out_dir."""
+    c = json.loads(cp.read_text())
+    c["out_dir"] = str(cp.parent / name)
+    p = cp.parent / f"{name}.json"
+    p.write_text(json.dumps(c))
+    return p
+
+
+def stage1b_world(judged: Path, tmp_path: Path) -> dict[str, Any]:
+    """:func:`control_world` plus seeds whose chunks lie in other papers than their stage-A pair's
+    window: one in another base paper with glossary entries, one in a neighbour paper. Each passage
+    names an alias of its own paper and one of the window's paper, so the definitions block shows
+    whose glossary it reads."""
+    main, cp, seed_p, stage_a = control_world(judged, tmp_path)
+    cfg = aj.load_config(cp)
+    chunks, arm_of = aj.chunk_arms(cfg)
+    p_arm = aj.paper_arms(chunks, arm_of)
+    gl = aj.read_glossaries(aj.glossary_paths(cfg))
+    a = next(p for p in stage_a if gl.get(str(p["c_paper"])))
+    win = str(a["c_paper"])
+    q = next(p for p in sorted(gl) if p_arm.get(p) == "base" and p not in (win, str(a["q_paper"])))
+    n = next(p for p in sorted(p_arm) if p_arm[p] == "neighbour")
+    titles = {str(c["paper"]): c["title"] for c in chunks.values() if c.get("title")}
+    exp = Path(cfg["chunk_exports"][aj.CONTROL_EXPORT])
+    rows = [json.loads(x) for x in exp.read_text().splitlines() if x.strip()]
+    seed = asc.read_jsonl(seed_p)
+    win_alias = gl[win][0]["alias"]
+    other: dict[str, str] = {}
+    for i, paper in enumerate((q, n)):
+        own = (gl.get(paper) or [{"alias": "NOALIAS"}])[0]["alias"]
+        cid = f"s1b-{i}-{paper}"
+        text = f"Other-paper passage {i} of {paper}: the {own} and the {win_alias} values were reported."
+        rows.append({"chunk_id": cid, "doc_id": f"d-{paper}", "content": text, "start_char": 0,
+                     "end_char": len(text), "metadata": {"source_path": paper, "title": titles.get(paper, "")}})
+        seed.append({"control_of": a["pair_id"], "record_id": a["record_id"], "chunk_id": cid, "stage": "stage1b"})
+        other[paper] = cid
+    fx.write_jsonl(exp, rows)
+    fx.write_jsonl(seed_p, seed)
+    return {"main": main, "cp": cp, "seed_p": seed_p, "stage_a": stage_a, "a": a, "win": win, "q": q, "n": n,
+            "other": other, "titles": titles, "gl": gl, "win_alias": win_alias}
+
+
+def world_for(cp: Path) -> tuple[aj.Pipeline, aj.StudyWorld]:
+    pl = aj.Pipeline(aj.load_config(cp), provenance={})
+    out = Path(pl.cfg["out_dir"])
+    return pl, aj.StudyWorld({"out_dir": str(out)}, pl.chunks(), pl.glossary(), pl.selection(1, "C"))
+
+
+def test_any_paper_seed_is_refused_without_the_flag_and_accepted_with_it(judged: Path, tmp_path: Path) -> None:
+    w = stage1b_world(judged, tmp_path)
+    out = Path(json.loads(w["cp"].read_text())["out_dir"])
+    with pytest.raises(SystemExit, match="paper is not the stage-A passage's"):
+        aj.main(build_cmd(w["cp"], w["seed_p"], w["main"]), prov={})
+    # refused before the registry is written
+    assert not any((out / f).exists() for f in ("pairs.jsonl", "pairs-manifest.json", "batches.json"))
+    assert aj.main(build_cmd(w["cp"], w["seed_p"], w["main"], "--any-paper"), prov={}) == aj.EXIT_OK
+    man = json.loads((out / "pairs-manifest.json").read_text())
+    assert man["build"] == man["control"]["build"] == aj.STAGE1B_BUILD == "stage1b-any-paper"
+    reg = {r["chunk_id"]: r for r in asc.read_jsonl(out / "pairs.jsonl")}
+    a = w["a"]
+    for paper, arm in ((w["q"], "base"), (w["n"], "neighbour")):
+        r = reg[w["other"][paper]]
+        # the passage side is the chunk's own paper and arm, the record side the stage-A pair's
+        assert (r["c_paper"], r["arm"]) == (paper, arm) != (a["c_paper"], a["arm"])
+        assert (r["question"], r["term"], r["q_paper"], r["record_kind"], r["record_id"]) == \
+            (a["question"], a["term"], a["q_paper"], a["record_kind"], a["record_id"])
+        assert r["control_of"] == [a["pair_id"]] and r["stage"] == aj.CONTROL_STAGE
+        assert r["pair_id"] == aj.pair_id(a["record_id"], r["chunk_id"])
+    c = man["counts"]
+    assert c["pairs"] == len(reg) == len(w["stage_a"]) + 2
+    assert c["passage_paper_not_stage_a_window_paper"] == 2
+    assert c["same_paper"] == sum(r["c_paper"] == r["q_paper"] for r in reg.values())
+    assert c["per_arm"] == dict(Counter(r["arm"] for r in reg.values()))
+    assert c["definitions_coverage"] == aj.definitions_coverage(list(reg.values()), w["gl"])
+    # the registry runs through the unchanged selection (C/E and the drift sample's arm strata)
+    pl = aj.Pipeline(aj.load_config(w["cp"]), provenance={})
+    assert {p["pair_id"] for p in pl.selection(1, "C")} == {r["pair_id"] for r in reg.values()}
+    drift = pl.selection(1, "opus")
+    assert drift and {p["arm"] for p in drift} <= set(asc.ARM_GROUPS)
+    with pytest.raises(SystemExit, match="frozen once built"):
+        aj.main(build_cmd(w["cp"], w["seed_p"], w["main"], "--any-paper"), prov={})
+
+
+def test_any_paper_refuses_a_chunk_whose_paper_is_in_no_corpus_arm(judged: Path, tmp_path: Path) -> None:
+    w = stage1b_world(judged, tmp_path)
+    cfg = aj.load_config(w["cp"])
+    chunks, arm_of = aj.chunk_arms(cfg)
+    control_ids = set(asc.read_chunk_exports([cfg["chunk_exports"][aj.CONTROL_EXPORT]]))
+    cid = w["other"][w["q"]]
+    chunks = {**chunks, cid: {**chunks[cid], "paper": "nowhere"}}
+    seed = [{"control_of": w["a"]["pair_id"], "record_id": w["a"]["record_id"], "chunk_id": cid}]
+    with pytest.raises(SystemExit, match="no chunk in any corpus arm's export"):
+        aj.build_control_pairs(seed, w["stage_a"], chunks, control_ids, any_paper=True, arm_of=arm_of)
+    with pytest.raises(ValueError, match="needs arm_of"):
+        aj.build_control_pairs(seed, w["stage_a"], chunks, control_ids, any_paper=True)
+
+
+def test_any_paper_prompt_title_and_definitions_come_from_the_chunks_own_paper(judged: Path,
+                                                                               tmp_path: Path) -> None:
+    w = stage1b_world(judged, tmp_path)
+    assert aj.main(build_cmd(w["cp"], w["seed_p"], w["main"], "--any-paper"), prov={}) == aj.EXIT_OK
+    pl, world = world_for(w["cp"])
+    reg = {p["chunk_id"]: p for p in world.pairs()}
+    chunks = pl.chunks()
+    for paper in (w["q"], w["n"]):
+        row = reg[w["other"][paper]]
+        text = chunks[row["chunk_id"]]["content"]
+        prompt, cut = world.prompt(row)
+        own_defs, own_cut = aj.jd.definitions_for(text, w["gl"].get(paper, ()))
+        assert (prompt, cut) == (aj.jd.judge_prompt(row["question"], row["term"], text, w["titles"][paper], own_defs),
+                                 own_cut)
+        assert f"PASSAGE'S PAPER TITLE: {w['titles'][paper]}\n" in prompt
+        assert w["titles"][paper] != w["titles"][w["win"]]
+        # the window paper's alias is in the passage, but the window paper's glossary is not read
+        assert f'"{w["win_alias"]}" stands for' not in prompt
+        win_defs, _ = aj.jd.definitions_for(text, w["gl"][w["win"]])
+        assert win_defs and prompt != aj.jd.judge_prompt(row["question"], row["term"], text,
+                                                         w["titles"][w["win"]], win_defs)
+    q_defs, _ = aj.jd.definitions_for(chunks[w["other"][w["q"]]]["content"], w["gl"][w["q"]])
+    assert q_defs, "the base paper's own alias must be listed (its merged-glossary entry)"
+    n_defs, _ = aj.jd.definitions_for(chunks[w["other"][w["n"]]]["content"], w["gl"].get(w["n"], ()))
+    if not n_defs:
+        assert "(none listed)" in world.prompt(reg[w["other"][w["n"]]])[0]
+
+
+#: the registry-row fields an ``--any-paper`` row must share with the ``build_pairs`` row of the same
+#: (record, chunk): pair identity, the passage side, the record side and the seeded order
+SAME_AS_BUILD_PAIRS = ("pair_id", "record_id", "chunk_id", "c_paper", "arm", "content_sha256", "question", "term",
+                       "q_paper", "record_kind", "order")
+
+
+def test_any_paper_row_equals_the_build_pairs_row_of_the_same_record_and_chunk(judged: Path,
+                                                                              tmp_path: Path) -> None:
+    """For a (record, chunk) whose stage-A pair's window lies in another paper, the ``--any-paper``
+    row is the row ``build_pairs`` registers when a leg retrieves that chunk for that record: the
+    same ``c_paper``, ``arm``, ``content_sha256``, ``question``, ``term``, ``q_paper`` (and pair id,
+    kind, order), and the identical prompt. The leg is a ``none``-glossary leg: a registry row
+    carries no glossary arm, and the prompt reads the chunk's own paper's merged glossary.
+
+    Two kinds of chunk: corpus-arm chunks of another base and a neighbour paper (``build_pairs``
+    takes their arm from ``arm_of`` directly), and the control-export-only chunks a stage-1b export
+    holds (``build_pairs`` given the arm the paper's corpus-arm chunks carry)."""
+    w = stage1b_world(judged, tmp_path)
+    cfg = aj.load_config(w["cp"])
+    chunks, arm_of = aj.chunk_arms(cfg)
+    control_ids = set(asc.read_chunk_exports([cfg["chunk_exports"][aj.CONTROL_EXPORT]]))
+    recs = asc.load_records(cfg["records"])
+    a = w["a"]
+    rec = next(r for r in recs if r["record_id"] == a["record_id"])
+    none_leg = asc.leg_id("base", "none", "default")
+    win_alias = w["win_alias"]
+
+    def both(cid: str, chunks_x: dict[str, Any], arm_bp: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
+        row = {"record_id": rec["record_id"], "condition": "base", "failed": False, "ranked_chunk_ids": [cid]}
+        (bp,), _ = aj.build_pairs(recs, [(none_leg, row)], chunks_x, arm_bp)
+        seed = [{"control_of": a["pair_id"], "record_id": a["record_id"], "chunk_id": cid}]
+        (cr,), counts = aj.build_control_pairs(seed, w["stage_a"], chunks_x, control_ids | {cid}, any_paper=True,
+                                               arm_of=arm_of)
+        assert counts["passage_paper_not_stage_a_window_paper"] == 1
+        return bp, cr
+
+    def same_prompt(bp: dict[str, Any], cr: dict[str, Any], chunks_x: dict[str, Any], paper: str) -> None:
+        assert "glossary" not in json.dumps(sorted(bp)) and "glossary" not in json.dumps(sorted(cr))
+        world = aj.StudyWorld({"out_dir": str(tmp_path)}, chunks_x, w["gl"], [bp])
+        prompt = world.prompt(bp)
+        assert world.prompt(cr) == prompt
+        assert f"PASSAGE'S PAPER TITLE: {w['titles'][paper]}\n" in prompt[0]
+        # the window paper's alias is in the passage, its glossary is not read
+        assert f'"{win_alias}" stands for' not in prompt[0]
+        own = (w["gl"].get(paper) or [None])[0]
+        if own is not None:
+            assert f'- "{own["alias"]}" stands for' in prompt[0]
+
+    compared = []
+    for paper in (w["q"], w["n"]):
+        assert paper not in (str(a["c_paper"]), str(a["q_paper"]))
+        cid = next(c for c in sorted(arm_of) if chunks[c]["paper"] == paper and c not in rec["gold_chunks"])
+        own = (w["gl"].get(paper) or [{"alias": "NOALIAS"}])[0]["alias"]
+        text = chunks[cid]["content"] + f" The {own} and the {win_alias} rose."
+        chunks_x = {**chunks, cid: {**chunks[cid], "content": text}}
+        bp, cr = both(cid, chunks_x, arm_of)
+        assert {k: cr[k] for k in SAME_AS_BUILD_PAIRS} == {k: bp[k] for k in SAME_AS_BUILD_PAIRS}
+        assert cr["c_paper"] == paper != a["c_paper"] and cr["arm"] == arm_of[cid]
+        same_prompt(bp, cr, chunks_x, paper)
+        compared.append(arm_of[cid])
+    for paper, cid in w["other"].items():
+        assert cid not in arm_of
+        twin = next(arm_of[c] for c in sorted(arm_of) if chunks[c]["paper"] == paper)
+        bp, cr = both(cid, dict(chunks), {**arm_of, cid: twin})
+        assert {k: cr[k] for k in SAME_AS_BUILD_PAIRS} == {k: bp[k] for k in SAME_AS_BUILD_PAIRS}
+        same_prompt(bp, cr, dict(chunks), paper)
+        compared.append(twin)
+    assert sorted(compared) == ["base", "base", "neighbour", "neighbour"]
+
+
+def test_same_paper_seeds_give_identical_rows_and_prompts_in_both_modes(judged: Path, tmp_path: Path) -> None:
+    main, cp, seed_p, _ = control_world(judged, tmp_path)
+    cp_1b = second_control_config(cp, "control-judge-1b")
+    assert aj.main(build_cmd(cp, seed_p, main), prov={}) == aj.EXIT_OK
+    assert aj.main(build_cmd(cp_1b, seed_p, main, "--any-paper"), prov={}) == aj.EXIT_OK
+    out, out_1b = (Path(json.loads(p.read_text())["out_dir"]) for p in (cp, cp_1b))
+    assert (out / "pairs.jsonl").read_bytes() == (out_1b / "pairs.jsonl").read_bytes()
+    assert (out / "batches.json").read_bytes() == (out_1b / "batches.json").read_bytes()
+    (_, w0), (_, w1) = world_for(cp), world_for(cp_1b)
+    p0, p1 = w0.pairs(), w1.pairs()
+    assert p0 == p1 and len(p0) > 0
+    for x, y in zip(p0, p1, strict=True):
+        assert w0.prompt(x) == w1.prompt(y)
+    m0, m1 = (json.loads((d / "pairs-manifest.json").read_text()) for d in (out, out_1b))
+    assert "build" not in m0 and "build" not in m0["control"]
+    assert m1["counts"]["passage_paper_not_stage_a_window_paper"] == 0
+    strip = ("build", "t", "passage_paper_not_stage_a_window_paper")
+
+    def drop(x: Any) -> Any:
+        if isinstance(x, dict):
+            return {k: drop(v) for k, v in x.items() if k not in strip}
+        return x
+    assert drop(m0) == drop(m1)
+
+
+def test_build_control_pairs_default_ignores_arm_of(judged: Path, tmp_path: Path) -> None:
+    main, cp, seed_p, stage_a = control_world(judged, tmp_path)
+    cfg = aj.load_config(cp)
+    chunks, arm_of = aj.chunk_arms(cfg)
+    control_ids = set(asc.read_chunk_exports([cfg["chunk_exports"][aj.CONTROL_EXPORT]]))
+    seed = asc.read_jsonl(seed_p)
+    ref = aj.build_control_pairs(seed, stage_a, chunks, control_ids)
+    assert aj.build_control_pairs(seed, stage_a, chunks, control_ids, any_paper=False, arm_of=arm_of) == ref
+    assert "passage_paper_not_stage_a_window_paper" not in ref[1]
+
+
+def _pre_stage1b_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    import importlib.util
+    import subprocess
+
+    repo = _HERE.parents[2]
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    # with git present a missing commit is a failure, never a skip: a shallow or foreign checkout
+    # would otherwise pass this byte-identity check by not running it
+    try:
+        src = subprocess.run(["git", "-C", str(repo), "show",
+                              f"{PRE_STAGE1B_COMMIT}:python/scripts/eval/alias_study_judge.py"],
+                             check=True, capture_output=True).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        stderr = getattr(e, "stderr", b"") or b""
+        pytest.fail(f"git is available but commit {PRE_STAGE1B_COMMIT[:8]} (the merge-base on main) or its "
+                    f"alias_study_judge.py cannot be read: {stderr.decode(errors='replace').strip() or e}")
+    assert b"any_paper" not in src
+    # deep enough that the module's out_dir-inside-the-repository check (its directory's
+    # parents[2]) is pre1b/, which holds no out_dir
+    d = tmp_path / "pre1b" / "a" / "b" / "c"
+    d.mkdir(parents=True)
+    (d / "alias_study_judge_pre1b.py").write_bytes(src)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = importlib.util.spec_from_file_location("alias_study_judge_pre1b", d / "alias_study_judge_pre1b.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_default_build_control_is_byte_identical_to_the_pre_stage1b_code(judged: Path, tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    old = _pre_stage1b_module(tmp_path, monkeypatch)
+    assert old.jd is aj.jd  # one harness module: the frozen clock below holds for both
+    monkeypatch.setattr(aj.jd.g, "now_iso", lambda: FIXED_T)
+    main, cp, seed_p, _ = control_world(judged, tmp_path)
+    cp_old = second_control_config(cp, "control-judge-old")
+    prov = {"commit": "c" * 40}
+    assert old.main(build_cmd(cp_old, seed_p, main), prov=prov) == old.EXIT_OK
+    assert aj.main(build_cmd(cp, seed_p, main), prov=prov) == aj.EXIT_OK
+    out, out_old = (Path(json.loads(p.read_text())["out_dir"]) for p in (cp, cp_old))
+    names = sorted(p.name for p in out.iterdir())
+    assert names == sorted(p.name for p in out_old.iterdir())
+    assert {"batches.json", "pairs-manifest.json", "pairs.jsonl"} <= set(names)
+    for name in names:
+        assert (out / name).read_bytes() == (out_old / name).read_bytes(), name
 
 
 # ------------------------------------------------------------------ the report (§5)
