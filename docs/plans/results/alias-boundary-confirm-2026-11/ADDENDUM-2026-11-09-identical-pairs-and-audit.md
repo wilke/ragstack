@@ -64,7 +64,10 @@ access to the study's registries.
   5. cover-any batch (15:07Z).
 
   The frozen primary was computed before the cover-any calls existed. Cover-any is the descriptive step 7
-  ([addendum](ADDENDUM-2026-11-06-cover-any.md)).
+  ([addendum](ADDENDUM-2026-11-06-cover-any.md)). The step-7 re-run of `confirm-report` (`--cover-config`) is
+  guarded, not just labelled: it recomputes the primary table and refuses unless that table is identical to
+  the committed step-6 one. Only then does it add the `cover_any` block. So the descriptive step provably
+  left the frozen result unchanged.
 - **Planned n.** `n_draw = 351` is fixed in the frozen PREREG §3.3, and `draw-confirm` refuses any other
   value. The draw ran once.
 - **Consistency of n with the traffic.** The Opus drift sample is 18 calls per arm, which is 5.13 % of 351:
