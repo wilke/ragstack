@@ -88,6 +88,15 @@ func planDecommission(_ context.Context, p *planner, args map[string]any) error 
 		return p.refuse("%s is supervised by %q, which is not something the ctl can stop; there is nothing for "+
 			"`decommission` to take down", t.Name, t.Supervisor)
 	}
+	if q := t.Stores.Qdrant.DataDir; q != "" {
+		// Decommission quarantines the tenant's data TREE by renaming it; a
+		// qdrant data dir moved out of that tree (stores.qdrant.data_dir)
+		// would stay behind, unrecorded by the quarantine block and unpurged,
+		// holding the tenant's vectors with no row left that names them.
+		return p.refuse("%s keeps its qdrant data in %s (stores.qdrant.data_dir), outside its data dir: decommission "+
+			"of a tenant with a moved qdrant data dir is not supported until a later release — it would strand that "+
+			"directory. Move the store back under %s/qdrant and remove the field first", t.Name, q, t.DataDir)
+	}
 	archive := decommissionArchiveOf(args)
 	if archive && !p.op.deps.hasRecipients() {
 		// Refused HERE, before a fence stops anything: an archive whose

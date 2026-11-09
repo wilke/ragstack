@@ -376,3 +376,34 @@ func TestDecommissionArchiveRefusesAStoppedTenant(t *testing.T) {
 	}
 	planDecom(t, oc, archiveDeps(oc), noArchive)
 }
+
+// A tenant whose qdrant data dir was moved out of its tree is refused: the
+// quarantine renames the data dir, and the moved dir would be stranded with no
+// row naming it. The ownership refusal still comes first.
+func TestDecommissionRefusesAMovedQdrantDataDir(t *testing.T) {
+	moved := func(tn *registry.Tenant) {
+		decomBackedUp(tn)
+		tn.Stores.Qdrant.DataDir = "/rag/stores2/qdrant/dev"
+	}
+	for _, args := range []map[string]any{nil, {"archive": false}} {
+		oc, _ := fixture(t, "dev", moved)
+		op, _ := NewRegistry(archiveDeps(oc)).Lookup("decommission")
+		_, err := op.Plan(context.Background(), oc, args)
+		if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "not supported until a later release") ||
+			!strings.Contains(err.Error(), "/rag/stores2/qdrant/dev") {
+			t.Fatalf("args %v: %v, want a refusal naming the moved dir", args, err)
+		}
+	}
+	ocW, _ := fixture(t, "dev", func(tn *registry.Tenant) { tn.Stores.Qdrant.DataDir = "/rag/stores2/qdrant/dev" })
+	op, _ := NewRegistry(archiveDeps(ocW)).Lookup("decommission")
+	if _, err := op.Plan(context.Background(), ocW, nil); err == nil ||
+		!strings.Contains(err.Error(), "quarantines only what the ctl runs") {
+		t.Errorf("a wilke-owned tenant with a moved dir = %v, want the ownership refusal first", err)
+	}
+	// The same row without the field still plans.
+	oc, _ := fixture(t, "dev", decomBackedUp)
+	op, _ = NewRegistry(archiveDeps(oc)).Lookup("decommission")
+	if _, err := op.Plan(context.Background(), oc, map[string]any{"archive": false}); err != nil {
+		t.Errorf("the same row without data_dir: %v", err)
+	}
+}
