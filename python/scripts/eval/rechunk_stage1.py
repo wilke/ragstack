@@ -4,7 +4,15 @@ in ``rechunk`` mode: per corpus arm, ``<runs>/<arm>/none.jsonl``, the served lis
 under each retriever) and the private label table (``rechunk_prep.py gold-map``), and writes a
 public JSON of counts, rates and Wilson 95 % intervals only.
 
-    rechunk_stage1.py --runs RUNS_DIR --label-table TABLE.jsonl --out PUBLIC.json
+    rechunk_stage1.py --runs RUNS_DIR --label-table TABLE.jsonl --out PUBLIC.json \\
+                      [--run-label-table RUN_TABLE.jsonl]
+
+**Stage 1b.** The run summaries record the sha of the label table the run was made against, and a
+table with another sha is refused. A merged table (``rechunk_prep.py gold-map --extra-final``)
+has another sha, so it is read with ``--run-label-table`` naming the run's table: the summaries
+are checked against that one, and the merged table must carry the same pair rows and every label
+of it unchanged (registries may only be added). The scoring is unchanged: a stage-1b label counts
+in ``A`` and ``U`` like any other (``A_own`` still reads only the pair's own mapped chunks).
 
 **Per retriever and pair** (each pair read in its corpus arm's run, its question's top 10):
 
@@ -113,10 +121,11 @@ def check_summary(summary: Mapping[str, Any], corpus_arm: str, table_sha: str) -
             "provenance": {k: (summary.get("provenance") or {}).get(k) for k in ("commit", "dirty")}}
 
 
-def read_runs(runs: Path, table: rp.LabelTable) -> tuple[dict[str, dict[tuple[str, str], dict[str, Any]]],
-                                                       dict[str, Any]]:
+def read_runs(runs: Path, table: rp.LabelTable, run_table_sha: str | None = None
+              ) -> tuple[dict[str, dict[tuple[str, str], dict[str, Any]]], dict[str, Any]]:
     """``corpus arm -> (record, condition) -> row`` for every arm with a pair, and the per-arm
-    run records (summary checks, file shas)."""
+    run records (summary checks, file shas). The summaries must name ``run_table_sha`` (default:
+    ``table``'s own sha; see :func:`check_merged`)."""
     rows: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
     info: dict[str, Any] = {}
     for c in asc.CORPUS_ARMS:
@@ -126,7 +135,7 @@ def read_runs(runs: Path, table: rp.LabelTable) -> tuple[dict[str, dict[tuple[st
         if not rpath.is_file() or not spath.is_file():
             raise SystemExit(f"REFUSED: no rechunk run for {c} (its pairs need one)")
         summ = json.loads(spath.read_text(encoding="utf-8"))
-        info[c] = {**check_summary(summ, c, table.sha256), "rows_sha256": asc.sha256_file(rpath),
+        info[c] = {**check_summary(summ, c, run_table_sha or table.sha256), "rows_sha256": asc.sha256_file(rpath),
                    "summary_sha256": asc.sha256_file(spath)}
         by: dict[tuple[str, str], dict[str, Any]] = {}
         for r in rp.read_rows(rpath):
@@ -287,9 +296,33 @@ def report(table: rp.LabelTable, rows: Mapping[str, Mapping[tuple[str, str], Map
             "q1_lost_pairs": q1(scored), "q2_all_pairs": q2(scored)}
 
 
-def run(runs: Path, table_path: Path, out: Path) -> dict[str, Any]:
+def check_merged(run_table: rp.LabelTable, table: rp.LabelTable) -> dict[str, Any]:
+    """``table`` extends ``run_table`` (the table the run was made against) by labels only, as
+    ``gold-map --extra-final`` does: the same pair rows, and every label row of ``run_table``
+    present with the same per-registry labels (registries may be added). SystemExit otherwise."""
+    if table.pairs != run_table.pairs:
+        raise SystemExit("REFUSED: --label-table has other pair rows than --run-label-table (not a merged table)")
+    for key, r in run_table.labels.items():
+        m = table.labels.get(key)
+        regs = (m or {}).get("registries") or {}
+        if m is None or any(regs.get(k) != v for k, v in (r.get("registries") or {}).items()):
+            raise SystemExit("REFUSED: a label row of --run-label-table is missing or changed in --label-table")
+    return {"run_label_table_sha256": run_table.sha256, "labels_added": len(table.labels) - len(run_table.labels),
+            "extra_registries": table.meta.get("extra_registries") or []}
+
+
+def run(runs: Path, table_path: Path, out: Path, run_table_path: Path | None = None) -> dict[str, Any]:
+    """The report. ``run_table_path``: the label table the run was made against, when
+    ``table_path`` is a merged one (``gold-map --extra-final``, stage 1b): the run summaries are
+    checked against it and the merged table must extend it (:func:`check_merged`)."""
     table = rp.read_label_table(table_path)
-    rows, info = read_runs(runs, table)
+    merged = None
+    forbidden_extra: set[str] = set()
+    if run_table_path is not None:
+        run_table = rp.read_label_table(run_table_path)
+        merged = check_merged(run_table, table)
+        forbidden_extra = run_table.forbidden()
+    rows, info = read_runs(runs, table, None if merged is None else merged["run_label_table_sha256"])
     rec = {"schema": SCHEMA, "exploratory": True,
            "measures": {"A": "a chunk labelled answers for the record (control or cover-any registry) is in the top 10",
                         "A_own": "one of this pair's own mapped chunks (max-overlap or cover-any) is labelled "
@@ -306,7 +339,9 @@ def run(runs: Path, table_path: Path, out: Path) -> dict[str, Any]:
            "top_k": asc.FOUND_K, "interval": "Wilson 95 %, rounded outward",
            **report(table, rows), "runs": info, "label_table_sha256": table.sha256,
            "provenance": acc.public_provenance(rp.experiment_provenance())}
-    forbidden = table.forbidden()
+    if merged is not None:
+        rec["merged_label_table"] = merged
+    forbidden = table.forbidden() | forbidden_extra
     for arm_rows in rows.values():
         for r in arm_rows.values():
             forbidden |= set(r.get("ranked_chunk_ids") or [])
@@ -318,8 +353,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--runs", required=True, type=Path, help="the rechunk run's out dir")
     ap.add_argument("--label-table", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path, help="the public report (counts only)")
+    ap.add_argument("--run-label-table", type=Path, default=None,
+                    help="the table the run was made against, when --label-table is a merged (stage-1b) one")
     args = ap.parse_args(argv)
-    rec = run(args.runs, args.label_table, args.out)
+    rec = run(args.runs, args.label_table, args.out, args.run_label_table)
     q = rec["q1_lost_pairs"]
     print(json.dumps({"pairs": rec["pairs"], "lost_pairs": q["lost_pairs"], "cover_class": q["cover_class"],
                       "out": str(args.out)}))

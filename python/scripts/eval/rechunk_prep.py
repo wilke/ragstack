@@ -8,7 +8,10 @@ the confirmatory boundary test, and the private label table the stage-1 report r
     rechunk_prep.py gold-map --sample sample.jsonl --pairs-seed pairs-seed.jsonl \\
                              --pairs-seed-cover pairs-seed-cover.jsonl --control-final judge-control/final.jsonl \\
                              --cover-final judge-cover/final.jsonl --stage-a-runs RUNS_DIR --out TABLE.jsonl \\
-                             [--summary S.json]
+                             [--summary S.json] [--extra-final F.jsonl ...]
+    rechunk_prep.py stage1b-seed --label-table TABLE.jsonl --runs RUNS_DIR [--retriever base] \\
+                                 --export E.jsonl [--export E2.jsonl ...] --out-seed SEED.jsonl \\
+                                 --out-export X.jsonl --summary S.json
 
 **The chunker.** ``sentence`` / 512 / 0 with the confirmatory control's params
 (:data:`alias_control_chunks.CONTROL_PARAMS`: tokens, pack 318, ``structure_cuts`` sections/1,
@@ -56,9 +59,41 @@ The ``stratum`` kept on a pair row is the confirmatory **draw stratum** (the sam
 ``stratum``; every confirmatory pair was drawn from the stage-A *answers* stratum), not the
 stage-A judge's route or label source, which the gold-map inputs do not carry.
 
+``--extra-final`` (repeatable; stage 1b): a further judge run's ``final.jsonl`` (rows with
+``record_id``, ``chunk_id``, ``label``, ``source``; a row without the ids, such as a batch row, is
+skipped and counted). Its labels join the table as registry ``stage1b`` under the same combine rule
+(answers if any registry says answers); disagreements are counted in the summary's ``stage1b``
+block (within the stage-1b files, and against the confirm registries). Without the flag, table and
+summary are byte-identical to a run without stage 1b.
+
 The judge files are read without repair (a torn tail is refused, never truncated). The labels
 reuse ``alias_control_chunks``' helpers (``cover_labels``, ``cover_split``, ``label_of``,
 ``is_unjudged``) and ``alias_study_judge.pair_id``. Every path comes from the command line.
+
+**stage1b-seed** (PLAN §4, stage 1b). For every lost pair, the top 10 of its question under one
+retriever (``--retriever``, the rechunk run's condition name; ``base`` = the default retriever) in
+its corpus arm's rows (``<runs>/<arm>/none.jsonl``, read and checked by ``rechunk_stage1.read_runs``,
+summary checks included). Every (record, chunk) there with **no label row** in the table is a
+seed; a chunk labelled ``unjudged`` is counted, not seeded. Deduplicated per (record, chunk).
+
+- ``--out-seed``: one row per seed in the shape ``alias_study_judge.py build-control --seed-pairs``
+  reads (``control_of``, ``record_id``, ``chunk_id``), with the cover-any seed rows' companions
+  (``stage_a_chunk_id``, ``doc_id`` = the seed chunk's own document, ``arm``, ``stratum``) and
+  ``pair_id``, ``corpus_arm``, ``best_rank``, ``lost_pairs_with_chunk``, ``same_paper_as_window``,
+  ``stage`` = ``stage1b``. ``control_of`` and ``stage_a_chunk_id`` are those of the lost pair (of
+  the same question) whose top 10 held the chunk: when several did, the first by pair id among
+  those whose stage-A window lies in the chunk's paper, else the first by pair id.
+  **build-control limit:** ``build_control_pairs`` refuses a seed whose chunk's paper (path root)
+  is not its stage-A pair's ``c_paper`` (the window's paper). A top-10 chunk from another paper
+  has no such stage-A pair among the lost pairs, so those rows (``same_paper_as_window`` false,
+  counted as ``seeds_other_paper``) cannot go through ``build-control`` unchanged.
+- ``--out-export``: the export rows of exactly the seed chunks, from the ``--export`` files,
+  unchanged (re-serialized ASCII-escaped only when the line is not pure ASCII); a seed chunk in no
+  export, or seen with conflicting content, is refused.
+- ``--summary``: counts only, input and output sha256s, provenance; no id.
+
+Outputs are written once (an existing file with other bytes is refused) and never inside the
+repository.
 """
 from __future__ import annotations
 
@@ -84,7 +119,7 @@ import alias_control_chunks as acc  # noqa: E402
 import alias_study_common as asc  # noqa: E402
 
 SCHEMA = {"structure": "rechunk-add-structure/1", "export": "rechunk-export/1", "gold_map": "rechunk-gold-map/1",
-          "table": "rechunk-label-table/1"}
+          "table": "rechunk-label-table/1", "stage1b_seed": "rechunk-stage1b-seed/1"}
 METHOD = acc.CONTROL_METHOD
 SIZE = acc.CONTROL_SIZE
 OVERLAP = acc.CONTROL_OVERLAP
@@ -97,6 +132,8 @@ NO_HOST = "http://127.0.0.1:1"
 
 LABELS = ("answers", "not", "unjudged")
 REGISTRIES = ("control", "cover")
+#: the registry name ``gold-map --extra-final`` gives the stage-1b judge runs' labels
+EXTRA_REGISTRY = "stage1b"
 
 
 # ------------------------------------------------------------------ small I/O helpers
@@ -480,11 +517,45 @@ def base_only_in_larger_arm(pair: Mapping[str, Any]) -> bool:
     return pair["corpus_arm"] == "base" and not any(lg.split("|")[0] == "base" for lg in pair["stage_a_legs"])
 
 
+def extra_labels(finals: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[dict[tuple[str, str], str], dict[str, int]]:
+    """``(record, chunk) -> label word`` of the additional registries' ``final.jsonl`` rows (the
+    stage-1b judge runs; :data:`EXTRA_REGISTRY`), and their counts. A row without ``record_id`` or
+    ``chunk_id`` (a batch row) is skipped and counted; a ``pair_id`` that is not
+    ``sha256(record|chunk)[:16]`` is refused. One (record, chunk) seen in several rows (or files)
+    takes :func:`combine` over them, and a disagreement between judged labels is counted."""
+    import alias_study_judge as aj
+
+    per: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+    counts: Counter[str] = Counter()
+    for fi, rows in enumerate(finals):
+        for j, r in enumerate(rows):
+            rid, cid = r.get("record_id"), r.get("chunk_id")
+            if not rid or not cid:
+                counts["rows_skipped_without_ids"] += 1
+                continue
+            if r.get("pair_id") is not None and r["pair_id"] != aj.pair_id(rid, cid):
+                raise SystemExit(f"--extra-final #{fi + 1}: a row's pair_id is not sha256(record|chunk)[:16]")
+            w = label_word(r)
+            assert w is not None
+            per[(rid, cid)][f"{fi}:{j}"] = w
+            counts["rows"] += 1
+    out: dict[tuple[str, str], str] = {}
+    for key, ws in per.items():
+        judged = {v for v in ws.values() if v != "unjudged"}
+        counts["conflicts_within"] += int(len(judged) > 1)
+        out[key] = combine(ws)
+    counts["labels"] = len(out)
+    return out, {k: counts[k] for k in ("rows", "rows_skipped_without_ids", "labels", "conflicts_within")}
+
+
 def gold_map(sample:Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, Any]],
              cover_seeds: Sequence[Mapping[str, Any]], cfinal: Mapping[str, Mapping[str, Any]],
-             vfinal: Mapping[str, Mapping[str, Any]], hits: Mapping[tuple[str, str], Sequence[str]]
+             vfinal: Mapping[str, Mapping[str, Any]], hits: Mapping[tuple[str, str], Sequence[str]],
+             extra: Mapping[tuple[str, str], str] | None = None
              ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """The label-table rows and their counts (a pure function; SystemExit on inconsistent inputs)."""
+    """The label-table rows and their counts (a pure function; SystemExit on inconsistent inputs).
+    ``extra`` (:func:`extra_labels`) adds the :data:`EXTRA_REGISTRY` registry's labels under the
+    same combine rule; ``None`` leaves rows and counts exactly as without it."""
     import alias_study_judge as aj
 
     by_pid: dict[str, Mapping[str, Any]] = {}
@@ -574,6 +645,19 @@ def gold_map(sample:Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, An
     if any(split[k] != mine[k] for k in acc.COVER_SPLIT) or split["n"] != sum(mine.values()):
         raise SystemExit("the cover-any classes disagree with alias_control_chunks.cover_split")
 
+    extra_counts: Counter[str] = Counter()
+    if extra is not None:
+        records = {s["record_id"] for s in sample}
+        for (rid, cid), w in sorted(extra.items()):
+            if rid not in records:
+                raise SystemExit("--extra-final: a label for a record that is not in the sample")
+            prior = labels.get((rid, cid))
+            extra_counts["labels_new" if not prior else "labels_already_judged"] += 1
+            judged_prior = {v for v in (prior or {}).values() if v != "unjudged"}
+            extra_counts["conflicts_with_confirm_registries"] += int(
+                w != "unjudged" and bool(judged_prior) and judged_prior != {w})
+            labels[(rid, cid)][EXTRA_REGISTRY] = w
+
     label_rows = []
     conflicts = 0
     for (rid, cid), regs in sorted(labels.items()):
@@ -597,6 +681,9 @@ def gold_map(sample:Sequence[Mapping[str, Any]], seeds: Sequence[Mapping[str, An
         "labels": len(label_rows), "label": dict(Counter(r["label"] for r in label_rows)),
         "label_source": dict(Counter(r["source"] for r in label_rows)), "registry_conflicts": conflicts,
         "no_final_row": dict(missing), "cover_any_chunks": sum(len(v) for v in covers.values())}
+    if extra is not None:
+        out_counts[EXTRA_REGISTRY] = {k: extra_counts[k] for k in ("labels_new", "labels_already_judged",
+                                                                   "conflicts_with_confirm_registries")}
     return [*pairs, *label_rows], out_counts
 
 
@@ -645,17 +732,22 @@ def read_label_table(path: str | Path) -> LabelTable:
 
 
 def run_gold_map(sample: Path, seeds: Path, cover_seeds: Path, cfinal: Path, vfinal: Path, runs: Path, out: Path,
-                 summary: Path | None = None) -> dict[str, Any]:
+                 summary: Path | None = None, extra_final: Sequence[Path] | None = None) -> dict[str, Any]:
     refuse_in_repo(out, "--out")
     samp = read_rows(sample)
     hits, leg_shas = stage_a_hits(runs, {(s["record_id"], s["chunk_id"]) for s in samp})
+    extra, extra_counts = (None, None) if not extra_final else extra_labels([read_rows(f) for f in extra_final])
     rows, counts = gold_map(samp, read_rows(seeds), read_rows(cover_seeds), final_rows(cfinal), final_rows(vfinal),
-                            hits)
+                            hits, extra)
+    if extra_counts is not None:
+        counts[EXTRA_REGISTRY] = {**extra_counts, **counts[EXTRA_REGISTRY], "files": len(extra_final or [])}
     meta = {"kind": "meta", "schema": SCHEMA["table"], "pairs": counts["pairs"], "labels": counts["labels"],
             "label_rule": "answers if any registry's final label is answers; not if judged and none answers; "
                           "else unjudged",
             "corpus_arm_rule": "base/neighbour: own arm; random: the draw whose judged stage-A leg retrieved the "
                                "window (both: the first in corpus-arm order)"}
+    if extra_final:
+        meta["extra_registries"] = [EXTRA_REGISTRY]
     sha = acc.write_private(out, acc.jsonl_bytes([meta, *rows]), "the rechunk label table")
     inputs = {"sample": sample, "pairs_seed": seeds, "pairs_seed_cover": cover_seeds, "control_final": cfinal,
               "cover_final": vfinal}
@@ -664,6 +756,8 @@ def run_gold_map(sample: Path, seeds: Path, cover_seeds: Path, cfinal: Path, vfi
            "stage_a_rows_sha256": dict(sorted(leg_shas.items())), "label_rule": meta["label_rule"],
            "corpus_arm_rule": meta["corpus_arm_rule"],
            "provenance": acc.public_provenance(experiment_provenance())}
+    if extra_final:
+        rec["inputs_sha256"]["extra_final"] = [asc.sha256_file(f) for f in extra_final]
     forbidden = read_label_table(out).forbidden()
     acc.write_summary(summary or out.with_name(out.name + ".summary.json"), rec, "the gold-map summary", forbidden)
     return rec
@@ -741,6 +835,173 @@ def check_rechunk_presence(table: LabelTable, exports: Sequence[Path], corpus_ar
             "expected_chunks": expected_chunks, "chunk_descriptor": DESCRIPTOR, "descriptor_checked_in": sources}
 
 
+# ------------------------------------------------------------------ stage1b-seed
+
+def stage1b_candidates(table: LabelTable, rows: Mapping[str, Mapping[tuple[str, str], Mapping[str, Any]]],
+                       condition: str) -> tuple[dict[tuple[str, str], list[tuple[dict[str, Any], int]]], dict[str, Any]]:
+    """``(record, chunk) -> [(lost pair, rank), …]``: every chunk with **no label row** for the
+    record in the top 10 of a lost pair's question under ``condition``, in the pair's corpus arm's
+    rows; and the counts. A missing row is refused (as in the report); a failed call leaves its
+    pair out (counted: its found@10 stays inexact)."""
+    cand: dict[tuple[str, str], list[tuple[dict[str, Any], int]]] = defaultdict(list)
+    c: Counter[str] = Counter()
+    lists: set[tuple[str, str]] = set()
+    lost = [p for p in table.pairs if p["lost"]]
+    for p in lost:
+        row = rows.get(p["corpus_arm"], {}).get((p["record_id"], condition))
+        if row is None:
+            raise SystemExit(f"REFUSED: a lost pair's record has no {condition!r} row in its corpus arm's run")
+        if row.get("failed") or row.get("ranked_chunk_ids") is None:
+            c["lost_pairs_failed"] += 1
+            continue
+        c["lost_pairs_read"] += 1
+        key = (p["record_id"], p["corpus_arm"])
+        first = key not in lists
+        lists.add(key)
+        for rank, cid in enumerate(list(row["ranked_chunk_ids"])[:asc.FOUND_K], 1):
+            lab = table.label(p["record_id"], cid)
+            if first:
+                c["top10_slots"] += 1
+                c[f"top10_slots_{lab or 'no_label_row'}"] += 1
+            if lab is None:
+                cand[(p["record_id"], cid)].append((p, rank))
+    counts = {"lost_pairs": len(lost), "lost_pairs_read": c["lost_pairs_read"],
+              "lost_pairs_failed": c["lost_pairs_failed"], "questions": len({p["record_id"] for p in lost}),
+              "top10_lists": len(lists), "top10_slots": c["top10_slots"],
+              "top10_slots_by_label": {k: c[f"top10_slots_{k}"] for k in (*LABELS, "no_label_row")}}
+    return dict(cand), counts
+
+
+def scan_exports(exports: Sequence[Path], want: set[str]) -> tuple[dict[str, str], dict[str, Any], Counter[str]]:
+    """``chunk_id -> the export line`` (unchanged when pure ASCII, else re-serialized ASCII-escaped,
+    ``alias_control_chunks.jsonl_bytes``' reason) and ``chunk_id -> parsed row`` for the ids in
+    ``want``. A chunk seen twice must carry the same content (the first line is kept); otherwise
+    refused."""
+    import _glossbench_r2 as g
+
+    lines: dict[str, str] = {}
+    parsed: dict[str, Any] = {}
+    c: Counter[str] = Counter()
+    for path in exports:
+        with g._open_text(path) as fh:
+            for i, line in enumerate(fh, 1):
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                row = g.parse_chunk(obj, f"{Path(path).name}:{i}")
+                if row.chunk_id not in want:
+                    continue
+                prev = parsed.get(row.chunk_id)
+                if prev is not None:
+                    if prev.content != row.content:
+                        raise SystemExit(f"REFUSED: {Path(path).name}:{i}: a seed chunk appears with conflicting "
+                                         "content in the exports; nothing written")
+                    c["duplicate_rows_same_content"] += 1
+                    continue
+                text = line.rstrip("\r\n")
+                if not text.isascii():
+                    text = json.dumps(obj, ensure_ascii=True)
+                    c["rows_reescaped"] += 1
+                lines[row.chunk_id] = text + "\n"
+                parsed[row.chunk_id] = row
+    return lines, parsed, c
+
+
+def stage1b_seeds(cand: Mapping[tuple[str, str], Sequence[tuple[Mapping[str, Any], int]]],
+                  paper_of: Mapping[str, str], doc_of: Mapping[str, str]
+                  ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One seed row per unlabelled (record, chunk), in the shape ``alias_study_judge.py
+    build-control --seed-pairs`` reads (``control_of``, ``record_id``, ``chunk_id``; the rest is
+    carried as the cover-any seed rows carry it).
+
+    ``control_of`` / ``stage_a_chunk_id`` are those of a lost pair of the same question whose top 10
+    held the chunk: the first by pair id among those whose stage-A window lies in the chunk's
+    paper (the window's paper is its max-overlap chunk's, ``paper_of``), else the first by pair id.
+    ``build_control_pairs`` refuses a seed whose chunk's paper (path root) is not the stage-A
+    pair's ``c_paper`` (the window's paper): those rows carry ``same_paper_as_window`` false and are
+    counted, never dropped."""
+    import alias_study_judge as aj
+
+    seeds = []
+    for (rid, cid), hits in sorted(cand.items()):
+        pairs = {p["pair_id"]: p for p, _ in hits}
+        same = sorted(pid for pid, p in pairs.items() if paper_of[p["max_overlap_chunk_id"]] == paper_of[cid])
+        pick = pairs[(same or sorted(pairs))[0]]
+        seeds.append({"control_of": pick["pair_id"], "record_id": rid, "chunk_id": cid,
+                      "pair_id": aj.pair_id(rid, cid), "doc_id": doc_of[cid], "stage_a_chunk_id": pick["stage_a_chunk_id"],
+                      "arm": pick["arm"], "corpus_arm": pick["corpus_arm"], "stratum": pick.get("draw_stratum"),
+                      "best_rank": min(r for _, r in hits), "lost_pairs_with_chunk": sorted(pairs),
+                      "same_paper_as_window": bool(same), "stage": EXTRA_REGISTRY})
+    counts = {"seeds": len(seeds), "seed_records": len({s["record_id"] for s in seeds}),
+              "seeds_same_paper_as_window": sum(s["same_paper_as_window"] for s in seeds),
+              "seeds_other_paper": sum(not s["same_paper_as_window"] for s in seeds),
+              "seeds_in_several_lost_pairs": sum(len(s["lost_pairs_with_chunk"]) > 1 for s in seeds),
+              "seeds_by_corpus_arm": dict(Counter(s["corpus_arm"] for s in seeds)),
+              "seeds_by_best_rank": rank_counts(s["best_rank"] for s in seeds)}
+    return seeds, counts
+
+
+def rank_counts(ranks: Iterable[int]) -> dict[str, int]:
+    rs = list(ranks)
+    return {name: sum(lo <= x <= hi for x in rs) for name, lo, hi in (("1", 1, 1), ("2-3", 2, 3), ("4-10", 4, 10))}
+
+
+def run_stage1b_seed(table_path: Path, runs: Path, exports: Sequence[Path], out_seed: Path, out_export: Path,
+                     summary: Path, retriever: str = "base") -> dict[str, Any]:
+    """``stage1b-seed`` (module docstring): the seed rows and the matching export rows of every
+    unlabelled top-10 chunk of the lost pairs' questions under ``retriever`` (a condition name of
+    the rechunk run, ``base`` = the default retriever), and a counts-only summary."""
+    import rechunk_stage1 as rs
+
+    if retriever not in asc.RETRIEVERS.values():
+        raise SystemExit(f"--retriever {retriever!r} is not a condition of the run ({sorted(asc.RETRIEVERS.values())})")
+    outs = {"--out-seed": out_seed, "--out-export": out_export, "--summary": summary}
+    for what, path in outs.items():
+        refuse_in_repo(path, what)
+    ins = {Path(x).resolve() for x in (table_path, *exports)}
+    if len({p.resolve() for p in outs.values()}) != 3 or any(p.resolve() in ins for p in outs.values()):
+        raise SystemExit("REFUSED: the outputs must be three distinct files, none of them an input")
+    table = read_label_table(table_path)
+    rows, info = rs.read_runs(runs, table)
+    cand, counts = stage1b_candidates(table, rows, retriever)
+    windows = {p["max_overlap_chunk_id"] for p in table.pairs if p["lost"]}
+    lines, parsed, dup = scan_exports(exports, {c for _, c in cand} | windows)
+    missing = sorted({c for _, c in cand} - set(parsed))
+    if missing:
+        raise SystemExit(f"REFUSED: {len(missing)} seed chunk(s) are in no --export file; nothing written")
+    if windows - set(parsed):
+        raise SystemExit(f"REFUSED: {len(windows - set(parsed))} lost pair max-overlap chunk(s) are in no --export "
+                         "file (their paper places the seeds); nothing written")
+    import _glossbench_r2 as g
+
+    paper_of = {cid: g.paper_of(row, "path_root") for cid, row in parsed.items()}
+    seeds, scounts = stage1b_seeds(cand, paper_of, {cid: row.doc_id for cid, row in parsed.items()})
+    seed_sha = acc.write_private(out_seed, acc.jsonl_bytes(seeds), "the stage-1b seed pairs")
+    export_bytes = "".join(lines[c] for c in sorted({s["chunk_id"] for s in seeds})).encode("utf-8")
+    export_sha = acc.write_private(out_export, export_bytes, "the stage-1b export rows")
+    rec = {"schema": SCHEMA["stage1b_seed"], "exploratory": True, "retriever_condition": retriever,
+           "top_k": asc.FOUND_K, **counts, **scounts, "export_rows": len({s["chunk_id"] for s in seeds}),
+           "export_duplicate_rows_same_content": dup["duplicate_rows_same_content"],
+           "export_rows_reescaped": dup["rows_reescaped"],
+           "rule": "unlabelled = no label row for (record, chunk) in the table; a top-10 chunk labelled unjudged "
+                   "is counted (top10_slots_by_label), not seeded",
+           "control_of_rule": "a lost pair of the same question whose top 10 held the chunk: first by pair id among "
+                              "those whose stage-A window is in the chunk's paper, else first by pair id",
+           "build_control_note": "alias_study_judge.build_control_pairs refuses a seed whose chunk's paper is not the "
+                                 "stage-A pair's c_paper; seeds_other_paper counts those rows",
+           "inputs_sha256": {"label_table": table.sha256, "exports": [asc.sha256_file(x) for x in exports],
+                             "runs": {c: {k: v[k] for k in ("rows_sha256", "summary_sha256")}
+                                      for c, v in sorted(info.items())}},
+           "outputs_sha256": {"seed": seed_sha, "export": export_sha},
+           "provenance": acc.public_provenance(experiment_provenance())}
+    forbidden = table.forbidden() | {x for s in seeds for x in (s["chunk_id"], s["pair_id"], s["doc_id"])}
+    for arm_rows in rows.values():
+        for r in arm_rows.values():
+            forbidden |= set(r.get("ranked_chunk_ids") or [])
+    acc.write_summary(summary, rec, "the stage-1b seed summary", forbidden)
+    return rec
+
+
 # ------------------------------------------------------------------ CLI
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -767,8 +1028,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     g.add_argument("--stage-a-runs", required=True, type=Path)
     g.add_argument("--out", required=True, type=Path)
     g.add_argument("--summary", type=Path, default=None)
+    g.add_argument("--extra-final", action="append", type=Path, default=None,
+                   help="a stage-1b judge run's final.jsonl (repeatable): its labels join as registry 'stage1b'")
+    b = sub.add_parser("stage1b-seed", help="seed rows of the unlabelled top-10 chunks of the lost pairs")
+    b.add_argument("--label-table", required=True, type=Path)
+    b.add_argument("--runs", required=True, type=Path, help="the rechunk run's out dir (read only)")
+    b.add_argument("--retriever", default="base", help="the run's condition name (base = the default retriever)")
+    b.add_argument("--export", required=True, action="append", type=Path,
+                   help="a rechunk chunk export (repeatable)")
+    b.add_argument("--out-seed", required=True, type=Path)
+    b.add_argument("--out-export", required=True, type=Path)
+    b.add_argument("--summary", required=True, type=Path)
     args = ap.parse_args(argv)
-    if args.cmd == "add-structure":
+    if args.cmd == "stage1b-seed":
+        rec = run_stage1b_seed(args.label_table, args.runs, args.export, args.out_seed, args.out_export,
+                               args.summary, args.retriever)
+        print(json.dumps({k: rec[k] for k in ("lost_pairs", "lost_pairs_failed", "seeds", "seeds_other_paper",
+                                              "export_rows")}))
+    elif args.cmd == "add-structure":
         rec = run_add_structure(args.src, args.out, args.summary)
         print(json.dumps({k: rec[k] for k in ("records", "sections", "out_sha256")}))
     elif args.cmd == "export":
@@ -778,7 +1055,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({k: rec[k] for k in ("documents", "chunks", "chunks_sha256")}))
     else:
         rec = run_gold_map(args.sample, args.pairs_seed, args.pairs_seed_cover, args.control_final,
-                           args.cover_final, args.stage_a_runs, args.out, args.summary)
+                           args.cover_final, args.stage_a_runs, args.out, args.summary, args.extra_final)
         print(json.dumps({k: rec[k] for k in ("pairs", "records", "by_corpus_arm", "lost", "cover_class",
                                               "table_sha256")}))
     return 0
