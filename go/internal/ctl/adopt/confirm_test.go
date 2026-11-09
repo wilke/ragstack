@@ -357,3 +357,56 @@ func TestConfirmStoresAgainstTheLiveHost(t *testing.T) {
 		})
 	}
 }
+
+// A row whose qdrant data dir was moved off the tenant tree
+// (stores.qdrant.data_dir) confirms its qdrant leg from a bind under THAT
+// dir; the same bind on a row that does not name it is still refused, and the
+// refusal names both directories when the row does name one.
+func TestConfirmStoresAcceptsTheRowsQdrantDataDir(t *testing.T) {
+	const qdir = "/data2/qdrant/hack"
+	moved := []hostfacts.StorageBind{
+		{HostPath: qdir + "/storage", ContainerPath: "/qdrant/storage", Device: "259:1"},
+		{HostPath: qdir + "/snapshots", ContainerPath: "/qdrant/snapshots", Device: "259:1"},
+	}
+
+	tn, host := confirmFixture()
+	host.Binds[101] = moved
+	if _, err := ConfirmStores(tn, []string{"qdrant"}, ConfirmOptions{Host: host}); err == nil {
+		t.Fatal("a qdrant bound from outside the data dir was confirmed on a row that does not name that dir")
+	}
+
+	tn, host = confirmFixture()
+	tn.Stores.Qdrant.DataDir = qdir
+	host.Binds[101] = moved
+	findings, err := ConfirmStores(tn, []string{"qdrant"}, ConfirmOptions{Host: host})
+	if err != nil {
+		t.Fatalf("ConfirmStores with the row's qdrant data dir: %v", err)
+	}
+	if !tn.Stores.Qdrant.Capabilities.Stop || len(findings) != 1 || !strings.Contains(findings[0].Detail, qdir+"/storage") {
+		t.Fatalf("caps=%+v findings=%+v", tn.Stores.Qdrant.Capabilities, findings)
+	}
+
+	// The data dir still counts too (the default layout on a moved row is a
+	// mismatch doctor reports, not a reason to refuse the bind here).
+	tn, host = confirmFixture()
+	tn.Stores.Qdrant.DataDir = qdir
+	if _, err := ConfirmStores(tn, []string{"qdrant"}, ConfirmOptions{Host: host}); err != nil {
+		t.Fatalf("ConfirmStores, data-dir bind on a moved row: %v", err)
+	}
+
+	tn, host = confirmFixture()
+	tn.Stores.Qdrant.DataDir = qdir
+	host.Binds[101] = []hostfacts.StorageBind{{HostPath: "/elsewhere/storage", ContainerPath: "/qdrant/storage"}}
+	_, err = ConfirmStores(tn, []string{"qdrant"}, ConfirmOptions{Host: host})
+	if err == nil || !strings.Contains(err.Error(), "/rag/data/tenants/hack") || !strings.Contains(err.Error(), qdir) {
+		t.Fatalf("refusal = %v, want it to name the data dir and the qdrant data dir", err)
+	}
+
+	// The qdrant data dir is the QDRANT leg's only: ES bound from it is refused.
+	tn, host = confirmFixture()
+	tn.Stores.Qdrant.DataDir = qdir
+	host.Binds[102] = []hostfacts.StorageBind{{HostPath: qdir + "/es", ContainerPath: "/usr/share/elasticsearch/data"}}
+	if _, err := ConfirmStores(tn, []string{"elasticsearch"}, ConfirmOptions{Host: host}); err == nil {
+		t.Fatal("an elasticsearch bound from the qdrant data dir was confirmed")
+	}
+}

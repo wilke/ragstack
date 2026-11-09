@@ -297,6 +297,13 @@ type Qdrant struct {
 	Instance     NullString        `json:"instance"`
 	SIF          NullString        `json:"sif"`
 	ExtraEnv     map[string]string `json:"extra_env"`
+	// DataDir is the HOST directory holding this qdrant's `storage/` and
+	// `snapshots/`. Empty (absent) means `<tenant data_dir>/qdrant`, and the
+	// default is spelled ONLY by absence. omitempty, like Code.PreviousImage:
+	// a row written without it must stay byte-identical and loadable by the
+	// previously deployed binary. Applied through Tenant.Paths, the one
+	// derivation point.
+	DataDir string `json:"data_dir,omitempty"`
 }
 
 // Elasticsearch store facts.

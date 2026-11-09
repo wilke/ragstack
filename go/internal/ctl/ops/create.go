@@ -421,7 +421,7 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	if p.sup == nil {
 		return p.refuse("%s would be created with supervisor %q, which is not one the ctl can start", name, t.Supervisor)
 	}
-	p.tpaths = paths.TenantPaths(p.oc.Roots, name, name)
+	p.tpaths = t.Paths(p.oc.Roots) // the prospective row: name == manifest_name, no qdrant data_dir
 	tp := p.tpaths
 
 	// ---- rendered at PLAN time, so the dry run shows the real thing --------

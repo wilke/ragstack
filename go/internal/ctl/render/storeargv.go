@@ -184,7 +184,9 @@ func prepare(t *registry.Tenant, cfg UnitConfig) (prepared, error) {
 	}
 	tp := paths.TenantPaths(
 		paths.NewRoots(cfg.RagRoot, paths.Overrides{DataDir: filepath.Dir(t.DataDir)}),
-		t.Name, filepath.Base(t.DataDir))
+		t.Name, filepath.Base(t.DataDir)).WithQdrantDataDir(t.Stores.Qdrant.DataDir)
+	// ^ the same qdrant rewrite registry.Tenant.Paths applies; the renderer
+	// derives its roots from the row's data_dir rather than the host roots.
 	return prepared{cfg: cfg, tp: tp}, nil
 }
 

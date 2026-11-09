@@ -215,8 +215,12 @@ type Tenant struct {
 	LogsDir      string // …/logs
 	BinDir       string // …/bin (new-tenant.sh up.sh/down.sh; never edited by the ctl)
 
-	QdrantStorage   string // …/qdrant/storage
-	QdrantSnapshots string // …/qdrant/snapshots
+	// QdrantDir is the HOST directory that holds the tenant qdrant's
+	// `storage/` and `snapshots/` — `<DataDir>/qdrant` unless the registry
+	// row moved it (registry.Qdrant.DataDir, applied by WithQdrantDataDir).
+	QdrantDir       string // …/qdrant
+	QdrantStorage   string // <QdrantDir>/storage
+	QdrantSnapshots string // <QdrantDir>/snapshots
 	ESData          string // …/elasticsearch/data
 	ESLogs          string // …/elasticsearch/logs
 	ESConfig        string // …/elasticsearch/config
@@ -254,6 +258,7 @@ func TenantPaths(root Roots, name, manifestName string) Tenant {
 		IngestDir:       filepath.Join(d, "ingest"),
 		LogsDir:         filepath.Join(d, "logs"),
 		BinDir:          filepath.Join(d, "bin"),
+		QdrantDir:       filepath.Join(d, "qdrant"),
 		QdrantStorage:   filepath.Join(d, "qdrant", "storage"),
 		QdrantSnapshots: filepath.Join(d, "qdrant", "snapshots"),
 		ESData:          filepath.Join(d, "elasticsearch", "data"),
@@ -267,6 +272,27 @@ func TenantPaths(root Roots, name, manifestName string) Tenant {
 		PidFile:         filepath.Join(d, "api-"+name+".pid"),
 		APILog:          filepath.Join(d, "logs", "api-"+name+".log"),
 	}
+}
+
+// WithQdrantDataDir moves the tenant qdrant's host directory to dir: it
+// rewrites QdrantDir, QdrantStorage and QdrantSnapshots and nothing else.
+// "" is a no-op (the default `<DataDir>/qdrant` layout stays). The registry
+// derivation (registry.Tenant.Paths) is the one caller that passes the row's
+// stores.qdrant.data_dir; this package cannot import registry (cycle).
+func (t Tenant) WithQdrantDataDir(dir string) Tenant {
+	if dir == "" {
+		return t
+	}
+	t.QdrantDir = dir
+	t.QdrantStorage = filepath.Join(dir, "storage")
+	t.QdrantSnapshots = filepath.Join(dir, "snapshots")
+	return t
+}
+
+// QdrantOffLayout reports whether the qdrant directory is somewhere other
+// than the default `<DataDir>/qdrant`.
+func (t Tenant) QdrantOffLayout() bool {
+	return t.QdrantDir != "" && t.QdrantDir != filepath.Join(t.DataDir, "qdrant")
 }
 
 // ProvisionDirs are the directories new-tenant.sh creates (its TENANT_DIRS

@@ -316,7 +316,7 @@ func newPlanner(o *op, oc jobs.Context, args map[string]any) *planner {
 	if oc.Tenant != nil {
 		p.t = oc.Tenant
 		p.tenant = oc.Tenant.Name
-		p.tpaths = paths.TenantPaths(oc.Roots, oc.Tenant.Name, oc.Tenant.ManifestName)
+		p.tpaths = oc.Tenant.Paths(oc.Roots)
 		p.sup = supervisorFor(oc.Tenant.Supervisor)
 	}
 	return p

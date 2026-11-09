@@ -136,6 +136,48 @@ func (c *contractCheck) nullable(ptr string, v NullString, re *regexp.Regexp) {
 	}
 }
 
+// qdrantDataDir checks the optional stores.qdrant.data_dir: the schema's
+// pattern, then the coherence rules the schema cannot say. Absent is always
+// fine (the default `<data_dir>/qdrant`).
+func (c *contractCheck) qdrantDataDir(ptr, tenantDataDir string, q Qdrant) {
+	d := q.DataDir
+	if d == "" {
+		return
+	}
+	c.pattern(ptr, d, reAbsPath)
+	if q.Ownership != OwnershipExclusive {
+		c.failf(ptr, "set on a %q store (only an exclusive qdrant has a data dir the ctl may place)", q.Ownership)
+	}
+	if path.Clean(d) != d {
+		c.failf(ptr, "%q is not clean (path.Clean gives %q)", d, path.Clean(d))
+		return
+	}
+	if d == "/" {
+		c.failf(ptr, "is the filesystem root")
+		return
+	}
+	if tenantDataDir == "" {
+		return
+	}
+	td := path.Clean(tenantDataDir)
+	if d == path.Join(td, "qdrant") {
+		c.failf(ptr, "%q is the default spelling; leave data_dir absent instead", d)
+		return
+	}
+	if d == td || PathUnder(d, td) {
+		c.failf(ptr, "%q equals or contains the tenant data_dir %q", d, td)
+	}
+}
+
+// PathUnder reports whether child is strictly below parent (both clean,
+// absolute, slash-separated).
+func PathUnder(parent, child string) bool {
+	if parent == "/" {
+		return child != "/" && strings.HasPrefix(child, "/")
+	}
+	return strings.HasPrefix(child, parent+"/")
+}
+
 func (c *contractCheck) enum(ptr, v string, allowed []string) {
 	for _, a := range allowed {
 		if v == a {
@@ -391,6 +433,7 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 	c.pattern(ptr+"/stores/qdrant/url", q.URL, reLoopbackURL)
 	c.nullable(ptr+"/stores/qdrant/sif", q.SIF, reAbsPath)
 	c.publicSettings(ptr+"/stores/qdrant/extra_env", q.ExtraEnv)
+	c.qdrantDataDir(ptr+"/stores/qdrant/data_dir", t.DataDir, q)
 
 	e := t.Stores.Elasticsearch
 	c.enum(ptr+"/stores/elasticsearch/ownership", e.Ownership, enumOwnership)

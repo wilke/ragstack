@@ -74,7 +74,7 @@ func cmdGowe(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	tenantEnv := filepath.Join(t.DataDir, "config", "tenant.env")
 	if t.DataDir == "" {
 		roots := paths.NewRoots(*root, paths.Overrides{})
-		tenantEnv = paths.TenantPaths(roots, t.Name, t.ManifestName).TenantEnv
+		tenantEnv = t.Paths(roots).TenantEnv
 	}
 	if *worktree != "" {
 		t.Worktree = *worktree

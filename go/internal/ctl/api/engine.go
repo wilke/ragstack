@@ -528,7 +528,7 @@ func newEngineRedactor(roots paths.Roots, loadFleet func() (*registry.Fleet, err
 	r := settings.NewRedactor()
 	if f, err := loadFleet(); err == nil {
 		for name, t := range f.Tenants {
-			tp := paths.TenantPaths(roots, name, t.ManifestName)
+			tp := t.Paths(roots)
 			if err := envfile.SeedRedactor(tp.ConfigDir, r); err != nil {
 				// Unreadable pre-handover files are the expected case; the
 				// key-shaped pass below still covers them by name.
@@ -650,8 +650,8 @@ func isSecretArg(name string) bool {
 // and run end to end without a single real secret anywhere.
 func fixtureFiles(roots paths.Roots, f *registry.Fleet) map[string][]byte {
 	out := map[string][]byte{}
-	for name, t := range f.Tenants {
-		tp := paths.TenantPaths(roots, name, t.ManifestName)
+	for _, t := range f.Tenants {
+		tp := t.Paths(roots)
 		byFile := map[string][]string{}
 		for _, ref := range t.SecretRefs {
 			byFile[ref.File] = append(byFile[ref.File], ref.Key)

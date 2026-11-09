@@ -270,7 +270,7 @@ func storageUnderDataDir(host hostfacts.Host, t *registry.Tenant, leg string, l 
 	}
 	var mine []hostfacts.StorageBind
 	for _, b := range binds {
-		if under(b.HostPath, t.DataDir) {
+		if underOwned(b.HostPath, t, leg) {
 			mine = append(mine, b)
 		}
 	}
@@ -294,7 +294,7 @@ func storageUnderDataDir(host hostfacts.Host, t *registry.Tenant, leg string, l 
 	}
 	// Fallback: the command line, for a process that IS the apptainer starter
 	// or is not containerized at all.
-	if path, ok := argvBindUnderDataDir(t, l); ok {
+	if path, ok := argvBindUnderDataDir(t, leg, l); ok {
 		return path + " (from the command line)", nil
 	}
 	if len(binds) == 0 {
@@ -302,13 +302,40 @@ func storageUnderDataDir(host hostfacts.Host, t *registry.Tenant, leg string, l 
 			"line, so nothing says the files it is writing are this tenant's. A store the ctl may stop has to be "+
 			"one it can see the storage of", t.Name, l.Pid, leg)
 	}
-	return "", fmt.Errorf("adopt %s: pid %d serves the %s port but mounts nothing under this tenant's data dir %s "+
+	return "", fmt.Errorf("adopt %s: pid %d serves the %s port but mounts nothing under %s "+
 		"(it mounts %s): it is not this tenant's store however its URL is spelled",
-		t.Name, l.Pid, leg, t.DataDir, describeBinds(binds))
+		t.Name, l.Pid, leg, ownedDescription(t, leg), describeBinds(binds))
+}
+
+// qdrantDataDir is the row's moved qdrant directory, or "" when the row keeps
+// the default `<data_dir>/qdrant` (already under the data dir).
+func qdrantDataDir(t *registry.Tenant, leg string) string {
+	if leg != "qdrant" {
+		return ""
+	}
+	return t.Stores.Qdrant.DataDir
+}
+
+// underOwned: path is inside the tenant's data dir, or — for the qdrant leg of
+// a row with stores.qdrant.data_dir — inside that qdrant dir.
+func underOwned(path string, t *registry.Tenant, leg string) bool {
+	if under(path, t.DataDir) {
+		return true
+	}
+	q := qdrantDataDir(t, leg)
+	return q != "" && under(path, q)
+}
+
+// ownedDescription names the directories underOwned accepts, for a refusal.
+func ownedDescription(t *registry.Tenant, leg string) string {
+	if q := qdrantDataDir(t, leg); q != "" {
+		return fmt.Sprintf("this tenant's data dir %s or its qdrant data dir %s", t.DataDir, q)
+	}
+	return "this tenant's data dir " + t.DataDir
 }
 
 // argvBindUnderDataDir is the command-line source: `--bind <host>:<container>`.
-func argvBindUnderDataDir(t *registry.Tenant, l hostfacts.Listener) (string, bool) {
+func argvBindUnderDataDir(t *registry.Tenant, leg string, l hostfacts.Listener) (string, bool) {
 	for i, arg := range l.Cmdline {
 		m := bindRE.FindStringSubmatch(arg)
 		if m == nil {
@@ -322,7 +349,7 @@ func argvBindUnderDataDir(t *registry.Tenant, l hostfacts.Listener) (string, boo
 			spec = l.Cmdline[i+1]
 		}
 		hostPath, _, _ := strings.Cut(spec, ":")
-		if under(hostPath, t.DataDir) {
+		if underOwned(hostPath, t, leg) {
 			return hostPath, true
 		}
 	}
