@@ -51,15 +51,17 @@ access to the study's registries.
   | 14Z | 49 | 36 |
   | 15Z | 16 | 9 |
 
-  The study's gateway total since stage A comes to about $9.2 at list prices.
+  The study's gateway total since stage A comes to about $9.2 at list prices (the coordinator's figure).
 - **Freshness.** None of the 110 request bodies appeared in any chat call of 2026-11-05. The condition that
   the pairs were fresh held.
-- **No interim analysis.** The audit holds no chat (judge) call between the exploratory null's last call
+- **No interim analysis.** In the repository, `confirm-report` runs once by construction: a re-run refuses an
+  existing `--out` ("confirm-report runs once"), and RESULTS.md records the single run. From outside, the
+  audit holds no chat (judge) call between the exploratory null's last call
   (2026-11-05T20:03:29Z) and the confirmatory batch (2026-11-06T14:29:30Z): 233 calls, none on the judge
   endpoint. The order was:
   1. freeze (frozen commit `016fb61` at 01:56:56Z; freeze recorded 02:47:50Z);
   2. draw (04:52Z);
-  3. first judge call (14:29:30Z);
+  3. first gateway judge call (Argon tiebreak, 14:29:30Z); the local C/E judging ran 04:56–05:26Z;
   4. `confirm-report` (14:34Z);
   5. cover-any batch (15:07Z).
 
