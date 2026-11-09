@@ -585,7 +585,7 @@ def test_a_tenant_mid_handover_is_skipped_by_a_fleet_run_and_started_by_name(tmp
 # shared qdrant/qdrant2 binds are always printed.
 # --------------------------------------------------------------------------- #
 
-def _qdrant_registry(tmp_path: Path, data_dir: str | None) -> Path:
+def _qdrant_registry(tmp_path: Path, data_dir: str | None, postgres_local: bool = False) -> Path:
     data = tmp_path / "data" / "qd"
     qdrant: dict[str, object] = {"ownership": "exclusive", "instance": "qdrant-unittest",
                                  "sif": "/rag/apptainer/images/qdrant.sif"}
@@ -606,12 +606,20 @@ def _qdrant_registry(tmp_path: Path, data_dir: str | None) -> Path:
                 "ui": {"mode": "static", "port": None, "base": "/ragstack/qd/ui/"},
                 "stores": {"qdrant": qdrant,
                            "elasticsearch": {"ownership": "shared", "instance": None},
-                           "postgres": {"kind": "sqlite"}},
+                           "postgres": ({"kind": "local", "instance": "postgres-unittest",
+                                         "port": 25865} if postgres_local else {"kind": "sqlite"})},
             },
         },
     }
     path = tmp_path / "registry.json"
     path.write_text(json.dumps(reg))
+    return path
+
+
+def _stores_env(tmp_path: Path, text: str, mode: int = 0o600) -> Path:
+    path = tmp_path / "stores.env"
+    path.write_text(text)
+    path.chmod(mode)
     return path
 
 
@@ -742,3 +750,119 @@ def test_restore_never_sources_stores_env(restore):
     assert "STORES_ENV=${STORES_ENV:-/rag/config/stores.env}" in code
     assert not re.search(r'(^|[;&|\s])(source|\.)\s+"?\$\{?STORES_ENV', code, re.M), \
         "restore.sh sources stores.env; it must parse it"
+
+
+@requires_shell
+@pytest.mark.parametrize("up_sh_binds, refused", [
+    ('--bind "$TDIR/qdrant/storage:/qdrant/storage"', True),   # the provision-time launcher
+    ('--bind "$QDIR/storage:/qdrant/storage"', False),          # regenerated for the moved dir
+])
+def test_a_moved_row_never_runs_an_up_sh_that_binds_the_default_qdrant(tmp_path, up_sh_binds, refused):
+    """The postgres leg is started through the tenant's up.sh (it holds the
+    password). On a row that moved its qdrant, an up.sh still binding
+    $TDIR/qdrant would bring qdrant up on the empty default dir whenever the
+    moved leg did not start, so it is refused, not run."""
+    qdir = tmp_path / "store2" / "qdrant" / "qd"
+    (qdir / "storage").mkdir(parents=True)
+    bin_dir = tmp_path / "data" / "qd" / "bin"
+    bin_dir.mkdir(parents=True)
+    up = bin_dir / "up.sh"
+    up.write_text(f"#!/bin/bash\n# stand-in launcher\napptainer instance run {up_sh_binds}\n")
+    up.chmod(0o755)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, str(qdir), postgres_local=True),
+                          "--tenant", "qd")
+    text = out.stdout + out.stderr
+    if refused:
+        assert out.returncode != 0, text
+        assert "postgres postgres-unittest (:25865) NOT started" in text and "still binds" in text, text
+        assert "via " + str(up) not in text, f"the stale up.sh was planned:\n{text}"
+    else:
+        assert "via " + str(up) in text, text
+        assert "still binds" not in text, text
+
+
+@requires_shell
+def test_a_row_without_data_dir_still_runs_its_up_sh_for_postgres(tmp_path):
+    bin_dir = tmp_path / "data" / "qd" / "bin"
+    bin_dir.mkdir(parents=True)
+    up = bin_dir / "up.sh"
+    up.write_text('#!/bin/bash\napptainer instance run --bind "$TDIR/qdrant/storage:/qdrant/storage"\n')
+    up.chmod(0o755)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None, postgres_local=True), "--tenant", "qd")
+    text = out.stdout + out.stderr
+    assert "via " + str(up) in text and "still binds" not in text, text
+
+
+@requires_shell
+@pytest.mark.parametrize("bad", ["relative/qd", "/store2/q d"])
+def test_a_malformed_registry_data_dir_is_refused(tmp_path, bad):
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, bad), "--tenant", "qd")
+    text = out.stdout + out.stderr
+    assert out.returncode != 0 and "is not an absolute path" in text, text
+    assert "[qdrant-unittest] apptainer instance run" not in text, text
+
+
+@requires_shell
+def test_a_moved_qdrant_dir_that_is_itself_a_symlink_is_refused(tmp_path):
+    real = tmp_path / "real-qdir"
+    (real / "storage").mkdir(parents=True)
+    link = tmp_path / "qdir-link"
+    link.symlink_to(real)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, str(link)), "--tenant", "qd")
+    text = out.stdout + out.stderr
+    assert out.returncode != 0 and "qdrant-unittest NOT started" in text, text
+
+
+@requires_shell
+@pytest.mark.parametrize("mode", [0o620, 0o602, 0o666])
+def test_a_group_or_world_writable_stores_env_is_refused(tmp_path, mode):
+    env = _stores_env(tmp_path, "SHARED_QDRANT_DIR=/data2/qdrant\n", mode)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), stores_env=str(env))
+    assert out.returncode == 2 and "writable" in out.stderr and "refusing to start" in out.stderr, \
+        out.stdout + out.stderr
+    assert "apptainer instance run" not in out.stdout
+
+
+@requires_shell
+def test_a_stores_env_owned_by_someone_else_is_refused(tmp_path):
+    """chown needs root here, so a stub `stat` first on PATH reports the file
+    as owned by uid 4242; the real one answers every other question."""
+    env = _stores_env(tmp_path, "SHARED_QDRANT_DIR=/data2/qdrant\n", 0o600)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), stores_env=str(env))
+    assert out.returncode == 0 and "/data2/qdrant/storage:/qdrant/storage" in out.stdout, out.stdout + out.stderr
+
+    stub = tmp_path / "stub-bin"
+    real_stat = shutil.which("stat")
+    (stub / "stat").write_text(
+        '#!/bin/sh\ncase "$*" in *%u*) echo 4242 ;; *) exec ' + str(real_stat) + ' "$@" ;; esac\n')
+    (stub / "stat").chmod(0o755)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), stores_env=str(env))
+    assert out.returncode == 2 and "owned by uid 4242" in out.stderr, out.stdout + out.stderr
+    assert "apptainer instance run" not in out.stdout
+
+
+@requires_shell
+@pytest.mark.parametrize("shape", ["directory", "symlink", "unreadable"])
+def test_a_stores_env_that_is_not_a_regular_readable_file_is_refused(tmp_path, shape):
+    path = tmp_path / "stores.env"
+    if shape == "directory":
+        path.mkdir()
+    elif shape == "symlink":
+        target = _stores_env(tmp_path, "SHARED_QDRANT_DIR=/data2/qdrant\n")
+        target.rename(tmp_path / "real.env")
+        path.symlink_to(tmp_path / "real.env")
+    else:
+        if os.geteuid() == 0:
+            pytest.skip("root reads a 0000 file")
+        _stores_env(tmp_path, "SHARED_QDRANT_DIR=/data2/qdrant\n", 0o000)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), stores_env=str(path))
+    assert out.returncode == 2 and "not a regular readable file" in out.stderr, out.stdout + out.stderr
+
+
+@requires_shell
+def test_help_does_not_depend_on_stores_env(tmp_path):
+    env_file = _stores_env(tmp_path, "garbage line\n")
+    env = dict(os.environ, STORES_ENV=str(env_file), RUN=str(tmp_path / "run"))
+    out = subprocess.run(["bash", str(OPS / "restore.sh"), "--help"],
+                         capture_output=True, text=True, env=env, timeout=60)
+    assert out.returncode == 0 and "restore.sh" in out.stdout, out.stdout + out.stderr

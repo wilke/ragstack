@@ -94,10 +94,27 @@ JQ=${JQ:-/usr/bin/jq}
 # the two keys below are read; a malformed line, or a value that is not a
 # plain absolute path, stops the run (a shared store started on the wrong
 # directory comes up EMPTY and looks healthy).
+#
+# The file decides which directory a shared store binds, so it is trusted only
+# when nobody else could have written it: it must be a regular, readable file
+# (not a symlink), owned by the account running this script or by root, and
+# not group- or world-writable. An ABSENT file is the default; anything else
+# that is not such a file stops the run.
 STORES_ENV=${STORES_ENV:-/rag/config/stores.env}
 load_stores_env() {
-  local file=$1 line key val n=0
-  [[ -r $file ]] || return 0
+  local file=$1 line key val n=0 owner mode
+  [[ -e $file || -L $file ]] || return 0
+  if [[ -L $file || ! -f $file || ! -r $file ]]; then
+    echo "$file exists but is not a regular readable file; refusing to start" >&2; exit 2
+  fi
+  owner=$(stat -c %u -- "$file") && mode=$(stat -c %a -- "$file") || {
+    echo "$file: cannot stat it; refusing to start" >&2; exit 2; }
+  if [[ $owner != "$EUID" && $owner != 0 ]]; then
+    echo "$file is owned by uid $owner, not by this account ($EUID) or root; refusing to start" >&2; exit 2
+  fi
+  if (( 8#$mode & 8#022 )); then
+    echo "$file is group- or world-writable (mode $mode); refusing to start" >&2; exit 2
+  fi
   while IFS= read -r line || [[ -n $line ]]; do
     n=$((n + 1))
     [[ -z ${line//[[:space:]]/} ]] && continue
@@ -115,9 +132,6 @@ load_stores_env() {
     esac
   done <"$file"
 }
-load_stores_env "$STORES_ENV"
-SHARED_QDRANT_DIR=${SHARED_QDRANT_DIR:-$DATA/qdrant}
-SHARED_QDRANT2_DIR=${SHARED_QDRANT2_DIR:-$DATA/qdrant2}
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dry-run) DRY=1 ;;
@@ -136,6 +150,10 @@ if [[ -n $TENANT ]]; then
   [[ $TENANT =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "--tenant: $TENANT is not a tenant name" >&2; exit 2; }
   [[ -z $ONLY ]] && ONLY="stores,apis,uis"
 fi
+# After argument parsing, so --help and a bad flag never depend on stores.env.
+load_stores_env "$STORES_ENV"
+SHARED_QDRANT_DIR=${SHARED_QDRANT_DIR:-$DATA/qdrant}
+SHARED_QDRANT2_DIR=${SHARED_QDRANT2_DIR:-$DATA/qdrant2}
 
 ts() { date -u +%FT%TZ; }
 say() { echo "$(ts) $*"; }
@@ -360,7 +378,12 @@ tenant_stores_up() {
       qdrant)     tenant_qdrant_up "$name" "$data" "$inst" "$port" || rc=1 ;;
       elasticsearch) tenant_es_up "$name" "$data" "$inst" "$port" || rc=1 ;;
       postgres)
-        if up=$(tenant_up_script "$data"); then
+        if up=$(tenant_up_script "$data") && moved_qdrant_up_sh_is_stale "$name" "$up"; then
+          say "  ✗ [$name] postgres $inst (:$port) NOT started: the row moves its qdrant (stores.qdrant.data_dir)"
+          say "    but $up still binds \$TDIR/qdrant — it would start qdrant on the empty default directory."
+          say "    Regenerate up.sh for the moved dir (it must bind \$QDIR), then re-run with --tenant $name."
+          rc=1
+        elif [[ -n $up ]]; then
           # up.sh starts every leg it knows; the two above are already running
           # by now and its own idempotency check skips them.
           run "[$name postgres $inst :$port] via $up (it holds the generated password)" "$up" || rc=1
@@ -374,6 +397,19 @@ tenant_stores_up() {
   return $rc
 }
 
+# moved_qdrant_up_sh_is_stale NAME UPSH — 0 when the row moves its qdrant
+# (stores.qdrant.data_dir) and the tenant's own launcher still binds the
+# default $TDIR/qdrant. Such an up.sh is never run: its idempotency check skips
+# a qdrant that is already up, but when the moved leg did NOT start it would
+# bring qdrant up on the empty default directory — a store that answers, holds
+# nothing, and looks healthy. The postgres leg it also carries stays down
+# (its password is in up.sh and is never reconstructed here) until up.sh is
+# regenerated to bind $QDIR.
+moved_qdrant_up_sh_is_stale() {
+  [[ -n $(reg_get "$1" '.stores.qdrant.data_dir') ]] || return 1
+  grep -qF '$TDIR/qdrant' "$2"
+}
+
 # tenant_qdrant_up — one tenant's own qdrant, from its row.
 #
 # The host directory holding storage/ and snapshots/ is the row's
@@ -385,7 +421,11 @@ tenant_qdrant_up() {
   local name=$1 data=$2 inst=$3 port=$4 sif opts=() kv qdir
   qdir=$(reg_get "$name" '.stores.qdrant.data_dir // empty')
   if [[ -n $qdir ]]; then
-    if [[ -L $qdir || -L $qdir/storage || ! -d $qdir/storage ]]; then
+    if [[ ! $qdir =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+      say "  ✗ [$name] qdrant data_dir is not an absolute path in [A-Za-z0-9._/-] — $inst NOT started"
+      return 1
+    fi
+    if [[ -L $qdir || ! -d $qdir || -L $qdir/storage || ! -d $qdir/storage ]]; then
       say "  ✗ [$name] qdrant data_dir $qdir: $qdir/storage is not a directory (or is a symlink) — $inst NOT started"
       return 1
     fi
