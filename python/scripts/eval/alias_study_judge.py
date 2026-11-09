@@ -11,7 +11,7 @@ check, the size notice, PAUSE / INFLIGHT, the budget stop and the call caps.
     alias_study_judge.py --config CFG finalize  --batch N
     alias_study_judge.py --config CFG commit-stage-a
     alias_study_judge.py --config CFG check-analysis-gate
-    alias_study_judge.py --config CONTROL build-control --seed-pairs SEED.jsonl --main-config MAIN
+    alias_study_judge.py --config CONTROL build-control --seed-pairs SEED.jsonl --main-config MAIN [--any-paper]
 
 **Pairs, on demand (§6.2, R9).** Only top-10 non-gold chunks are judged, and only when a leg
 needs them. ``found10``: a record's top 10 in a leg is judged only when its gold chunk is
@@ -129,6 +129,19 @@ unchanged on that directory (the control export is read with the others); ``buil
 ``commit-stage-a`` are refused on a control config. The config is validated exactly as the main
 one (``pinned_problems``, the frozen prereg's sha256).
 
+**Stage 1b (exploratory; rechunk study PLAN §4).** ``build-control --any-paper`` is the same
+command on the same control config, with one difference: a seed's chunk may come from any paper of
+the corpus (without the flag such a seed is refused, as above). The record side of a row (question,
+term, ``q_paper``, kind, need, ``control_of``) is still the stage-A pair's; the passage side is the
+chunk's own, derived as ``build-pairs`` derives it for a retrieved chunk: ``c_paper`` is the
+chunk's export-row paper (:func:`chunk_arms`), ``arm`` its export's arm group, or for a
+control-export chunk its paper's (:func:`paper_arms`). The prompt's title and definitions follow
+from ``c_paper`` exactly as for every other pair (:class:`StudyWorld`, the merged glossary), and
+the ``same_paper`` count and the definitions coverage are computed on these rows. The manifest
+carries ``build``: :data:`STAGE1B_BUILD` (top level and in ``control``) and the count
+``passage_paper_not_stage_a_window_paper``; a default build's files carry neither, byte for byte.
+The prompt, models, sampling, tiebreak, drift sample and caps are untouched.
+
 **Modes.** As the runner (``dry_run``, ``pilot``, main; a ``STUDY-MODE`` marker in the out dir;
 the main run pins the frozen prereg, §9.2). Main and pilot also pin the prereg's numbers (batch
 2,000, drift share .05, reference lines .97 / .95, arm gap .05, 100 pairs, the retry cap 2), the drift
@@ -231,6 +244,8 @@ PILOT_BUILD_PRINT = ("pairs", "per_need", "per_arm")
 #: the chunk-boundary control's export key in ``chunk_exports`` (module docstring)
 CONTROL_EXPORT = "control"
 CONTROL_STAGE = "control"
+#: ``build-control --any-paper`` (stage 1b): the manifest's ``build`` stamp (module docstring)
+STAGE1B_BUILD = "stage1b-any-paper"
 LABEL_FILES = {"C": "labels-qwen-C.jsonl", "E": "labels-qwen-E.jsonl", "argon": "labels-gw-argon.jsonl",
                "opus": "labels-gw-opus.jsonl"}
 
@@ -455,13 +470,41 @@ def control_config_problems(raw: Mapping[str, Any], main_raw: Mapping[str, Any])
     return bad
 
 
+def paper_arms(chunks: Mapping[str, Mapping[str, Any]], arm_of: Mapping[str, str]) -> dict[str, str]:
+    """``paper -> arm group`` from :func:`chunk_arms`' output: the arm of the corpus-arm export
+    chunks of each paper (base first, as :func:`chunk_arms` keeps base for a chunk an expanded arm
+    repeats). A paper whose chunks fall in two non-base arms is refused. Control-export chunks
+    carry no arm (they are not in ``arm_of``) and place no paper."""
+    out: dict[str, str] = {}
+    for cid, group in arm_of.items():
+        paper = str(chunks[cid]["paper"])
+        prev = out.get(paper)
+        if prev is None or group == "base":
+            out[paper] = group
+        elif prev != group and prev != "base":
+            raise SystemExit(f"a paper has chunks in the {prev} and the {group} exports")
+    return out
+
+
 def build_control_pairs(seed: Sequence[Mapping[str, Any]], main_pairs: Sequence[Mapping[str, Any]],
-                        chunks: Mapping[str, Mapping[str, Any]], control_ids: set[str]
+                        chunks: Mapping[str, Mapping[str, Any]], control_ids: set[str], *,
+                        any_paper: bool = False, arm_of: Mapping[str, str] | None = None
                         ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The control registry rows (module docstring) from the seed rows ``{control_of, record_id,
-    chunk_id}`` and the main run's registry. Raises SystemExit on a seed row that does not fit."""
+    chunk_id}`` and the main run's registry. Raises SystemExit on a seed row that does not fit.
+
+    ``any_paper`` (stage 1b, exploratory; module docstring): the seed's chunk may lie in any paper.
+    The passage-side fields are then the chunk's own, derived as :func:`build_pairs` derives them
+    for a retrieved chunk: ``c_paper`` is the chunk's export-row paper, ``arm`` its export's arm
+    group (``arm_of``, :func:`chunk_arms`; a control-export chunk takes its paper's arm,
+    :func:`paper_arms`). The record side (question, term, ``q_paper``, kind, need) stays the
+    stage-A pair's."""
+    if any_paper and arm_of is None:
+        raise ValueError("any_paper needs arm_of (chunk_arms)")
+    p_arm = paper_arms(chunks, arm_of) if any_paper and arm_of is not None else {}
     by_id = {p["pair_id"]: p for p in main_pairs}
     out: dict[str, dict[str, Any]] = {}
+    other = 0
     for i, s in enumerate(seed, 1):
         a = by_id.get(s.get("control_of"))
         if a is None:
@@ -474,24 +517,34 @@ def build_control_pairs(seed: Sequence[Mapping[str, Any]], main_pairs: Sequence[
         if cid not in control_ids:
             raise SystemExit(f"seed row {i}: the chunk is not in the control export")
         ch = chunks[cid]
-        if str(ch["paper"]) != str(a["c_paper"]):
-            raise SystemExit(f"seed row {i}: the control chunk's paper is not the stage-A passage's")
+        if any_paper:
+            c_paper = ch["paper"]
+            arm = (arm_of or {}).get(cid) or p_arm.get(str(c_paper))
+            if arm is None:
+                raise SystemExit(f"seed row {i}: the chunk's paper has no chunk in any corpus arm's export")
+        else:
+            if str(ch["paper"]) != str(a["c_paper"]):
+                raise SystemExit(f"seed row {i}: the control chunk's paper is not the stage-A passage's")
+            c_paper, arm = a["c_paper"], a["arm"]
         pid = pair_id(a["record_id"], cid)
         row = out.get(pid)
         if row is not None:
             if a["pair_id"] not in row["control_of"]:
                 row["control_of"] = sorted([*row["control_of"], a["pair_id"]])
             continue
+        other += int(str(c_paper) != str(a["c_paper"]))
         out[pid] = {"pair_id": pid, "record_id": a["record_id"], "chunk_id": cid,
                     "content_sha256": asc.sha_text(ch["content"]), "question": a["question"], "term": a["term"],
-                    "q_paper": a["q_paper"], "c_paper": a["c_paper"], "record_kind": a["record_kind"],
-                    "arm": a["arm"], "stage": CONTROL_STAGE, "need": a.get("need", "found10"),
+                    "q_paper": a["q_paper"], "c_paper": c_paper, "record_kind": a["record_kind"],
+                    "arm": arm, "stage": CONTROL_STAGE, "need": a.get("need", "found10"),
                     "control_of": [a["pair_id"]], "order": asc.seeded_key(asc.SEEDS["judge_order"], pid)}
     pairs = sorted(out.values(), key=lambda p: p["order"])
     counts = {"pairs": len(pairs), "seed_rows": len(seed),
               "stage_a_pairs_controlled": len({x for p in pairs for x in p["control_of"]}),
               "per_arm": dict(Counter(p["arm"] for p in pairs)), "per_need": dict(Counter(p["need"] for p in pairs)),
               "same_paper": sum(p["c_paper"] == p["q_paper"] for p in pairs)}
+    if any_paper:
+        counts["passage_paper_not_stage_a_window_paper"] = other
     return pairs, counts
 
 
@@ -1339,9 +1392,11 @@ class Pipeline:
             return "rolled_back"
         raise jd.p4.HardStop("pairs.jsonl matches neither side of the pending build")
 
-    def build_control(self, seed_path: Path, main_config: Path, raw: Mapping[str, Any]) -> dict[str, Any]:
+    def build_control(self, seed_path: Path, main_config: Path, raw: Mapping[str, Any], *,
+                      any_paper: bool = False) -> dict[str, Any]:
         """``build-control`` (module docstring, *The chunk-boundary control*). Writes only into this
-        (control) out_dir; the main run's judge dir is read, never written."""
+        (control) out_dir; the main run's judge dir is read, never written. ``any_paper``: the
+        stage-1b registry (module docstring, *Stage 1b*), stamped ``build`` in the manifest."""
         if not is_control(self.cfg):
             raise SystemExit(f"build-control needs a control config (chunk_exports with {CONTROL_EXPORT!r})")
         main_raw = json.loads(main_config.read_text(encoding="utf-8"))
@@ -1356,11 +1411,12 @@ class Pipeline:
         if asc.sha256_file(mout / "pairs.jsonl") != mman.get("pairs_sha256"):
             raise jd.p4.HardStop("the main run's pairs.jsonl differs from its manifest")
         main_pairs = asc.read_jsonl(mout / "pairs.jsonl")
-        chunks, _ = chunk_arms(self.cfg)
+        chunks, arm_of = chunk_arms(self.cfg)
         self._chunks = chunks
         control_ids = set(asc.read_chunk_exports([self.cfg["chunk_exports"][CONTROL_EXPORT]]))
         seed = asc.read_jsonl(seed_path)
-        pairs, counts = build_control_pairs(seed, main_pairs, chunks, control_ids)
+        pairs, counts = build_control_pairs(seed, main_pairs, chunks, control_ids, any_paper=any_paper,
+                                            arm_of=arm_of)
         counts["definitions_coverage"] = definitions_coverage(pairs, self.glossary())
         data = "".join(json.dumps(p, sort_keys=True) + "\n" for p in pairs).encode("utf-8")
         new = batches(pairs, int(self.cfg["batch_size"]))
@@ -1380,6 +1436,9 @@ class Pipeline:
                "control": {"main_out_dir_pairs_sha256": mman["pairs_sha256"], "stage": CONTROL_STAGE,
                            "exploratory": True},
                "provenance": self.prov, "t": jd.g.now_iso()}
+        if any_paper:
+            # only in the opted-in mode: a default build's manifest keeps its exact keys and bytes
+            man["build"] = man["control"]["build"] = STAGE1B_BUILD
         jd.g.write_json_atomic(self.pending_path, {"stage": CONTROL_STAGE,
                                                    "old_sha256": hashlib.sha256(b"").hexdigest(),
                                                    "manifest": man, "batches": bdoc})
@@ -1816,6 +1875,8 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
     bc = sub.add_parser("build-control")
     bc.add_argument("--seed-pairs", required=True, type=Path)
     bc.add_argument("--main-config", required=True, type=Path)
+    bc.add_argument("--any-paper", action="store_true",
+                    help="stage 1b (exploratory): a seed chunk may lie in any paper; its passage fields are its own")
     args = ap.parse_args(argv)
     os.umask(0o077)
     cfg = load_config(args.config)
@@ -1836,7 +1897,7 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
         return EXIT_OK
     if args.cmd == "build-control":
         man = pl.build_control(args.seed_pairs, args.main_config,
-                               json.loads(args.config.read_text(encoding="utf-8")))
+                               json.loads(args.config.read_text(encoding="utf-8")), any_paper=args.any_paper)
         print(json.dumps(man["counts"], indent=1))
         return EXIT_OK
     if args.cmd == "status":
