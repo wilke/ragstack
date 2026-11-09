@@ -84,6 +84,40 @@ DATA=/rag/data
 DRY=0; ONLY=""; SKIP=""; PROXY=0; TENANT=""
 REGISTRY=${REGISTRY:-$DATA/tenants/registry.json}
 JQ=${JQ:-/usr/bin/jq}
+# Where the SHARED qdrant (:6333) and qdrant2 (:6343) keep storage/ and
+# snapshots/. The environment wins; otherwise /rag/config/stores.env (optional)
+# may name them; otherwise the historical $DATA/qdrant and $DATA/qdrant2.
+#
+# stores.env is PARSED, never sourced: KEY=VALUE lines, blanks and comments,
+# one pair of surrounding quotes stripped — the same loop as ctl-daemon.sh's
+# load_env. Sourcing it would run whatever it contains as this account. Only
+# the two keys below are read; a malformed line, or a value that is not a
+# plain absolute path, stops the run (a shared store started on the wrong
+# directory comes up EMPTY and looks healthy).
+STORES_ENV=${STORES_ENV:-/rag/config/stores.env}
+load_stores_env() {
+  local file=$1 line key val n=0
+  [[ -r $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    n=$((n + 1))
+    [[ -z ${line//[[:space:]]/} ]] && continue
+    [[ ${line#"${line%%[![:space:]]*}"} == \#* ]] && continue
+    if [[ ! $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      echo "$file line $n is not KEY=VALUE; refusing to start" >&2; exit 2
+    fi
+    key=${line%%=*}; val=${line#*=}
+    if [[ ${#val} -ge 2 && ${val:0:1} == "'" && ${val: -1} == "'" ]]; then val=${val:1:${#val}-2}
+    elif [[ ${#val} -ge 2 && ${val:0:1} == '"' && ${val: -1} == '"' ]]; then val=${val:1:${#val}-2}; fi
+    case $key in
+      SHARED_QDRANT_DIR|SHARED_QDRANT2_DIR)
+        [[ $val =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "$file line $n: $key is not an absolute path in [A-Za-z0-9._/-]; refusing to start" >&2; exit 2; }
+        [[ -n ${!key:-} ]] || printf -v "$key" '%s' "$val" ;;
+    esac
+  done <"$file"
+}
+load_stores_env "$STORES_ENV"
+SHARED_QDRANT_DIR=${SHARED_QDRANT_DIR:-$DATA/qdrant}
+SHARED_QDRANT2_DIR=${SHARED_QDRANT2_DIR:-$DATA/qdrant2}
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dry-run) DRY=1 ;;
@@ -341,8 +375,23 @@ tenant_stores_up() {
 }
 
 # tenant_qdrant_up — one tenant's own qdrant, from its row.
+#
+# The host directory holding storage/ and snapshots/ is the row's
+# stores.qdrant.data_dir when it has one, else <data_dir>/qdrant. A row that
+# MOVED it is refused unless <qdir>/storage is a real directory: a missing one
+# would start an empty store, and a symlink is a store whose real location the
+# registry does not record. (The default layout keeps its old behaviour.)
 tenant_qdrant_up() {
-  local name=$1 data=$2 inst=$3 port=$4 sif opts=() kv
+  local name=$1 data=$2 inst=$3 port=$4 sif opts=() kv qdir
+  qdir=$(reg_get "$name" '.stores.qdrant.data_dir // empty')
+  if [[ -n $qdir ]]; then
+    if [[ -L $qdir || -L $qdir/storage || ! -d $qdir/storage ]]; then
+      say "  ✗ [$name] qdrant data_dir $qdir: $qdir/storage is not a directory (or is a symlink) — $inst NOT started"
+      return 1
+    fi
+  else
+    qdir=$data/qdrant
+  fi
   sif=$(reg_get "$name" '.stores.qdrant.sif'); [[ -n $sif ]] || sif=$IMG/qdrant.sif
   # extra_env is what the running store's environment actually holds; the port
   # keys are overridden from the block, which is what every other reader of
@@ -353,8 +402,8 @@ tenant_qdrant_up() {
                 + {QDRANT__SERVICE__HTTP_PORT: ($t.ports.qdrant_http|tostring),
                    QDRANT__SERVICE__GRPC_PORT: ($t.ports.qdrant_grpc|tostring)}')"
   start_instance "$inst" "$sif" \
-    --bind "$data/qdrant/storage:/qdrant/storage" \
-    --bind "$data/qdrant/snapshots:/qdrant/snapshots" \
+    --bind "$qdir/storage:/qdrant/storage" \
+    --bind "$qdir/snapshots:/qdrant/snapshots" \
     "${opts[@]}" \
     -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
 }
@@ -479,13 +528,13 @@ if want stores; then
   say "  (--tenant $TENANT: the shared stores are not this tenant's and are left alone)"
   else
   start_instance qdrant "$IMG/qdrant.sif" \
-    --bind "$DATA/qdrant/storage:/qdrant/storage" --bind "$DATA/qdrant/snapshots:/qdrant/snapshots" \
+    --bind "$SHARED_QDRANT_DIR/storage:/qdrant/storage" --bind "$SHARED_QDRANT_DIR/snapshots:/qdrant/snapshots" \
     --bind "/rag/cache/load3corpus:/rag/cache/load3corpus" \
     --env QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=12 \
     --env QDRANT__STORAGE__OPTIMIZERS__MAX_OPTIMIZATION_THREADS=1 \
     -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
   start_instance qdrant2 "$IMG/qdrant.sif" \
-    --bind "$DATA/qdrant2/storage:/qdrant/storage" --bind "$DATA/qdrant2/snapshots:/qdrant/snapshots" \
+    --bind "$SHARED_QDRANT2_DIR/storage:/qdrant/storage" --bind "$SHARED_QDRANT2_DIR/snapshots:/qdrant/snapshots" \
     --env QDRANT__SERVICE__HTTP_PORT=6343 --env QDRANT__SERVICE__GRPC_PORT=6344 \
     --env QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=12 \
     --env QDRANT__STORAGE__OPTIMIZERS__MAX_OPTIMIZATION_THREADS=1 \

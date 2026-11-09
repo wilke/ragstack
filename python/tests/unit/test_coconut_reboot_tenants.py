@@ -575,3 +575,170 @@ def test_a_tenant_mid_handover_is_skipped_by_a_fleet_run_and_started_by_name(tmp
     # And it really does plan the tenant rather than only talking about it.
     assert "25800" in named_text, named_text
     assert "--abandon" in named_text, "the way back does not say how to make the row agree"
+
+
+# --------------------------------------------------------------------------- #
+# stores.qdrant.data_dir and the shared qdrant dirs (PR1 of the per-qdrant
+# host data dir). The plan is read off the dry run's printf %q argv, with a
+# stub `apptainer` first on PATH that lists no instances — so `start_instance`
+# never short-circuits on a store this host happens to be running and the
+# shared qdrant/qdrant2 binds are always printed.
+# --------------------------------------------------------------------------- #
+
+def _qdrant_registry(tmp_path: Path, data_dir: str | None) -> Path:
+    data = tmp_path / "data" / "qd"
+    qdrant: dict[str, object] = {"ownership": "exclusive", "instance": "qdrant-unittest",
+                                 "sif": "/rag/apptainer/images/qdrant.sif"}
+    if data_dir is not None:
+        qdrant["data_dir"] = data_dir
+    reg = {
+        "schema_version": 1,
+        "display_order": ["qd"],
+        "tenants": {
+            "qd": {
+                "name": "qd", "manifest_name": "qd", "owner": "wilke", "state": "active",
+                "data_dir": str(data),
+                "worktree": str(tmp_path / "repos" / "qd"),
+                "python_env": "/rag/envs/ragstack",
+                "ports": {"index": 92, "base": 25860, "api": 25860, "qdrant_http": 25861,
+                          "qdrant_grpc": 25862, "es_http": 25863, "es_transport": 25864},
+                "api": {"bind": "127.0.0.1", "pidfile": "", "log": ""},
+                "ui": {"mode": "static", "port": None, "base": "/ragstack/qd/ui/"},
+                "stores": {"qdrant": qdrant,
+                           "elasticsearch": {"ownership": "shared", "instance": None},
+                           "postgres": {"kind": "sqlite"}},
+            },
+        },
+    }
+    path = tmp_path / "registry.json"
+    path.write_text(json.dumps(reg))
+    return path
+
+
+def _qdrant_dry_run(tmp_path: Path, registry: Path, *args: str,
+                    stores_env: str | None = None, extra_env: dict[str, str] | None = None
+                    ) -> subprocess.CompletedProcess[str]:
+    stub = tmp_path / "stub-bin"
+    stub.mkdir(exist_ok=True)
+    fake = stub / "apptainer"
+    fake.write_text('#!/bin/sh\necho "INSTANCE NAME    PID    IP    IMAGE"\n')
+    fake.chmod(0o755)
+    env = dict(os.environ, REGISTRY=str(registry), RUN=str(tmp_path / "run"),
+               PATH=f"{stub}:{os.environ.get('PATH', '')}",
+               STORES_ENV=stores_env or str(tmp_path / "no-stores.env"))
+    env.pop("SHARED_QDRANT_DIR", None)
+    env.pop("SHARED_QDRANT2_DIR", None)
+    env.update(extra_env or {})
+    return subprocess.run(
+        ["bash", str(OPS / "restore.sh"), "--dry-run", "--only", "stores", *args],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+
+
+def _binds(text: str, instance: str) -> list[str]:
+    """The --bind values of the dry-run argv that starts ``instance``."""
+    for line in text.splitlines():
+        words = line.split()
+        if words[:3] == ["apptainer", "instance", "run"] and instance in words:
+            return [words[i + 1] for i, w in enumerate(words) if w == "--bind"]
+    raise AssertionError(f"no apptainer instance run for {instance} in:\n{text}")
+
+
+@requires_shell
+def test_a_tenant_qdrant_binds_the_default_dir_without_data_dir(tmp_path):
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), "--tenant", "qd")
+    text = out.stdout + out.stderr
+    data = tmp_path / "data" / "qd"
+    assert _binds(text, "qdrant-unittest") == [
+        f"{data}/qdrant/storage:/qdrant/storage",
+        f"{data}/qdrant/snapshots:/qdrant/snapshots",
+    ], text
+
+
+@requires_shell
+def test_a_tenant_qdrant_binds_the_rows_data_dir(tmp_path):
+    qdir = tmp_path / "store2" / "qdrant" / "qd"
+    (qdir / "storage").mkdir(parents=True)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, str(qdir)), "--tenant", "qd")
+    text = out.stdout + out.stderr
+    assert _binds(text, "qdrant-unittest") == [
+        f"{qdir}/storage:/qdrant/storage",
+        f"{qdir}/snapshots:/qdrant/snapshots",
+    ], text
+    assert "/data/qd/qdrant/" not in text, text
+
+
+@requires_shell
+@pytest.mark.parametrize("shape", ["missing", "symlink"])
+def test_a_moved_qdrant_dir_that_is_not_a_real_directory_is_refused(tmp_path, shape):
+    qdir = tmp_path / "store2" / "qdrant" / "qd"
+    qdir.mkdir(parents=True)
+    if shape == "symlink":
+        real = tmp_path / "elsewhere"
+        real.mkdir()
+        (qdir / "storage").symlink_to(real)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, str(qdir)), "--tenant", "qd")
+    text = out.stdout + out.stderr
+    assert out.returncode != 0, f"a {shape} qdrant storage dir was not a failure:\n{text}"
+    assert f"qdrant data_dir {qdir}" in text and "qdrant-unittest NOT started" in text, text
+    assert "[qdrant-unittest] apptainer instance run" not in text, text
+
+
+@requires_shell
+def test_the_shared_qdrant_dirs_default_to_the_historical_paths(tmp_path):
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None))
+    text = out.stdout + out.stderr
+    assert _binds(text, "qdrant")[:2] == [
+        "/rag/data/qdrant/storage:/qdrant/storage",
+        "/rag/data/qdrant/snapshots:/qdrant/snapshots",
+    ], text
+    assert _binds(text, "qdrant2") == [
+        "/rag/data/qdrant2/storage:/qdrant/storage",
+        "/rag/data/qdrant2/snapshots:/qdrant/snapshots",
+    ], text
+
+
+@requires_shell
+def test_the_shared_qdrant_dirs_come_from_stores_env_and_the_environment_wins(tmp_path):
+    marker = tmp_path / "SOURCED"
+    stores_env = tmp_path / "stores.env"
+    stores_env.write_text(
+        "# shared store dirs\n"
+        "\n"
+        "SHARED_QDRANT_DIR=/data2/qdrant\n"
+        'SHARED_QDRANT2_DIR="/data3/qdrant2"\n'
+        # Parsed, never sourced: this line would create the marker if it ran.
+        f"UNRELATED=$(touch {marker})\n"
+    )
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), stores_env=str(stores_env))
+    text = out.stdout + out.stderr
+    assert _binds(text, "qdrant")[:2] == [
+        "/data2/qdrant/storage:/qdrant/storage", "/data2/qdrant/snapshots:/qdrant/snapshots"], text
+    assert _binds(text, "qdrant2") == [
+        "/data3/qdrant2/storage:/qdrant/storage", "/data3/qdrant2/snapshots:/qdrant/snapshots"], text
+    assert not marker.exists(), "stores.env was SOURCED: a command substitution in it ran"
+
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), stores_env=str(stores_env),
+                          extra_env={"SHARED_QDRANT_DIR": "/env/qdrant"})
+    text = out.stdout + out.stderr
+    assert _binds(text, "qdrant")[:2] == [
+        "/env/qdrant/storage:/qdrant/storage", "/env/qdrant/snapshots:/qdrant/snapshots"], text
+    assert _binds(text, "qdrant2")[0] == "/data3/qdrant2/storage:/qdrant/storage", text
+
+
+@requires_shell
+@pytest.mark.parametrize("line", ["SHARED_QDRANT_DIR=relative/qdrant", "not a key value line",
+                                  "SHARED_QDRANT_DIR=/data2/$(id)"])
+def test_a_bad_stores_env_stops_the_run(tmp_path, line):
+    stores_env = tmp_path / "stores.env"
+    stores_env.write_text(line + "\n")
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, None), stores_env=str(stores_env))
+    assert out.returncode != 0 and "refusing to start" in out.stderr, out.stdout + out.stderr
+    assert "apptainer instance run" not in out.stdout, out.stdout
+
+
+def test_restore_never_sources_stores_env(restore):
+    code = _code(restore)
+    assert "STORES_ENV=${STORES_ENV:-/rag/config/stores.env}" in code
+    assert not re.search(r'(^|[;&|\s])(source|\.)\s+"?\$\{?STORES_ENV', code, re.M), \
+        "restore.sh sources stores.env; it must parse it"
