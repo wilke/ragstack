@@ -130,6 +130,11 @@ single-chunk prompt; it says where the answer text sits, not whether retrieval w
   coverage and shorter chunks together) makes the frozen judge withdraw *answers* on about one in five
   passages it had confidently accepted. That is 16.8 points beyond its own re-read noise. The exploratory
   finding holds on fresh pairs; descriptively, the excess appears in each corpus arm.
+- **Conservative, post hoc.** 56 of the 351 pairs had a new chunk identical to the window, so the chunking
+  changed nothing for them, and the frozen test counted them. Among the 295 pairs where the text changed, the
+  excess is 20.3 points (post hoc, sensitivity only; [addendum](ADDENDUM-2026-11-09-identical-pairs-and-audit.md)).
+  Rechunk stage 1 found that, for most pairs whose answer moved to a neighbouring chunk, retrieval still
+  returns that chunk ([report](../rechunk-found10-2026-11/REPORT.md)).
 - **What is not shown.** The test bundles where the cut falls, how much of the window survives, and chunk
   length.
   - The descriptives point to coverage: when the new chunk keeps most of the window, little is lost beyond

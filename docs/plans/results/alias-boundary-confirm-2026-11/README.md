@@ -34,6 +34,8 @@ those assumptions (PREREG §3.2–3.3).
 | [RESULTS.md](RESULTS.md) | record | the outcome, the decision sentence of PREREG §7, the primary table, the gates, the §6 descriptives, procedural notes |
 | [artifacts/](artifacts/) | record | `draw.json`, `chunk.json`, `map.json`, `retest-seed.json` (steps 1–2, #977), `confirm-report.json` (step 6, with the step-7 `cover_any` block added) and `map-cover.json` (step 7) |
 | [ADDENDUM-2026-11-06-cover-any.md](ADDENDUM-2026-11-06-cover-any.md) | record | step 7: where the lost answers went (descriptive) |
+| [ADDENDUM-2026-11-09-identical-pairs-and-audit.md](ADDENDUM-2026-11-09-identical-pairs-and-audit.md) | record | post hoc: 56 pairs whose control chunk equals the window (excluded: d 20.3 points, n 295), and the gateway audit's independent checks |
+| [posthoc_identical.py](posthoc_identical.py), [artifacts/posthoc-identical-pairs.json](artifacts/posthoc-identical-pairs.json) | record | the post-hoc counts (no ids) |
 | [DEVIATIONS.md](DEVIATIONS.md) | record, append-only | post-freeze deviations (PREREG §9.3); D-1, D-2: the owner's go replaced the gateway coordinator's ack (both gateway batches) |
 
 `power.json` was produced by `python3 -I -B power.py` from a **clean tree at commit `0bbe2d9`** (its

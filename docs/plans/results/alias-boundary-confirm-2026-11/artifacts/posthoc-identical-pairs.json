@@ -1,0 +1,71 @@
+{
+ "all": {
+  "b": 68,
+  "c": 9,
+  "n": 351
+ },
+ "changed": {
+  "b": 68,
+  "c": 8,
+  "d": 0.20339,
+  "mcnemar_one_sided_p": 2.8164537624032045e-13,
+  "n": 295,
+  "table": {
+   "control_answers|retest_answers": 212,
+   "control_answers|retest_not": 8,
+   "control_not|retest_answers": 68,
+   "control_not|retest_not": 7
+  }
+ },
+ "definition": "control (max-overlap) chunk content == stage-A window content, byte for byte",
+ "identical": {
+  "b": 0,
+  "c": 1,
+  "d": -0.017857,
+  "mcnemar_one_sided_p": 1.0,
+  "n": 56,
+  "table": {
+   "control_answers|retest_answers": 55,
+   "control_answers|retest_not": 1,
+   "control_not|retest_answers": 0,
+   "control_not|retest_not": 0
+  }
+ },
+ "identical_coverage_values": {
+  "1.0": 56
+ },
+ "pairs": 351,
+ "post_hoc": true,
+ "pre_registered": false,
+ "provenance": {
+  "citable": true,
+  "commit": "71e10557133abcce1a38fd96b5211bdcce2a5755",
+  "describe": "v1.6.25-89-g71e10557",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-09T21:57:34Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+71e10557",
+  "warnings_n": 1
+ },
+ "schema": "alias-confirm-posthoc-identical/1"
+}
