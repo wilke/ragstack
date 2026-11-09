@@ -69,8 +69,8 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 
 ## 4. Tests and families
 
-- **Primary cell.** §11 Q1: the draft takes the default retriever, pooled over the four corpus collections,
-  with records clustered by paper.
+- **Primary cell** (§11 Q1). The default retriever, pooled over the four corpus collections, with records
+  clustered by paper.
 - **Statistic.** The paired difference per record, S − W, in {−1, 0, +1}. The test is an exact sign-flip
   over papers (clusters of the 2 G + 1 C records), one-sided, as non-inferiority against −δ. Each family is
   tested at α = 0.05 on its own (Q and J).
@@ -130,15 +130,12 @@ then a signed annotated tag, then the run. After the freeze, any change is a dat
   and the new pairs for `build-control --any-paper`.
 - The report: the paired sign-flip over papers, the families, the gates and the decision wording.
 
-## 11. Owner questions (open)
+## 11. Owner decisions (2026-11-09)
 
-- **Q1: primary cell.** Default retriever pooled over the 4 corpora (recommended: the realistic mix, and the
-  most power), or base only (closest to the deployed collection, but at the 94 % ceiling)?
-- **Q2: hypothesis.** Non-inferiority with δ = 2 points, then superiority (recommended: adoption needs "no
-  loss"), or two-sided equality?
-- **Q3: J judging scope.** All three retrievers, or default + norerank as in the alias study's judged legs
-  (recommended; BM25 J as a descriptive only)?
-- **Q4: the 26 non-verbatim quotes.** Exclude them from Q (recommended; they stay in J), or match after
-  normalisation?
-- **Q5: the 218 records retrieved on S in stage 1.** Keep them, since no outcome was computed (recommended),
-  or exclude them?
+| question | owner's answer |
+|---|---|
+| Q1: primary cell | **default retriever, pooled over the 4 corpora**, records clustered by paper |
+| Q2: hypothesis | **non-inferiority, δ = 2 points, then superiority** (hierarchical, no extra α); δ is confirmed after the power simulation |
+| Q3: J judging scope | **all three retrievers** (default, norerank and BM25 are all judged; J's primary is still the default retriever) |
+| Q4: 26 non-verbatim quotes | **excluded from Q**, kept in J |
+| Q5: 218 records retrieved on S in stage 1 | **kept** (no S-side outcome was ever computed for them; declared in §2) |
