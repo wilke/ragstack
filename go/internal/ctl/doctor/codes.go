@@ -483,6 +483,28 @@ const (
 	// predates the allowlist and points somewhere nobody decided on. Empty
 	// values are skipped.
 	EndpointHostNotAllowed = "endpoint_host_not_allowed"
+
+	// QdrantDataDirMissing: the row moves its qdrant data dir
+	// (stores.qdrant.data_dir) and `<that dir>/storage` is not a directory.
+	// The qdrant unit is conditioned on it (ConditionPathIsDirectory) and
+	// apptainer refuses a bind whose source is missing, so the store will not
+	// start. Warn on its own, an error for the ops that start the store (see
+	// preconditions.go) — the class of es_snapshots_dir_missing.
+	QdrantDataDirMissing = "qdrant_data_dir_missing"
+
+	// QdrantDataDirSymlink: the row's qdrant data dir, or its storage/, is a
+	// symlink. A bind is a mount of whatever the link resolves to, so a link
+	// is a store whose real location nothing in the registry records (and
+	// restore.sh refuses to start it). Error.
+	QdrantDataDirSymlink = "qdrant_data_dir_symlink"
+
+	// QdrantDataDirOutsideRoots: the row's qdrant data dir is not under any of
+	// the ctl drivers' approved roots (the tenants data dir, the ctl config
+	// and state dirs, the backups dir, the repos dir). The instance driver
+	// refuses a bind outside them and the files driver refuses to move a
+	// snapshot out of one, so start and backup would both fail. Error.
+	// (Configurable store roots are a later PR.)
+	QdrantDataDirOutsideRoots = "qdrant_data_dir_outside_roots"
 )
 
 // The two names a handover's postgres migration leaves in

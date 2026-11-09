@@ -223,10 +223,10 @@ type upData struct {
 	// QDir is the row's stores.qdrant.data_dir, "" for the default
 	// $TDIR/qdrant. The script spells QDIR only when it is set, so a default
 	// row renders byte-identically to new-tenant.sh (parity_test.go).
-	QDir                    string
-	Ports                   registry.Ports
-	PostgresLocal           bool
-	PGPassword              string
+	QDir          string
+	Ports         registry.Ports
+	PostgresLocal bool
+	PGPassword    string
 }
 
 // upTmpl is render_up_sh verbatim. Backticks in the script's here-doc do not

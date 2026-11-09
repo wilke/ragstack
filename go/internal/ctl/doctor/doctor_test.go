@@ -724,6 +724,7 @@ func TestOpsTableIsSane(t *testing.T) {
 		ACLGrantsOthers, ACLGrantPresent, CtlAccountNoAccess,
 		BootCronMissing, BootCronPresent, StoresUnconfirmed,
 		ServerImageMissing, ServerImageMismatch, ServerImageUnregistered, ImageDirOutsideBindRoots,
+		QdrantDataDirMissing, QdrantDataDirSymlink, QdrantDataDirOutsideRoots,
 	} {
 		known[c] = true
 	}
