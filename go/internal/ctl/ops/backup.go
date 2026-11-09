@@ -2410,12 +2410,20 @@ func moveAcrossFilesystems(ctx context.Context, files jobs.Files, src, dst strin
 	if err == nil || !errors.Is(err, syscall.EXDEV) {
 		return "", err
 	}
+	// The rename refuses an existing destination; the copy (temp file +
+	// rename in dst's directory) would silently replace one. Same guarantee
+	// on both paths: never land on top of something already there.
+	if _, serr := files.Stat(ctx, dst); serr == nil {
+		return "", fmt.Errorf("%w: %s already exists; the ctl never moves a snapshot over an existing path", jobs.ErrRefused, dst)
+	} else if !errors.Is(serr, fs.ErrNotExist) {
+		return "", fmt.Errorf("checking the destination %s before the cross-filesystem copy: %w", dst, serr)
+	}
 	if err := files.CopyFile(ctx, src, dst, 0o640); err != nil {
 		return "", fmt.Errorf("rename across filesystems failed (EXDEV) and so did the copy: %w", err)
 	}
 	if err := files.Remove(ctx, src); err != nil {
-		return fmt.Sprintf("the snapshot was copied into the bundle across filesystems but its source %s could not "+
-			"be removed (%v): it still holds disk on the qdrant store", src, err), nil
+		return fmt.Sprintf("the snapshot was copied into the bundle across filesystems but its source could not "+
+			"be removed (%v): leftover snapshot %s still holds disk on the qdrant store — delete it by hand", err, src), nil
 	}
 	return "", nil
 }

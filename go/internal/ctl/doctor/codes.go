@@ -516,6 +516,13 @@ const (
 	// mount condition from configured store roots; until then this is the
 	// check.
 	QdrantDataDirRootNotMounted = "qdrant_data_dir_root_not_mounted"
+
+	// QdrantDataDirDropped: a re-adoption found the row's qdrant leg no longer
+	// exclusive, so the stores.qdrant.data_dir the old row carried (allowed
+	// only on an exclusive store) is not carried onto the new one. Warn: the
+	// moved directory still holds whatever the tenant's qdrant wrote there,
+	// and nothing in the registry names it any more.
+	QdrantDataDirDropped = "qdrant_data_dir_dropped"
 )
 
 // The two names a handover's postgres migration leaves in

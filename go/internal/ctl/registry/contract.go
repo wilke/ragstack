@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
 // Patterns, byte-identical to the schema's (RE2-compatible: the contract keeps
@@ -166,6 +168,22 @@ func (c *contractCheck) qdrantDataDir(ptr, tenantDataDir string, q Qdrant) {
 	}
 	if d == td || PathUnder(d, td) {
 		c.failf(ptr, "%q equals or contains the tenant data_dir %q", d, td)
+		return
+	}
+	if PathUnder(path.Join(td, "qdrant"), d) {
+		c.failf(ptr, "%q is under the default %s: move the store out of the default dir, or leave data_dir absent",
+			d, path.Join(td, "qdrant"))
+		return
+	}
+	// Nor may it sit in (or be) a directory the row's own layout already
+	// gives another store or the tenant itself — provisioning creates those,
+	// and a qdrant inside one shares its lifetime and permissions.
+	tp := paths.TenantPaths(paths.Roots{DataDir: path.Dir(td)}, "x", path.Base(td))
+	for _, pd := range tp.ProvisionDirsFor(paths.StorePostgresLocal) {
+		if d == pd || PathUnder(pd, d) {
+			c.failf(ptr, "%q is inside %s, a directory the tenant's own layout provisions", d, pd)
+			return
+		}
 	}
 }
 

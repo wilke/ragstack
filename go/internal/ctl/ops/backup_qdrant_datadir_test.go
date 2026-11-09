@@ -1,12 +1,15 @@
 package ops
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
+	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
@@ -104,5 +107,37 @@ func TestBackupQdrantMoveOtherErrorsStillFail(t *testing.T) {
 	}
 	if fake.Count("files.CopyFile") != 0 {
 		t.Error("a non-EXDEV rename failure took the copy fallback")
+	}
+}
+
+// moveAcrossFilesystems keeps the rename's guarantee on the copy path: an
+// existing destination is refused, not overwritten. A Remove that fails after
+// a good copy is a warning naming the leftover source.
+func TestMoveAcrossFilesystemsRefusesAnExistingDestination(t *testing.T) {
+	const src, dst = "/rag/stores2/qdrant/dev/snapshots/docs/s.snapshot", "/rag/backups/tenants/dev/b/qdrant/docs/s.snapshot"
+	exdev := &os.LinkError{Op: "rename", Old: src, New: dst, Err: syscall.EXDEV}
+
+	fake := drivers.NewFake(drivers.FakeOptions{Roots: []string{"/rag"}})
+	fake.FakeFiles().Put(src, []byte("new"), 0o640)
+	fake.FakeFiles().Put(dst, []byte("old"), 0o640)
+	fake.Fail("files.Rename:"+src, exdev)
+	_, err := moveAcrossFilesystems(context.Background(), fake.Files(), src, dst)
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("existing destination: %v, want ErrRefused", err)
+	}
+	if fake.Count("files.CopyFile") != 0 || string(fake.FakeFiles().Content(dst)) != "old" {
+		t.Error("the copy ran over an existing destination")
+	}
+
+	fake = drivers.NewFake(drivers.FakeOptions{Roots: []string{"/rag"}})
+	fake.FakeFiles().Put(src, []byte("snap"), 0o640)
+	fake.Fail("files.Rename:"+src, exdev)
+	fake.Fail("files.Remove:"+src, errors.New("permission denied"))
+	warn, err := moveAcrossFilesystems(context.Background(), fake.Files(), src, dst)
+	if err != nil {
+		t.Fatalf("copy then failed remove: %v, want a warning only", err)
+	}
+	if !strings.Contains(warn, "leftover") || !strings.Contains(warn, src) || string(fake.FakeFiles().Content(dst)) != "snap" {
+		t.Errorf("warning = %q, dst = %q", warn, fake.FakeFiles().Content(dst))
 	}
 }

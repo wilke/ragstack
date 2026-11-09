@@ -314,7 +314,13 @@ func (p *previewer) build() (*registry.Tenant, error) {
 	t.ExternalRefs = p.externalRefs()
 	t.UnmanagedFiles = p.unmanagedFiles()
 	t.Stores = p.stores(&t.Drift)
-	keepQdrantDataDir(t, p.opts.Existing)
+	if keepQdrantDataDir(t, p.opts.Existing) {
+		p.warn(doctor.QdrantDataDirDropped, fmt.Sprintf(
+			"the registry row moves this tenant's qdrant data to %s (stores.qdrant.data_dir), but the qdrant leg "+
+				"now reads as %s, not exclusive, so the field is not carried over: that directory is no longer "+
+				"named by the registry — check what it holds before re-adopting",
+			p.opts.Existing.Stores.Qdrant.DataDir, t.Stores.Qdrant.Ownership))
+	}
 	// A re-adoption of a row the control plane RUNS keeps what the handover
 	// decided. It comes after the stores so the capabilities are on the row to
 	// keep, and before the rollback descriptor, which records the owner.
@@ -340,13 +346,18 @@ func (p *previewer) build() (*registry.Tenant, error) {
 // store's data sits where the row said. Carried only while the re-observed
 // leg is still exclusive (the contract refuses it anywhere else); on the
 // preview row so that `--confirm-stores qdrant` checks the moved directory.
-func keepQdrantDataDir(next, prev *registry.Tenant) {
+//
+// It reports whether a data_dir was DROPPED (the previous row had one and the
+// leg is no longer exclusive), so the preview can say so.
+func keepQdrantDataDir(next, prev *registry.Tenant) (dropped bool) {
 	if prev == nil || next == nil || prev.Stores.Qdrant.DataDir == "" {
-		return
+		return false
 	}
 	if next.Stores.Qdrant.Ownership == registry.OwnershipExclusive {
 		next.Stores.Qdrant.DataDir = prev.Stores.Qdrant.DataDir
+		return false
 	}
+	return true
 }
 
 // --------------------------------------------------------------- ownership
