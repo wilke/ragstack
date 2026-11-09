@@ -464,6 +464,33 @@ the `unexpected_listener` warning on its +5 port that `doctor` was already
 raising. The fix is to re-adopt — `adopt-all --preview` shows the `postgres`
 line per tenant, `--commit` records it — after which the warning clears.
 
+### Where a tenant's qdrant keeps its data (`stores.qdrant.data_dir`)
+
+By default a tenant's own qdrant keeps `storage/` and `snapshots/` under
+`<data_dir>/qdrant`. An **exclusive** qdrant row may name another HOST
+directory in the optional `stores.qdrant.data_dir`; every path the ctl
+derives for that store — the unit's binds, `up.sh` (`QDIR`), backups,
+`--confirm-stores`, `fleet` disk usage, `doctor` — then uses it, and
+`ops/coconut/restore.sh` binds it too. Absent means the default, and the
+default is spelled only by absence: the contract refuses a row that names
+`<data_dir>/qdrant` explicitly, a path that equals or contains the row's
+`data_dir`, and (fleet-wide) two rows sharing one dir or one row's dir nested
+under another tenant's `data_dir` or qdrant dir. A row without the field
+serialises byte-identically, so an older daemon still reads the registry.
+
+A dir off the `/rag` mount adds a second `ConditionPathIsMountPoint=` (its
+top-level directory, e.g. `/data2`) to the qdrant unit. `doctor` raises
+`qdrant_data_dir_missing` (no `<dir>/storage`; red for start/restart),
+`qdrant_data_dir_symlink` and `qdrant_data_dir_outside_roots` (the drivers'
+approved roots do not cover it yet — configurable store roots and the verb
+that moves a store are later PRs). Nothing sets the field today; it is
+hand-edited only after the data has been moved with the store stopped.
+
+The SHARED qdrant (:6333) and qdrant2 (:6343) dirs are `restore.sh`'s:
+`SHARED_QDRANT_DIR` / `SHARED_QDRANT2_DIR` from the environment, else from the
+optional `/rag/config/stores.env` (KEY=VALUE, parsed — never sourced), else
+`/rag/data/qdrant` and `/rag/data/qdrant2`.
+
 ---
 
 ## 6. Publish the first gateway generation

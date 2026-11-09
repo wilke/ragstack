@@ -245,7 +245,8 @@ before it writes anything:
   this account cannot read is somebody else's);
 * that process has a directory under this tenant's own data dir MOUNTED where a
   store of its kind keeps its data — `<data_dir>/qdrant/storage` at
-  `/qdrant/storage`, the ES data dir, the postgres PGDATA. The evidence is
+  `/qdrant/storage` (or, for a row with `stores.qdrant.data_dir`, a directory
+  under that dir), the ES data dir, the postgres PGDATA. The evidence is
   `/proc/<pid>/mountinfo`, not the command line: the process holding the port is
   the one inside the container (`./qdrant`, the elasticsearch JVM, `postgres`)
   and carries no `--bind` at all, because the `apptainer instance run` that set
