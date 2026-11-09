@@ -314,6 +314,7 @@ func (p *previewer) build() (*registry.Tenant, error) {
 	t.ExternalRefs = p.externalRefs()
 	t.UnmanagedFiles = p.unmanagedFiles()
 	t.Stores = p.stores(&t.Drift)
+	keepQdrantDataDir(t, p.opts.Existing)
 	// A re-adoption of a row the control plane RUNS keeps what the handover
 	// decided. It comes after the stores so the capabilities are on the row to
 	// keep, and before the rollback descriptor, which records the owner.
@@ -330,6 +331,22 @@ func (p *previewer) build() (*registry.Tenant, error) {
 	}
 	p.info(doctor.CapabilitiesUnconfirmed, "store capabilities stay false until an operator confirms process identity, backing path and exclusive ownership")
 	return t, nil
+}
+
+// keepQdrantDataDir carries the row's stores.qdrant.data_dir onto a
+// re-adoption's preview (and commit.go's carryOver onto the committed row).
+// It is a DECISION, not a host fact adoption can read back: dropping it would
+// point every ctl path at <data_dir>/qdrant — an empty directory — while the
+// store's data sits where the row said. Carried only while the re-observed
+// leg is still exclusive (the contract refuses it anywhere else); on the
+// preview row so that `--confirm-stores qdrant` checks the moved directory.
+func keepQdrantDataDir(next, prev *registry.Tenant) {
+	if prev == nil || next == nil || prev.Stores.Qdrant.DataDir == "" {
+		return
+	}
+	if next.Stores.Qdrant.Ownership == registry.OwnershipExclusive {
+		next.Stores.Qdrant.DataDir = prev.Stores.Qdrant.DataDir
+	}
 }
 
 // --------------------------------------------------------------- ownership

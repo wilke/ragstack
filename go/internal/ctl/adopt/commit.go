@@ -358,6 +358,7 @@ func carryOver(next, prev *registry.Tenant, over Overrides) {
 	if !over.confirmed("qdrant") {
 		next.Stores.Qdrant.Capabilities = prev.Stores.Qdrant.Capabilities
 	}
+	keepQdrantDataDir(next, prev)
 	if !over.confirmed("elasticsearch") {
 		next.Stores.Elasticsearch.Capabilities = prev.Stores.Elasticsearch.Capabilities
 	}

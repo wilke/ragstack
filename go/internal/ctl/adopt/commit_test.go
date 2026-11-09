@@ -296,3 +296,37 @@ func TestReadoptKeepsWhatThePreparationOpsDecided(t *testing.T) {
 		}
 	})
 }
+
+// A re-adoption keeps the row's stores.qdrant.data_dir: it is a decision the
+// host cannot be read for, and dropping it would point every ctl path at the
+// empty default dir. Dropped only when the re-observed qdrant is not exclusive.
+func TestReadoptKeepsTheQdrantDataDir(t *testing.T) {
+	dir := t.TempDir()
+	roots := paths.NewRoots(dir, paths.Overrides{})
+	reg := roots.Registry()
+	first := commitTestTenant(roots, "dev", 2)
+	first.Stores.Qdrant.Ownership = registry.OwnershipExclusive
+	first.Stores.Qdrant.DataDir = "/data2/qdrant/dev"
+	if err := Commit(reg, first, CommitOptions{Roots: roots, UpdatedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	again := commitTestTenant(roots, "dev", 2)
+	again.Stores.Qdrant.Ownership = registry.OwnershipExclusive
+	if err := Commit(reg, again, CommitOptions{Roots: roots, UpdatedBy: "test", Readopt: true}); err != nil {
+		t.Fatalf("--readopt refused: %v", err)
+	}
+	after, err := registry.LoadNoRepair(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.Tenants["dev"].Stores.Qdrant.DataDir; got != "/data2/qdrant/dev" {
+		t.Errorf("qdrant data_dir after --readopt = %q, want it carried over", got)
+	}
+
+	next := commitTestTenant(roots, "dev", 2)
+	next.Stores.Qdrant.Ownership = registry.OwnershipShared
+	keepQdrantDataDir(next, after.Tenants["dev"])
+	if next.Stores.Qdrant.DataDir != "" {
+		t.Error("a data_dir was carried onto a shared qdrant leg")
+	}
+}
