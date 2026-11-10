@@ -22,7 +22,8 @@ log gives the batch times.
   wait for the coordinator and its gateway.
 - **When.** 2026-11-10. The owner's go for judging ("Go: Qwen now, gateway after notice") came first; the choice of
   the second gateway followed when the coordinator could not be reached. The gateway calls ran
-  20:18:40–23:36:10Z, one batch at a time: the harness finalizes each batch (Qwen, then the Argon tiebreak and
+  20:18:40–23:36:10Z (the audit's first and last logged call times; the operator's batch windows, which start at
+  the runner's start line and end at its end line, are 20:18:29–23:36:11Z), one batch at a time: the harness finalizes each batch (Qwen, then the Argon tiebreak and
   the Opus drift reference) before it starts the next.
 - **What had been seen.** The per-registry totals of `j-seeds.json` (S seeds 7,196, S orphans 1,549; drift
   sample 616, seeds 555, orphans 61), read to size the notice, as §6 step 3 declares. During judging, the audit's
@@ -43,7 +44,7 @@ log gives the batch times.
   | | | 1474–1533 | Claude Opus 5.5 | 60 | 75,679 | 5,284 | 1,291 | 3,993 |
   | drift | 23:34:51–23:36:11 | 1534–1566 | Gemini 4 Argon | 33 | 30,618 | 1,876 | 485 | 1,391 |
   | | | 1567–1594 | Claude Opus 5.5 | 28 | 37,142 | 3,074 | 1,270 | 1,804 |
-  | **total** | 20:18:40–23:36:10 | 774–1594 | Argon / Opus | **432 / 389** | 372,884 / 480,641 | 24,373 / 40,535 | 6,303 / 14,913 | 18,070 / 25,622 |
+  | **total** | 20:18:40–23:36:10 (calls logged) | 774–1594 | Argon / Opus | **432 / 389** | 372,884 / 480,641 | 24,373 / 40,535 | 6,303 / 14,913 | 18,070 / 25,622 |
 
   - **821 calls**, all HTTP 200, with 0 errors, 0 provider notices and 0 refusals. The model served equals the
     model requested on every call ("Gemini 4 Argon", "Claude Opus 5.5"), with no fallback. Tokens in: 853,525
