@@ -63,10 +63,15 @@ func TestQdrantDataDirUnitAndScripts(t *testing.T) {
 		"TDIR=\"/rag/data/tenants/sandbox\"\nQDIR=\"" + qdir + "\"\n",
 		`--bind "$QDIR/storage:/qdrant/storage"`,
 		`--bind "$QDIR/snapshots:/qdrant/snapshots"`,
+		"Do not re-run\n# new-tenant.sh: it would bind $TDIR/qdrant again",
+		`"ragstack-ctl render up-sh sandbox"`,
 	} {
 		if !strings.Contains(string(up), w) {
 			t.Errorf("up.sh lacks %q", w)
 		}
+	}
+	if strings.Contains(string(up), "re-run it to regenerate") {
+		t.Error("a moved-qdrant up.sh still tells the operator to re-run new-tenant.sh")
 	}
 	tn.Stores.Qdrant.DataDir = "/data2/$(id)"
 	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images"}); err == nil {

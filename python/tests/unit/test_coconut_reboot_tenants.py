@@ -752,33 +752,55 @@ def test_restore_never_sources_stores_env(restore):
         "restore.sh sources stores.env; it must parse it"
 
 
+_CURRENT_BINDS = (
+    '    --bind "$QDIR/storage:/qdrant/storage" \\\n'
+    '    --bind "$QDIR/snapshots:/qdrant/snapshots" \\\n'
+)
+
+
 @requires_shell
-@pytest.mark.parametrize("up_sh_binds, refused", [
-    ('--bind "$TDIR/qdrant/storage:/qdrant/storage"', True),   # the provision-time launcher
-    ('--bind "$QDIR/storage:/qdrant/storage"', False),          # regenerated for the moved dir
+@pytest.mark.parametrize("case, refused", [
+    ("default dir", True),          # the provision-time launcher
+    ("braced default", True),       # ${TDIR}/qdrant — a blacklist on $TDIR/qdrant misses it
+    ("literal path", True),         # the default dir spelled out
+    ("previous move", True),        # a QDIR launcher rendered for an EARLIER data_dir
+    ("comment mention", False),     # current launcher whose comment names $TDIR/qdrant
+    ("current", False),             # regenerated for the row's current dir
 ])
-def test_a_moved_row_never_runs_an_up_sh_that_binds_the_default_qdrant(tmp_path, up_sh_binds, refused):
+def test_a_moved_row_runs_only_the_up_sh_rendered_for_its_current_dir(tmp_path, case, refused):
     """The postgres leg is started through the tenant's up.sh (it holds the
-    password). On a row that moved its qdrant, an up.sh still binding
-    $TDIR/qdrant would bring qdrant up on the empty default dir whenever the
-    moved leg did not start, so it is refused, not run."""
+    password). On a row that moved its qdrant, only an up.sh that carries
+    exactly what render.UpSh emits for the CURRENT dir (QDIR="<dir>" and both
+    "$QDIR/..." binds) is run; anything else would bring qdrant up on the wrong
+    directory whenever the moved leg did not start."""
     qdir = tmp_path / "store2" / "qdrant" / "qd"
     (qdir / "storage").mkdir(parents=True)
-    bin_dir = tmp_path / "data" / "qd" / "bin"
+    data = tmp_path / "data" / "qd"
+    body = {
+        "default dir": '    --bind "$TDIR/qdrant/storage:/qdrant/storage" \\\n',
+        "braced default": '    --bind "${TDIR}/qdrant/storage:/qdrant/storage" \\\n',
+        "literal path": f'    --bind "{data}/qdrant/storage:/qdrant/storage" \\\n',
+        "previous move": f'QDIR="{tmp_path}/old-store/qdrant/qd"\n' + _CURRENT_BINDS,
+        "comment mention": f'# was: $TDIR/qdrant/storage\nQDIR="{qdir}"\n' + _CURRENT_BINDS,
+        "current": f'QDIR="{qdir}"\n' + _CURRENT_BINDS,
+    }[case]
+    bin_dir = data / "bin"
     bin_dir.mkdir(parents=True)
     up = bin_dir / "up.sh"
-    up.write_text(f"#!/bin/bash\n# stand-in launcher\napptainer instance run {up_sh_binds}\n")
+    up.write_text(f'#!/bin/bash\nTDIR="{data}"\n{body}')
     up.chmod(0o755)
     out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, str(qdir), postgres_local=True),
                           "--tenant", "qd")
     text = out.stdout + out.stderr
     if refused:
         assert out.returncode != 0, text
-        assert "postgres postgres-unittest (:25865) NOT started" in text and "still binds" in text, text
-        assert "via " + str(up) not in text, f"the stale up.sh was planned:\n{text}"
+        assert "postgres postgres-unittest (:25865) NOT started" in text, text
+        assert "ragstack-ctl render up-sh qd --store postgres-local" in text, text
+        assert "<GENERATED:PG_PASSWORD>" in text and "Do NOT re-run new-tenant.sh" in text, text
+        assert "via " + str(up) not in text, f"a stale up.sh was planned:\n{text}"
     else:
         assert "via " + str(up) in text, text
-        assert "still binds" not in text, text
+        assert "NOT started" not in text, text
 
 
 @requires_shell
@@ -794,11 +816,18 @@ def test_a_row_without_data_dir_still_runs_its_up_sh_for_postgres(tmp_path):
 
 
 @requires_shell
-@pytest.mark.parametrize("bad", ["relative/qd", "/store2/q d"])
-def test_a_malformed_registry_data_dir_is_refused(tmp_path, bad):
+@pytest.mark.parametrize("bad, why", [("relative/qd", "is not an absolute path"),
+                                      ("/store2/q d", "is not an absolute path"),
+                                      ("/store2/../qd", "'..' segment"),
+                                      ("/store2/qd/..", "'..' segment")])
+def test_a_malformed_registry_data_dir_is_refused(tmp_path, bad, why):
+    if ".." in bad:
+        # Make the target real, so only the '..' rule can refuse it.
+        (tmp_path / "qd" / "storage").mkdir(parents=True)
+        bad = str(tmp_path / bad.lstrip("/"))
     out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, bad), "--tenant", "qd")
     text = out.stdout + out.stderr
-    assert out.returncode != 0 and "is not an absolute path" in text, text
+    assert out.returncode != 0 and why in text, text
     assert "[qdrant-unittest] apptainer instance run" not in text, text
 
 
@@ -866,3 +895,24 @@ def test_help_does_not_depend_on_stores_env(tmp_path):
     out = subprocess.run(["bash", str(OPS / "restore.sh"), "--help"],
                          capture_output=True, text=True, env=env, timeout=60)
     assert out.returncode == 0 and "restore.sh" in out.stdout, out.stdout + out.stderr
+
+
+@requires_shell
+def test_restore_accepts_exactly_what_the_go_renderer_emits_for_a_moved_dir(tmp_path):
+    """The positive match in restore.sh is tied to render.UpSh: the Go golden
+    for a moved qdrant (its QDIR repointed at this test's dir) must be the
+    up.sh restore.sh runs."""
+    golden = (Path(__file__).resolve().parents[3] / "go" / "internal" / "ctl" / "render" / "testdata"
+              / "golden" / "up.sh.qdrant-data-dir").read_text()
+    assert 'QDIR="/data2/qdrant/sandbox"\n' in golden
+    qdir = tmp_path / "store2" / "qdrant" / "qd"
+    (qdir / "storage").mkdir(parents=True)
+    bin_dir = tmp_path / "data" / "qd" / "bin"
+    bin_dir.mkdir(parents=True)
+    up = bin_dir / "up.sh"
+    up.write_text(golden.replace('QDIR="/data2/qdrant/sandbox"', f'QDIR="{qdir}"'))
+    up.chmod(0o755)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, str(qdir), postgres_local=True),
+                          "--tenant", "qd")
+    text = out.stdout + out.stderr
+    assert "via " + str(up) in text and "NOT started" not in text, text

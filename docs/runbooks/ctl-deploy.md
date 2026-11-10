@@ -512,16 +512,23 @@ and remove the field first. Supporting it is a later PR.
 
 **restore.sh and a tenant's own `bin/up.sh`.** `restore.sh` starts a moved
 qdrant from the row (`$qdir/storage`, `$qdir/snapshots`) and refuses it unless
-the dir and its `storage/` are real directories (not symlinks). The postgres
-leg of a `--postgres local` tenant is started through the tenant's
-provision-time `bin/up.sh`, because that script holds the generated password —
-and that same script also starts qdrant bound to `$TDIR/qdrant`. On a row with
-`stores.qdrant.data_dir`, `restore.sh` therefore **refuses to run an up.sh that
-still binds `$TDIR/qdrant`** (postgres is reported NOT started, the run exits
-nonzero): run blindly, it would bring qdrant up on the empty default dir
-whenever the moved leg had not started. Regenerate that tenant's up.sh to bind
-`$QDIR` (the renderer does this for a row with the field) before relying on a
-reboot.
+the path is clean (no `..`) and the dir and its `storage/` are real directories
+(not symlinks). The postgres leg of a `--postgres local` tenant is started
+through the tenant's `bin/up.sh`, because that script holds the generated
+password — and the same script starts qdrant too. On a row with
+`stores.qdrant.data_dir`, `restore.sh` runs that up.sh **only if it is the one
+rendered for the row's current dir**: the line `QDIR="<data_dir>"` and both
+`"$QDIR/storage:/qdrant/storage"` / `"$QDIR/snapshots:/qdrant/snapshots"` binds,
+byte-for-byte. Any other up.sh (the provision-time `$TDIR/qdrant` one, a
+literal path, one left from an earlier move) is refused: postgres is reported
+NOT started and the run exits nonzero, because run blindly it would bring
+qdrant up on the wrong, possibly empty, directory.
+
+To regenerate it: `ragstack-ctl render up-sh <name> --store postgres-local >
+up.sh.new`. The CLI never has the tenant's secrets, so it renders
+`POSTGRES_PASSWORD=<GENERATED:PG_PASSWORD>`: splice the real value back from
+the old up.sh, then replace it keeping the old file's mode and owner. Do **not** re-run
+`new-tenant.sh` — it writes `$TDIR/qdrant` back.
 
 The SHARED qdrant (:6333) and qdrant2 (:6343) dirs are `restore.sh`'s:
 `SHARED_QDRANT_DIR` / `SHARED_QDRANT2_DIR` from the environment, else from the

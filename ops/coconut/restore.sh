@@ -104,6 +104,8 @@ STORES_ENV=${STORES_ENV:-/rag/config/stores.env}
 load_stores_env() {
   local file=$1 line key val n=0 owner mode
   [[ -e $file || -L $file ]] || return 0
+  # Assumes the parent directory is not writable by others, and accepts the
+  # check-then-read race (TOCTOU) — both follow-ups, not handled here.
   if [[ -L $file || ! -f $file || ! -r $file ]]; then
     echo "$file exists but is not a regular readable file; refusing to start" >&2; exit 2
   fi
@@ -380,8 +382,11 @@ tenant_stores_up() {
       postgres)
         if up=$(tenant_up_script "$data") && moved_qdrant_up_sh_is_stale "$name" "$up"; then
           say "  ✗ [$name] postgres $inst (:$port) NOT started: the row moves its qdrant (stores.qdrant.data_dir)"
-          say "    but $up still binds \$TDIR/qdrant — it would start qdrant on the empty default directory."
-          say "    Regenerate up.sh for the moved dir (it must bind \$QDIR), then re-run with --tenant $name."
+          say "    and $up is not the launcher for that dir (no QDIR=\"<data_dir>\" + \"\$QDIR/storage\" bind)."
+          say "    Run blindly it could start qdrant on the wrong (empty) directory."
+          say "    Regenerate it: ragstack-ctl render up-sh $name --store postgres-local > up.sh.new — that renders"
+          say "    POSTGRES_PASSWORD=<GENERATED:PG_PASSWORD>, so splice the real password back from the old up.sh."
+          say "    Do NOT re-run new-tenant.sh: it writes \$TDIR/qdrant back. Then re-run with --tenant $name."
           rc=1
         elif [[ -n $up ]]; then
           # up.sh starts every leg it knows; the two above are already running
@@ -398,16 +403,26 @@ tenant_stores_up() {
 }
 
 # moved_qdrant_up_sh_is_stale NAME UPSH — 0 when the row moves its qdrant
-# (stores.qdrant.data_dir) and the tenant's own launcher still binds the
-# default $TDIR/qdrant. Such an up.sh is never run: its idempotency check skips
-# a qdrant that is already up, but when the moved leg did NOT start it would
-# bring qdrant up on the empty default directory — a store that answers, holds
-# nothing, and looks healthy. The postgres leg it also carries stays down
-# (its password is in up.sh and is never reconstructed here) until up.sh is
-# regenerated to bind $QDIR.
+# (stores.qdrant.data_dir) and the tenant's own launcher is NOT the one
+# rendered for that dir. Such an up.sh is never run: its idempotency check
+# skips a qdrant that is already up, but when the moved leg did NOT start it
+# would bring qdrant up on whatever directory it names — the default
+# $TDIR/qdrant, or the dir of an EARLIER move — a store that answers, holds
+# the wrong data or none, and looks healthy. The postgres leg it also carries
+# stays down (its password is in up.sh and is never reconstructed here).
+#
+# The match is POSITIVE and byte-for-byte what `render.UpSh` emits for the
+# row's current dir (golden up.sh.qdrant-data-dir): the line
+# QDIR="<data_dir>" and both "$QDIR/…" binds. Anything else — any spelling of
+# the default dir, a literal path, a QDIR from a previous move — is stale.
 moved_qdrant_up_sh_is_stale() {
-  [[ -n $(reg_get "$1" '.stores.qdrant.data_dir') ]] || return 1
-  grep -qF '$TDIR/qdrant' "$2"
+  local qdir
+  qdir=$(reg_get "$1" '.stores.qdrant.data_dir')
+  [[ -n $qdir ]] || return 1
+  grep -qxF "QDIR=\"$qdir\"" "$2" &&
+    grep -qF '"$QDIR/storage:/qdrant/storage"' "$2" &&
+    grep -qF '"$QDIR/snapshots:/qdrant/snapshots"' "$2" && return 1
+  return 0
 }
 
 # tenant_qdrant_up — one tenant's own qdrant, from its row.
@@ -423,6 +438,10 @@ tenant_qdrant_up() {
   if [[ -n $qdir ]]; then
     if [[ ! $qdir =~ ^/[A-Za-z0-9._/-]+$ ]]; then
       say "  ✗ [$name] qdrant data_dir is not an absolute path in [A-Za-z0-9._/-] — $inst NOT started"
+      return 1
+    fi
+    if [[ $qdir == */../* || $qdir == */.. ]]; then
+      say "  ✗ [$name] qdrant data_dir $qdir has a '..' segment — $inst NOT started"
       return 1
     fi
     if [[ -L $qdir || ! -d $qdir || -L $qdir/storage || ! -d $qdir/storage ]]; then
