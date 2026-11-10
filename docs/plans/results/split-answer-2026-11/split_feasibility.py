@@ -303,6 +303,7 @@ def run(confirm_dir: Path, label_table: Path, out: Path) -> dict[str, Any]:
     over: dict[str, dict[str, list[int]]] = {name: defaultdict(list) for name in CONFIGS}
     cuts_info: dict[str, Counter[str]] = defaultdict(Counter)
     ncuts: dict[str, list[int]] = defaultdict(list)
+    wtok: dict[str, list[int]] = defaultdict(list)
     nb: dict[str, dict[str, Counter[str]]] = defaultdict(lambda: defaultdict(Counter))
     nb_tok: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
     nb_items: dict[str, dict[str, set[tuple[str, int, int]]]] = defaultdict(lambda: defaultdict(set))
@@ -312,6 +313,7 @@ def run(confirm_dir: Path, label_table: Path, out: Path) -> dict[str, Any]:
         a_spans = [(s, e) for s, e, _ in chunked["adopted"][d]]
         cuts = interior_cuts(a_spans, ws, we)
         ncuts[g].append(len(cuts))
+        wtok[g].append(counter.count(text[ws:we]))
         walls = [c for c in cuts if c in seg_edges[d]]
         cuts_info[g]["pairs"] += 1
         cuts_info[g]["cuts"] += len(cuts)
@@ -400,6 +402,7 @@ def run(confirm_dir: Path, label_table: Path, out: Path) -> dict[str, Any]:
         "tokenizer": acc.TOKENIZER, "model_window": acc.MODEL_WINDOW, "cover_any_cap": acc.COVER_ANY_CAP,
         "label_rows": len(labelled),
         "adopted_cuts_in_window": {g: {**dict(cuts_info[g]), "per_pair": stats(ncuts[g])} for g in GROUPS},
+        "window_tokens": {g: stats(wtok[g]) for g in GROUPS},
         "chunkings": chunk_summary,
         "per_chunking": per_config,
         "neighbour_passages": neighbours,
