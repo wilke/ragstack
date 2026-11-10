@@ -51,6 +51,135 @@
    "random2": 0.895
   }
  },
+ "beyond_grid": {
+  "cells": [
+   {
+    "capped": true,
+    "design_effect": 3.25,
+    "discordance": 0.15,
+    "hier_superiority_power": {
+     "1": 0.0511,
+     "2": 0.0511,
+     "3": 0.0511
+    },
+    "mc_se_at_0.05": 0.0022,
+    "mc_se_at_0.9": 0.003,
+    "mean_D_pts": 0.003,
+    "mean_abs_cluster_sum_total": 539.6,
+    "ni_power_johnson": {
+     "1": 0.2478,
+     "2": 0.6029,
+     "3": 0.8797
+    },
+    "ni_power_score": {
+     "1": 0.2447,
+     "2": 0.6027,
+     "3": 0.8803
+    },
+    "ni_power_wald": {
+     "1": 0.2467,
+     "2": 0.6036,
+     "3": 0.8815
+    },
+    "rates_by_corpus": {
+     "base": {
+      "implied_S": 0.925,
+      "p_minus": 0.075,
+      "p_plus": 0.058
+     },
+     "neighbour": {
+      "implied_S": 0.8817,
+      "p_minus": 0.075,
+      "p_plus": 0.08067
+     },
+     "random1": {
+      "implied_S": 0.9057,
+      "p_minus": 0.075,
+      "p_plus": 0.08067
+     },
+     "random2": {
+      "implied_S": 0.9007,
+      "p_minus": 0.075,
+      "p_plus": 0.08067
+     }
+    },
+    "rho_paper": 0.0,
+    "rho_record": 0.75,
+    "sd_D_pts": 1.058,
+    "sims": 10000,
+    "superiority_power_alone": 0.0511,
+    "true_pts": 0
+   },
+   {
+    "capped": true,
+    "design_effect": 3.19,
+    "discordance": 0.15,
+    "hier_superiority_power": {
+     "1": 0.0046,
+     "2": 0.0046,
+     "3": 0.0046
+    },
+    "mc_se_at_0.05": 0.0022,
+    "mc_se_at_0.9": 0.003,
+    "mean_D_pts": -1.009,
+    "mean_abs_cluster_sum_total": 541.1,
+    "ni_power_johnson": {
+     "1": 0.0463,
+     "2": 0.2431,
+     "3": 0.5962
+    },
+    "ni_power_score": {
+     "1": 0.0458,
+     "2": 0.2424,
+     "3": 0.5977
+    },
+    "ni_power_wald": {
+     "1": 0.0459,
+     "2": 0.2437,
+     "3": 0.5989
+    },
+    "rates_by_corpus": {
+     "base": {
+      "implied_S": 0.92,
+      "p_minus": 0.08,
+      "p_plus": 0.058
+     },
+     "neighbour": {
+      "implied_S": 0.87,
+      "p_minus": 0.08,
+      "p_plus": 0.074
+     },
+     "random1": {
+      "implied_S": 0.894,
+      "p_minus": 0.08,
+      "p_plus": 0.074
+     },
+     "random2": {
+      "implied_S": 0.889,
+      "p_minus": 0.08,
+      "p_plus": 0.074
+     }
+    },
+    "rho_paper": 0.0,
+    "rho_record": 0.75,
+    "sd_D_pts": 1.048,
+    "sims": 10000,
+    "superiority_power_alone": 0.0046,
+    "true_pts": -1
+   }
+  ],
+  "discordance": 0.15,
+  "max_discordance_at_true_0": 0.1935,
+  "note": "10 % is the top of the grid, not a bound: at Delta = 0 the S-W discordance can reach about 2 x the pooled W miss rate (~19 %); simulated after the grid, sizing correlation",
+  "rho_paper": 0.0,
+  "rho_record": 0.75,
+  "size_cell": {
+   "delta_pts": 3,
+   "size_johnson": 0.054,
+   "size_score": 0.0537,
+   "size_wald": 0.0539
+  }
+ },
  "cells": [
   {
    "capped": false,
@@ -4440,12 +4569,12 @@
  },
  "primary_test": "one-sided NI, H0 Delta <= -delta: sign-flip randomisation test over papers on X_k = T_k + m_k*delta (exact p by lattice convolution in the analysis; standardised form z = sum X / sqrt(sum X^2) > z_0.95 in the simulation)",
  "provenance": {
-  "commit": "414ae12f9587bd0ef57d57d77f69e692e8f31a9c",
+  "commit": "72d2ed9461f0cb1666ab4e9a1f2ca9bea1b4d1e7",
   "dirty": false,
   "implementation": "cpython",
   "python": "3.8.5",
   "python_full": "3.8.5 (default, Sep  4 2020, 07:30:14) \n[GCC 7.3.0]",
-  "script_sha256": "ff13176c73fd682926ed30fffeecc954ac0b809d6ed7548fe761b2ddc67e8c46"
+  "script_sha256": "7289721c6aeb5a8aaa33ac73bdcd9d5ceabde7162028a362a13cc43e16b898c1"
  },
  "raw_exclusion_cells": [
   {
@@ -5452,6 +5581,26 @@
     "reject_normal": 0.0
    },
    "true_pts": -2
+  },
+  {
+   "delta_pts": 3,
+   "discordance": 0.1,
+   "ni": {
+    "decision_agreement": 0.998,
+    "max_abs_p_diff": 0.00133,
+    "reject_exact": 0.06,
+    "reject_normal": 0.062
+   },
+   "rho_paper": 0.0,
+   "rho_record": 0.75,
+   "studies": 500,
+   "superiority": {
+    "decision_agreement": 1.0,
+    "max_abs_p_diff": 0.0066,
+    "reject_exact": 0.0,
+    "reject_normal": 0.0
+   },
+   "true_pts": -3
   }
  ],
  "z_crit": 1.6448536269514722
