@@ -198,7 +198,9 @@ type SurfaceContext struct {
 	Worktree string
 	// BindRoots are CTL_API_BIND_ROOTS' paths (the mode suffix dropped).
 	BindRoots []string
-	// Denied are the ctl's own dirs and every OTHER tenant's data dir.
+	// Denied are the ctl's own dirs, every OTHER tenant's data dir, every
+	// row's moved qdrant dir (stores.qdrant.data_dir) and the store data
+	// roots (CTL_STORE_DATA_ROOTS).
 	Denied []DeniedRoot
 	// AllowedHosts is CTL_ALLOWED_ENDPOINT_HOSTS, resolved (lower-case).
 	AllowedHosts []string

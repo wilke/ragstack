@@ -82,6 +82,19 @@ type RealOptions struct {
 	// (CTL_API_BIND_ROOTS, parsed in internal/ctl/api); never a registry row.
 	// Fixed at construction, like ApprovedRoots.
 	ExtraBindRoots []BindRoot
+	// StoreDataRoots are CTL_STORE_DATA_ROOTS (parsed in internal/ctl/api):
+	// the directories a tenant's moved store data may live under — `/qdrant`
+	// on coconut's store volume. Unlike ExtraBindRoots they are WRITE roots:
+	// they join the approved roots of the files driver (a backup moves a
+	// snapshot out, a restore copies one in) and of the instance driver (the
+	// store binds its storage), and they get the approved roots' strict rule
+	// unchanged — strictly under, never the root itself, no symlink at the
+	// leaf, read/write. They never reach the git, build or proc drivers: a
+	// store volume is not somewhere the ctl checks code out, builds a UI or
+	// writes a pidfile. Daemon configuration, never a registry row; whether a
+	// ROW may use a dir under one is registry.Tenant.QdrantDataDirAllowed.
+	// Held to CheckStoreDataRoots at construction.
+	StoreDataRoots []string
 	// StoreLongTimeout is the ceiling on a store call that can legitimately
 	// take a long time (a snapshot, a restore, a recover, an exact count, a
 	// pg_dump). Zero takes LongTimeout.
@@ -143,13 +156,26 @@ func NewReal(o RealOptions) *Real {
 	// driver with its own exec.Cmd would be a place they could stop holding.
 	run := &runner{Redact: o.Redact, Logger: o.Logger}
 	roots := append([]string(nil), o.ApprovedRoots...)
+	// The write roots of the two drivers that touch store data: the approved
+	// roots plus the store roots — or, when the store roots are unusable, the
+	// approved roots alone and an instance driver that refuses every start
+	// (the engine refuses such a configuration before it gets here; this is
+	// the driver failing closed for any other caller).
+	storeErr := CheckStoreDataRoots(o.StoreDataRoots, o.ApprovedRoots, o.ExtraBindRoots)
+	writeRoots := append([]string(nil), roots...)
+	if storeErr == nil {
+		writeRoots = append(writeRoots, o.StoreDataRoots...)
+	}
 	// One HTTP client for the three HTTP drivers, so the connection pool, the
 	// redirect refusal and the timeouts are one decision rather than three.
 	h := newHTTPStores(o)
 	return &Real{
 		opts:    o,
 		gateway: &RealGateway{opts: o},
-		files:   &RealFiles{Roots: roots, Tree: TreeRootsOf(o.Roots)},
+		// The files driver writes under the store roots too (a backup's
+		// snapshot move out of a moved qdrant dir); RemoveTree keeps its own
+		// four deletion roots, which no store root joins.
+		files:   &RealFiles{Roots: writeRoots, Tree: TreeRootsOf(o.Roots)},
 		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
 		// The listener table comes from hostfacts, so this driver and
 		// `doctor` answer a port question from the same parser; the roots
@@ -169,8 +195,11 @@ func NewReal(o RealOptions) *Real {
 		archive: &RealArchive{opts: o},
 		// The instance driver binds host paths into a container, so it gets
 		// the same approved roots the drivers that write under them do.
-		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: roots,
-			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir),
+		// …and the store roots, so a moved qdrant dir is bound under the same
+		// strict rule as one under the tenant tree.
+		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: writeRoots,
+			ConfigErr: storeErr,
+			Env:       apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir),
 			ConfigDir: apptainerConfigDir(o.Roots.CtlStateDir),
 			// Copied: the extra bind roots are fixed at construction too.
 			ExtraRoots: append([]BindRoot(nil), o.ExtraBindRoots...)},
@@ -198,6 +227,16 @@ func (r *Real) NpmCache() string { return r.opts.NpmCache }
 // them (a copy). The daemon and `--direct` wiring tests read it.
 func (r *Real) ExtraBindRoots() []BindRoot {
 	return append([]BindRoot(nil), r.instances.ExtraRoots...)
+}
+
+// StoreDataRoots are the store roots NewReal admitted (a copy): empty when
+// none were configured or when CheckStoreDataRoots refused them. The wiring
+// tests read it.
+func (r *Real) StoreDataRoots() []string {
+	if r.instances.ConfigErr != nil {
+		return nil
+	}
+	return append([]string(nil), r.opts.StoreDataRoots...)
 }
 
 func (r *Real) Systemd() jobs.Systemd             { return r.systemd }

@@ -1068,6 +1068,12 @@ func buildDirectEngineAndDrivers(o *opFlags) (jobs.Engine, jobs.Drivers, error) 
 	if err := api.SetAPIBindRootsFromEnv(&cfg); err != nil {
 		return nil, nil, err
 	}
+	// …and the same store data roots (CTL_STORE_DATA_ROOTS), read out of
+	// ctl.env when the environment does not carry them: a moved qdrant dir
+	// must start through ctl-as-svc.sh exactly as it does under the daemon.
+	if err := api.SetStoreDataRootsFromEnv(&cfg); err != nil {
+		return nil, nil, err
+	}
 	// …and the same endpoint allowlist (CTL_ALLOWED_ENDPOINT_HOSTS, #714),
 	// read out of ctl.env when the environment does not carry it: a run
 	// through ctl-as-svc.sh does not load that file.

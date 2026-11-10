@@ -36,7 +36,9 @@ func TestEnvKeysMatchAnsibleTemplates(t *testing.T) {
 
 	// The PR-D host-program paths are read by the daemon but not templated by
 	// the role yet (see HostToolEnvKeys): they are allowed in the template and
-	// not required from it. Delete this exception in the commit that adds the
+	// not required from it. CTL_STORE_DATA_ROOTS is in that list too: the
+	// template renders it only when ctl_store_data_roots is set (unset means
+	// none), so it is allowed, never required. Delete this exception in the commit that adds the
 	// rows, so the reconciliation covers them like everything else.
 	hostTool := map[string]bool{}
 	for _, k := range HostToolEnvKeys() {

@@ -49,6 +49,54 @@ func CheckBindRoot(r BindRoot) error {
 	return nil
 }
 
+// CheckStoreDataRoots holds CTL_STORE_DATA_ROOTS (RealOptions.StoreDataRoots)
+// to the rules a store root needs before it may join the approved roots of the
+// files and instance drivers.
+//
+// Each root is a bind root's shape (CheckBindRoot: absolute, clean, safe
+// charset, not "/"); no root is listed twice or nested in another; and no root
+// equals, contains or lies under
+//
+//   - an approved root: a store root that CONTAINED the tenant data root or
+//     the ctl config dir would widen the files driver to everything under it,
+//     and one inside an approved root is already approved — either is a typo;
+//   - an extra bind root (CTL_API_BIND_ROOTS): containBind judges a bind by
+//     the MOST SPECIFIC root that holds it, and on a tie the stricter wins, so
+//     `/qdrant:ro` there would quietly turn every store start under the store
+//     root `/qdrant` into a refusal — and a writable extra root over a store
+//     root would let an API instance bind a tenant's vectors whole.
+//
+// Every failure is jobs.ErrRefused and names the entry.
+func CheckStoreDataRoots(store, approved []string, extra []BindRoot) error {
+	overlap := func(a, b string) bool { return underOrAt(a, b) || underOrAt(b, a) }
+	for i, r := range store {
+		if err := CheckBindRoot(BindRoot{Path: r}); err != nil {
+			return fmt.Errorf("%w: store data root %q: %v", jobs.ErrRefused, r, err)
+		}
+		for _, o := range store[:i] {
+			if overlap(r, o) {
+				return fmt.Errorf("%w: store data roots %s and %s overlap (one is, or is under, the other)",
+					jobs.ErrRefused, o, r)
+			}
+		}
+		for _, a := range approved {
+			if a != "" && overlap(r, filepath.Clean(a)) {
+				return fmt.Errorf("%w: store data root %s overlaps the approved root %s; a store root is a "+
+					"directory of its own (a separate volume), never one of, inside or around the ctl's roots",
+					jobs.ErrRefused, r, a)
+			}
+		}
+		for _, e := range extra {
+			if overlap(r, e.Path) {
+				return fmt.Errorf("%w: store data root %s overlaps the API bind root %s (CTL_API_BIND_ROOTS); "+
+					"the most specific root decides a bind's mode, so the two lists may not share a directory",
+					jobs.ErrRefused, r, e.String())
+			}
+		}
+	}
+	return nil
+}
+
 // containBind is the containment check for the HOST side of one bind, and the
 // path it returns is the one that goes on the argv.
 //
@@ -60,6 +108,10 @@ func CheckBindRoot(r BindRoot) error {
 // read-only extra root keeps the bind it always allowed. On a tie the stricter
 // root wins.
 func (i *RealInstances) containBind(host string, readOnly bool) (string, error) {
+	if i.ConfigErr != nil {
+		return "", fmt.Errorf("%w: this instance driver was built from an unusable root configuration, so it "+
+			"binds nothing: %v", jobs.ErrRefused, i.ConfigErr)
+	}
 	for _, r := range i.ExtraRoots {
 		if err := CheckBindRoot(r); err != nil {
 			return "", fmt.Errorf("%w: this instance driver was configured with an unusable extra bind root %q: %v",

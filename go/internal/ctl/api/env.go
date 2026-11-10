@@ -157,6 +157,21 @@ const (
 	// daemon's (and a --direct run's) start rather than being half-applied.
 	EnvAPIBindRoots = "CTL_API_BIND_ROOTS"
 
+	// EnvStoreDataRoots lists the directories a tenant's MOVED store data may
+	// live under (stores.qdrant.data_dir; `/qdrant` on coconut's store
+	// volume). Comma-separated absolute, clean directories, with NO `:ro`/`:rw`
+	// suffix — a store root is read/write by definition, so a suffix is a parse
+	// error rather than a mode. They join the approved roots of the files and
+	// instance drivers only (never git, build or proc) under the approved
+	// roots' strict rule, and a row's dir is honoured only strictly under one
+	// of them or under its own data_dir. Unset or blank is none: nothing
+	// changes. ctl.env, optional; a malformed value refuses the daemon's (and
+	// a --direct run's) start. A --direct run with the variable unset reads it
+	// out of <ctl config dir>/ctl.env, as for CTL_ALLOWED_ENDPOINT_HOSTS.
+	// ctl-daemon.sh parses ctl.env when the daemon STARTS, so a change needs a
+	// daemon restart.
+	EnvStoreDataRoots = "CTL_STORE_DATA_ROOTS"
+
 	// EnvAllowedEndpointHosts is the allowlist of hosts an executable-surface
 	// URL may name (#714: `env set-surface`, `create --set` under --direct,
 	// and doctor's endpoint_host_not_allowed). A comma list of host names or
@@ -234,6 +249,104 @@ func SetAPIBindRootsFromEnv(cfg *EngineConfig) error {
 	return nil
 }
 
+// ParseStoreDataRoots parses a CTL_STORE_DATA_ROOTS value. Blank is nil: no
+// store roots, and nothing changes.
+//
+// Every entry must be an absolute directory that is already clean (no `..`,
+// no trailing or doubled slash — unlike CTL_API_BIND_ROOTS nothing is
+// normalised, because a store root is compared exactly against registry rows),
+// in the safe path charset, not `/`, and listed once. A `:ro`/`:rw` suffix is
+// refused: a store root is read/write by definition, and a suffix copied from
+// CTL_API_BIND_ROOTS is an operator's mistake that must be loud. Overlap with
+// the approved roots and the bind roots is drivers.CheckStoreDataRoots' check,
+// made where both lists are known.
+func ParseStoreDataRoots(v string) ([]string, error) {
+	if strings.TrimSpace(v) == "" {
+		return nil, nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(v, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			return nil, fmt.Errorf("%s=%q has an empty entry", EnvStoreDataRoots, v)
+		}
+		if strings.Contains(entry, ":") {
+			return nil, fmt.Errorf("%s entry %q: a store root takes no :ro/:rw suffix (it is read/write by "+
+				"definition) and no other colon", EnvStoreDataRoots, entry)
+		}
+		if !filepath.IsAbs(entry) {
+			return nil, fmt.Errorf("%s entry %q: the path must be absolute", EnvStoreDataRoots, entry)
+		}
+		for _, part := range strings.Split(entry, "/") {
+			if part == ".." {
+				return nil, fmt.Errorf("%s entry %q: the path may not contain ..", EnvStoreDataRoots, entry)
+			}
+		}
+		if filepath.Clean(entry) != entry {
+			return nil, fmt.Errorf("%s entry %q: the path is not clean (write %q)", EnvStoreDataRoots, entry,
+				filepath.Clean(entry))
+		}
+		if err := drivers.CheckBindRoot(drivers.BindRoot{Path: entry}); err != nil {
+			return nil, fmt.Errorf("%s entry %q: %v", EnvStoreDataRoots, entry, err)
+		}
+		if seen[entry] {
+			return nil, fmt.Errorf("%s lists %s twice", EnvStoreDataRoots, entry)
+		}
+		seen[entry] = true
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
+// StoreDataRootsFrom is CTL_STORE_DATA_ROOTS as this process should see it:
+// the environment's value, else (unset or blank) the one in <configDir>/ctl.env
+// (only that key is read), else none — parsed. The daemon (ctl-daemon.sh exports ctl.env),
+// a --direct run (ctl-as-svc.sh does not) and `fleet grant` (run by the
+// owner, outside both) therefore resolve the same list.
+func StoreDataRootsFrom(configDir string) ([]string, error) {
+	v := os.Getenv(EnvStoreDataRoots)
+	if strings.TrimSpace(v) == "" {
+		v = CtlEnvValue(configDir, EnvStoreDataRoots)
+	}
+	return ParseStoreDataRoots(v)
+}
+
+// SetStoreDataRootsFromEnv fills cfg.StoreDataRoots (StoreDataRootsFrom over
+// cfg.Roots.CtlConfigDir). The daemon and the --direct CLI both call it,
+// beside SetAPIBindRootsFromEnv. A malformed value is an error: a typo in a
+// containment list must refuse the start.
+func SetStoreDataRootsFromEnv(cfg *EngineConfig) error {
+	roots, err := StoreDataRootsFrom(cfg.Roots.CtlConfigDir)
+	if err != nil {
+		return err
+	}
+	cfg.StoreDataRoots = roots
+	return nil
+}
+
+// CheckStoreDataRootsConfig holds cfg.StoreDataRoots to
+// drivers.CheckStoreDataRoots against the deployment's approved roots and the
+// bind roots (cfg.APIBindRoots, or the default when nil). The daemon calls it
+// at start-up, so an overlapping configuration refuses the start instead of
+// becoming a job engine that is "unavailable" and retried forever; the engine
+// builder calls it again for every other caller.
+func CheckStoreDataRootsConfig(cfg EngineConfig) error {
+	bind := cfg.APIBindRoots
+	if bind == nil {
+		var err error
+		if bind, err = ParseAPIBindRoots(""); err != nil {
+			return err
+		}
+	}
+	r := cfg.Roots
+	approved := []string{r.DataDir, r.CtlConfigDir, r.CtlStateDir, r.BackupsDir, r.ReposDir}
+	if err := drivers.CheckStoreDataRoots(cfg.StoreDataRoots, approved, bind); err != nil {
+		return fmt.Errorf("%s: %w", EnvStoreDataRoots, err)
+	}
+	return nil
+}
+
 // HostToolEnvKeys are the PR-D host-program variables, plus PR-F's
 // CTL_API_BIND_ROOTS (a host fact of the same kind, with a correct default).
 //
@@ -247,6 +360,7 @@ func HostToolEnvKeys() []string {
 	return []string{
 		EnvSystemctlBin, EnvGitBin, EnvNodeBin, EnvNpmBin, EnvApptainerBin,
 		EnvCrontabBin, EnvMirror, EnvNpmCache, EnvAPIBindRoots, EnvAllowedEndpointHosts,
+		EnvStoreDataRoots,
 	}
 }
 

@@ -490,6 +490,15 @@ func (p *planner) addBackupSteps(a backupPlanArgs) (string, error) {
 			"prerequisites, because nothing stopped the tenant writing while it was taken")
 	}
 
+	// A moved qdrant dir outside every root that may hold it (PR2) is refused
+	// before anything, fence included: the files driver would refuse to move
+	// the snapshot out of it half way through a fenced bundle.
+	if scope.has(scopeStores) {
+		if err := p.refuseQdrantDataDir("a backup"); err != nil {
+			return "", err
+		}
+	}
+
 	// The precheck comes FIRST, before the fence: refusing a backup for want
 	// of disk after the API has been stopped would be an outage in the service
 	// of an operation that was never going to finish.

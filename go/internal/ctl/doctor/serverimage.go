@@ -58,6 +58,37 @@ func (d *run) apiBindRoots() []string {
 	return out
 }
 
+// envStoreDataRoots is CTL_STORE_DATA_ROOTS (api.EnvStoreDataRoots; a
+// literal here because api imports doctor).
+const envStoreDataRoots = "CTL_STORE_DATA_ROOTS"
+
+// storeDataRoots is Options.StoreDataRoots, else CTL_STORE_DATA_ROOTS from the
+// process environment, else from <ctl config dir>/ctl.env, else none. Entries
+// that are not absolute and clean are dropped here: the daemon refuses to
+// start on a malformed value, so this lenient read only ever errs towards
+// FEWER roots, which makes the finding louder, never quieter.
+func (d *run) storeDataRoots() []string {
+	if d.opts.StoreDataRoots != nil {
+		return d.opts.StoreDataRoots
+	}
+	v := strings.TrimSpace(os.Getenv(envStoreDataRoots))
+	if v == "" && d.roots.CtlConfigDir != "" {
+		if b, err := os.ReadFile(filepath.Join(d.roots.CtlConfigDir, "ctl.env")); err == nil {
+			if f, _, err := envfile.ParseLenient(b); err == nil {
+				v, _ = f.Get(envStoreDataRoots)
+			}
+		}
+	}
+	var out []string
+	for _, r := range strings.Split(v, ",") {
+		r = strings.TrimSpace(r)
+		if r != "" && r != "/" && filepath.IsAbs(r) && filepath.Clean(r) == r {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // ImageHashCache remembers the sha256 of image files keyed by (path, size,
 // mtime), for the life of the process that holds it. A doctor run that is
 // not about to start an image reads from it and never hashes; a run under

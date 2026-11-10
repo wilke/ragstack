@@ -166,6 +166,18 @@ func RunServe(args []string) int {
 		logger.Error("bind roots", "err", err.Error())
 		return exitUsage
 	}
+	// The store data roots (CTL_STORE_DATA_ROOTS), same rule: malformed
+	// refuses, and so does a list that overlaps the approved or bind roots —
+	// HERE, because a failed engine build is retried as "unavailable" (#716)
+	// and a configuration error is not something a retry fixes.
+	if err := SetStoreDataRootsFromEnv(&cfg); err != nil {
+		logger.Error("store data roots", "err", err.Error())
+		return exitUsage
+	}
+	if err := CheckStoreDataRootsConfig(cfg); err != nil {
+		logger.Error("store data roots", "err", err.Error())
+		return exitUsage
+	}
 	// The endpoint allowlist (#714), with the same rule: malformed refuses.
 	if err := SetAllowedEndpointHostsFromEnv(&cfg); err != nil {
 		logger.Error("endpoint allowlist", "err", err.Error())

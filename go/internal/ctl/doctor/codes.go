@@ -498,13 +498,14 @@ const (
 	// restore.sh refuses to start it). Error.
 	QdrantDataDirSymlink = "qdrant_data_dir_symlink"
 
-	// QdrantDataDirOutsideRoots: the row's qdrant data dir is not under any of
-	// the ctl drivers' approved roots (the tenants data dir, the ctl config
-	// and state dirs, the backups dir, the repos dir). The instance driver
-	// refuses a bind outside them and the files driver refuses to move a
-	// snapshot out of one, so start (in instance mode) and backup would both
-	// fail. WARN in PR1: the field is new and hand-set, and the driver's own
-	// refusal is the hard stop; configurable store roots are a later PR.
+	// QdrantDataDirOutsideRoots: the row's qdrant data dir is neither
+	// strictly under one of the configured store data roots
+	// (CTL_STORE_DATA_ROOTS in ctl.env) nor strictly under the row's own
+	// data_dir (registry.Tenant.QdrantDataDirAllowed). The ops refuse to start
+	// or back up such a row, and the files and instance drivers would refuse
+	// its paths anyway. Error (PR2; a warn in PR1, when the store roots were
+	// not configurable yet). Repair: add the dir's volume to
+	// CTL_STORE_DATA_ROOTS and restart the daemon, or move the store back.
 	QdrantDataDirOutsideRoots = "qdrant_data_dir_outside_roots"
 
 	// QdrantDataDirRootNotMounted: the row's qdrant data dir is outside the
@@ -512,9 +513,8 @@ const (
 	// /proc/self/mountinfo) is the root filesystem itself. A dir moved off
 	// /rag is moved onto a store filesystem; landing on `/` means that
 	// filesystem is not mounted (or was never set up), and a qdrant started
-	// there writes its collections onto the root fs. Error. PR2 emits a unit
-	// mount condition from configured store roots; until then this is the
-	// check.
+	// there writes its collections onto the root fs. Error. The instance
+	// supervisor makes the same check before it starts the store (PR2).
 	QdrantDataDirRootNotMounted = "qdrant_data_dir_root_not_mounted"
 
 	// QdrantDataDirDropped: a re-adoption found the row's qdrant leg no longer

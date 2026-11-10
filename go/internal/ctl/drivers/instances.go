@@ -54,6 +54,11 @@ type RealInstances struct {
 	// never loosen a bind Roots already governs. They never reach the files,
 	// git, build or proc drivers: being bindable is not being writable by the ctl.
 	ExtraRoots []BindRoot
+	// ConfigErr is set by NewReal when the root configuration it was handed
+	// is unusable (CheckStoreDataRoots). Every Run and every bind is then
+	// refused with it: a driver that dropped the bad roots and carried on
+	// would start some stores and refuse others for a reason nobody could see.
+	ConfigErr error
 	// Env is apptainer's OWN environment for a call in jobs.NamespaceCtl:
 	// APPTAINER_CACHEDIR and APPTAINER_CONFIGDIR under the ctl's state dir.
 	// The instance registry lives under the config dir, so a `list` or a
@@ -217,6 +222,10 @@ func parseInstanceList(stdout []byte) ([]jobs.Instance, error) {
 func (i *RealInstances) Run(ctx context.Context, spec jobs.InstanceSpec) error {
 	if err := checkInstanceName(spec.Name); err != nil {
 		return err
+	}
+	if i.ConfigErr != nil {
+		return fmt.Errorf("%w: this instance driver was built from an unusable root configuration, so it "+
+			"starts nothing: %v", jobs.ErrRefused, i.ConfigErr)
 	}
 	sif, err := checkSIF(spec.SIF)
 	if err != nil {

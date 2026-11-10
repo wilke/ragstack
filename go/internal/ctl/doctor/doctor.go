@@ -116,6 +116,12 @@ type Options struct {
 	// falls back to DefaultAPIBindRoots. image_dir_outside_bind_roots is
 	// raised for a GOWE_IMAGE_DIRS entry outside all of them.
 	APIBindRoots []string
+	// StoreDataRoots are CTL_STORE_DATA_ROOTS: the roots a row's moved qdrant
+	// dir may be strictly under, besides its own data_dir. Nil reads the
+	// process environment, then <ctl config dir>/ctl.env (the same order
+	// api.StoreDataRootsFrom uses); an explicitly empty slice is "none".
+	// qdrant_data_dir_outside_roots is raised for a dir outside all of them.
+	StoreDataRoots []string
 	// AllowedEndpointHosts is CTL_ALLOWED_ENDPOINT_HOSTS, resolved (#714).
 	// Nil reads the process environment, then <ctl config dir>/ctl.env, then
 	// the default (loopback and this host). endpoint_host_not_allowed is
@@ -1130,25 +1136,17 @@ func (d *run) storeChecks(t *registry.Tenant) {
 
 // qdrantDataDirChecks are the host facts of a row that moves its qdrant data
 // dir (stores.qdrant.data_dir). Nothing is raised for a row without one.
-// Store-root containment (configured store roots) is a later PR; this checks
-// only what would make the ctl's own drivers refuse the dir today.
+// Containment is registry.Tenant.QdrantDataDirAllowed over the configured
+// store roots — the rule the ops refuse with — so this finding and a refused
+// start or backup always agree.
 func (d *run) qdrantDataDirChecks(t *registry.Tenant) {
 	q := t.Stores.Qdrant.DataDir
 	if q == "" || t.Stores.Qdrant.Ownership != registry.OwnershipExclusive {
 		return
 	}
-	inRoots := false
-	for _, r := range []string{d.roots.DataDir, d.roots.CtlConfigDir, d.roots.CtlStateDir, d.roots.BackupsDir, d.roots.ReposDir} {
-		if r != "" && q != filepath.Clean(r) && under(q, r) {
-			inRoots = true
-			break
-		}
-	}
-	if !inRoots {
-		d.add(model.LevelWarn, QdrantDataDirOutsideRoots, t.Name, fmt.Sprintf(
-			"stores.qdrant.data_dir %s is outside the ctl's approved roots (%s, %s, %s, %s, %s): the instance driver "+
-				"would refuse its bind and the files driver would refuse to move a snapshot out of it",
-			q, d.roots.DataDir, d.roots.CtlConfigDir, d.roots.CtlStateDir, d.roots.BackupsDir, d.roots.ReposDir))
+	if err := t.QdrantDataDirAllowed(d.storeDataRoots()); err != nil {
+		d.add(model.LevelError, QdrantDataDirOutsideRoots, t.Name, err.Error()+
+			": start and backup refuse this row until it is")
 	}
 	if rag := filepath.Clean(d.roots.RagRoot); d.roots.RagRoot != "" && !under(q, rag) {
 		if mp, fs, err := d.host.MountOf(q); err == nil && mp == "/" {

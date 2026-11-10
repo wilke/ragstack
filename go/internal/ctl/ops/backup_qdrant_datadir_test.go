@@ -42,7 +42,9 @@ func TestBackupMovesQdrantSnapshotsAcrossFilesystems(t *testing.T) {
 				}
 			}
 		}
-		p := plan(t, oc, "backup", map[string]any{"fence": true})
+		// The moved dir is admitted by a store data root (PR2); without one
+		// the plan refuses (TestBackupRefusesAQdrantDirOutsideEveryRoot).
+		p := planStoreRoots(t, oc, []string{"/rag/stores2"}, "backup", map[string]any{"fence": true})
 		r := newRunner(oc, fake)
 		r.runAll(t, p)
 

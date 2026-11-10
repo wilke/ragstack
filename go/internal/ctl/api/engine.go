@@ -97,6 +97,12 @@ type EngineConfig struct {
 	// DefaultAPIBindRoots. SetAPIBindRootsFromEnv fills it; the daemon and the
 	// --direct CLI both call it.
 	APIBindRoots []drivers.BindRoot
+	// StoreDataRoots are CTL_STORE_DATA_ROOTS, parsed: the directories a
+	// row's moved store data may live under. Nil is none. They join the files
+	// and instance drivers' approved roots (real and fake alike), the ops'
+	// containment rule and doctor. SetStoreDataRootsFromEnv fills it; the
+	// daemon and the --direct CLI both call it.
+	StoreDataRoots []string
 	// AllowedEndpointHosts is CTL_ALLOWED_ENDPOINT_HOSTS, resolved (#714).
 	// Nil takes settings.DefaultAllowedHosts. SetAllowedEndpointHostsFromEnv
 	// fills it; the daemon and the --direct CLI both call it.
@@ -313,6 +319,19 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 	for _, r := range bindRoots {
 		bindRootPaths = append(bindRootPaths, r.Path)
 	}
+	// The store roots (CTL_STORE_DATA_ROOTS) are checked HERE against the
+	// approved roots and the bind roots, so an overlapping configuration
+	// refuses the daemon's start (and a --direct run) with the reason, rather
+	// than building an instance driver that refuses every start.
+	storeRoots := append([]string{}, cfg.StoreDataRoots...)
+	approvedRoots := []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir, cfg.Roots.ReposDir}
+	{
+		check := cfg
+		check.APIBindRoots = bindRoots
+		if err := CheckStoreDataRootsConfig(check); err != nil {
+			return nil, nil, err
+		}
+	}
 	allowedHosts := cfg.AllowedEndpointHosts
 	if allowedHosts == nil {
 		host, _ := os.Hostname()
@@ -324,7 +343,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		// defaults to; with none, every write is a containment refusal.
 		opts := drivers.FakeOptions{
 			Now:   cfg.Now,
-			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir, cfg.Roots.ReposDir},
+			Roots: append(append([]string(nil), approvedRoots...), storeRoots...),
 		}
 		if f, err := loadFleet(); err == nil {
 			// The whole in-memory host, seeded from the fixture fleet: the env
@@ -333,6 +352,10 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			// against a host that matches the registry it planned from.
 			opts = FixtureDrivers(cfg.Roots, f, cfg.Now)
 			opts.Roots = append(opts.Roots, cfg.Roots.ReposDir)
+			// The store roots, as the real files driver takes them: a fake
+			// that refused a write under /qdrant the host would accept (or the
+			// reverse) would be a conformance run vouching for the wrong thing.
+			opts.Roots = append(opts.Roots, storeRoots...)
 			// The fixture host knows what a prepared artifact is: its worktree
 			// has node_modules (Build.UI refuses without them, exactly as the
 			// real driver does) and its sha resolves in the mirror. Without
@@ -382,6 +405,9 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			// roots (PR-F). Instance binds ONLY: the files, git, build and
 			// proc drivers keep the approved roots and nothing else.
 			ExtraBindRoots: bindRoots,
+			// The store roots: WRITE roots of the files and instance drivers
+			// only, under the approved roots' strict rule (drivers/real.go).
+			StoreDataRoots: storeRoots,
 		})
 	}
 
@@ -412,6 +438,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			CtlGID:             ctlGID,
 			SudoersGroup:       fleet.DefaultSudoersGroup,
 			ExternalStorePorts: hostfacts.DefaultExternalStorePorts,
+			StoreDataRoots:     storeRoots,
 		})
 		if resp == nil {
 			return model.DoctorResponse{}, errors.New("doctor returned nothing")
@@ -431,6 +458,8 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			Sealer:               backupSealer(cfg.Roots, cfg.Logger),
 			AllowedEndpointHosts: allowedHosts,
 			APIBindRoots:         bindRootPaths,
+			StoreDataRoots:       storeRoots,
+			MountOf:              host.MountOf,
 		}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,

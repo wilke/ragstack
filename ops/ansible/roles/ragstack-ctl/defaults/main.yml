@@ -41,3 +41,8 @@ ctl_node_bin: "{{ rag_root }}/tools/node/current/bin/node"
 ctl_npm_bin: "{{ rag_root }}/tools/node/current/bin/npm"
 ctl_mirror: "{{ rag_root }}/repos/ragstack.git"
 ctl_npm_cache: "{{ rag_root }}/cache/npm"
+# CTL_STORE_DATA_ROOTS: directories a tenant's MOVED store data may live under
+# (stores.qdrant.data_dir), comma-separated absolute clean paths, NO :ro/:rw
+# suffix. Empty renders no row (none; nothing changes). On coconut: /qdrant.
+# The daemon reads ctl.env at start, so a change needs a daemon restart.
+ctl_store_data_roots: ""
