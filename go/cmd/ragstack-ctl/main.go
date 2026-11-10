@@ -1350,6 +1350,7 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-ui-mode <name> static|external [--ui-port P]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-bind <name> 127.0.0.1|0.0.0.0")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-supervisor <name> manual|instance [--desired-boot enabled|disabled]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant set-store-dir <name> --store qdrant (--dir ABS_PATH | --clear) [--direct] [--dry-run]")
 		fmt.Fprintln(stderr, "       ragstack-ctl tenant handover <name> --release|--take --token T|--commit|--abandon")
 		return exitUsage
 	}
@@ -1380,6 +1381,8 @@ func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return cmdTenantSetBind(args[1:], registryPath, ragRoot, jsonOut)
 	case "set-supervisor":
 		return cmdTenantSetSupervisor(args[1:], registryPath, ragRoot, jsonOut)
+	case "set-store-dir":
+		return cmdTenantSetStoreDir(args[1:], registryPath, ragRoot, jsonOut)
 	case "handover":
 		// A handover is the one verb whose phases run as two different
 		// accounts; the command is in handover.go with the protocol it drives.

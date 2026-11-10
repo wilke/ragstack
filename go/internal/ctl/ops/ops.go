@@ -229,6 +229,10 @@ func NewRegistry(d Deps) jobs.Registry {
 	// is not destructive; what it can do wrong is claim a supervisor this
 	// account cannot act as, which its own precondition refuses.
 	add("set-supervisor", false, planSetSupervisor)
+	// set-store-dir writes ONE registry field (and restart_pending) for a
+	// tenant whose qdrant is already stopped, and copies nothing, so it is not
+	// destructive. CLI-only and --direct-only (ops/setstoredir.go).
+	add("set-store-dir", false, planSetStoreDir)
 	add("gateway-apply", false, planGatewayApply)
 	add("gateway-reload", false, planGatewayReload)
 	add("settings-put", false, planSettingsPut)

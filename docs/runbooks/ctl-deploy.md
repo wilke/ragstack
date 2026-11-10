@@ -486,13 +486,13 @@ and the store parents `elasticsearch/`, `postgres/`, `ui/` — so
 `<data_dir>/elasticsearch` and `<data_dir>/postgres/x` are both refused. A
 sibling such as `<data_dir>/qdrant-b` is legal.
 
-**Setting it (hand-edit only until PR3).** Nothing sets the field today. Set it
+**Setting it.** `ragstack-ctl tenant set-store-dir <name> --store qdrant --dir <dir>` (or `--clear` to go back to `<data_dir>/qdrant`) writes the field and `restart_pending`, CLI-only and `--direct` only; it refuses unless the qdrant is exclusive and stopped and the dir holds `storage/` + `snapshots/` on a mounted volume under the roots below — the procedure with rollback is [qdrant-data-dir.md](qdrant-data-dir.md). Set it
 only after **every** ctl binary on the host — the daemon, the CLI, and anything
 cron runs — is a build that knows the field: an older binary refuses a
 registry carrying an unknown member, which would take the whole control plane
-down. Stop the store, move `storage/` and `snapshots/`, hand-edit the row, then
-check the edit with `ragstack-ctl registry validate` (read-only: it loads the
-file the way every reader does and writes nothing) before starting anything.
+down. `ragstack-ctl registry validate` (read-only: it loads the file the way
+every reader does and writes nothing) checks the registry with the binary you
+run it as.
 
 **Where the dir may be (PR2).** A row's `stores.qdrant.data_dir` is honoured
 only when it is **strictly under** a `CTL_STORE_DATA_ROOTS` entry (see the
@@ -575,7 +575,8 @@ For `/qdrant` on coconut, in order:
    granted account the owner entry adds nothing — so without such a grant,
    wilke has **no** access to the files svcbvbrc creates under `/qdrant`.
    Grant per tenant dir rather than making the root group-writable.
-4. Move the store and hand-edit the row as above.
+4. Move the store and repoint the row with `tenant set-store-dir`
+   ([qdrant-data-dir.md](qdrant-data-dir.md)).
 
 **Before a start (instance supervisor).** For a row whose qdrant dir is off the
 default layout, the start step checks — before the instance is run, and

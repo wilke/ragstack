@@ -88,7 +88,7 @@ var (
 	enumUIMode        = []string{UIModeStatic, UIModeDev, UIModeExternal}
 	enumSupervisor    = []string{"systemd", "manual", "instance"}
 	enumOwner         = []string{"svcbvbrc", "wilke"}
-	enumState         = []string{"provisioned", "active", "stopped", "migrating", StateHandover, StateQuarantined, "decommissioned"}
+	enumState         = []string{"provisioned", "active", "stopped", "migrating", StateHandover, StateQuarantined, StateDecommissioned}
 	enumDesiredBoot   = []string{"enabled", "disabled"}
 	enumEnvLayout     = []string{"legacy", "managed"}
 	enumRole          = []string{"admin", "user"}
