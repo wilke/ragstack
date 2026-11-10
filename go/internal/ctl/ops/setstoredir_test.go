@@ -239,7 +239,12 @@ func TestSetStoreDirWritesTheFieldAndRestartPendingOnly(t *testing.T) {
 	oc, fake := storeDirFixture(t, nil)
 	row := oc.Fleet.Tenants["dev"]
 	row.RestartPending = false
-	want := *row
+	// A deep copy: a shallow one shares last_ops' map with the row, and would
+	// see a last_ops entry the op wrongly added as "expected".
+	var want registry.Tenant
+	if err := json.Unmarshal([]byte(rowJSON(t, row)), &want); err != nil {
+		t.Fatal(err)
+	}
 	want.Stores.Qdrant.DataDir = movedQdir
 	want.RestartPending = true
 	gen := oc.Fleet.Generation
@@ -313,6 +318,7 @@ func TestSetStoreDirIsIdempotent(t *testing.T) {
 func TestSetStoreDirClearRoundTrip(t *testing.T) {
 	oc, fake := storeDirFixture(t, nil)
 	orig, _ := json.Marshal(oc.Fleet.Tenants["dev"].Stores.Qdrant)
+	lastOpsBefore := len(oc.Fleet.Tenants["dev"].LastOps)
 	if _, err := runStoreDir(t, oc, fake, mountedOn("/qdrant"), setDirArgs(movedQdir)); err != nil {
 		t.Fatalf("set: %v", err)
 	}
@@ -335,8 +341,8 @@ func TestSetStoreDirClearRoundTrip(t *testing.T) {
 	if p.Result()["previous_data_dir"] != movedQdir {
 		t.Errorf("result = %v", p.Result())
 	}
-	if _, ok := row.LastOps["set-store-dir"]; ok {
-		t.Error("set-store-dir recorded a last_ops entry")
+	if len(row.LastOps) != lastOpsBefore {
+		t.Errorf("set-store-dir changed last_ops: %v", row.LastOps)
 	}
 }
 
