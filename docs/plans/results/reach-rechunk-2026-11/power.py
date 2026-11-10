@@ -79,8 +79,10 @@ is small. This is a property of the data the design can produce, not of the conv
 *In the simulation* the NI decision uses the standardised form z > z_0.95 (normal approximation of
 the randomisation distribution; the exact convolution costs ~0.1-1 s per test, too slow for the grid).
 The **validation block** computes the exact randomisation p for a subsample of simulated studies in
-three cells (the sizing case at the boundary Delta = -2 and at Delta = 0, and the worst size corner)
-and reports the decision agreement, the rejection rates and the largest |p_exact - p_normal|.
+four cells (the sizing case at the boundary Delta = -2 and at Delta = 0 for delta = 2, the worst size
+corner, and -- appended after the grid -- the owner's delta = 3 at its boundary Delta = -3 under the
+sizing case) and reports the decision agreement, the rejection rates and the largest
+|p_exact - p_normal|.
 
 **Superiority (hierarchical, after NI).** H0: Delta <= 0 by the sign-flip over papers on the integer
 cluster sums T_k (exact randomisation p by the same convolution; under exchangeable S and W within a
@@ -91,7 +93,9 @@ z = sum T_k / sqrt(sum T_k^2) > z_0.95 and validated like NI.
 **Outputs** (``power.json``): the assumptions; one cell per (true Delta, discordance, rho_paper,
 rho_record), each with the NI power for delta in {1, 2, 3} points (score, Wald, Johnson), the
 hierarchical superiority power, the design effect and the per-corpus rates used; size cells at
-Delta = -delta for every delta; the raw-exclusion sensitivity; the validation block; power tables at
+Delta = -delta for every delta; the raw-exclusion sensitivity; the validation block; ``beyond_grid``
+(10 % is the grid's top, not a bound: discordance 15 % at true 0 and -1 and its delta = 3 size cell,
+sizing correlation, simulated after everything else so the grid's numbers are unchanged); power tables at
 three correlation settings; the recommendation (rule, power and size at the sizing case, and the
 owner's delta = 2 by discordance); provenance (script sha256, Python, git commit and dirty flag).
 """
@@ -133,6 +137,14 @@ PAPER_SIZES_RAW = {1: 27, 2: 93, 3: 284}  # 404 papers, 1,065 records
 #: the sizing case for the recommendation (assumed, not estimated; see the module doc)
 SIZING = {"discordance": 0.10, "rho_paper": 0.0, "rho_record": 0.75, "true_pts": 0}
 TARGET_RULE = 0.90
+#: beyond the grid (PREREG §5): 10 % is the grid's top, not a bound. At Delta = 0 the discordance can
+#: reach 2 x the pooled W miss rate (~19 %); one cell at 15 % under the sizing correlation, simulated
+#: after every grid cell so the grid's random stream (and every number above) is unchanged
+BEYOND_DISCORDANCE = 0.15
+BEYOND_TRUE_PTS = (0, -1)
+BEYOND_SIZE_DELTA = 3
+#: the delta = 3 validation cell (exact vs normal), at the boundary Delta = -3 under the sizing case
+VALID_DELTA3 = {"true_pts": -3, "delta_pts": 3}
 
 
 def seed_int(seed: str) -> int:
@@ -462,6 +474,26 @@ def main(argv: list[str] | None = None) -> int:
         # the worst size corner of the grid: does the exact randomisation p rescue it? (it does not)
         valid.append(validate(rng, -2, 0.02, 0.25, 0.25, 2, a.valid))
 
+    # --- appended after every grid draw above (the grid's stream is unchanged; PREREG §5) ---
+    if a.valid > 0:
+        # the delta = 3 test (the owner's margin) at its boundary under the sizing case
+        valid.append(validate(rng, VALID_DELTA3["true_pts"], SIZING["discordance"], SIZING["rho_paper"],
+                              SIZING["rho_record"], VALID_DELTA3["delta_pts"], a.valid))
+    beyond: dict[str, object] = {
+        "discordance": BEYOND_DISCORDANCE, "rho_paper": SIZING["rho_paper"], "rho_record": SIZING["rho_record"],
+        "note": "10 % is the top of the grid, not a bound: at Delta = 0 the S-W discordance can reach about "
+                "2 x the pooled W miss rate (~19 %); simulated after the grid, sizing correlation",
+        "max_discordance_at_true_0": round(2 * sum(1 - w for w in W_BASELINE.values()) / len(W_BASELINE), 4),
+        "cells": [], "size_cell": None}
+    for tp in BEYOND_TRUE_PTS:
+        beyond["cells"].append(simulate_cell(rng, tp, BEYOND_DISCORDANCE, SIZING["rho_paper"],  # type: ignore[union-attr]
+                                             SIZING["rho_record"], a.sims))
+    bc = simulate_cell(rng, -BEYOND_SIZE_DELTA, BEYOND_DISCORDANCE, SIZING["rho_paper"], SIZING["rho_record"],
+                       a.sims, deltas=(BEYOND_SIZE_DELTA,))
+    beyond["size_cell"] = None if bc is None else {
+        "delta_pts": BEYOND_SIZE_DELTA, **{f"size_{t}": bc[f"ni_power_{t}"][str(BEYOND_SIZE_DELTA)]  # type: ignore[index]
+                                           for t in ("score", "wald", "johnson")}}
+
     def find(tp, pi, rp, rr):
         return next(c for c in cells if c["true_pts"] == tp and c["discordance"] == pi
                     and c["rho_paper"] == rp and c["rho_record"] == rr)
@@ -533,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
                   "at_0.05": round(math.sqrt(0.0475 / a.sims), 4)},
         "cells": cells, "skipped_cells": skipped, "size_cells": size_cells,
         "max_size_score": max_size, "size_summary_max_over_rho": size_summary,
-        "raw_exclusion_cells": raw, "validation": valid,
+        "raw_exclusion_cells": raw, "validation": valid, "beyond_grid": beyond,
         "sizing_case": SIZING, "power_tables": tables, "hier_superiority_table_sizing": sup_table,
         "recommendation": rec_block,
         "provenance": {"script_sha256": hashlib.sha256(here.read_bytes()).hexdigest(),
@@ -543,7 +575,7 @@ def main(argv: list[str] | None = None) -> int:
     a.out.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"recommendation": rec_block, "max_size_score": max_size, "size_summary": size_summary,
                       "power_tables": tables, "hier_superiority_table_sizing": sup_table,
-                      "validation": valid}, indent=1))
+                      "validation": valid, "beyond_grid": beyond}, indent=1))
     return 0
 
 
