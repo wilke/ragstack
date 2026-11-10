@@ -1,4 +1,4 @@
-# Pre-registration: does the adopted chunking cost reach? (fixed 512-token windows vs boundary-respecting chunks) — DRAFT v0, 2026-11-09
+# Pre-registration: does the adopted chunking cost reach? (fixed 512-token windows vs boundary-respecting chunks) — DRAFT v1, 2026-11-09
 
 STATUS: DRAFT. Not frozen. The owner decided confirmatory (2026-11-09). The freeze follows the alias
 study's procedure (signed tag, private sha file) after two independent reviews. Open questions for the owner
@@ -27,8 +27,8 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 - **J (judged):** found@10 with the frozen alias judge.
 
 **Hypotheses.** These depend on the owner's choice in §11 Q2. The draft takes non-inferiority as primary:
-- **HQ:** quote@10(S) − quote@10(W) > −δ. The draft uses δ = 2 points, an owner decision. If non-inferiority
-  holds, superiority is tested next (hierarchical, no extra α).
+- **HQ:** quote@10(S) − quote@10(W) > −δ, with **δ = 3 points** (owner, 2026-11-09, from `power.json`). If
+  non-inferiority holds, superiority is tested next (hierarchical, no extra α).
 - **HJ:** the same, for judged found@10.
 
 ## 2. Data (fixed before any S-side outcome exists)
@@ -36,8 +36,9 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 - **Questions.** The alias study's 1,091 accepted records (900 balanced + 191; private). The questions,
   answers and quotes are unchanged.
   - Each record carries a `quote`, about 160 characters (range 18–300), taken from its gold chunk.
-  - 1,065 of the 1,091 quotes are verbatim substrings of the gold chunk's text (drafting session, read-only
-    count). The handling of the 26 others is §11 Q4.
+  - After whitespace normalisation, the same normalisation quote@10 uses, 1,089 of the 1,091 quotes are
+    verbatim in their gold chunk (`feasibility.json` `eligibility`; 1,065 without normalisation). The 2 others
+    are excluded from Q and kept in J (§11 Q4).
 - **W side (existing).** The alias study's committed stage-A retrieval runs, legs `<corpus>/none`, which hold
   each record's ranked chunk ids under default, norerank and BM25. The text comes from the W chunk exports.
   Nothing new is run on the W side.
@@ -51,7 +52,9 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 ## 3. Outcomes
 
 - **quote@10 (Q).** A question is found when the union of its top-10 chunks covers at least 90 % of the
-  quote's characters, after whitespace normalisation. This is the OA evaluation's definition.
+  quote's characters, after whitespace normalisation. This is the OA evaluation's definition, implemented once
+  as `quote_cover` / `quote_hit` in `python/scripts/eval/reach_quote.py` (tested). One function scores both
+  sides.
   - It is chunking-symmetric: a quote split across two retrieved chunks counts.
   - It needs no judge.
   - It credits only the gold location.
@@ -65,31 +68,77 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
   - Remaining labels come from new judging with the frozen judge: alias-judge prompts, C/E, Argon tiebreak,
     Opus drift reference. New (record, chunk) pairs are built with `build-control --any-paper`, the stage-1b
     mode.
+- **Judge drift check** (owner, 2026-11-09). W's labels are from 2026-11-04/06; S's will be new. At run time, a
+  seeded 5 % sample of the W (record, chunk) pairs that J uses (seed `261109|reach|drift|W`; ≈ 615 of
+  12,310) is re-judged by the frozen judge. The report gives the agreement between the original and the new
+  labels, overall and by original label. This is descriptive and does not enter the test. If agreement on
+  W's *answers* labels falls below 0.90, the J result carries a *judge drift* caveat.
 - **Context tokens per query** (top 10, SFR tokenizer): descriptive.
 
 ## 4. Tests and families
 
 - **Primary cell** (§11 Q1). The default retriever, pooled over the four corpus collections, with records
   clustered by paper.
-- **Statistic.** The paired difference per record, S − W, in {−1, 0, +1}. The test is an exact sign-flip
-  over papers (clusters of the 2 G + 1 C records), one-sided, as non-inferiority against −δ. Each family is
-  tested at α = 0.05 on its own (Q and J).
+- **Clusters.** 408 papers holding 1,089 eligible records: 25, 85 and 298 papers with 1, 2 and 3 records.
+  Each record contributes one paired difference per corpus.
+- **Statistic.** The paired difference per record and corpus, S − W, in {−1, 0, +1}. For non-inferiority, a
+  sign-flip over papers on the null-shifted cluster sums X_k = T_k + m_k·δ (m_k = the cluster's paired
+  differences), one-sided, α = 0.05. The p is computed exactly by lattice convolution
+  (`power.py` `sign_flip_p_exact`). Superiority, after non-inferiority, is the exact sign-flip on T_k. Each
+  family (Q, J) is tested at α = 0.05 on its own.
+- **Size, declared.** The randomisation p is exact, but the composite null does not make d + δ
+  sign-symmetric, so the test's size is only asymptotically α.
+  - Simulated size at the sizing case: 0.0545 (`power.json` `recommendation.size_at_sizing_case`).
+  - Up to 0.0775 at 2 % discordance under the measured correlations.
+  - Up to 0.138 in the worst grid cell (`power.json` `size_cells`).
+
+  A rejection at low observed discordance is reported with this caveat.
 - **Secondary, not tested.** Each corpus and each retriever separately; G vs C records; context tokens;
   discordant records broken down by coverage of the gold window under S.
 
-## 5. Power
+## 5. Power (`power.py`, `power.json`, seeded `261109|reach|rechunk|power`, 10,000 studies per cell)
 
-Not computed yet (§10). The W baseline quote@10 (read-only count, committed data):
+**W baseline quote@10** (`feasibility.json` `w_side`, the committed scorer, eligible records):
 
 | corpus | default | norerank | BM25 |
 |---|---|---|---|
 | base | 94.2 % | 86.8 % | 82.3 % |
-| neighbour | 87.6 % | 74.1 % | 73.8 % |
+| neighbour | 87.7 % | 74.0 % | 73.7 % |
 | random-1 | 90.0 % | 78.8 % | 77.3 % |
 | random-2 | 89.5 % | 78.9 % | 77.2 % |
 
-The ceiling on the base corpus limits superiority, not non-inferiority. A seeded simulation, `power.py`, will
-size δ and the discordance assumptions: discordance rates of 2–10 %, within-paper correlation 0–0.5.
+**Correlations**, from a W-only proxy (`feasibility.json` `w_miss_correlation`):
+- misses of the same record correlate 0.74 across corpora;
+- different records of the same paper correlate 0.005.
+
+The sizing case therefore takes ρ_record 0.75 and ρ_paper 0. The design effect is about 3.2: the four corpora
+add far less than four times the information.
+
+**Non-inferiority power** at true Δ = 0 under the sizing case (`power.json` `recommendation`):
+
+| discordance | δ = 1 | δ = 2 | δ = 3 |
+|---|---|---|---|
+| 2 % | 0.82 | 1.00 | 1.00 |
+| 5 % | 0.50 | 0.95 | 1.00 |
+| 10 % | 0.32 | 0.76 | **0.97** |
+
+δ = 3 is the smallest margin with power ≥ 0.90 at 10 % discordance. 10 % is the top of the grid, because S's
+discordance cannot be observed before S exists. At true Δ = −1 and 10 % discordance, power is 0.75.
+
+**Hierarchical superiority** (sizing correlation): at true +1, power is 0.30, 0.49 and 0.86 for 10, 5 and 2 %
+discordance; at true +2, it is 0.76, 0.96 and 1.00. With the base corpus at 94 %, superiority is weak unless
+discordance is low.
+
+**Sensitivity.** Excluding the 26 raw non-verbatim quotes instead (1,065 records) gives practically the same
+power (`raw_exclusion_cells`).
+
+**J judging load** (`feasibility.json`):
+- **W:** needs no new judging. All 12,310 (record, chunk) pairs in its no-hit top-10 lists already carry a
+  final label.
+- **S:** estimated at the same miss rate, all three retrievers: about 12,300 new pairs, about 24.6k Qwen
+  calls. That means about 860 / 1,480 / 2,090 Argon calls at 7 / 12 / 17 % escalation, and about 615 Opus
+  calls.
+- **Drift check:** about 615 more pairs.
 
 ## 6. Procedure
 
@@ -113,6 +162,9 @@ size δ and the discordance assumptions: discordance rates of 2–10 %, within-p
   which the confirmatory test showed penalises answers split across S chunks.
 - The W runs date from 2026-11-04 and the S runs will be later. Same server settings; tools image and API
   versions to be recorded.
+- J asymmetry: W's labels come from the 2026-11-04/06 judge runs and S's from new judging, so any judge drift
+  lands on S only. The content-hash reuse rule will rarely apply, because S and W chunk texts are seldom
+  identical. The drift check (§3) measures this.
 - 19 documents chunk differently in the image than in the host export (rechunk DEVIATIONS D-5). The S side
   uses the collections as built.
 
@@ -135,7 +187,7 @@ then a signed annotated tag, then the run. After the freeze, any change is a dat
 | question | owner's answer |
 |---|---|
 | Q1: primary cell | **default retriever, pooled over the 4 corpora**, records clustered by paper |
-| Q2: hypothesis | **non-inferiority, δ = 2 points, then superiority** (hierarchical, no extra α); δ is confirmed after the power simulation |
-| Q3: J judging scope | **all three retrievers** (default, norerank and BM25 are all judged; J's primary is still the default retriever) |
-| Q4: 26 non-verbatim quotes | **excluded from Q**, kept in J |
+| Q2: hypothesis | **non-inferiority, then superiority** (hierarchical, no extra α); **δ = 3 points** (owner, 2026-11-09, after the power simulation: δ = 2 had power 0.76 at 10 % discordance) |
+| Q3: J judging scope | **all three retrievers** (J's primary is still the default retriever), **plus a W re-judge drift check** on a seeded 5 % sample (owner, 2026-11-09, after the load estimate: about 12,300 new S pairs) |
+| Q4: non-verbatim quotes | restated by the owner (2026-11-09): **only the 2 that fail after whitespace normalisation are excluded from Q**, and they are kept in J; 1,089 records in Q |
 | Q5: 218 records retrieved on S in stage 1 | **kept** (no S-side outcome was ever computed for them; declared in §2) |
