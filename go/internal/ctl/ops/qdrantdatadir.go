@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
+	"github.com/ragstack/ragstack/internal/ctl/storeroots"
 )
 
 // refuseQdrantDataDir is the PLAN-time half: a row whose stores.qdrant.data_dir
@@ -30,8 +32,9 @@ func (p *planner) refuseQdrantDataDir(verb string) error {
 
 // qdrantDataDirPrecheck is the RUN-time half, made immediately before the
 // instance is started: for a row whose qdrant dir is off the default layout,
-// `<dir>`, `<dir>/storage` and `<dir>/snapshots` must each exist, be a
-// directory and not be a symlink, and — for a dir outside the rag root — the
+// every component from the admitting root down to `<dir>`, and
+// `<dir>/storage` and `<dir>/snapshots`, must each exist, be a directory and
+// not be a symlink, and — for a dir outside the rag root — the
 // deepest mount holding it must not be `/`. A failure is a refusal and nothing
 // is started.
 //
@@ -44,12 +47,35 @@ func (p *planner) refuseQdrantDataDir(verb string) error {
 // on /rag's own mount, which everything else the ctl runs is already on — the
 // same exemption doctor's qdrant_data_dir_root_not_mounted makes.
 func qdrantDataDirPrecheck(ctx context.Context, sc *jobs.StepContext, tp paths.Tenant, ragRoot string,
-	mountOf func(string) (string, string, error)) (string, error) {
+	storeRoots []string, mountOf func(string) (string, string, error)) (string, error) {
 	if !tp.QdrantOffLayout() {
 		return "", nil
 	}
 	dir := tp.QdrantDir
-	for _, p := range []string{dir, tp.QdrantStorage, tp.QdrantSnapshots} {
+	// EVERY component from the root that admits the dir (a store root, or
+	// the row's own data_dir) down to the dir is checked, not just the leaf:
+	// `ln -s /rag/data/tenants/victim /qdrant/tenants` leaves dir, storage/
+	// and snapshots/ all real directories while the store runs inside
+	// another tenant's tree (review F1). The root itself may be a link — that
+	// is the operator's layout — but nothing below it may.
+	root := storeroots.Governing(dir, storeRoots)
+	if root == "" {
+		if _, err := paths.SafePath(filepath.Clean(tp.DataDir), dir); err == nil {
+			root = filepath.Clean(tp.DataDir)
+		}
+	}
+	if root == "" {
+		return "", fmt.Errorf("%w: the moved qdrant dir %s is under no store data root and not under %s",
+			jobs.ErrRefused, dir, tp.DataDir)
+	}
+	rel, _ := filepath.Rel(root, dir)
+	var chain []string
+	cur := root
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		chain = append(chain, cur)
+	}
+	for _, p := range append(chain, tp.QdrantStorage, tp.QdrantSnapshots) {
 		st, err := sc.Ops.Drivers.Files().Stat(ctx, p)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -75,6 +101,9 @@ func qdrantDataDirPrecheck(ctx context.Context, sc *jobs.StepContext, tp paths.T
 		return "", fmt.Errorf("%w: the moved qdrant dir %s is outside %s and this engine has no mount table to "+
 			"check it against; it is not started on a filesystem nobody looked at", jobs.ErrRefused, dir, ragRoot)
 	}
+	// MountOf resolves the dir through a symlinked store root first
+	// (hostfacts), so /qdrant -> /mnt/vol answers the volume's mount (F3). A
+	// store root that really is on the root filesystem is still refused.
 	mp, fsType, err := mountOf(dir)
 	if err != nil {
 		return "", fmt.Errorf("%w: finding the mount that holds %s: %v", jobs.ErrRefused, dir, err)

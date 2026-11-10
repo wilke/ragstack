@@ -7,6 +7,7 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
+	"github.com/ragstack/ragstack/internal/ctl/storeroots"
 )
 
 // BindRoot is one directory the instance driver may bind from beyond the
@@ -68,31 +69,12 @@ func CheckBindRoot(r BindRoot) error {
 //
 // Every failure is jobs.ErrRefused and names the entry.
 func CheckStoreDataRoots(store, approved []string, extra []BindRoot) error {
-	overlap := func(a, b string) bool { return underOrAt(a, b) || underOrAt(b, a) }
-	for i, r := range store {
-		if err := CheckBindRoot(BindRoot{Path: r}); err != nil {
-			return fmt.Errorf("%w: store data root %q: %v", jobs.ErrRefused, r, err)
-		}
-		for _, o := range store[:i] {
-			if overlap(r, o) {
-				return fmt.Errorf("%w: store data roots %s and %s overlap (one is, or is under, the other)",
-					jobs.ErrRefused, o, r)
-			}
-		}
-		for _, a := range approved {
-			if a != "" && overlap(r, filepath.Clean(a)) {
-				return fmt.Errorf("%w: store data root %s overlaps the approved root %s; a store root is a "+
-					"directory of its own (a separate volume), never one of, inside or around the ctl's roots",
-					jobs.ErrRefused, r, a)
-			}
-		}
-		for _, e := range extra {
-			if overlap(r, e.Path) {
-				return fmt.Errorf("%w: store data root %s overlaps the API bind root %s (CTL_API_BIND_ROOTS); "+
-					"the most specific root decides a bind's mode, so the two lists may not share a directory",
-					jobs.ErrRefused, r, e.String())
-			}
-		}
+	bind := make([]string, 0, len(extra))
+	for _, e := range extra {
+		bind = append(bind, e.Path)
+	}
+	if err := storeroots.Check(store, approved, bind); err != nil {
+		return fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 	}
 	return nil
 }
@@ -133,6 +115,8 @@ func (i *RealInstances) containBind(host string, readOnly bool) (string, error) 
 			return "", err
 		}
 		resolved = itself
+	} else if err := storeConfined(host, resolved, i.Store); err != nil {
+		return "", err
 	}
 	if ro, root := i.governingRootIsReadOnly(resolved); ro && !readOnly {
 		return "", fmt.Errorf("%w: %s is under the read-only bind root %s; bind it with :ro",

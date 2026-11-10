@@ -163,8 +163,10 @@ func NewReal(o RealOptions) *Real {
 	// the driver failing closed for any other caller).
 	storeErr := CheckStoreDataRoots(o.StoreDataRoots, o.ApprovedRoots, o.ExtraBindRoots)
 	writeRoots := append([]string(nil), roots...)
+	var storeRoots []string
 	if storeErr == nil {
-		writeRoots = append(writeRoots, o.StoreDataRoots...)
+		storeRoots = append(storeRoots, o.StoreDataRoots...)
+		writeRoots = append(writeRoots, storeRoots...)
 	}
 	// One HTTP client for the three HTTP drivers, so the connection pool, the
 	// redirect refusal and the timeouts are one decision rather than three.
@@ -175,7 +177,7 @@ func NewReal(o RealOptions) *Real {
 		// The files driver writes under the store roots too (a backup's
 		// snapshot move out of a moved qdrant dir); RemoveTree keeps its own
 		// four deletion roots, which no store root joins.
-		files:   &RealFiles{Roots: writeRoots, Tree: TreeRootsOf(o.Roots)},
+		files:   &RealFiles{Roots: writeRoots, Store: storeRoots, Tree: TreeRootsOf(o.Roots)},
 		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
 		// The listener table comes from hostfacts, so this driver and
 		// `doctor` answer a port question from the same parser; the roots
@@ -198,8 +200,8 @@ func NewReal(o RealOptions) *Real {
 		// …and the store roots, so a moved qdrant dir is bound under the same
 		// strict rule as one under the tenant tree.
 		instances: &RealInstances{run: run, Bin: orDefault(o.Apptainer, defaultApptainer), Roots: writeRoots,
-			ConfigErr: storeErr,
-			Env:       apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir),
+			ConfigErr: storeErr, Store: storeRoots,
+			Env: apptainerEnv(o.Roots.CtlStateDir), AccountEnv: apptainerAccountEnv(o.Roots.CtlStateDir),
 			ConfigDir: apptainerConfigDir(o.Roots.CtlStateDir),
 			// Copied: the extra bind roots are fixed at construction too.
 			ExtraRoots: append([]BindRoot(nil), o.ExtraBindRoots...)},
@@ -394,6 +396,10 @@ func describe(res *gateway.Result, err error) (int, string, error) {
 //     about to delete deletes the link and never its target.
 type RealFiles struct {
 	Roots []string
+	// Store are the store roots among Roots (CTL_STORE_DATA_ROOTS). A path
+	// under one is also held to storeConfined: no symlink between the store
+	// root and the leaf.
+	Store []string
 	// Tree are the four roots RemoveTree may delete under (drivers/
 	// removetree.go). The zero value refuses every RemoveTree.
 	Tree TreeRoots
@@ -406,7 +412,55 @@ type RealFiles struct {
 // a deployment whose /rag/data is itself a symlink is a normal host, not an
 // escape) and returns the RESOLVED path the caller must operate on.
 func (f *RealFiles) check(path string) (string, error) {
-	return resolvedContained(path, f.roots())
+	resolved, err := resolvedContained(path, f.roots())
+	if err != nil {
+		return "", err
+	}
+	if err := storeConfined(path, resolved, f.Store); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+// storeConfined is the extra rule a STORE root (CTL_STORE_DATA_ROOTS) adds to
+// resolvedContained: between the store root and the leaf there is no symlink
+// at all, in either direction.
+//
+// resolvedContained accepts a path whose resolved spelling is under ANY
+// approved root, which is right for the ctl's own trees and wrong for a store
+// volume other accounts can write to: `ln -s /rag/data/tenants/victim
+// /qdrant/tenants` makes `/qdrant/tenants/dev/storage` resolve into another
+// tenant's tree, which IS an approved root, and every check above passes. So
+// a path lexically under a store root (in its written or resolved spelling)
+// must resolve to exactly the store root's resolved spelling plus the same
+// relative path — no component in between may be a link — and a path that is
+// NOT under a store root may not resolve into one (a link from a tenant tree
+// into a moved qdrant dir is the same plant from the other side). The store
+// root ITSELF may be a symlink (`/qdrant -> /mnt/vol`): that is the operator's
+// layout, not a component somebody planted below it.
+func storeConfined(path, resolved string, store []string) error {
+	for _, s := range store {
+		rs, err := resolveDir(s)
+		if err != nil {
+			rs = s
+		}
+		for _, spelling := range []string{s, rs} {
+			rel, err := filepath.Rel(spelling, path)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+				continue
+			}
+			if want := filepath.Join(rs, rel); resolved != want {
+				return fmt.Errorf("%w: %s crosses a symlink below the store root %s (it resolves to %s, not %s); "+
+					"nothing between a store root and a store's files may be a link", jobs.ErrRefused, path, s, resolved, want)
+			}
+			return nil
+		}
+		if rel, err := filepath.Rel(rs, resolved); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+			return fmt.Errorf("%w: %s resolves to %s, inside the store root %s, through a symlink; a store root is "+
+				"reached by its own path only", jobs.ErrRefused, path, resolved, s)
+		}
+	}
+	return nil
 }
 
 // resolvedContained is the containment check every driver that writes,

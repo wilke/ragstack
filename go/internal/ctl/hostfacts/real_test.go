@@ -2,6 +2,7 @@ package hostfacts
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -34,5 +35,31 @@ func TestRealMountOfRoot(t *testing.T) {
 	mp, _, err := (&Real{}).MountOf("/")
 	if err != nil || mp != "/" {
 		t.Fatalf("MountOf(/) = %q, %v", mp, err)
+	}
+}
+
+// Review F3: a store root that is a symlink to the mounted volume answers the
+// volume's mount, not "/" — the lexical answer would refuse every start of a
+// qdrant moved there.
+func TestMountOfResolvesASymlinkedPath(t *testing.T) {
+	base := t.TempDir()
+	vol := filepath.Join(base, "mnt", "vol")
+	if err := os.MkdirAll(filepath.Join(vol, "tenants"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "qdrant")
+	if err := os.Symlink(vol, alias); err != nil {
+		t.Fatal(err)
+	}
+	f := &Fake{Mounts: map[string]string{"/": "ext4", vol: "xfs"}}
+	for _, p := range []string{filepath.Join(alias, "tenants", "dev"), filepath.Join(alias, "tenants")} {
+		mp, fs, err := f.MountOf(p)
+		if err != nil || mp != vol || fs != "xfs" {
+			t.Errorf("MountOf(%s) = %s, %s, %v; want %s, xfs", p, mp, fs, err, vol)
+		}
+	}
+	// A path nothing of which exists below / is answered lexically, as before.
+	if mp, _, _ := f.MountOf("/no/such/qdrant/dev"); mp != "/" {
+		t.Errorf("MountOf of a missing path = %s, want /", mp)
 	}
 }

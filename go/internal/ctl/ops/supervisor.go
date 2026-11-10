@@ -478,8 +478,9 @@ func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
 		}
 		if p.tpaths.QdrantOffLayout() {
 			tp, ragRoot, mountOf := p.tpaths, p.oc.Roots.RagRoot, p.op.deps.MountOf
+			storeRoots := append([]string(nil), p.op.deps.StoreDataRoots...)
 			qdrantPrecheck = func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-				return qdrantDataDirPrecheck(ctx, sc, tp, ragRoot, mountOf)
+				return qdrantDataDirPrecheck(ctx, sc, tp, ragRoot, storeRoots, mountOf)
 			}
 		}
 	}

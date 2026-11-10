@@ -20,6 +20,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
+	"github.com/ragstack/ragstack/internal/ctl/storeroots"
 )
 
 // DefaultAPIBindRoots are the host roots an image-mode API instance may have
@@ -58,35 +59,47 @@ func (d *run) apiBindRoots() []string {
 	return out
 }
 
-// envStoreDataRoots is CTL_STORE_DATA_ROOTS (api.EnvStoreDataRoots; a
-// literal here because api imports doctor).
-const envStoreDataRoots = "CTL_STORE_DATA_ROOTS"
-
-// storeDataRoots is Options.StoreDataRoots, else CTL_STORE_DATA_ROOTS from the
-// process environment, else from <ctl config dir>/ctl.env, else none. Entries
-// that are not absolute and clean are dropped here: the daemon refuses to
-// start on a malformed value, so this lenient read only ever errs towards
-// FEWER roots, which makes the finding louder, never quieter.
+// storeDataRoots is CTL_STORE_DATA_ROOTS as this run sees it: Options
+// .StoreDataRoots, else the process environment, else <ctl config
+// dir>/ctl.env — parsed and checked by internal/ctl/storeroots, the same code
+// the daemon and --direct refuse their start with (review F4). An unusable
+// list is NO roots here (so every moved row is reported outside them) plus a
+// store_data_roots_invalid error from storeRootChecks: a standalone doctor is
+// never green over a configuration the daemon will not start on.
 func (d *run) storeDataRoots() []string {
-	if d.opts.StoreDataRoots != nil {
-		return d.opts.StoreDataRoots
+	d.loadStoreRoots()
+	return d.storeRoots
+}
+
+func (d *run) loadStoreRoots() {
+	if d.storeRootsLoaded {
+		return
 	}
-	v := strings.TrimSpace(os.Getenv(envStoreDataRoots))
-	if v == "" && d.roots.CtlConfigDir != "" {
-		if b, err := os.ReadFile(filepath.Join(d.roots.CtlConfigDir, "ctl.env")); err == nil {
-			if f, _, err := envfile.ParseLenient(b); err == nil {
-				v, _ = f.Get(envStoreDataRoots)
+	d.storeRootsLoaded = true
+	roots := d.opts.StoreDataRoots
+	if roots == nil {
+		v := strings.TrimSpace(os.Getenv(storeroots.Env))
+		if v == "" && d.roots.CtlConfigDir != "" {
+			if b, err := os.ReadFile(filepath.Join(d.roots.CtlConfigDir, "ctl.env")); err == nil {
+				if f, _, err := envfile.ParseLenient(b); err == nil {
+					v, _ = f.Get(storeroots.Env)
+				}
 			}
 		}
-	}
-	var out []string
-	for _, r := range strings.Split(v, ",") {
-		r = strings.TrimSpace(r)
-		if r != "" && r != "/" && filepath.IsAbs(r) && filepath.Clean(r) == r {
-			out = append(out, r)
+		parsed, err := storeroots.Parse(v)
+		if err != nil {
+			d.storeRootsErr = err
+			return
 		}
+		roots = parsed
 	}
-	return out
+	r := d.roots
+	approved := []string{r.DataDir, r.CtlConfigDir, r.CtlStateDir, r.BackupsDir, r.ReposDir}
+	if err := storeroots.Check(roots, approved, d.apiBindRoots()); err != nil {
+		d.storeRootsErr = err
+		return
+	}
+	d.storeRoots = roots
 }
 
 // ImageHashCache remembers the sha256 of image files keyed by (path, size,
@@ -269,4 +282,52 @@ func tenantEnvValue(t *registry.Tenant, key string) (string, bool) {
 		return "", false
 	}
 	return f.Get(key)
+}
+
+// storeRootChecks are the host facts of the store data roots, whether or not
+// any row uses them yet:
+//
+//   - store_data_roots_invalid (error): the list does not parse, or overlaps
+//     an approved root or a bind root — the daemon and --direct refuse to
+//     start on it, so doctor says so instead of being green;
+//   - store_data_root_writable (warn): a store root that its group or
+//     everybody may write. Anyone who can write it can plant a symlink below
+//     it (`ln -s /rag/data/tenants/victim /qdrant/tenants`); the drivers and
+//     the pre-start check refuse to follow one, but a cels-writable root is a
+//     standing invitation, and /qdrant was created 2775 svcbvbrc:cels.
+func (d *run) storeRootChecks() {
+	d.loadStoreRoots()
+	if d.storeRootsErr != nil {
+		d.add(model.LevelError, StoreDataRootsInvalid, "", d.storeRootsErr.Error()+
+			": the daemon and --direct refuse to start on this CTL_STORE_DATA_ROOTS")
+		return
+	}
+	for _, r := range d.storeRoots {
+		fi, err := os.Stat(r)
+		if err != nil {
+			continue
+		}
+		if m := fi.Mode().Perm(); m&0o022 != 0 {
+			d.add(model.LevelWarn, StoreDataRootWritable, "", fmt.Sprintf(
+				"store data root %s is mode %04o: writable by its group or by everybody, any of whom could plant a "+
+					"symlink below it. Create the per-tenant dirs as the ctl account, then tighten the root "+
+					"(chmod 2750 or 0755) and grant per tenant dir with `ragstack-ctl fleet grant`",
+				r, fileModeBits(fi.Mode())))
+		}
+	}
+}
+
+// fileModeBits is a FileMode as the octal a shell prints (setgid included).
+func fileModeBits(m os.FileMode) uint32 {
+	b := uint32(m.Perm())
+	if m&os.ModeSetuid != 0 {
+		b |= 0o4000
+	}
+	if m&os.ModeSetgid != 0 {
+		b |= 0o2000
+	}
+	if m&os.ModeSticky != 0 {
+		b |= 0o1000
+	}
+	return b
 }

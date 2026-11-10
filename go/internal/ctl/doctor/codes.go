@@ -492,20 +492,36 @@ const (
 	// preconditions.go) — the class of es_snapshots_dir_missing.
 	QdrantDataDirMissing = "qdrant_data_dir_missing"
 
-	// QdrantDataDirSymlink: the row's qdrant data dir, or its storage/, is a
-	// symlink. A bind is a mount of whatever the link resolves to, so a link
+	// QdrantDataDirSymlink: the row's qdrant data dir, its storage/, or any
+	// component between the root that admits it (a store root, or the row's
+	// data_dir) and the dir is a symlink. A bind is a mount of whatever the link resolves to, so a link
 	// is a store whose real location nothing in the registry records (and
 	// restore.sh refuses to start it). Error.
 	QdrantDataDirSymlink = "qdrant_data_dir_symlink"
 
+	// StoreDataRootsInvalid: CTL_STORE_DATA_ROOTS does not parse, or one of
+	// its roots equals, contains or lies under an approved root or a
+	// CTL_API_BIND_ROOTS entry (internal/ctl/storeroots, the same check the
+	// daemon and --direct refuse their start with). Error.
+	StoreDataRootsInvalid = "store_data_roots_invalid"
+
+	// StoreDataRootWritable: a store data root is writable by its group or by
+	// other, so any member could plant a symlink below it. Warn — the drivers
+	// and the pre-start check refuse to follow such a link — raised whether or
+	// not a row uses the root yet. Repair: create the tenant dirs as the ctl
+	// account, chmod the root 2750/0755 and grant per tenant dir.
+	StoreDataRootWritable = "store_data_root_writable"
+
 	// QdrantDataDirOutsideRoots: the row's qdrant data dir is neither
 	// strictly under one of the configured store data roots
 	// (CTL_STORE_DATA_ROOTS in ctl.env) nor strictly under the row's own
-	// data_dir (registry.Tenant.QdrantDataDirAllowed). The ops refuse to start
-	// or back up such a row, and the files and instance drivers would refuse
-	// its paths anyway. Error (PR2; a warn in PR1, when the store roots were
-	// not configurable yet). Repair: add the dir's volume to
-	// CTL_STORE_DATA_ROOTS and restart the daemon, or move the store back.
+	// data_dir (registry.Tenant.QdrantDataDirAllowed). start, restart and
+	// backup refuse such a row at plan time, and the files and instance
+	// drivers would refuse its paths anyway. WARN on its own, an ERROR for
+	// start, restart and backup (preconditions.go), so stop and the repair
+	// ops stay possible on the tenant. Repair: add the dir's volume to
+	// CTL_STORE_DATA_ROOTS (restart the daemon; a --direct run re-reads
+	// ctl.env every call), or move the store back and remove the field.
 	QdrantDataDirOutsideRoots = "qdrant_data_dir_outside_roots"
 
 	// QdrantDataDirRootNotMounted: the row's qdrant data dir is outside the

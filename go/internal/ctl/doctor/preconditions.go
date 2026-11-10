@@ -33,7 +33,7 @@ var preconditions = map[string][]string{
 	"start": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
 		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
-		ServerImageMissing, ServerImageMismatch, QdrantDataDirMissing,
+		ServerImageMissing, ServerImageMismatch, QdrantDataDirMissing, QdrantDataDirOutsideRoots,
 	},
 	// Stopping needs to be sure it is stopping THIS tenant's processes.
 	"stop": {PortOwnerMismatch},
@@ -41,7 +41,7 @@ var preconditions = map[string][]string{
 	"restart": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
 		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
-		QdrantDataDirMissing,
+		QdrantDataDirMissing, QdrantDataDirOutsideRoots,
 	},
 	// A backup writes a bundle plus a transient snapshot copy; without the
 	// reserve it fills the filesystem the tenants run on. It must also know
@@ -50,7 +50,12 @@ var preconditions = map[string][]string{
 	// It also WRITES a bundle under <backups>/tenants: an account that can
 	// neither own nor reach that root produces a half-written bundle, which
 	// is worse than a refused backup.
-	"backup": {DiskLow, PortOwnerMismatch, PortNotListening, CtlAccountNoAccess},
+	//
+	// A moved qdrant dir outside every store root (qdrant_data_dir_outside_
+	// roots) blocks start, restart and backup — the ops that refuse it at
+	// plan time anyway — and nothing else, so `stop` and the repairs stay
+	// reachable on that tenant.
+	"backup": {DiskLow, PortOwnerMismatch, PortNotListening, CtlAccountNoAccess, QdrantDataDirOutsideRoots},
 	// A restore creates a fresh tenant and stages a whole bundle into it.
 	"restore": {DiskLow, StoreURLDisallowed, CtlAccountNoAccess},
 	// Handover's row is per DESTINATION (handoverPreconditions below); this

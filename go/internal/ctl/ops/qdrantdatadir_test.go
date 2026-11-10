@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,7 +56,10 @@ func movedInstanceFixture(t *testing.T, dir string) (jobs.Context, *drivers.Fake
 	t.Helper()
 	oc, fake := instanceFixture(t)
 	oc.Tenant.Stores.Qdrant.DataDir = dir
-	for _, d := range []string{dir, dir + "/storage", dir + "/snapshots"} {
+	// The store root joins the fake's roots, as the engine adds it: the fake
+	// instance driver holds a qdrant bind to them (review F5).
+	fake.FakeFiles().Roots = append(fake.FakeFiles().Roots, "/qdrant")
+	for _, d := range []string{filepath.Dir(dir), dir, dir + "/storage", dir + "/snapshots"} {
 		fake.FakeFiles().Dirs[d] = 0o2770
 	}
 	return oc, fake
@@ -155,6 +159,12 @@ func TestInstanceStartPrechecksAMovedQdrantDir(t *testing.T) {
 				delete(f.FakeFiles().Dirs, d)
 			}
 		}, mountedOn("/qdrant"), movedQdir},
+		// Review F1: a link BETWEEN the store root and the dir, with the dir,
+		// storage/ and snapshots/ all real directories behind it.
+		{"an intermediate component is a symlink", func(f *drivers.Fake) {
+			delete(f.FakeFiles().Dirs, "/qdrant/tenants")
+			f.FakeFiles().PutSymlink("/qdrant/tenants")
+		}, mountedOn("/qdrant"), "/qdrant/tenants is a symlink"},
 		{"storage is a symlink", func(f *drivers.Fake) {
 			delete(f.FakeFiles().Dirs, movedQdir+"/storage")
 			f.FakeFiles().PutSymlink(movedQdir + "/storage")

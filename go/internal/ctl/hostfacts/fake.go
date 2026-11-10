@@ -93,7 +93,9 @@ func (f *Fake) MountOf(path string) (string, string, error) {
 	if err := f.Errs["mountof"]; err != nil {
 		return "", "", err
 	}
-	return deepestMount(path, f.Mounts)
+	// Resolved as the real one resolves it: a fixture that builds a symlinked
+	// store root in a temp dir must get the answer the host would give.
+	return deepestMount(resolveExisting(path), f.Mounts)
 }
 
 var (

@@ -355,6 +355,9 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 			// The store roots, as the real files driver takes them: a fake
 			// that refused a write under /qdrant the host would accept (or the
 			// reverse) would be a conformance run vouching for the wrong thing.
+			// The fake instance driver holds QDRANT binds to these same roots
+			// (lexically, plus recorded symlinks); other instances' binds are
+			// not containment-checked by the fake.
 			opts.Roots = append(opts.Roots, storeRoots...)
 			// The fixture host knows what a prepared artifact is: its worktree
 			// has node_modules (Build.UI refuses without them, exactly as the

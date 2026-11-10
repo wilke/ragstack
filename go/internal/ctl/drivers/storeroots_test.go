@@ -241,3 +241,155 @@ func TestFakeAndRealFilesAgreeUnderAStoreRoot(t *testing.T) {
 		}
 	}
 }
+
+// Review F1 (the PoC, as a regression): an INTERMEDIATE symlink under a store
+// root — `ln -s <tenants>/victim <store>/tenants`, which any member of a
+// group that can write the store root can plant — must not redirect a moved
+// qdrant dir into another approved root. The files driver creates nothing in
+// the victim tree, a snapshot move through it is refused, and the instance
+// driver binds nothing through it.
+func TestStoreRootRefusesAnIntermediateSymlink(t *testing.T) {
+	ragRoot := t.TempDir()
+	store := t.TempDir()
+	s := newStub(t, keyVerb)
+	s.respond("list", `{"instances":[]}`, "", 0)
+	roots := paths.NewRoots(ragRoot, paths.Overrides{})
+	victim := filepath.Join(roots.DataDir, "victim")
+	for _, d := range []string{filepath.Join(victim, "dev", "snapshots"), roots.CtlStateDir, roots.BackupsDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sif := filepath.Join(roots.CtlStateDir, "qdrant.sif")
+	if err := os.WriteFile(sif, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap := filepath.Join(victim, "dev", "snapshots", "s.snapshot")
+	if err := os.WriteFile(snap, []byte("victim's"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(store, "tenants")); err != nil {
+		t.Fatal(err)
+	}
+	r := NewReal(RealOptions{Roots: roots, Apptainer: s.Path, StoreDataRoots: []string{store}})
+	ctx := context.Background()
+
+	moved := filepath.Join(store, "tenants", "dev")
+	storage := filepath.Join(moved, "storage")
+	if err := r.Files().MkdirAll(ctx, storage, 0o2770); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("MkdirAll through an intermediate symlink = %v, want a refusal", err)
+	}
+	if _, err := os.Lstat(filepath.Join(victim, "dev", "storage")); err == nil {
+		t.Error("the directory was created inside the victim tree")
+	}
+	// The backup's snapshot move out of the moved dir.
+	dst := filepath.Join(roots.BackupsDir, "dev", "s.snapshot")
+	if err := r.Files().Rename(ctx, filepath.Join(moved, "snapshots", "s.snapshot"), dst); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("Rename out of a dir behind an intermediate symlink = %v, want a refusal", err)
+	}
+	if _, err := os.Stat(snap); err != nil {
+		t.Errorf("the victim's snapshot was moved: %v", err)
+	}
+	// The bind.
+	if err := os.MkdirAll(filepath.Join(victim, "dev", "storage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := r.Instances().Run(ctx, jobs.InstanceSpec{Name: "qdrant-dev", SIF: sif, Binds: []string{storage + ":/qdrant/storage"}})
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("a bind through an intermediate symlink under the store root = %v, want a refusal", err)
+	}
+	if strings.Contains(strings.Join(s.argv(), "\n"), victim) {
+		t.Errorf("apptainer was handed the victim tree: %v", s.argv())
+	}
+}
+
+// The other direction: a link from an approved root INTO a store root (a
+// tenant tree reaching another tenant's moved qdrant dir) is refused too; and
+// a store root that is ITSELF a symlink (/qdrant -> /mnt/vol, the operator's
+// layout) still works under both spellings.
+func TestStoreRootLinksInAndASymlinkedStoreRoot(t *testing.T) {
+	ctx := context.Background()
+	r, _, store, _ := storeRootReal(t)
+	if err := os.MkdirAll(filepath.Join(store, "tenants", "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(r.opts.Roots.DataDir, "dev-link")
+	if err := os.MkdirAll(r.opts.Roots.DataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(store, "tenants", "other"), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Files().WriteAtomic(ctx, filepath.Join(link, "x"), []byte("x"), 0o640); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("a write reaching a store root through a tenant-tree link = %v, want a refusal", err)
+	}
+
+	ragRoot := t.TempDir()
+	vol := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "qdrant")
+	if err := os.Symlink(vol, alias); err != nil {
+		t.Fatal(err)
+	}
+	r2 := NewReal(RealOptions{Roots: paths.NewRoots(ragRoot, paths.Overrides{}), StoreDataRoots: []string{alias}})
+	for _, dir := range []string{filepath.Join(alias, "tenants", "a"), filepath.Join(vol, "tenants", "b")} {
+		if err := r2.Files().MkdirAll(ctx, dir, 0o750); err != nil {
+			t.Errorf("MkdirAll(%s) under a symlinked store root = %v, want success", dir, err)
+		}
+	}
+}
+
+// Review F5: the fake instance driver holds a QDRANT bind to the same roots
+// the real one does, so a fake-driven test of a moved qdrant dir refuses what
+// the host would.
+func TestFakeAndRealInstancesAgreeOnQdrantBinds(t *testing.T) {
+	ctx := context.Background()
+	r, s, store, sif := storeRootReal(t)
+	fakeAll := NewFake(FakeOptions{Roots: append(append([]string(nil), r.opts.ApprovedRoots...), store)})
+	other := t.TempDir()
+	good := filepath.Join(store, "tenants", "dev", "storage")
+	if err := os.MkdirAll(good, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(other, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An intermediate link and a leaf link, on both hosts.
+	interLink := filepath.Join(store, "linked")
+	leafLink := filepath.Join(store, "tenants", "leaf")
+	for _, l := range []string{interLink, leafLink} {
+		if err := os.Symlink(filepath.Join(other, "x"), l); err != nil {
+			t.Fatal(err)
+		}
+		fakeAll.FakeFiles().PutSymlink(l)
+	}
+	for _, c := range []struct {
+		host string
+		ok   bool
+	}{
+		{good, true},
+		{store, false},                               // the store root whole
+		{filepath.Join(other, "x"), false},           // outside every root
+		{filepath.Join(interLink, "storage"), false}, // through an intermediate link
+		{leafLink, false},                            // a link at the leaf
+	} {
+		spec := jobs.InstanceSpec{Name: "qdrant-dev", SIF: sif, Binds: []string{c.host + ":/qdrant/storage"}}
+		fakeErr := NewFake(FakeOptions{Roots: fakeAll.FakeFiles().Roots}).withLinks(fakeAll).Instances().Run(ctx, spec)
+		s.respond("list", `{"instances":[]}`, "", 0)
+		realErr := r.Instances().Run(ctx, spec)
+		if c.ok && (fakeErr != nil || realErr != nil) {
+			t.Errorf("bind %s: fake = %v, real = %v; both must accept", c.host, fakeErr, realErr)
+		}
+		if !c.ok && (!errors.Is(fakeErr, jobs.ErrRefused) || !errors.Is(realErr, jobs.ErrRefused)) {
+			t.Errorf("bind %s: fake = %v, real = %v; both must refuse", c.host, fakeErr, realErr)
+		}
+	}
+}
+
+// withLinks copies src's recorded symlinks into f (a fresh fake per case, so
+// a successful Run does not leave "already running" behind).
+func (f *Fake) withLinks(src *Fake) *Fake {
+	for p := range src.FakeFiles().Links {
+		f.FakeFiles().PutSymlink(p)
+	}
+	return f
+}

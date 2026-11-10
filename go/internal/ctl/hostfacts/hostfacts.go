@@ -179,8 +179,10 @@ type Host interface {
 	// confirmation (--direct, as the owner of the tree).
 	StorageBinds(pid int) ([]StorageBind, error)
 	// MountOf is the deepest mount in THIS process's /proc/self/mountinfo
-	// whose mount point contains path (lexically; path need not exist), with
-	// its filesystem type. "/" means the path is on the root filesystem.
+	// whose mount point contains path, with its filesystem type. The path
+	// need not exist; its deepest existing ancestor is resolved through
+	// symlinks first, so a symlinked store root (/qdrant -> /mnt/vol) answers
+	// the volume's mount, not "/". "/" means the path is on the root filesystem.
 	// doctor uses it to tell a moved qdrant data dir that sits on a mounted
 	// store filesystem from one that would land on the root fs.
 	MountOf(path string) (mountPoint, fsType string, err error)

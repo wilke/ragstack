@@ -9,6 +9,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
 	"github.com/ragstack/ragstack/internal/ctl/settings"
+	"github.com/ragstack/ragstack/internal/ctl/storeroots"
 )
 
 // Every CTL_* environment variable the daemon reads, in one place.
@@ -170,7 +171,7 @@ const (
 	// out of <ctl config dir>/ctl.env, as for CTL_ALLOWED_ENDPOINT_HOSTS.
 	// ctl-daemon.sh parses ctl.env when the daemon STARTS, so a change needs a
 	// daemon restart.
-	EnvStoreDataRoots = "CTL_STORE_DATA_ROOTS"
+	EnvStoreDataRoots = storeroots.Env
 
 	// EnvAllowedEndpointHosts is the allowlist of hosts an executable-surface
 	// URL may name (#714: `env set-surface`, `create --set` under --direct,
@@ -259,44 +260,10 @@ func SetAPIBindRootsFromEnv(cfg *EngineConfig) error {
 // refused: a store root is read/write by definition, and a suffix copied from
 // CTL_API_BIND_ROOTS is an operator's mistake that must be loud. Overlap with
 // the approved roots and the bind roots is drivers.CheckStoreDataRoots' check,
-// made where both lists are known.
+// made where both lists are known. The grammar lives in internal/ctl/storeroots
+// so that doctor, which api imports, parses it identically.
 func ParseStoreDataRoots(v string) ([]string, error) {
-	if strings.TrimSpace(v) == "" {
-		return nil, nil
-	}
-	var out []string
-	seen := map[string]bool{}
-	for _, raw := range strings.Split(v, ",") {
-		entry := strings.TrimSpace(raw)
-		if entry == "" {
-			return nil, fmt.Errorf("%s=%q has an empty entry", EnvStoreDataRoots, v)
-		}
-		if strings.Contains(entry, ":") {
-			return nil, fmt.Errorf("%s entry %q: a store root takes no :ro/:rw suffix (it is read/write by "+
-				"definition) and no other colon", EnvStoreDataRoots, entry)
-		}
-		if !filepath.IsAbs(entry) {
-			return nil, fmt.Errorf("%s entry %q: the path must be absolute", EnvStoreDataRoots, entry)
-		}
-		for _, part := range strings.Split(entry, "/") {
-			if part == ".." {
-				return nil, fmt.Errorf("%s entry %q: the path may not contain ..", EnvStoreDataRoots, entry)
-			}
-		}
-		if filepath.Clean(entry) != entry {
-			return nil, fmt.Errorf("%s entry %q: the path is not clean (write %q)", EnvStoreDataRoots, entry,
-				filepath.Clean(entry))
-		}
-		if err := drivers.CheckBindRoot(drivers.BindRoot{Path: entry}); err != nil {
-			return nil, fmt.Errorf("%s entry %q: %v", EnvStoreDataRoots, entry, err)
-		}
-		if seen[entry] {
-			return nil, fmt.Errorf("%s lists %s twice", EnvStoreDataRoots, entry)
-		}
-		seen[entry] = true
-		out = append(out, entry)
-	}
-	return out, nil
+	return storeroots.Parse(v)
 }
 
 // StoreDataRootsFrom is CTL_STORE_DATA_ROOTS as this process should see it:

@@ -59,6 +59,10 @@ type RealInstances struct {
 	// refused with it: a driver that dropped the bad roots and carried on
 	// would start some stores and refuse others for a reason nobody could see.
 	ConfigErr error
+	// Store are the store roots among Roots (CTL_STORE_DATA_ROOTS): a bind
+	// under one is also held to storeConfined — no symlink anywhere between
+	// the store root and the leaf.
+	Store []string
 	// Env is apptainer's OWN environment for a call in jobs.NamespaceCtl:
 	// APPTAINER_CACHEDIR and APPTAINER_CONFIGDIR under the ctl's state dir.
 	// The instance registry lives under the config dir, so a `list` or a
