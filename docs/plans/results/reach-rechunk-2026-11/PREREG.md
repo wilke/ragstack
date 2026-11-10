@@ -77,7 +77,8 @@ drawn from it.
   The run summaries do not record the config's sha256, so the pin is enforced by the report's settings
   check against the W run summaries (§7.1, *retrieval settings*). That check has been run on real files
   (`feasibility.json` `settings_gates`): the W summaries against themselves, and the stage-1 S summaries
-  (same config but for the keys above) against the W ones, both without a difference.
+  (same config but for the keys above) against the W ones, both with no gated difference (only the fields
+  §7.1 lists as compared are compared; other fields differ, and are not compared).
 - **Prior S-side exposure, declared.** Rechunk stage 1 retrieved the S collections for the 218 questions of
   the confirmatory test. It computed no quote@10 and no found@10 for any of them. Those questions are re-run
   here with the rest (§11 Q5: kept).
@@ -118,7 +119,8 @@ drawn from it.
     Each registry's `pairs.jsonl` is required beside its `final.jsonl` (`--s-prior-pairs`; `j-seeds` and
     `report` refuse without it). A prior label is reused only if its key's `content_sha256` equals the
     sha256 of the S export's text of that chunk. A judged prior label whose sha differs (or whose chunk has
-    no S export text) is **not reused**: the key is not seeded and counts as unjudged, and the count is a
+    no S export text) is **not reused**: the key is not seeded and counts as unjudged unless the content-hash
+    rule labels it, and the count is a
     caveat on J (§7.1). A reused key with no pairs row is counted, also a caveat on J. Neither refuses: J is
     descriptive, and its tooling never blocks Q (owner decision, 2026-11-10). The check has been run now
     on all 1,121 prior keys against the pinned S exports (`feasibility.json` `prior_content`): every key's
@@ -146,6 +148,12 @@ drawn from it.
     - a pair whose prior label is not reused (above), or whose chunk has no export text, so it could not be
       seeded (`s_unjudged_by_kind` `prior_content_mismatch`, `no_export_text`).
 
+    Each unjudged S pair is counted under one kind in `s_unjudged_by_kind`, the first that applies, in
+    this order: `prior_content_mismatch`, `no_export_text`, `orphan`, `unjudged_by_judge` (a registry row
+    says unjudged), `no_registry_row` (`unclassified` when no `--main-pairs` is given). So a pair that is
+    both, say, an orphan and without export text is counted under `no_export_text` only, and not in
+    `j_labels.s_orphans`.
+
     Orphans are written to the private `orphans.jsonl` and counted in `j-seeds.json` and in the report
     (`j_labels.s_orphans`, `s_unjudged_by_kind`).
 
@@ -171,7 +179,8 @@ drawn from it.
   - **Prompt identity.** Each re-judged pair's `prompt_sha256` and `system_sha256` against the original
     row of the same pair id. Any difference, or no compared row at all, makes the drift check *not
     evaluable* (it would compare different prompts), and the J sentence carries *judge drift check not
-    evaluable*.
+    evaluable*. So do label rows that cannot be read (a row without `pair_id`, in the W or the drift judge
+    dir): a J caveat, never a refusal, since these rows serve the drift check only.
   - **Cache check.** A re-judged pair whose `reasoning_sample` is byte-identical to the original's, where
     both have ≥ 200 characters, flags *cache suspected* (one pair is the threshold, as in the alias
     boundary-confirm prereg). A backend with compared rows but no eligible pair reads *cache check not
@@ -343,7 +352,8 @@ seen and when. This is a rule, not a mechanism (§8).
 
 Gates on Q:
 - Any retrieval leg with failed calls or a fired depth or reranker gate.
-- An S run whose retrieval settings differ from the W run's beyond the declared differences.
+- An S run whose retrieval settings differ from the W run's in a compared field (only the fields listed
+  under *Retrieval settings* below are compared).
 - An S collection whose census differs from `build-summary.json`.
 - The inputs check below.
 
@@ -360,7 +370,7 @@ How `python/scripts/eval/reach_report.py` reads each check:
   condition with a non-null `gate`; any failed call, missing row or duplicate row in any (corpus, retriever)
   leg. Also an S run that is not the reach run (`study.mode` `rechunk` with `rechunk_scope` `all_records`).
 - **Retrieval settings** (a gate on Q, a caveat on J; operator default, §11): per corpus, the S run summary
-  against the W run summary. Compared:
+  against the W run summary. The check is a whitelist: only these fields are compared.
   - the condition set;
   - each condition's `request` (the collection is a placeholder) and its `requested` depth (50);
   - `found_k`, `server_assumed`, `study.retrievers`, `study.request_order` and
@@ -368,7 +378,12 @@ How `python/scripts/eval/reach_report.py` reads each check:
   - the server config hash: S's `study.config_sha256_start` equals W's (`2e91056f…` in all four W
     summaries), and the hash is unchanged within each run.
 
-  A field missing on either side counts as a difference. Declared expected differences, not compared:
+  A compared field missing on either side counts as a difference. No other field is compared. The run
+  sizes (`calls`, `records`, `rows`, `ok`, `per_leg_failed`, `identical_to_norerank`) and the outcome
+  fields (W's `found10`, S's `outcomes`) are covered by the *Retrieval* check above, not by this one:
+  complete status, and missing, failed or duplicate rows against the 1,091 records. The list below is
+  documentation: the differences expected between the runs (`SETTINGS_EXPECTED` in the code, printed with
+  the comparison). It exempts nothing, since no field outside the compared list is compared:
   - the collection names and indexes;
   - the census and the collection build;
   - the run mode and its stamps (`mode`, `study.mode`, `rechunk_scope`, `stage`, `legs`, `exploratory`,
@@ -456,7 +471,7 @@ Caveats appended to the sentence ("Caveats: …"):
   drift lands on S only; and J includes the 2 records that are not Q-eligible (§2).
 - **J, judge drift:** when the drift check's agreement on W's *answers* labels is below 0.90, or cannot be
   computed (no drift registry, no original *answers* label in the re-judged sample, no label rows to
-  compare, or a re-judge prompt that differs from the original: *judge drift check not evaluable*); and
+  compare or unreadable ones, or a re-judge prompt that differs from the original: *judge drift check not evaluable*); and
   *cache suspected* or *cache check not evaluable* from the cache check (§3).
 
 The report writes Q under `families`: the secondary figures of §4 (not tested), the gates that fired, and
@@ -482,7 +497,10 @@ caveats with the check each came from, the sentence and the secondary figures. J
 - The W runs date from 2026-11-04 and the S runs will be later. The same server settings are required by
   the retrieval-settings gate (§7.1), which passes on the stage-1 S runs of the same config (§2).
 - Inputs: `report` refuses unless its pre-freeze inputs are the §9.1 pins (`frozen-inputs.json`) and its
-  inputs are those `j-seeds` read; a mechanism, not a rule (§6 step 5). The tools image and API versions are recorded, and the server
+  inputs are those `j-seeds` read; a mechanism, not a rule (§6 step 5). Its limit: the check compares,
+  per flag, the set of input shas, not each file's place. The §9.1 rows name files by basename (the four W
+  runs are all `none.jsonl`), so swapping W run files between corpus directories is not caught
+  mechanically; a file outside the pinned set is. The tools image and API versions are recorded, and the server
   version is printed beside the comparison.
 - J asymmetry: W's labels come from the 2026-11-04/06 judge runs and S's from new judging, so any judge drift
   lands on S only. The content-hash reuse rule will rarely apply, because S and W chunk texts are seldom

@@ -1081,6 +1081,65 @@ def test_read_export_refuses_duplicate_basenames(tmp_path: Path) -> None:
         rr.read_export(rr.parse_exports([f"base={a}", f"neighbour={b}"]), set())
 
 
+def test_read_export_reads_one_file_given_by_two_paths_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same export named by a relative and an absolute path (or a symlink) is one file: read once,
+    one sha; two distinct files with the same basename are still refused."""
+    w = fx.World(tmp_path)
+    a = tmp_path / "a" / "chunks.jsonl"
+    a.parent.mkdir()
+    a.write_bytes(w.w_export.read_bytes())
+    link = tmp_path / "link"
+    link.symlink_to(a.parent, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    spec = rr.parse_exports(["base=a/chunks.jsonl", f"neighbour={a}", f"random1={link / 'chunks.jsonl'}"])
+    assert rr.export_files(spec) == [Path("a/chunks.jsonl")]
+    exp = rr.read_export(spec, set())
+    assert exp.sha256 == {"chunks.jsonl": asc.sha256_file(a)}
+    b = tmp_path / "b" / "chunks.jsonl"
+    b.parent.mkdir()
+    b.write_bytes(w.w_export.read_bytes())
+    with pytest.raises(SystemExit, match="share the basename 'chunks.jsonl'"):
+        rr.read_export(rr.parse_exports(["base=a/chunks.jsonl", f"neighbour={a}", f"random1={b}"]), set())
+
+
+def test_unreadable_label_rows_make_drift_not_evaluable_and_q_is_reported(tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review follow-up 4: a W or drift judge dir's Qwen label row without pair_id (read by
+    alias_control_chunks.label_rows) does not stop the report: the drift check is not evaluable, a J
+    caveat, and Q is reported as without it."""
+    w = fx.World(tmp_path)
+    paths = scenario(w)
+    monkeypatch.setattr(rr, "DRIFT_SHARE", 0.5)
+    inp = inputs(w, paths)
+    w_need = rr.needed_pairs(rr.score_lists(w.records, inp.w_runs, inp.w_export.chunks))
+    sample = rr.drift_sample(w_need)
+    orig = inp.w_reg.labels
+    ddir = tmp_path / "drift-judge"
+    for be, f in (("C", "labels-qwen-C.jsonl"), ("E", "labels-qwen-E.jsonl")):
+        fx.write_jsonl(tmp_path / f, list(qwen_rows(sorted(w_need))[be].values()))
+        fx.write_jsonl(ddir / f, list(qwen_rows(sample)[be].values()))
+    same = fx.write_jsonl(ddir / "final.jsonl", [fx.label_row(r, c, int(orig[(r, c)] == "answers")) for r, c in sample])
+    good = report(w, inputs(w, paths, drift=[same]))
+    assert good["drift_check"]["prompt_identity"]["status"] == "identical" and good["label_row_errors"] == {}
+    for where in (tmp_path, ddir):  # the W judge dir, then the drift judge dir
+        p = where / "labels-qwen-E.jsonl"
+        keep = p.read_text()
+        rows = asc.read_jsonl(p)
+        del rows[0]["pair_id"]
+        fx.write_jsonl(p, rows)
+        side = "W" if where == tmp_path else "drift"
+        rec = report(w, inputs(w, paths, drift=[same]))
+        d = rec["drift_check"]
+        assert d["evaluable"] is False and d["prompt_identity"]["status"] == "unreadable_rows"
+        assert set(rec["label_row_errors"]) == {side} and "without pair_id" in rec["label_row_errors"][side]
+        assert d["caveat"].startswith("judge drift check not evaluable (label rows unreadable: " + side)
+        assert d["caveat"] in rec["descriptive"]["J"]["sentence"]
+        # Q: the same outcome, figures and gates as with readable rows
+        assert rec["families"]["Q"] == good["families"]["Q"] and rec["gates"] == good["gates"]
+        assert rec["families"]["Q"]["outcome"] in rr.OUTCOMES
+        p.write_text(keep)
+
+
 def test_read_summaries_reads_only_the_summaries(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     d = w.write_runs("W")

@@ -217,10 +217,15 @@ def parse_exports(specs: Sequence[str]) -> dict[str, list[Path]]:
 
 
 def export_files(spec: Mapping[str, Sequence[Path]]) -> list[Path]:
+    """The distinct export files of one side, in arm order: one file named twice (by a relative and an
+    absolute path, or through a symlink) is read once (de-duplicated on ``Path.resolve()``)."""
     seen: list[Path] = []
+    real: set[Path] = set()
     for arm in CORPORA:
         for p in spec.get(arm, []):
-            if p not in seen:
+            r = p.resolve()
+            if r not in real:
+                real.add(r)
                 seen.append(p)
     return seen
 
@@ -247,7 +252,8 @@ class Export:
 def read_export(spec: Mapping[str, Sequence[Path]], want: set[str], docs: Iterable[str] = ()) -> Export:
     """Stream the exports once: the wanted chunks (content, doc, span, paper) and every span and
     chunk text of the documents in ``docs``. One id with two contents is refused, and so are two
-    files with the same basename (the shas are keyed by basename)."""
+    distinct files with the same basename (the shas are keyed by basename; one file given twice is
+    read once, :func:`export_files`)."""
     import _glossbench_r2 as g
 
     docs = set(docs)
@@ -836,8 +842,9 @@ def settings_gates(w: Runs, s: Runs) -> tuple[list[str], dict[str, Any]]:
     the W run summary: the same condition set, each condition's ``request`` (with the collection
     placeholder) and ``requested`` depth, the fields of :data:`SETTINGS_SAME`, and the server config
     hash (S at start = W at start, and unchanged within each run). A field absent on either side
-    counts as a difference. The differences of :data:`SETTINGS_EXPECTED` are declared and not
-    compared; the server version is reported beside."""
+    counts as a difference. A whitelist: no other field is compared. :data:`SETTINGS_EXPECTED` is
+    documentation (printed, never used to skip a field); the run sizes and outcomes are covered by
+    :func:`retrieval_gates`. The server version is reported beside."""
     out: list[str] = []
     per: dict[str, Any] = {}
     for c in CORPORA:
@@ -944,13 +951,23 @@ class Inputs:
     w_label_rows: dict[str, dict[str, dict[str, Any]]] | None = None
     drift_label_rows: dict[str, dict[str, dict[str, Any]]] | None = None
     label_row_duplicates: dict[str, int] = field(default_factory=dict)
+    #: side ("W", "drift") -> why its Qwen label rows could not be read (J only: the drift check is
+    #: then not evaluable, PREREG §3; never a gate on Q)
+    label_row_errors: dict[str, str] = field(default_factory=dict)
+
+
+class LabelRowsUnreadable(Exception):
+    """A judge dir's Qwen label rows cannot be read (a row without ``pair_id``, a row that is not an
+    object, a corrupt line). Used only for the drift check, so it is a J caveat, never a refusal."""
 
 
 def judge_dir_rows(finals: Sequence[Path]) -> tuple[dict[str, dict[str, dict[str, Any]]], int]:
     """The Qwen label rows (``alias_control_chunks.label_rows``: as the harness reads them, the last
     row of a pair id wins) of the judge dirs holding ``finals``, merged by pair id over the dirs, and
-    the number of pair ids read more than once (within a file or across dirs)."""
+    the number of pair ids read more than once (within a file or across dirs). Rows that
+    ``label_rows`` cannot read raise :class:`LabelRowsUnreadable`."""
     import alias_control_chunks as acc
+    import alias_study_judge as aj
 
     out: dict[str, dict[str, dict[str, Any]]] = {be: {} for be in QWEN_BACKENDS}
     dup = 0
@@ -960,7 +977,11 @@ def judge_dir_rows(finals: Sequence[Path]) -> tuple[dict[str, dict[str, dict[str
             dirs.append(f.parent)
     for d in dirs:
         for be in QWEN_BACKENDS:
-            rows, n_dup, _ = acc.label_rows(d, be)
+            try:
+                rows, n_dup, _ = acc.label_rows(d, be)
+            except (KeyError, TypeError, ValueError) as e:
+                why = "a row without pair_id" if isinstance(e, KeyError) else f"unreadable ({type(e).__name__})"
+                raise LabelRowsUnreadable(f"{d.name}/{aj.LABEL_FILES[be]}: {why}") from e
             dup += n_dup + sum(p in out[be] for p in rows)
             out[be].update(rows)
     return out, dup
@@ -1007,11 +1028,20 @@ def load_inputs(a: argparse.Namespace, *, report: bool) -> Inputs:
         if a.drift_final and {f.parent.resolve() for f in a.drift_final} & {f.parent.resolve() for f in a.w_final}:
             raise SystemExit("REFUSED: a --drift-final shares a judge dir with a --w-final (the drift registry is its "
                              "own build-control out_dir; its label rows would be compared with themselves)")
-        inp.w_label_rows, dw = judge_dir_rows(a.w_final)
-        inp.label_row_duplicates["W"] = dw
-        if a.drift_final:
-            inp.drift_label_rows, dd = judge_dir_rows(a.drift_final)
-            inp.label_row_duplicates["drift"] = dd
+        # the Qwen label rows serve the drift check only (J): rows that cannot be read make it not
+        # evaluable (a J caveat) and never stop Q (PREREG §3; owner decision, 2026-11-10)
+        sides = [("W", a.w_final)] + ([("drift", a.drift_final)] if a.drift_final else [])
+        for side, finals in sides:
+            try:
+                rows, n_dup = judge_dir_rows(finals)
+            except LabelRowsUnreadable as e:
+                inp.label_row_errors[side] = str(e)
+                continue
+            inp.label_row_duplicates[side] = n_dup
+            if side == "W":
+                inp.w_label_rows = rows
+            else:
+                inp.drift_label_rows = rows
     return inp
 
 
@@ -1109,10 +1139,13 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
     has_stage_a = None if inp.main_pairs is None else set(stage_a_pairs(inp.main_pairs))
 
     def s_unjudged_kind(rid: str, cid: str) -> str:
-        """An S pair J needs without a judged label: its prior label not reused (content sha
-        mismatch, §3), its chunk with no S export text (never seeded), an orphan (no stage-A pair
-        for the record, so no registry could take it), unjudged by the judge (a registry row says
-        unjudged), or with no registry row."""
+        """The one kind an S pair J needs without a judged label is counted under: the first that
+        applies, in this order (PREREG §3): ``prior_content_mismatch`` (its prior label not reused),
+        ``no_export_text`` (its chunk has no S export text, never seeded), ``orphan`` (no stage-A
+        pair for the record, so no registry could take it), ``unjudged_by_judge`` (a registry row
+        says unjudged), ``no_registry_row`` (``unclassified`` without ``--main-pairs``). A pair
+        that is, say, an orphan without export text counts as ``no_export_text`` only, and not in
+        ``s_orphans``."""
         if sl.label(rid, cid)[1] == "prior_content_mismatch":
             return "prior_content_mismatch"
         if cid not in inp.s_export.chunks:
@@ -1158,7 +1191,7 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
 
     # drift (descriptive, PREREG §3)
     drift = drift_summary(w_need, w_labels, inp.drift, inp.w_label_rows, inp.drift_label_rows,
-                          w_texts=inp.w_export.chunks)
+                          w_texts=inp.w_export.chunks, rows_errors=inp.label_row_errors)
 
     # the confirmatory family: Q only (PREREG §4; owner decision, 2026-11-10)
     fam: dict[str, Any] = {}
@@ -1251,6 +1284,7 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
                      "unjudged_by_retriever": by_ret},
         "drift_check": drift,
         "label_row_duplicates": dict(sorted(inp.label_row_duplicates.items())),
+        "label_row_errors": dict(sorted(inp.label_row_errors.items())),
         "discordant_by_gold_window_coverage_under_S": {k: dict(sorted(v.items())) for k, v in cov.items()},
         "context_tokens": tokens,
         "census": census_info,
@@ -1315,7 +1349,8 @@ def context_tokens(w_sc: Mapping[tuple[str, str, str], ListScore], s_sc: Mapping
 def drift_summary(w_need: Mapping[tuple[str, str], Any], w_labels: Mapping[tuple[str, str], str],
                   drift: Registry | None, w_rows: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
                   drift_rows: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
-                  w_texts: Mapping[str, Chunk] | None = None) -> dict[str, Any]:
+                  w_texts: Mapping[str, Chunk] | None = None,
+                  rows_errors: Mapping[str, str] | None = None) -> dict[str, Any]:
     """PREREG §3 (descriptive): the seeded 5 % of the W pairs J uses, re-judged; agreement of the new
     labels with the originals, overall and by original label; the *judge drift* caveat when the
     agreement on the original *answers* labels is below 0.90 (or cannot be computed).
@@ -1327,7 +1362,10 @@ def drift_summary(w_need: Mapping[tuple[str, str], Any], w_labels: Mapping[tuple
     pair id; any difference, or no compared row at all, makes the drift check *not evaluable* (it
     would compare different prompts); and the **cache check**: ``reasoning_sample`` byte-identical
     on a pair where both rows' reasoning has >= 200 characters flags *cache suspected* (a caveat), a
-    backend with compared rows but no eligible pair reads *cache check not evaluable* (a caveat)."""
+    backend with compared rows but no eligible pair reads *cache check not evaluable* (a caveat).
+    ``rows_errors`` (side -> why, :class:`LabelRowsUnreadable`): label rows that could not be read
+    make the drift check not evaluable (status ``unreadable_rows``; the reasons are the report's
+    ``label_row_errors``), a caveat on J only."""
     import alias_control_chunks as acc
     import alias_study_judge as aj
 
@@ -1362,7 +1400,9 @@ def drift_summary(w_need: Mapping[tuple[str, str], Any], w_labels: Mapping[tuple
     differs = {be: {"prompt": cache[be]["prompt_sha256_differs"], "system": cache[be]["system_sha256_differs"]}
                for be in QWEN_BACKENDS}
     mismatch = sum(v["prompt"] + v["system"] for v in differs.values())
-    if w_rows is None or drift_rows is None:
+    if rows_errors:
+        prompt_status = "unreadable_rows"
+    elif w_rows is None or drift_rows is None:
         prompt_status = "absent"
     elif compared == 0:
         prompt_status = "no_compared_rows"
@@ -1371,7 +1411,9 @@ def drift_summary(w_need: Mapping[tuple[str, str], Any], w_labels: Mapping[tuple
     evaluable = prompt_status == "identical"
     caveats: list[str] = []
     if not evaluable:
-        why = {"absent": "no label rows given", "no_compared_rows": "no re-judged pair has an original Qwen label row "
+        why = {"unreadable_rows": "label rows unreadable: " + "; ".join(
+                   f"{side} {msg}" for side, msg in sorted((rows_errors or {}).items())),
+               "absent": "no label rows given", "no_compared_rows": "no re-judged pair has an original Qwen label row "
                "of the same pair id", "mismatch": f"the re-judge prompt differs from the original on {mismatch} "
                "(backend, pair) row(s)"}[prompt_status]
         caveats.append(f"judge drift check not evaluable ({why})")
@@ -1540,8 +1582,9 @@ def frozen_sources() -> tuple[dict[str, Any], str]:
 def check_frozen_inputs(inputs: Mapping[str, Any], frozen: Mapping[str, Any], prereg_text: str) -> dict[str, Any]:
     """PREREG §6 step 5 / §9.1: ``report`` refuses unless ``frozen-inputs.json`` is §9.1's table
     (:func:`frozen_inputs` of the committed prereg) and, per flag, the shas of the inputs it was
-    given are exactly the frozen ones (order-insensitive; a missing, extra or swapped file
-    refuses)."""
+    given are exactly the frozen ones (order-insensitive; a missing, extra or substituted file
+    refuses). The limit (PREREG §8): it compares a set of shas per flag, so pinned files swapped
+    between places within one flag (the W runs between corpus dirs) are not caught."""
     want = frozen_inputs(prereg_text)
     if frozen.get("rows") != want["rows"] or frozen.get("by_flag") != want["by_flag"]:
         raise SystemExit(f"REFUSED: {FROZEN_INPUTS.name} is not the prereg's §9.1 table")
