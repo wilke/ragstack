@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -263,6 +264,9 @@ func (f *Fleet) Validate() error {
 			return err
 		}
 	}
+	if err := f.validateQdrantDataDirs(); err != nil {
+		return err
+	}
 	for _, tb := range f.Tombstones {
 		if other, dup := seenIdx[tb.Index]; dup {
 			return fmt.Errorf("tombstone %q and tenant %q share index %d", tb.ManifestName, other, tb.Index)
@@ -270,6 +274,64 @@ func (f *Fleet) Validate() error {
 		seenIdx[tb.Index] = "tombstone:" + tb.ManifestName
 		if err := checkBlock("tombstone:"+tb.ManifestName, tb.Index, tb.Base, f.PortBase, f.PortStride); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// validateQdrantDataDirs is the cross-row half of stores.qdrant.data_dir
+// (the per-row half is in ValidateContract): no two rows name the same qdrant
+// data dir, and no row's qdrant data dir is equal to or under ANOTHER row's
+// data_dir or (effective) qdrant dir — two tenants' qdrant instances must
+// never bind the same storage, and a purge or decommission of one tenant's
+// tree must never reach another tenant's vectors. Rows are walked in key order
+// so the error names the same pair on every run.
+func (f *Fleet) validateQdrantDataDirs() error {
+	keys := make([]string, 0, len(f.Tenants))
+	for k := range f.Tenants {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	seen := map[string]string{}
+	for _, k := range keys {
+		d := f.Tenants[k].Stores.Qdrant.DataDir
+		if d == "" {
+			continue
+		}
+		d = path.Clean(d)
+		if other, dup := seen[d]; dup {
+			return fmt.Errorf("tenants %q and %q share stores.qdrant.data_dir %q", other, k, d)
+		}
+		seen[d] = k
+	}
+	for _, k := range keys {
+		d := f.Tenants[k].Stores.Qdrant.DataDir
+		if d == "" {
+			continue
+		}
+		d = path.Clean(d)
+		for _, ok := range keys {
+			if ok == k {
+				continue
+			}
+			o := f.Tenants[ok]
+			od := path.Clean(o.DataDir)
+			oq := path.Join(od, "qdrant")
+			if o.Stores.Qdrant.DataDir != "" {
+				oq = path.Clean(o.Stores.Qdrant.DataDir)
+			}
+			if o.DataDir != "" && (d == od || PathUnder(od, d)) {
+				return fmt.Errorf("tenant %q stores.qdrant.data_dir %q is inside tenant %q's data_dir %q", k, d, ok, od)
+			}
+			if d != oq && PathUnder(oq, d) {
+				return fmt.Errorf("tenant %q stores.qdrant.data_dir %q is inside tenant %q's qdrant dir %q", k, d, ok, oq)
+			}
+			if d == oq {
+				return fmt.Errorf("tenant %q stores.qdrant.data_dir %q is tenant %q's qdrant dir", k, d, ok)
+			}
+			if (o.DataDir != "" && PathUnder(d, od)) || PathUnder(d, oq) {
+				return fmt.Errorf("tenant %q stores.qdrant.data_dir %q contains tenant %q's data", k, d, ok)
+			}
 		}
 	}
 	return nil

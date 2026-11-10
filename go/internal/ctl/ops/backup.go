@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -799,12 +800,21 @@ func (p *planner) addQdrantSnapshots(bundleDir string, fence bool) {
 				if err := files.MkdirAll(ctx, filepath.Dir(dst), 0o2770); err != nil {
 					return "", err
 				}
-				// Rename, not copy: the snapshot is already on the same
-				// filesystem (both are under <data_dir>'s volume), so moving it
-				// is atomic and does not double the transient cost that taking
-				// it already paid.
-				if err := files.Rename(ctx, filepath.Join(snapshotsDir, c, name), dst); err != nil {
+				// Rename, not copy: the snapshot is normally on the same
+				// filesystem as the bundle (both under the /rag volume), so
+				// moving it is atomic and does not double the transient cost
+				// that taking it already paid. A row whose qdrant data dir is
+				// on ANOTHER filesystem (stores.qdrant.data_dir) gets EXDEV
+				// from rename(2); then the snapshot is streamed across and the
+				// source removed — slower, the same bundle.
+				src := filepath.Join(snapshotsDir, c, name)
+				warn, err := moveAcrossFilesystems(ctx, files, src, dst)
+				if err != nil {
 					return "", fmt.Errorf("moving the snapshot of %s into the bundle: %w", c, err)
+				}
+				if warn != "" {
+					sc.Logf("%s", warn)
+					part.Warnings = append(part.Warnings, warn)
 				}
 				sum, size, err := files.Sha256(ctx, dst)
 				if err != nil {
@@ -2384,4 +2394,36 @@ func (p *planner) pendingRun(driver, method string) jobs.StepFunc {
 	return func(context.Context, *jobs.StepContext) (string, error) {
 		return "", fmt.Errorf("%w: %s.%s lands in PR-D", jobs.ErrRefused, driver, method)
 	}
+}
+
+// moveAcrossFilesystems renames src to dst, and when rename(2) refuses because
+// the two are on different filesystems (EXDEV) copies src to dst through the
+// Files driver (streaming, temp-file + rename in dst's directory) and then
+// removes src. The fast path is unchanged: only an EXDEV takes the copy.
+//
+// A copy that succeeded and a Remove that then failed leaves the bundle whole
+// and the snapshot ALSO still in the store's snapshots dir; that is returned
+// as a warning, not an error — the bundle is good, and the leftover is disk the
+// operator can reclaim, which the warning names.
+func moveAcrossFilesystems(ctx context.Context, files jobs.Files, src, dst string) (warning string, err error) {
+	err = files.Rename(ctx, src, dst)
+	if err == nil || !errors.Is(err, syscall.EXDEV) {
+		return "", err
+	}
+	// The rename refuses an existing destination; the copy (temp file +
+	// rename in dst's directory) would silently replace one. Same guarantee
+	// on both paths: never land on top of something already there.
+	if _, serr := files.Stat(ctx, dst); serr == nil {
+		return "", fmt.Errorf("%w: %s already exists; the ctl never moves a snapshot over an existing path", jobs.ErrRefused, dst)
+	} else if !errors.Is(serr, fs.ErrNotExist) {
+		return "", fmt.Errorf("checking the destination %s before the cross-filesystem copy: %w", dst, serr)
+	}
+	if err := files.CopyFile(ctx, src, dst, 0o640); err != nil {
+		return "", fmt.Errorf("rename across filesystems failed (EXDEV) and so did the copy: %w", err)
+	}
+	if err := files.Remove(ctx, src); err != nil {
+		return fmt.Sprintf("the snapshot was copied into the bundle across filesystems but its source could not "+
+			"be removed (%v): leftover snapshot %s still holds disk on the qdrant store — delete it by hand", err, src), nil
+	}
+	return "", nil
 }

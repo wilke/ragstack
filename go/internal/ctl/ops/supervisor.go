@@ -859,7 +859,7 @@ func (p *planner) apiLaunch(port int) (apiLaunch, error) { return p.apiLaunchFor
 func (p *planner) apiLaunchFor(row *registry.Tenant, port int) (apiLaunch, error) {
 	tp := p.tpaths
 	if p.t == nil || row.Name != p.t.Name {
-		tp = paths.TenantPaths(p.oc.Roots, row.Name, orDefault(row.ManifestName, row.Name))
+		tp = row.Paths(p.oc.Roots) // manifest_name "" defaults to the name, as orDefault did
 	}
 	pidfile := row.API.PidFile
 	if pidfile == "" {

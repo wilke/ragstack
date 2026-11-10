@@ -33,7 +33,7 @@ var preconditions = map[string][]string{
 	"start": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
 		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
-		ServerImageMissing, ServerImageMismatch,
+		ServerImageMissing, ServerImageMismatch, QdrantDataDirMissing,
 	},
 	// Stopping needs to be sure it is stopping THIS tenant's processes.
 	"stop": {PortOwnerMismatch},
@@ -41,6 +41,7 @@ var preconditions = map[string][]string{
 	"restart": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
 		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
+		QdrantDataDirMissing,
 	},
 	// A backup writes a bundle plus a transient snapshot copy; without the
 	// reserve it fills the filesystem the tenants run on. It must also know

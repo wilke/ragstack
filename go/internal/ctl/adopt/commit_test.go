@@ -3,10 +3,13 @@ package adopt
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
+	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
@@ -295,4 +298,79 @@ func TestReadoptKeepsWhatThePreparationOpsDecided(t *testing.T) {
 			t.Errorf("a bookkeeping field was dropped: %+v", next)
 		}
 	})
+}
+
+// A re-adoption keeps the row's stores.qdrant.data_dir: it is a decision the
+// host cannot be read for, and dropping it would point every ctl path at the
+// empty default dir. Dropped only when the re-observed qdrant is not exclusive.
+func TestReadoptKeepsTheQdrantDataDir(t *testing.T) {
+	dir := t.TempDir()
+	roots := paths.NewRoots(dir, paths.Overrides{})
+	reg := roots.Registry()
+	first := commitTestTenant(roots, "dev", 2)
+	first.Stores.Qdrant.Ownership = registry.OwnershipExclusive
+	first.Stores.Qdrant.DataDir = "/data2/qdrant/dev"
+	if err := Commit(reg, first, CommitOptions{Roots: roots, UpdatedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	again := commitTestTenant(roots, "dev", 2)
+	again.Stores.Qdrant.Ownership = registry.OwnershipExclusive
+	if err := Commit(reg, again, CommitOptions{Roots: roots, UpdatedBy: "test", Readopt: true}); err != nil {
+		t.Fatalf("--readopt refused: %v", err)
+	}
+	after, err := registry.LoadNoRepair(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := after.Tenants["dev"].Stores.Qdrant.DataDir; got != "/data2/qdrant/dev" {
+		t.Errorf("qdrant data_dir after --readopt = %q, want it carried over", got)
+	}
+
+	next := commitTestTenant(roots, "dev", 2)
+	next.Stores.Qdrant.Ownership = registry.OwnershipShared
+	keepQdrantDataDir(next, after.Tenants["dev"])
+	if next.Stores.Qdrant.DataDir != "" {
+		t.Error("a data_dir was carried onto a shared qdrant leg")
+	}
+}
+
+// The preview carries the field (so --confirm-stores sees the moved dir) and
+// SAYS so when it has to drop it because the re-observed leg is shared.
+func TestReadoptPreviewCarriesOrReportsTheQdrantDataDir(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	rows := previewLive(t, roots, h)
+	at := time.Date(2026, 9, 17, 12, 20, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name, manifest string
+		uiPort         int
+		wantKept       bool
+	}{
+		{"dev", "dev", 8090, true},    // the live dev qdrant is exclusive
+		{"demo", "demo", 5210, false}, // demo runs on the shared :6333
+	} {
+		prev := *rows[c.name]
+		prev.Stores.Qdrant.DataDir = "/rag/stores2/qdrant/" + c.name
+		row, findings, err := Preview(roots, c.name, Options{
+			DataDir: filepath.Join(roots.DataDir, c.manifest), Worktree: filepath.Join(roots.ReposDir, c.name),
+			ManifestName: c.manifest, UIPort: c.uiPort, Host: h, Now: func() time.Time { return at },
+			Existing: &prev, Readopt: true,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var reported bool
+		for _, f := range findings {
+			if f.Code == doctor.QdrantDataDirDropped {
+				reported = f.Level == model.LevelWarn && strings.Contains(f.Detail, prev.Stores.Qdrant.DataDir)
+			}
+		}
+		if c.wantKept {
+			if row.Stores.Qdrant.DataDir != prev.Stores.Qdrant.DataDir || reported {
+				t.Errorf("%s: data_dir=%q reported=%v, want it carried silently", c.name, row.Stores.Qdrant.DataDir, reported)
+			}
+		} else if row.Stores.Qdrant.DataDir != "" || !reported {
+			t.Errorf("%s: data_dir=%q reported=%v, want it dropped WITH a warn", c.name, row.Stores.Qdrant.DataDir, reported)
+		}
+	}
 }

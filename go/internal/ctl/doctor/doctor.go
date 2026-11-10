@@ -1115,6 +1115,7 @@ func (d *run) storeChecks(t *registry.Tenant) {
 				"%s is absent; the es unit binds it as path.repo and apptainer refuses a bind whose source is missing — create it before starting", snaps))
 		}
 	}
+	d.qdrantDataDirChecks(t)
 	if !t.Stores.DormantProvisionedDirs {
 		return
 	}
@@ -1127,6 +1128,52 @@ func (d *run) storeChecks(t *registry.Tenant) {
 	d.add(model.LevelWarn, DormantProvisionedDirs, t.Name, fmt.Sprintf("%s has provisioned store directories it does not use", t.Name))
 }
 
+// qdrantDataDirChecks are the host facts of a row that moves its qdrant data
+// dir (stores.qdrant.data_dir). Nothing is raised for a row without one.
+// Store-root containment (configured store roots) is a later PR; this checks
+// only what would make the ctl's own drivers refuse the dir today.
+func (d *run) qdrantDataDirChecks(t *registry.Tenant) {
+	q := t.Stores.Qdrant.DataDir
+	if q == "" || t.Stores.Qdrant.Ownership != registry.OwnershipExclusive {
+		return
+	}
+	inRoots := false
+	for _, r := range []string{d.roots.DataDir, d.roots.CtlConfigDir, d.roots.CtlStateDir, d.roots.BackupsDir, d.roots.ReposDir} {
+		if r != "" && q != filepath.Clean(r) && under(q, r) {
+			inRoots = true
+			break
+		}
+	}
+	if !inRoots {
+		d.add(model.LevelWarn, QdrantDataDirOutsideRoots, t.Name, fmt.Sprintf(
+			"stores.qdrant.data_dir %s is outside the ctl's approved roots (%s, %s, %s, %s, %s): the instance driver "+
+				"would refuse its bind and the files driver would refuse to move a snapshot out of it",
+			q, d.roots.DataDir, d.roots.CtlConfigDir, d.roots.CtlStateDir, d.roots.BackupsDir, d.roots.ReposDir))
+	}
+	if rag := filepath.Clean(d.roots.RagRoot); d.roots.RagRoot != "" && !under(q, rag) {
+		if mp, fs, err := d.host.MountOf(q); err == nil && mp == "/" {
+			d.add(model.LevelError, QdrantDataDirRootNotMounted, t.Name, fmt.Sprintf(
+				"stores.qdrant.data_dir %s is outside %s and the deepest mount holding it is the root filesystem "+
+					"(/, %s): the store filesystem it was moved to is not mounted, and a qdrant started there would "+
+					"write onto the root fs", q, rag, fs))
+		}
+	}
+	storage := filepath.Join(q, "storage")
+	for _, p := range []string{q, storage} {
+		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			d.add(model.LevelError, QdrantDataDirSymlink, t.Name, fmt.Sprintf(
+				"%s is a symlink: a bind mounts whatever it resolves to, so the store's real location is not the one "+
+					"the registry records — replace it with the directory itself", p))
+			return
+		}
+	}
+	if fi, err := os.Stat(storage); err != nil || !fi.IsDir() {
+		d.add(model.LevelWarn, QdrantDataDirMissing, t.Name, fmt.Sprintf(
+			"%s is not a directory; the qdrant unit is conditioned on it and apptainer refuses a bind whose source "+
+				"is missing — create it (or move the store there) before starting", storage))
+	}
+}
+
 // permissionChecks walk the paths the ctl has to trust for this tenant: the
 // ones nobody else may WRITE, and the ones the ctl itself must be able to
 // READ.
@@ -1134,6 +1181,12 @@ func (d *run) permissionChecks(t *registry.Tenant) {
 	d.secretsReadable(t)
 	d.writable(t.Name, t.DataDir)
 	d.writable(t.Name, filepath.Join(t.DataDir, "config", "secrets.env"))
+	// A moved qdrant data dir (stores.qdrant.data_dir) holds this tenant's
+	// vectors outside the tree checked above, so it is trusted the same way.
+	if q := t.Stores.Qdrant.DataDir; q != "" {
+		d.writable(t.Name, q)
+		d.writable(t.Name, filepath.Join(q, "storage"))
+	}
 	for _, sif := range []string{string(t.Stores.Qdrant.SIF), string(t.Stores.Elasticsearch.SIF)} {
 		if sif != "" {
 			d.writable(t.Name, sif)

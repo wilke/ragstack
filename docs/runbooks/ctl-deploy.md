@@ -464,6 +464,84 @@ the `unexpected_listener` warning on its +5 port that `doctor` was already
 raising. The fix is to re-adopt — `adopt-all --preview` shows the `postgres`
 line per tenant, `--commit` records it — after which the warning clears.
 
+### Where a tenant's qdrant keeps its data (`stores.qdrant.data_dir`)
+
+By default a tenant's own qdrant keeps `storage/` and `snapshots/` under
+`<data_dir>/qdrant`. An **exclusive** qdrant row may name another HOST
+directory in the optional `stores.qdrant.data_dir`; every path the ctl
+derives for that store — the unit's binds, `up.sh` (`QDIR`), backups,
+`--confirm-stores`, `fleet` disk usage, `doctor` — then uses it, and
+`ops/coconut/restore.sh` binds it too. Absent means the default, and the
+default is spelled only by absence: the contract refuses a row that names
+`<data_dir>/qdrant` explicitly, a path that equals or contains the row's
+`data_dir`, and (fleet-wide) two rows sharing one dir or one row's dir nested
+under another tenant's `data_dir` or qdrant dir. A row without the field
+serialises byte-identically, so an older daemon still reads the registry.
+
+The contract also refuses a dir under `<data_dir>/qdrant`, and a dir that is
+inside **or contains** a directory the row's own layout owns: the provisioned
+dirs (`elasticsearch/data`, `state`, `postgres/data`, …), `logs/`, `ui/dist`,
+and the store parents `elasticsearch/`, `postgres/`, `ui/` — so
+`<data_dir>/elasticsearch` and `<data_dir>/postgres/x` are both refused. A
+sibling such as `<data_dir>/qdrant-b` is legal.
+
+**Setting it (PR1: hand-edit only).** Nothing sets the field today. Set it
+only after **every** ctl binary on the host — the daemon, the CLI, and anything
+cron runs — is a build that knows the field: an older binary refuses a
+registry carrying an unknown member, which would take the whole control plane
+down. Stop the store, move `storage/` and `snapshots/`, hand-edit the row, then
+check the edit with `ragstack-ctl registry validate` (read-only: it loads the
+file the way every reader does and writes nothing) before starting anything.
+In PR1 the dir must also be under one of the ctl's approved roots (the tenants
+data dir, the ctl config/state dirs, the backups dir, the repos dir): the
+instance driver refuses a bind outside them and the files driver refuses to
+move a backup snapshot out of one. `doctor` reports that case as
+`qdrant_data_dir_outside_roots` (a **warn** in PR1 — the driver's refusal is
+the hard stop); configurable store roots are PR2.
+
+The qdrant unit keeps its single `ConditionPathIsMountPoint=/rag` and its
+`ConditionPathIsDirectory=<dir>/storage`; PR1 emits no mount condition for the
+moved dir's own filesystem (PR2 will, from configured store roots). Instead
+`doctor` raises `qdrant_data_dir_root_not_mounted` (error) when the dir is
+outside `/rag` and the deepest mount holding it is the root filesystem. Other
+findings: `qdrant_data_dir_missing` (no `<dir>/storage`; red for
+start/restart), `qdrant_data_dir_symlink` (error), and, on a re-adoption whose
+qdrant leg is no longer exclusive, `qdrant_data_dir_dropped` (warn: the field
+is not carried over and the dir is no longer named).
+
+`tenant decommission` **refuses** a row that sets the field (the quarantine
+renames the data tree and would strand the moved dir); move the store back
+and remove the field first. Supporting it is a later PR.
+
+**restore.sh and a tenant's own `bin/up.sh`.** `restore.sh` starts a moved
+qdrant from the row (`$qdir/storage`, `$qdir/snapshots`) and refuses it unless
+the path is clean (no `..`) and the dir and its `storage/` are real directories
+(not symlinks). The postgres leg of a `--postgres local` tenant is started
+through the tenant's `bin/up.sh`, because that script holds the generated
+password — and the same script starts qdrant too. On a row with
+`stores.qdrant.data_dir`, `restore.sh` runs that up.sh **only if it is the one
+rendered for the row's current dir**: the line `QDIR="<data_dir>"` and both
+`"$QDIR/storage:/qdrant/storage"` / `"$QDIR/snapshots:/qdrant/snapshots"` binds,
+byte-for-byte. Any other up.sh (the provision-time `$TDIR/qdrant` one, a
+literal path, one left from an earlier move) is refused: postgres is reported
+NOT started and the run exits nonzero, because run blindly it would bring
+qdrant up on the wrong, possibly empty, directory.
+
+To regenerate it: `ragstack-ctl render up-sh <name> --store postgres-local >
+up.sh.new`. The CLI never has the tenant's secrets, so it renders
+`POSTGRES_PASSWORD=<GENERATED:PG_PASSWORD>`: splice the real value back from
+the old up.sh, then replace it keeping the old file's mode and owner. Do **not** re-run
+`new-tenant.sh` — it writes `$TDIR/qdrant` back.
+
+The SHARED qdrant (:6333) and qdrant2 (:6343) dirs are `restore.sh`'s:
+`SHARED_QDRANT_DIR` / `SHARED_QDRANT2_DIR` from the environment, else from the
+optional `/rag/config/stores.env` (KEY=VALUE, parsed — never sourced), else
+`/rag/data/qdrant` and `/rag/data/qdrant2`. `stores.env` must be a regular
+readable file owned by the account running `restore.sh` (or root) and not
+group- or world-writable; anything else that exists at that path, a malformed
+line, or a value that is not a plain absolute path stops the run (exit 2). An
+absent file means the defaults.
+
 ---
 
 ## 6. Publish the first gateway generation

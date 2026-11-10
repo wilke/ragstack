@@ -105,6 +105,7 @@ func usage() {
                                             --spec entries take an optional ui_mode field with the same
                                             meaning as --ui-mode.
   registry repair [--registry PATH]         rewrite manifest.tsv FROM the registry (explicit, destructive)
+  registry validate [--registry PATH]       load the registry as every reader does (contract + invariants); writes nothing
   doctor [<name>] [--op VERB] [--json]      diagnose the host/a tenant (exit 3 when red)
   wait-ready <name> [--timeout S]           block until the tenant's own stores answer (unit ExecStartPre)
   es-seed-config <name> [--rag-root DIR]    seed an empty ES config bind from the image (unit ExecStartPre)
@@ -919,10 +920,31 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 // out: the repair rewrites manifest.tsv FROM the registry, so a reader that
 // did it would truncate a live manifest and hand the next new-tenant.sh a
 // port block that is already in use.
+//
+// `registry validate` is the read-only check of a hand-edited registry (e.g.
+// a new stores.qdrant.data_dir): it loads the file exactly as every reader
+// does — the published contract, then the cross-row invariants — and writes
+// nothing, not even the projection.
 func cmdRegistry(args []string, registryPath, ragRoot string) int {
-	if len(args) == 0 || args[0] != "repair" {
-		fmt.Fprintln(stderr, "usage: ragstack-ctl registry repair [--registry PATH]")
+	if len(args) == 0 || (args[0] != "repair" && args[0] != "validate") {
+		fmt.Fprintln(stderr, "usage: ragstack-ctl registry repair|validate [--registry PATH]")
 		return exitUsage
+	}
+	if args[0] == "validate" {
+		fs := flag.NewFlagSet("registry validate", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		reg := fs.String("registry", registryPath, "registry.json path")
+		root := fs.String("rag-root", ragRoot, "deployment root")
+		if err := fs.Parse(args[1:]); err != nil {
+			return exitUsage
+		}
+		path := resolveRegistry(*reg, *root)
+		f, err := registry.LoadNoRepair(path)
+		if err != nil {
+			return fail(err)
+		}
+		fmt.Fprintf(stdout, "%s: valid (generation %d, %d tenants)\n", path, f.Generation, len(f.Tenants))
+		return exitOK
 	}
 	fs := flag.NewFlagSet("registry repair", flag.ContinueOnError)
 	fs.SetOutput(stderr)

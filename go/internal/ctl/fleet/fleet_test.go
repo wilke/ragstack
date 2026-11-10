@@ -700,3 +700,29 @@ func TestImageModeCodeDriftComparesHeadWithTheImageCommit(t *testing.T) {
 		t.Error("worktree mode lost the describe-vs-tag drift")
 	}
 }
+
+// A qdrant data dir moved off the tenant tree counts toward the row's disk;
+// one inside the tree is not counted twice.
+func TestDiskBytesIncludesAnOffTreeQdrantDataDir(t *testing.T) {
+	for _, c := range []struct {
+		dir  string
+		want int64
+	}{
+		{"", 12 << 30},
+		{"/data2/qdrant/dev", 12<<30 + 40<<30},
+		{"/rag/data/tenants/dev/qdrant-b", 12 << 30},
+	} {
+		f := registry.LiveFixture()
+		f.Tenants["dev"].Stores.Qdrant.DataDir = c.dir
+		p := probes(t)
+		h := p.Disk.(*hostfacts.Fake)
+		h.DU["/data2/qdrant/dev"] = 40 << 30
+		h.DU["/rag/data/tenants/dev/qdrant-b"] = 7 << 30
+		resp := Build(context.Background(), paths.NewRoots("/rag", paths.Overrides{}), f, p)
+		for _, r := range resp.Tenants {
+			if r.Name == "dev" && r.DiskBytes != c.want {
+				t.Errorf("data_dir %q: disk_bytes = %d, want %d", c.dir, r.DiskBytes, c.want)
+			}
+		}
+	}
+}

@@ -255,3 +255,38 @@ func TestServerImagesDirIsInsideTheCtlStateDir(t *testing.T) {
 		t.Errorf("standard layout: %q", got)
 	}
 }
+
+// TestWithQdrantDataDir: moving the qdrant dir rewrites exactly QdrantDir,
+// QdrantStorage and QdrantSnapshots; "" is the identity; ProvisionDirs keeps
+// its eleven entries (the moved storage/snapshots replace the defaults).
+func TestWithQdrantDataDir(t *testing.T) {
+	r := Roots{DataDir: "/rag/data/tenants", ReposDir: "/rag/repos/tenants"}
+	tp := TenantPaths(r, "alpha", "")
+	if tp.QdrantDir != "/rag/data/tenants/alpha/qdrant" {
+		t.Fatalf("default QdrantDir = %q", tp.QdrantDir)
+	}
+	if tp.QdrantOffLayout() {
+		t.Error("default layout reported off-layout")
+	}
+	if got := tp.WithQdrantDataDir(""); got != tp {
+		t.Errorf("WithQdrantDataDir(\"\") changed the tenant: %+v", got)
+	}
+	moved := tp.WithQdrantDataDir("/data2/qdrant/alpha")
+	want := tp
+	want.QdrantDir = "/data2/qdrant/alpha"
+	want.QdrantStorage = "/data2/qdrant/alpha/storage"
+	want.QdrantSnapshots = "/data2/qdrant/alpha/snapshots"
+	if moved != want {
+		t.Errorf("WithQdrantDataDir rewrote more or less than the three qdrant fields:\n got %+v\nwant %+v", moved, want)
+	}
+	if !moved.QdrantOffLayout() {
+		t.Error("moved layout not reported off-layout")
+	}
+	dirs := moved.ProvisionDirs()
+	if len(dirs) != 11 {
+		t.Fatalf("ProvisionDirs = %d entries, want 11", len(dirs))
+	}
+	if dirs[0] != want.QdrantStorage || dirs[1] != want.QdrantSnapshots {
+		t.Errorf("ProvisionDirs qdrant entries = %q %q", dirs[0], dirs[1])
+	}
+}

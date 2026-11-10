@@ -84,6 +84,56 @@ DATA=/rag/data
 DRY=0; ONLY=""; SKIP=""; PROXY=0; TENANT=""
 REGISTRY=${REGISTRY:-$DATA/tenants/registry.json}
 JQ=${JQ:-/usr/bin/jq}
+# Where the SHARED qdrant (:6333) and qdrant2 (:6343) keep storage/ and
+# snapshots/. The environment wins; otherwise /rag/config/stores.env (optional)
+# may name them; otherwise the historical $DATA/qdrant and $DATA/qdrant2.
+#
+# stores.env is PARSED, never sourced: KEY=VALUE lines, blanks and comments,
+# one pair of surrounding quotes stripped — the same loop as ctl-daemon.sh's
+# load_env. Sourcing it would run whatever it contains as this account. Only
+# the two keys below are read; a malformed line, or a value that is not a
+# plain absolute path, stops the run (a shared store started on the wrong
+# directory comes up EMPTY and looks healthy).
+#
+# The file decides which directory a shared store binds, so it is trusted only
+# when nobody else could have written it: it must be a regular, readable file
+# (not a symlink), owned by the account running this script or by root, and
+# not group- or world-writable. An ABSENT file is the default; anything else
+# that is not such a file stops the run.
+STORES_ENV=${STORES_ENV:-/rag/config/stores.env}
+load_stores_env() {
+  local file=$1 line key val n=0 owner mode
+  [[ -e $file || -L $file ]] || return 0
+  # Assumes the parent directory is not writable by others, and accepts the
+  # check-then-read race (TOCTOU) — both follow-ups, not handled here.
+  if [[ -L $file || ! -f $file || ! -r $file ]]; then
+    echo "$file exists but is not a regular readable file; refusing to start" >&2; exit 2
+  fi
+  owner=$(stat -c %u -- "$file") && mode=$(stat -c %a -- "$file") || {
+    echo "$file: cannot stat it; refusing to start" >&2; exit 2; }
+  if [[ $owner != "$EUID" && $owner != 0 ]]; then
+    echo "$file is owned by uid $owner, not by this account ($EUID) or root; refusing to start" >&2; exit 2
+  fi
+  if (( 8#$mode & 8#022 )); then
+    echo "$file is group- or world-writable (mode $mode); refusing to start" >&2; exit 2
+  fi
+  while IFS= read -r line || [[ -n $line ]]; do
+    n=$((n + 1))
+    [[ -z ${line//[[:space:]]/} ]] && continue
+    [[ ${line#"${line%%[![:space:]]*}"} == \#* ]] && continue
+    if [[ ! $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      echo "$file line $n is not KEY=VALUE; refusing to start" >&2; exit 2
+    fi
+    key=${line%%=*}; val=${line#*=}
+    if [[ ${#val} -ge 2 && ${val:0:1} == "'" && ${val: -1} == "'" ]]; then val=${val:1:${#val}-2}
+    elif [[ ${#val} -ge 2 && ${val:0:1} == '"' && ${val: -1} == '"' ]]; then val=${val:1:${#val}-2}; fi
+    case $key in
+      SHARED_QDRANT_DIR|SHARED_QDRANT2_DIR)
+        [[ $val =~ ^/[A-Za-z0-9._/-]+$ ]] || { echo "$file line $n: $key is not an absolute path in [A-Za-z0-9._/-]; refusing to start" >&2; exit 2; }
+        [[ -n ${!key:-} ]] || printf -v "$key" '%s' "$val" ;;
+    esac
+  done <"$file"
+}
 while [[ $# -gt 0 ]]; do
   case $1 in
     --dry-run) DRY=1 ;;
@@ -102,6 +152,10 @@ if [[ -n $TENANT ]]; then
   [[ $TENANT =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "--tenant: $TENANT is not a tenant name" >&2; exit 2; }
   [[ -z $ONLY ]] && ONLY="stores,apis,uis"
 fi
+# After argument parsing, so --help and a bad flag never depend on stores.env.
+load_stores_env "$STORES_ENV"
+SHARED_QDRANT_DIR=${SHARED_QDRANT_DIR:-$DATA/qdrant}
+SHARED_QDRANT2_DIR=${SHARED_QDRANT2_DIR:-$DATA/qdrant2}
 
 ts() { date -u +%FT%TZ; }
 say() { echo "$(ts) $*"; }
@@ -306,7 +360,7 @@ reg_env() {
 # image, the ports, the binds and the environment the store is actually running
 # with. postgres is started through the tenant's own launcher, for the password.
 tenant_stores_up() {
-  local name=$1 data up kind inst port sif specs rc=0
+  local name=$1 data up kind inst port sif specs rc=0 qrc=0
   data=$(reg_get "$name" '.data_dir')
   [[ -n $data ]] || { say "  [$name] the registry row has no data_dir — stores NOT started"; return 1; }
   specs=$(tenant_store_specs "$name")
@@ -323,10 +377,25 @@ tenant_stores_up() {
   while read -r kind inst port; do
     [[ -n $inst ]] || continue
     case $kind in
-      qdrant)     tenant_qdrant_up "$name" "$data" "$inst" "$port" || rc=1 ;;
+      qdrant)     tenant_qdrant_up "$name" "$data" "$inst" "$port" || { rc=1; qrc=1; } ;;
       elasticsearch) tenant_es_up "$name" "$data" "$inst" "$port" || rc=1 ;;
       postgres)
-        if up=$(tenant_up_script "$data"); then
+        # tenant_store_specs lists qdrant first, so qrc is final here. A moved
+        # qdrant that was refused must not be started by up.sh's own qdrant leg
+        # either (whatever it binds), so postgres waits with it.
+        if (( qrc )) && [[ -n $(reg_get "$name" '.stores.qdrant.data_dir') ]]; then
+          say "  ✗ [$name] postgres $inst (:$port) NOT started: the moved qdrant leg did not start, and up.sh"
+          say "    (the only launcher holding the postgres password) would start qdrant too. Fix the qdrant leg first."
+          rc=1
+        elif up=$(tenant_up_script "$data") && moved_qdrant_up_sh_is_stale "$name" "$up"; then
+          say "  ✗ [$name] postgres $inst (:$port) NOT started: the row moves its qdrant (stores.qdrant.data_dir)"
+          say "    and $up is not the launcher for that dir (no QDIR=\"<data_dir>\" + \"\$QDIR/storage\" bind)."
+          say "    Run blindly it could start qdrant on the wrong (empty) directory."
+          say "    Regenerate it: ragstack-ctl render up-sh $name --store postgres-local > up.sh.new — that renders"
+          say "    POSTGRES_PASSWORD=<GENERATED:PG_PASSWORD>, so splice the real password back from the old up.sh."
+          say "    Do NOT re-run new-tenant.sh: it writes \$TDIR/qdrant back. Then re-run with --tenant $name."
+          rc=1
+        elif [[ -n $up ]]; then
           # up.sh starts every leg it knows; the two above are already running
           # by now and its own idempotency check skips them.
           run "[$name postgres $inst :$port] via $up (it holds the generated password)" "$up" || rc=1
@@ -340,9 +409,55 @@ tenant_stores_up() {
   return $rc
 }
 
+# moved_qdrant_up_sh_is_stale NAME UPSH — 0 when the row moves its qdrant
+# (stores.qdrant.data_dir) and the tenant's own launcher is NOT the one
+# rendered for that dir. Such an up.sh is never run: its idempotency check
+# skips a qdrant that is already up, but when the moved leg did NOT start it
+# would bring qdrant up on whatever directory it names — the default
+# $TDIR/qdrant, or the dir of an EARLIER move — a store that answers, holds
+# the wrong data or none, and looks healthy. The postgres leg it also carries
+# stays down (its password is in up.sh and is never reconstructed here).
+#
+# The match is POSITIVE and byte-for-byte what `render.UpSh` emits for the
+# row's current dir (golden up.sh.qdrant-data-dir): the line
+# QDIR="<data_dir>" and both whole "    --bind "$QDIR/…" \" lines. Anything else — any spelling of
+# the default dir, a literal path, a QDIR from a previous move — is stale.
+moved_qdrant_up_sh_is_stale() {
+  local qdir
+  qdir=$(reg_get "$1" '.stores.qdrant.data_dir')
+  [[ -n $qdir ]] || return 1
+  grep -qxF "QDIR=\"$qdir\"" "$2" &&
+    grep -qxF '    --bind "$QDIR/storage:/qdrant/storage" \' "$2" &&
+    grep -qxF '    --bind "$QDIR/snapshots:/qdrant/snapshots" \' "$2" && return 1
+  return 0
+}
+
 # tenant_qdrant_up — one tenant's own qdrant, from its row.
+#
+# The host directory holding storage/ and snapshots/ is the row's
+# stores.qdrant.data_dir when it has one, else <data_dir>/qdrant. A row that
+# MOVED it is refused unless <qdir>/storage is a real directory: a missing one
+# would start an empty store, and a symlink is a store whose real location the
+# registry does not record. (The default layout keeps its old behaviour.)
 tenant_qdrant_up() {
-  local name=$1 data=$2 inst=$3 port=$4 sif opts=() kv
+  local name=$1 data=$2 inst=$3 port=$4 sif opts=() kv qdir
+  qdir=$(reg_get "$name" '.stores.qdrant.data_dir // empty')
+  if [[ -n $qdir ]]; then
+    if [[ ! $qdir =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+      say "  ✗ [$name] qdrant data_dir is not an absolute path in [A-Za-z0-9._/-] — $inst NOT started"
+      return 1
+    fi
+    if [[ $qdir == */../* || $qdir == */.. ]]; then
+      say "  ✗ [$name] qdrant data_dir $qdir has a '..' segment — $inst NOT started"
+      return 1
+    fi
+    if [[ -L $qdir || ! -d $qdir || -L $qdir/storage || ! -d $qdir/storage ]]; then
+      say "  ✗ [$name] qdrant data_dir $qdir: $qdir/storage is not a directory (or is a symlink) — $inst NOT started"
+      return 1
+    fi
+  else
+    qdir=$data/qdrant
+  fi
   sif=$(reg_get "$name" '.stores.qdrant.sif'); [[ -n $sif ]] || sif=$IMG/qdrant.sif
   # extra_env is what the running store's environment actually holds; the port
   # keys are overridden from the block, which is what every other reader of
@@ -353,8 +468,8 @@ tenant_qdrant_up() {
                 + {QDRANT__SERVICE__HTTP_PORT: ($t.ports.qdrant_http|tostring),
                    QDRANT__SERVICE__GRPC_PORT: ($t.ports.qdrant_grpc|tostring)}')"
   start_instance "$inst" "$sif" \
-    --bind "$data/qdrant/storage:/qdrant/storage" \
-    --bind "$data/qdrant/snapshots:/qdrant/snapshots" \
+    --bind "$qdir/storage:/qdrant/storage" \
+    --bind "$qdir/snapshots:/qdrant/snapshots" \
     "${opts[@]}" \
     -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
 }
@@ -479,13 +594,13 @@ if want stores; then
   say "  (--tenant $TENANT: the shared stores are not this tenant's and are left alone)"
   else
   start_instance qdrant "$IMG/qdrant.sif" \
-    --bind "$DATA/qdrant/storage:/qdrant/storage" --bind "$DATA/qdrant/snapshots:/qdrant/snapshots" \
+    --bind "$SHARED_QDRANT_DIR/storage:/qdrant/storage" --bind "$SHARED_QDRANT_DIR/snapshots:/qdrant/snapshots" \
     --bind "/rag/cache/load3corpus:/rag/cache/load3corpus" \
     --env QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=12 \
     --env QDRANT__STORAGE__OPTIMIZERS__MAX_OPTIMIZATION_THREADS=1 \
     -- /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
   start_instance qdrant2 "$IMG/qdrant.sif" \
-    --bind "$DATA/qdrant2/storage:/qdrant/storage" --bind "$DATA/qdrant2/snapshots:/qdrant/snapshots" \
+    --bind "$SHARED_QDRANT2_DIR/storage:/qdrant/storage" --bind "$SHARED_QDRANT2_DIR/snapshots:/qdrant/snapshots" \
     --env QDRANT__SERVICE__HTTP_PORT=6343 --env QDRANT__SERVICE__GRPC_PORT=6344 \
     --env QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=12 \
     --env QDRANT__STORAGE__OPTIMIZERS__MAX_OPTIMIZATION_THREADS=1 \

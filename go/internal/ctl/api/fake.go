@@ -474,7 +474,7 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		CollectionsByOrigin: map[string][]string{}, InstancePorts: map[string]int{},
 	}
 	for name, t := range f.Tenants {
-		tp := paths.TenantPaths(roots, name, t.ManifestName)
+		tp := t.Paths(roots)
 		// The API is up for an active tenant, and its unit moves the port, so
 		// a fence that stops the unit really frees the socket.
 		_, _, _, _, apiUnit, _ := render.UnitNames(name)

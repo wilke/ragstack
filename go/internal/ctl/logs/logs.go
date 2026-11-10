@@ -309,7 +309,7 @@ func NewRedactor(t *registry.Tenant) (*settings.Redactor, error) {
 // outside the tenant's data dir (or the apptainer instance log directory) is
 // ever considered.
 func Resolve(roots paths.Roots, t *registry.Tenant, file model.LogFile) (string, error) {
-	tp := paths.TenantPaths(roots, t.Name, t.ManifestName)
+	tp := t.Paths(roots)
 	var candidates []string
 	switch file {
 	case model.LogAPI:

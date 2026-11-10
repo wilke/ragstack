@@ -859,7 +859,7 @@ func (s *selftest) purgedChecks(ctx context.Context, t *registry.Tenant) []check
 	}
 	out = append(out, row)
 
-	tp := paths.TenantPaths(s.roots, name, t.ManifestName)
+	tp := t.Paths(s.roots)
 	trees := []string{tp.DataDir, filepath.Join(s.roots.BackupsDir, name), filepath.Join(s.roots.ReposDir, name),
 		filepath.Join(s.roots.UnitsDir(), name)}
 	if t.Quarantine != nil && t.Quarantine.Dir != "" {
@@ -1756,7 +1756,7 @@ func (s *selftest) instancesGoneCheck(ctx context.Context, name string, t *regis
 	}
 	pidfile := t.API.PidFile
 	if pidfile == "" {
-		pidfile = paths.TenantPaths(s.roots, name, t.ManifestName).PidFile
+		pidfile = t.Paths(s.roots).PidFile
 	}
 	if _, err := s.drv.Files().ReadFile(ctx, pidfile); err == nil {
 		alive = append(alive, pidfile)

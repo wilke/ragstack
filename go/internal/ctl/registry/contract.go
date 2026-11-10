@@ -22,6 +22,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
 // Patterns, byte-identical to the schema's (RE2-compatible: the contract keeps
@@ -134,6 +136,75 @@ func (c *contractCheck) nullable(ptr string, v NullString, re *regexp.Regexp) {
 	if v != "" {
 		c.pattern(ptr, string(v), re)
 	}
+}
+
+// qdrantDataDir checks the optional stores.qdrant.data_dir: the schema's
+// pattern, then the coherence rules the schema cannot say. Absent is always
+// fine (the default `<data_dir>/qdrant`).
+func (c *contractCheck) qdrantDataDir(ptr, tenantDataDir string, q Qdrant) {
+	d := q.DataDir
+	if d == "" {
+		return
+	}
+	c.pattern(ptr, d, reAbsPath)
+	if q.Ownership != OwnershipExclusive {
+		c.failf(ptr, "set on a %q store (only an exclusive qdrant has a data dir the ctl may place)", q.Ownership)
+	}
+	if path.Clean(d) != d {
+		c.failf(ptr, "%q is not clean (path.Clean gives %q)", d, path.Clean(d))
+		return
+	}
+	if d == "/" {
+		c.failf(ptr, "is the filesystem root")
+		return
+	}
+	if tenantDataDir == "" {
+		return
+	}
+	td := path.Clean(tenantDataDir)
+	if d == path.Join(td, "qdrant") {
+		c.failf(ptr, "%q is the default spelling; leave data_dir absent instead", d)
+		return
+	}
+	if d == td || PathUnder(d, td) {
+		c.failf(ptr, "%q equals or contains the tenant data_dir %q", d, td)
+		return
+	}
+	if PathUnder(path.Join(td, "qdrant"), d) {
+		c.failf(ptr, "%q is under the default %s: move the store out of the default dir, or leave data_dir absent",
+			d, path.Join(td, "qdrant"))
+		return
+	}
+	// Nor may it sit in (or be) a directory the row's own layout already
+	// gives another store or the tenant itself — provisioning creates those,
+	// and a qdrant inside one shares its lifetime and permissions.
+	// And it may not CONTAIN one either (`<dd>/elasticsearch`, `<dd>/postgres`,
+	// `<dd>/ui`): a qdrant dir wrapped around another store's directory would
+	// put that store inside whatever later moves, purges or re-permissions it.
+	tp := paths.TenantPaths(paths.Roots{DataDir: path.Dir(td)}, "x", path.Base(td))
+	// The stores' parent dirs too, so a sibling such as <dd>/elasticsearch/x
+	// or <dd>/postgres/x is refused, not only the leaves provisioning makes.
+	owned := append(tp.ProvisionDirsFor(paths.StorePostgresLocal), tp.LogsDir, tp.UIDist,
+		path.Dir(tp.ESData), path.Dir(tp.PostgresData), path.Dir(tp.UIDist))
+	for _, pd := range owned {
+		if d == pd || PathUnder(pd, d) {
+			c.failf(ptr, "%q is inside %s, a directory the tenant's own layout provisions", d, pd)
+			return
+		}
+		if PathUnder(d, pd) {
+			c.failf(ptr, "%q contains %s, a directory the tenant's own layout provisions", d, pd)
+			return
+		}
+	}
+}
+
+// PathUnder reports whether child is strictly below parent (both clean,
+// absolute, slash-separated).
+func PathUnder(parent, child string) bool {
+	if parent == "/" {
+		return child != "/" && strings.HasPrefix(child, "/")
+	}
+	return strings.HasPrefix(child, parent+"/")
 }
 
 func (c *contractCheck) enum(ptr, v string, allowed []string) {
@@ -391,6 +462,7 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 	c.pattern(ptr+"/stores/qdrant/url", q.URL, reLoopbackURL)
 	c.nullable(ptr+"/stores/qdrant/sif", q.SIF, reAbsPath)
 	c.publicSettings(ptr+"/stores/qdrant/extra_env", q.ExtraEnv)
+	c.qdrantDataDir(ptr+"/stores/qdrant/data_dir", t.DataDir, q)
 
 	e := t.Stores.Elasticsearch
 	c.enum(ptr+"/stores/elasticsearch/ownership", e.Ownership, enumOwnership)

@@ -12,6 +12,7 @@ package fleet
 import (
 	"context"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -218,6 +219,14 @@ func row(ctx context.Context, t *registry.Tenant, p Probes, listeners map[int]ho
 	r.ServerImage = ServerImageName(t)
 	if n, err := p.Disk.Usage(ctx, t.DataDir); err == nil && n > 0 {
 		r.DiskBytes = n
+	}
+	// A qdrant data dir moved OFF the tenant tree (stores.qdrant.data_dir) is
+	// this tenant's disk too, and the walk of data_dir above does not reach
+	// it. One inside the tree is already counted.
+	if q := t.Stores.Qdrant.DataDir; q != "" && !registry.PathUnder(filepath.Clean(t.DataDir), filepath.Clean(q)) {
+		if n, err := p.Disk.Usage(ctx, q); err == nil && n > 0 {
+			r.DiskBytes += n
+		}
 	}
 	if b := t.LastBackup; b != nil {
 		r.LastBackup = &model.LastBackup{At: b.At, Fenced: b.Fenced, Verified: b.Verified, Checked: b.Checked}
