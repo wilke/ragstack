@@ -138,6 +138,18 @@ func TestQdrantDataDirRowRules(t *testing.T) {
 		{"under the postgres data dir", func(f *Fleet) {
 			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/postgres/data/q"
 		}, "own layout provisions"},
+		{"containing the es dirs", func(f *Fleet) {
+			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/elasticsearch"
+		}, "contains /rag/data/tenants/dev/elasticsearch/data"},
+		{"containing the postgres dirs", func(f *Fleet) {
+			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/postgres"
+		}, "contains /rag/data/tenants/dev/postgres/data"},
+		{"containing the ui dist", func(f *Fleet) {
+			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/ui"
+		}, "contains /rag/data/tenants/dev/ui/dist"},
+		{"the logs dir", func(f *Fleet) {
+			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/logs"
+		}, "inside /rag/data/tenants/dev/logs"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := LiveFixture()

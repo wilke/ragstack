@@ -178,10 +178,18 @@ func (c *contractCheck) qdrantDataDir(ptr, tenantDataDir string, q Qdrant) {
 	// Nor may it sit in (or be) a directory the row's own layout already
 	// gives another store or the tenant itself — provisioning creates those,
 	// and a qdrant inside one shares its lifetime and permissions.
+	// And it may not CONTAIN one either (`<dd>/elasticsearch`, `<dd>/postgres`,
+	// `<dd>/ui`): a qdrant dir wrapped around another store's directory would
+	// put that store inside whatever later moves, purges or re-permissions it.
 	tp := paths.TenantPaths(paths.Roots{DataDir: path.Dir(td)}, "x", path.Base(td))
-	for _, pd := range tp.ProvisionDirsFor(paths.StorePostgresLocal) {
+	owned := append(tp.ProvisionDirsFor(paths.StorePostgresLocal), tp.LogsDir, tp.UIDist)
+	for _, pd := range owned {
 		if d == pd || PathUnder(pd, d) {
 			c.failf(ptr, "%q is inside %s, a directory the tenant's own layout provisions", d, pd)
+			return
+		}
+		if PathUnder(d, pd) {
+			c.failf(ptr, "%q contains %s, a directory the tenant's own layout provisions", d, pd)
 			return
 		}
 	}

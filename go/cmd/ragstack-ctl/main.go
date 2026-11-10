@@ -105,6 +105,7 @@ func usage() {
                                             --spec entries take an optional ui_mode field with the same
                                             meaning as --ui-mode.
   registry repair [--registry PATH]         rewrite manifest.tsv FROM the registry (explicit, destructive)
+  registry validate [--registry PATH]       load the registry as every reader does (contract + invariants); writes nothing
   doctor [<name>] [--op VERB] [--json]      diagnose the host/a tenant (exit 3 when red)
   wait-ready <name> [--timeout S]           block until the tenant's own stores answer (unit ExecStartPre)
   es-seed-config <name> [--rag-root DIR]    seed an empty ES config bind from the image (unit ExecStartPre)

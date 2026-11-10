@@ -344,6 +344,10 @@ func TestRegistryRepairIsAVerbNotASideEffect(t *testing.T) {
 		t.Error("`registry` with no verb should be a usage error")
 	}
 
+	if _, out, errs := capture(t, "help"); !strings.Contains(out+errs, "registry validate [--registry PATH]") {
+		t.Error("the top-level usage does not list `registry validate`")
+	}
+
 	// `registry validate` reads, checks and writes nothing.
 	regBefore, _ := os.ReadFile(reg)
 	if rc, out, errs := capture(t, "registry", "validate", "--registry", reg, "--rag-root", dir); rc != exitOK ||
