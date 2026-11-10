@@ -79,3 +79,59 @@ All three stopped the neighbour build before any store write, were fixed, and we
 ## D-8: teardown deferred
 The plan deletes the four collections after the analysis. The owner asked that nothing be deleted, so the
 collections and the stage-out register stay until the owner gives the teardown go.
+
+## D-9 (2026-11-10): the stage-1b gateway calls ran on the homes-mgrast gateway, not the Mac gateway
+Stage 1b is described in [ADDENDUM-2026-11-10-stage1b.md](ADDENDUM-2026-11-10-stage1b.md). None of the
+figures below is in a committed artifact. They come from the homes gateway's audit, as read by MG-RAST at
+03:15Z, and from the gateway coordinator's (OpenChia's) review, both reported to the operator.
+
+- **What changed.** Every earlier stage's gateway calls ran on the Mac gateway, and its audit covered them.
+  The 114 stage-1b gateway calls ran on the homes-mgrast gateway instead. That gateway has its own Argo key
+  and its own audit.
+- **Why.** The Mac gateway was unreachable because the Mac's VPN was down. The owner chose the homes-mgrast
+  gateway in chat on 2026-11-10. The declined alternative was to wait for a tunnel to the Mac gateway.
+- **The gateway.**
+  - Started 03:02Z, with `--messages-native`, `--fallback ""` (no model fallback), and no access control.
+  - It runs the Mac gateway's code plus a one-line header patch in `post_native`. That patch affects only
+    `/v1/messages`, and the study's calls all went to the chat endpoint.
+- **The calls** (2026-11-10, chat endpoint): all non-streaming and `ok`/200, with 0 empty, 0 error and 0
+  provider notices.
+
+  | model | calls | window (UTC) | audit ids | tokens in | tokens out | of which reasoning | visible (out − reasoning) |
+  |---|---|---|---|---|---|---|---|
+  | Gemini 4 Argon (tiebreak) | 80 | 03:11:12–03:13:12 | within 8–99 | 71,005 | 4,439 | 937 | 3,502 |
+  | Claude Opus 5.5 (drift check) | 34 | 03:13:23–03:13:44 | 103–136, contiguous | 43,847 | 4,076 | 1,842 | 2,234 |
+
+  - Token counts are the provider's, as the audit logs them. `reasoning_tokens` is a subset of `tokens_out`,
+    as on the Mac gateway (same code, and consistent with the data). Cache tokens were 0 / 0.
+  - The audit holds ids 1–141, contiguous; it has no `events.jsonl`.
+- **Other traffic in the window.**
+  - Exactly 12 streamed Opus calls to `/v1/messages` sit inside the Argon id range (ids 12, 21, 25, 33, 36,
+    39, 48, 52, 60, 62, 95, 96), and 3 more at ids 100–102. They are attributed to the operator's own
+    argo-agent review run, which started at 03:10:10Z.
+  - Ids 1–2 are 2 Haiku calls, MG-RAST's tests.
+  - Every chat-endpoint call in the window is one of the study's 114.
+- **What the coordinator established, and what it could not.**
+  - OpenChia *reviewed* the reported totals and found them consistent:
+    - labels 323 + 348 = 671;
+    - tiebreak labels 28 + 52 = 80, so the escalation rate is 11.92 %;
+    - 591 non-escalated labels = 295 + 296;
+    - drift sample 34 = round(33.55);
+    - timing within the range observed on the Mac gateway.
+  - It has no access to the homes audit, so it could not reconcile the calls against an audit of its own, as
+    it had for the earlier batches. The stage-1b gateway traffic is therefore **reviewed, not verified**.
+- **Identity evidence.**
+  - Per-call input tokens match the Mac runs: Argon 887.6 against 892.4 in the exploratory null (0.5 %), and
+    Opus 1,289.6 against 1,287.4 in the confirmatory run (0.2 %). Read as analysis, these per-call rates are
+    consistent with the same prompts reaching the same models.
+  - Timing lies within the Mac-observed range.
+  - Argon's reasoning tokens were 11.7 per call, against 29.9 (null) and 26.3 (confirmatory). The
+    coordinator noted this and did not chase it.
+- **Preflight estimate.** The preflight token estimate was off by −16.9 % (Argon) and +21.1 % (Opus).
+- **Cost.** About $0.55 for stage 1b. The study's gateway total comes to about $9.8 across both gateways
+  (the coordinator's figures).
+- **Consequence.** The study's gateway record now spans two gateways and two credentials. The Mac audit
+  covers every gateway call before stage 1b, and the homes audit covers the 114 stage-1b calls alone.
+- **Effect on the result.** The calls decided 80 tiebreak labels and the 34-call drift check. They touch only
+  stage 1b's A, which saturates. They do not touch A_own, which is unchanged
+  ([addendum](ADDENDUM-2026-11-10-stage1b.md)).
