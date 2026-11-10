@@ -79,6 +79,18 @@ retrieval stage-A leg). The summaries carry ``mode: rechunk`` and ``exploratory:
 ``study`` block the same); found10's gold-id levels are left out of them (the gold ids are stage-A
 chunk ids); outcomes come from ``rechunk_stage1.py``.
 
+``rechunk: {all_records: true}`` is the **reach comparison's S-side run**
+(``docs/plans/results/reach-rechunk-2026-11/PREREG.md`` §2, §6 step 2, §10): the rechunk mode
+above with one difference, opted into by this key and exclusive of ``label_table``: every record
+of the accepted file is run in every corpus arm (no label table is read). Presence then checks what
+makes sense without a table (``rechunk_prep.check_rechunk_export``): the arm's export holds
+``corpora.<arm>.expected_chunks`` chunks and every row (and the load receipt, when it records one)
+carries the confirmatory chunk descriptor. The record set is verified as in the main run. The
+summaries carry ``mode: rechunk``, ``study.rechunk_scope: all_records``, the record count in
+``study.record_set`` and :data:`REACH_OUTCOMES_NOTE` in place of found10's gold-id levels; outcomes
+come from ``reach_report.py``. A ``label_table`` config is unchanged by this key's existence (its
+files are byte-identical to the version without it).
+
 **Gates kept from round 3** (found10): the live census before and after (here against the load
 receipt, above, in place of round 3's swap record); the depth read-back on every call, with the BM25
 exhaustion verifier (``exhausted_verified`` scored, ``clamp`` / ``query_mismatch`` hard
@@ -187,6 +199,10 @@ RECHUNK = "rechunk"
 #: the rechunk mode's leg-summary note in place of found10's gold-id outcome levels
 RECHUNK_OUTCOMES_NOTE = ("not scored here: the records' gold ids are stage-A chunk ids, absent under the new "
                          "chunking; rechunk outcomes come from the label table (rechunk_stage1.py)")
+#: ``rechunk: {all_records: true}`` (the reach comparison's S-side run; module docstring, *Modes*)
+RECHUNK_ALL_RECORDS = "all_records"
+REACH_OUTCOMES_NOTE = ("not scored here: the records' gold ids are stage-A chunk ids, absent under the new "
+                       "chunking; reach outcomes (quote@10, judged found@10) come from reach_report.py")
 
 
 def canonical_sha(obj: Any) -> str:
@@ -411,13 +427,27 @@ def validate_config(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def check_rechunk_config(cfg: Mapping[str, Any]) -> None:
-    """The rechunk mode's own shape: ``rechunk: {label_table: PATH}``, never with ``dry_run`` or
-    ``pilot``. Raises :class:`found10.Refused`."""
+    """The rechunk mode's own shape: ``rechunk: {label_table: PATH}`` (stage 1) or ``rechunk:
+    {all_records: true}`` (the reach comparison's S side), one of the two, never with ``dry_run``
+    or ``pilot``. Raises :class:`found10.Refused`."""
     rc = cfg.get(RECHUNK)
     if cfg.get("dry_run") or cfg.get("pilot"):
         raise f10.Refused("rechunk excludes dry_run and pilot")
+    if isinstance(rc, Mapping) and RECHUNK_ALL_RECORDS in rc:
+        if rc[RECHUNK_ALL_RECORDS] is not True:
+            raise f10.Refused(f"rechunk.{RECHUNK_ALL_RECORDS} must be true when given")
+        if "label_table" in rc:
+            raise f10.Refused(f"rechunk: {RECHUNK_ALL_RECORDS} and label_table exclude each other (the reach run "
+                              "reads no label table)")
+        return
     if not isinstance(rc, Mapping) or not rc.get("label_table"):
         raise f10.Refused("rechunk needs {label_table: PATH} (rechunk_prep.py gold-map)")
+
+
+def rechunk_all_records(cfg: Mapping[str, Any]) -> bool:
+    """``rechunk: {all_records: true}``: the reach comparison's S-side run (every accepted record)."""
+    rc = cfg.get(RECHUNK)
+    return isinstance(rc, Mapping) and rc.get(RECHUNK_ALL_RECORDS) is True
 
 
 def rechunk_table(cfg: Mapping[str, Any]) -> Any:
@@ -511,6 +541,9 @@ def load_study_records(cfg: Mapping[str, Any]) -> tuple[list[dict[str, Any]], di
         keep = {r["record_id"] for r in desc}
         recs = [r for r in recs if r["record_id"] in keep]
         ident = {**ident, "pilot": True, "pilot_records": len(recs)}
+    elif config_mode(cfg) == RECHUNK and rechunk_all_records(cfg):
+        # the reach comparison's S side: the full accepted file, verified above, every record run
+        ident = {**ident, RECHUNK: True, "rechunk_records": len(recs), "rechunk_scope": RECHUNK_ALL_RECORDS}
     elif config_mode(cfg) == RECHUNK:
         # the full accepted file is verified above, unchanged; then only the records of the
         # label table's pairs (each is run once per corpus arm of its pairs, build_runner)
@@ -689,7 +722,8 @@ class AliasRunner(f10.Runner):
             for c in (summary.get("conditions") or {}).values():
                 for k in PILOT_WITHHELD_CONDITION_KEYS:
                     c.pop(k, None)
-                c["outcomes"] = RECHUNK_OUTCOMES_NOTE
+                c["outcomes"] = (REACH_OUTCOMES_NOTE if self.study.get("rechunk_scope") == RECHUNK_ALL_RECORDS
+                                 else RECHUNK_OUTCOMES_NOTE)
         if self.study.get("mode") == "pilot":
             # R28 (owner, 2026-11-03): the pilot stays blind to outcomes; its leg summaries carry
             # no found@10 level (the rows keep every rank, privately; the pilot report reads rows
@@ -768,7 +802,19 @@ def build_runner(cfg: dict[str, Any], recs: Sequence[Mapping[str, Any]], ident: 
             raise f10.Refused(f"stage-A commit does not verify: {e}") from e
     ccfg = cfg["corpora"][corpus_arm]
     extra: dict[str, Any] = {}
-    if mode == RECHUNK:
+    if mode == RECHUNK and rechunk_all_records(cfg):
+        if glossary != asc.REPEAT_GLOSSARY:
+            raise f10.Refused(f"rechunk runs the {asc.REPEAT_GLOSSARY} collections only")
+        import rechunk_prep as rp
+
+        extra["rechunk_presence"] = rp.check_rechunk_export(
+            export_paths(ccfg["chunk_export"]), corpus_arm, expected_chunks=int(ccfg["expected_chunks"]),
+            load_receipt=Path(cfg["collections"][corpus_arm][glossary]["load_receipt"]), records=len(recs))
+        extra["exploratory"] = True
+        extra["rechunk_scope"] = RECHUNK_ALL_RECORDS
+        if not recs:
+            raise f10.Refused("rechunk all_records: the accepted file holds no record")
+    elif mode == RECHUNK:
         if glossary != asc.REPEAT_GLOSSARY:
             raise f10.Refused(f"rechunk runs the {asc.REPEAT_GLOSSARY} collections only")
         import rechunk_prep as rp
