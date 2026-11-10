@@ -1,5 +1,5 @@
 {
- "blinding": "W side, plus the S chunk exports (chunk texts, for S reachability) and the prior S registries' label files (integrity); no S retrieval output and no S outcome was read",
+ "blinding": "W side, plus the S chunk exports (chunk texts, for S reachability and the prior-content check), the prior S registries' label and pairs files (integrity, content sha) and the stage-1 S run summaries (the settings gate; no per-record outcome); no S retrieval row and no S outcome was read",
  "eligibility": {
   "eligible": 1089,
   "eligible_papers": 408,
@@ -66,8 +66,69 @@
    }
   }
  },
+ "prior_content": {
+  "combined": {
+   "judged": {
+    "match": 1121,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   },
+   "judged_keys": 1121,
+   "keys": 1121,
+   "match": 1121,
+   "mismatch": 0,
+   "no_pairs_row": 0,
+   "no_s_text": 0
+  },
+  "per_registry": {
+   "control": {
+    "judged": {
+     "match": 351,
+     "mismatch": 0,
+     "no_pairs_row": 0,
+     "no_s_text": 0
+    },
+    "judged_keys": 351,
+    "keys": 351,
+    "match": 351,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   },
+   "cover_any": {
+    "judged": {
+     "match": 174,
+     "mismatch": 0,
+     "no_pairs_row": 0,
+     "no_s_text": 0
+    },
+    "judged_keys": 174,
+    "keys": 174,
+    "match": 174,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   },
+   "stage1b": {
+    "judged": {
+     "match": 671,
+     "mismatch": 0,
+     "no_pairs_row": 0,
+     "no_s_text": 0
+    },
+    "judged_keys": 671,
+    "keys": 671,
+    "match": 671,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   }
+  },
+  "rule": "match: the pairs rows' content_sha256 is exactly sha256 of the S export's text of the chunk; a judged label that does not match is not reused and counts as unjudged, a key with no pairs row is counted (caveats on J, PREREG \u00a73)"
+ },
  "provenance": {
-  "commit": "8a172b6865057c48abd7083ae8565bc44729c69e",
+  "commit": "7c7ac1a1bc4e6677c431d64d83a7059de2837339",
   "dirty": false,
   "implementation": "cpython",
   "inputs_sha256": {
@@ -82,17 +143,28 @@
    "runs_neighbour": "4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882",
    "runs_random1": "4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e",
    "runs_random2": "ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87",
+   "runs_summary_base": "20936e99d9b0fb964de44d06b133fc20349b3c57bdd6c1cf90540935b6ab2fa7",
+   "runs_summary_neighbour": "7295a67826e178dd2cd75f15c1f2b35aa41b93efeeae7eb3a7a22c26903af40c",
+   "runs_summary_random1": "7d30412f716f79989ef1a9c28dac2a8bdaf8ba223a8631f87cfe96ea459e703b",
+   "runs_summary_random2": "302ffb23ff35bbdb808dfe29f365f7d5451fbd15879a5217dedb0d4924c531db",
    "s_export_base": "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
    "s_export_neighbour": "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
    "s_export_random1": "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
    "s_export_random2": "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c",
    "s_prior_final_control": "f0c6c7e6805c94a7be0c90c5dd69d96d4b03818273633c31bedd9b82e4065f99",
    "s_prior_final_cover_any": "956fb547a5546e9d454a7c0d92cd7804f3dc11db55d654eb4e3e5fa3eb14fe4e",
-   "s_prior_final_stage1b": "af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a"
+   "s_prior_final_stage1b": "af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a",
+   "s_prior_pairs_control": "6a2608200aa64c1f5e3a6b5ee90d4763c0e57e59de1698f47f435f955ec0f604",
+   "s_prior_pairs_cover_any": "f802cfd7106fff265466fa6c4a444aff34530b81a0c48d7669e876fae38df531",
+   "s_prior_pairs_stage1b": "aee3d117cf592a0087449f615eca9686f71d47c1f126ac44303d5acc03ecd2e6",
+   "s_stage1_summary_base": "4ebd768fc1c1b580bd817100bf24324f6dfff0aca377a345abe85403d413204d",
+   "s_stage1_summary_neighbour": "05b11e47d53e890a98fbe472504259c794ab43f6d65b387d413e1e06993742b3",
+   "s_stage1_summary_random1": "cc1456ceccd933643aefc5a26134faf334b7f924b74d41f9ed95aeaa0d8023e1",
+   "s_stage1_summary_random2": "4983af32f36c935e904d582268ffbd749c7190cf1743334780897779c6dcbc23"
   },
   "python": "3.12.13",
   "reach_quote_sha256": "8f9e7e5d63ad689ac6b6a683e6e83781d8d8b4d78f249f741444eaf5c7bc1e84",
-  "script_sha256": "19b182867e9a370075cd57295cb3c15df0d57fe11b3855e2901e1884817d087d"
+  "script_sha256": "8d8806a583728bf6f62787d841910b0a85269f4087aa644dc336eada22e0f20d"
  },
  "registry": {
   "label_rows_with_record_and_chunk": 24559,
@@ -204,6 +276,205 @@
   "min_match": 20,
   "module": "reach_quote",
   "top_k": 10
+ },
+ "settings_gates": {
+  "expected_differences": [
+   "collection",
+   "index",
+   "census",
+   "study.collection_build",
+   "study.mode",
+   "study.rechunk_scope",
+   "study.stage",
+   "study.legs",
+   "study.leg_stages",
+   "study.prereg",
+   "exploratory",
+   "provenance",
+   "server./v1/version (reported)",
+   "utc",
+   "mode",
+   "study.exploratory",
+   "study.rechunk_presence",
+   "study.gold_presence",
+   "study.record_set.rechunk",
+   "study.record_set.rechunk_records",
+   "conditions.*.hit_stamps"
+  ],
+  "note": "stage-1 S: the rechunk stage-1 runs (the reach config but for out_dir and the rechunk keys, PREREG \u00a72); summaries only, no per-record outcome in rechunk mode",
+  "stage1_s_vs_w": {
+   "compared": [
+    "condition set",
+    "request",
+    "requested",
+    "found_k",
+    "server_assumed",
+    "study.retrievers",
+    "study.request_order",
+    "study.record_set.accepted_sha256",
+    "server config hash"
+   ],
+   "gates": [],
+   "per_corpus": {
+    "base": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    },
+    "neighbour": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    },
+    "random1": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    },
+    "random2": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    }
+   }
+  },
+  "stage1_s_vs_w_fields_not_compared": {
+   "differs": [
+    "calls",
+    "census.collection_build.chunk_cap.effective",
+    "census.collection_build.collection",
+    "census.collection_build.embed_provenance",
+    "census.collection_build.index",
+    "census.collection_build.load_receipt_sha256",
+    "census.collection_build.n_chunks",
+    "census.collection_build.provenance.image_commit",
+    "census.collection_build.provenance.image_version",
+    "census.collection_build.provenance.tool_image",
+    "census.collection_build.provenance.tool_image_digest",
+    "census.live_after.stamps.<stamp>",
+    "census.live_after.total",
+    "census.live_before.stamps.<stamp>",
+    "census.live_before.total",
+    "census.verified.total",
+    "collection",
+    "conditions.<condition>.hit_stamps.<stamp>",
+    "conditions.<condition>.identical_to_norerank.records",
+    "conditions.<condition>.ok",
+    "conditions.<condition>.records",
+    "conditions.<condition>.rows",
+    "index",
+    "provenance.commit",
+    "provenance.describe",
+    "provenance.recorded_at",
+    "provenance.segmentation",
+    "provenance.version",
+    "server./v1/version.git_sha",
+    "server./v1/version.git_tag",
+    "server./v1/version.started_at",
+    "server./v1/version.version",
+    "study.collection_build.chunk_cap.effective",
+    "study.collection_build.collection",
+    "study.collection_build.embed_provenance",
+    "study.collection_build.index",
+    "study.collection_build.load_receipt_sha256",
+    "study.collection_build.n_chunks",
+    "study.collection_build.provenance.image_commit",
+    "study.collection_build.provenance.image_version",
+    "study.collection_build.provenance.tool_image",
+    "study.collection_build.provenance.tool_image_digest",
+    "study.mode",
+    "study.per_leg_failed.<leg>.rows",
+    "utc"
+   ],
+   "s_only": [
+    "conditions.<condition>.outcomes",
+    "exploratory",
+    "mode",
+    "study.exploratory",
+    "study.prereg",
+    "study.rechunk_presence.chunk_descriptor",
+    "study.rechunk_presence.chunks_in_export",
+    "study.rechunk_presence.descriptor_checked_in",
+    "study.rechunk_presence.expected_chunks",
+    "study.rechunk_presence.export_sha256",
+    "study.rechunk_presence.label_table_sha256",
+    "study.rechunk_presence.mapped_chunks",
+    "study.rechunk_presence.pairs",
+    "study.rechunk_presence.present",
+    "study.rechunk_presence.records",
+    "study.record_set.rechunk",
+    "study.record_set.rechunk_records"
+   ],
+   "w_only": [
+    "conditions.<condition>.found10",
+    "study.gold_presence.chunks_in_export",
+    "study.gold_presence.export_sha256",
+    "study.gold_presence.gold_chunks",
+    "study.gold_presence.present",
+    "study.prereg.sha256",
+    "study.prereg.verified"
+   ]
+  },
+  "w_vs_w": {
+   "compared": [
+    "condition set",
+    "request",
+    "requested",
+    "found_k",
+    "server_assumed",
+    "study.retrievers",
+    "study.request_order",
+    "study.record_set.accepted_sha256",
+    "server config hash"
+   ],
+   "gates": [],
+   "per_corpus": {
+    "base": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    },
+    "neighbour": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    },
+    "random1": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    },
+    "random2": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    }
+   }
+  }
  },
  "unresolved_chunk_texts": 0,
  "w_miss_correlation": {
