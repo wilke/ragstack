@@ -180,8 +180,9 @@ test-ctl: ## Run the ctl package tests (goldens, parity vs new-tenant.sh, canari
 # ctl-as-svc.sh are the ones anything actually depends on running correctly
 # from $(CTL_PREFIX) today; restore.sh/pre-reboot.sh/snapshot.sh/verify.sh are
 # the reboot runbook's, installed alongside them so the runbook has one
-# location to name, not two.
-OPS_SCRIPTS := ctl-daemon.sh ctl-as-svc.sh restore.sh pre-reboot.sh snapshot.sh verify.sh
+# location to name, not two. qdrant-census.sh is the qdrant data-dir runbook's
+# read-only verification primitive (docs/runbooks/qdrant-data-dir.md).
+OPS_SCRIPTS := ctl-daemon.sh ctl-as-svc.sh restore.sh pre-reboot.sh snapshot.sh verify.sh qdrant-census.sh
 
 # OPS_PY_HELPERS ships alongside OPS_SCRIPTS: render_inventory.py is
 # snapshot.sh's helper, which looks for it beside itself (i.e. under
@@ -189,7 +190,7 @@ OPS_SCRIPTS := ctl-daemon.sh ctl-as-svc.sh restore.sh pre-reboot.sh snapshot.sh 
 # a snapshot run from $(CTL_PREFIX) alone never renders INVENTORY.md.
 OPS_PY_HELPERS := render_inventory.py
 
-check-ops: ## bash -n/ast-parse + a home-directory-reference lint on the seven ops/coconut files install-ops installs
+check-ops: ## bash -n/ast-parse + a home-directory-reference lint on the eight ops/coconut files install-ops installs
 	@ok=1; \
 	for f in $(OPS_SCRIPTS); do \
 	  s="ops/coconut/$$f"; \
