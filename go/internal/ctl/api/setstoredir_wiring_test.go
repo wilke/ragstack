@@ -77,6 +77,7 @@ func TestSetStoreDirThroughTheWiredEngine(t *testing.T) {
 	fake.FakeProc().FreePort(row.Ports.QdrantGRPC)
 	fake.FakeInstances().StopAll()
 	fake.FakeFiles().Dirs[row.DataDir+"/qdrant/storage"] = 0o2770
+	fake.FakeFiles().Dirs[row.DataDir+"/qdrant/snapshots"] = 0o2770
 	_, job, err := direct.Submit(context.Background(), jobs.Request{
 		Op: "set-store-dir", Tenant: managedFixtureName, Args: clearArgs,
 		IdempotencyKey: "store-dir-clear", Mode: model.WorkerDirect, Principal: p,

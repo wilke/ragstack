@@ -27,7 +27,8 @@ package ops
 //     must be real directories (not symlinks), and outside the rag root the deepest mount holding the
 //     dir must not be `/` — the same run-time check the instance supervisor
 //     makes before it starts a moved qdrant (qdrantDataDirPrecheck);
-//   - `--clear` requires `<data_dir>/qdrant/storage` to be a real directory:
+//   - `--clear` requires `<data_dir>/qdrant/storage` and `/snapshots` to be real
+//     directories:
 //     the default location must actually hold the store.
 //
 // The registry write goes through saveTenant (registry.Save: both validation
@@ -116,7 +117,7 @@ func planSetStoreDir(_ context.Context, p *planner, args map[string]any) error {
 		return p.refuse("%s has a handover in flight (phase %s): finish or abandon it before moving its store",
 			t.Name, t.Handover.Phase)
 	}
-	if t.Quarantine != nil || t.State == registry.StateQuarantined || t.State == "decommissioned" {
+	if t.Quarantine != nil || t.State == registry.StateQuarantined || t.State == registry.StateDecommissioned {
 		return p.refuse("%s is %s: a quarantined or decommissioned tenant's store is not moved", t.Name, t.State)
 	}
 	if t.Stores.Qdrant.Ownership != registry.OwnershipExclusive {
@@ -280,17 +281,19 @@ func (p *planner) addQdrantStoppedProbe() {
 // <data_dir>/qdrant/storage.
 func (p *planner) addStoreDirProbe(want, def string) {
 	if want == "" {
-		storage := path.Join(def, "storage")
+		storage, snapshots := path.Join(def, "storage"), path.Join(def, "snapshots")
 		p.addFor("files", step{
 			Kind: "probe", Title: "check that the default location " + def + " holds the store",
-			Targets: []string{storage},
+			Targets: []string{storage, snapshots},
 			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-				if err := realDir(ctx, sc, storage); err != nil {
-					return "", fmt.Errorf("%w: --clear points the row back at %s, and %v; a qdrant started there "+
-						"would start EMPTY. Copy the store back first, or keep the row where it is",
-						jobs.ErrRefused, def, err)
+				for _, d := range []string{storage, snapshots} {
+					if err := realDir(ctx, sc, d); err != nil {
+						return "", fmt.Errorf("%w: --clear points the row back at %s, and %v; a qdrant started "+
+							"there would start EMPTY (or fail its bind). Copy the store back first, or keep the "+
+							"row where it is", jobs.ErrRefused, def, err)
+					}
 				}
-				return storage + " is a directory", nil
+				return storage + " and " + snapshots + " are directories", nil
 			},
 		})
 		return

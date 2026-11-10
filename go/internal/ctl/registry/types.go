@@ -487,6 +487,9 @@ type RollbackDescriptor struct {
 // port block until a purge removes it.
 const StateQuarantined = "quarantined"
 
+// StateDecommissioned is the state of a row whose tenant is gone for good.
+const StateDecommissioned = "decommissioned"
+
 // QuarantineMarker is the infix every quarantined data tree carries:
 // `<data_dir>.quarantined-<stamp>`. ValidateContract demands it, and so will
 // the purge that deletes such a tree: a directory without it is not one a

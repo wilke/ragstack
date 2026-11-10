@@ -44,7 +44,7 @@ while i < len(args):
         i += 1; continue
     url = a; i += 1
 with open(os.environ["CURL_LOG"], "a") as log:
-    log.write(json.dumps({"method": method, "url": url, "data": data}) + "\n")
+    log.write(json.dumps({"method": method, "url": url, "data": data, "argv": args}) + "\n")
 table = json.load(open(os.environ["CURL_TABLE"]))
 key = method + " " + url
 if key not in table:
@@ -159,7 +159,8 @@ def test_a_connection_failure_exits_nonzero(tmp_path):
     assert "curl failed" in out.stderr
 
 
-@pytest.mark.parametrize("arg", ["", "0", "70000", "localhost:6333", "file:///etc/passwd", "http://h/;rm"])
+@pytest.mark.parametrize("arg", ["", "0", "70000", "localhost:6333", "file:///etc/passwd", "http://h/;rm",
+                                 "http://[::1", "http://[zz]:6333", "--bogus"])
 def test_a_bad_argument_exits_2(tmp_path, arg):
     out, calls = _run(tmp_path, {}, arg)
     assert out.returncode == 2, out
@@ -169,7 +170,8 @@ def test_a_bad_argument_exits_2(tmp_path, arg):
 def test_no_arguments_prints_usage(tmp_path):
     out, _ = _run(tmp_path, {})
     assert out.returncode == 2
-    assert "qdrant-census.sh <port-or-url>" in out.stderr
+    assert "qdrant-census.sh [--stable] <port-or-url>" in out.stderr
+    assert "set -uo" not in out.stderr
 
 
 def test_the_script_sources_nothing_and_sets_pipefail():
@@ -177,3 +179,45 @@ def test_the_script_sources_nothing_and_sets_pipefail():
     code = [l for l in text.splitlines() if not l.lstrip().startswith("#")]
     assert "set -uo pipefail" in code
     assert not [l for l in code if l.lstrip().startswith(("source ", ". "))]
+
+
+def test_a_bad_later_argument_is_refused_before_any_request(tmp_path):
+    """Every argument is checked first: a typo in the second one must not
+    throw away (or half-take) the census of the first."""
+    out, calls = _run(tmp_path, _table("http://127.0.0.1:24041"), "24041", "not-a-port")
+    assert out.returncode == 2
+    assert calls == []
+    assert out.stdout == ""
+
+
+def test_a_bracketed_ipv6_url_is_accepted_and_not_globbed(tmp_path):
+    base = "http://[::1]:6333"
+    out, calls = _run(tmp_path, _table(base), base + "/")
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout)[0]["endpoint"] == base
+    # curl globs [] unless told not to.
+    assert calls and all("-g" in c["argv"] for c in calls)
+
+
+def test_stable_drops_the_volatile_keys(tmp_path):
+    """status and segments_count can change on a correct move (yellow while
+    loading, the optimizer merging segments); --stable is the pass condition."""
+    base = "http://127.0.0.1:24041"
+    before = _table(base)
+    after = _table(base)
+    info = after[f"GET {base}/collections/chunks"][1]["result"]
+    info["status"], info["segments_count"] = "yellow", 3
+    full_b, _ = _run(tmp_path, before, "24041")
+    full_a, _ = _run(tmp_path, after, "24041")
+    assert full_b.stdout != full_a.stdout
+    st_b, _ = _run(tmp_path, before, "--stable", "24041")
+    st_a, _ = _run(tmp_path, after, "--stable", "24041")
+    assert st_b.returncode == st_a.returncode == 0, st_b.stderr + st_a.stderr
+    assert st_b.stdout == st_a.stdout
+    col = json.loads(st_b.stdout)[0]["collections"][0]
+    assert set(col) == {"name", "points_count", "vectors", "sparse_vectors", "aliases"}
+    # …but a lost point is still a difference.
+    lost = _table(base)
+    lost[f"POST {base}/collections/chunks/points/count"] = [200, {"result": {"count": 87_999}}]
+    st_l, _ = _run(tmp_path, lost, "--stable", "24041")
+    assert st_l.stdout != st_b.stdout

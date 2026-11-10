@@ -86,11 +86,19 @@ func TestSetStoreDirRefusals(t *testing.T) {
 	}{
 		{name: "the daemon's engine (not --direct)", args: setDirArgs(movedQdir), want: "--direct",
 			setup: func(_ *testing.T, oc jobs.Context, _ *drivers.Fake) jobs.Context { oc.Mode = ""; return oc }},
-		{name: "instance running in the ctl's table", args: setDirArgs(movedQdir), want: "is running",
-			tweak: func(o *drivers.FakeOptions) { o.RunningInstances = []string{"qdrant-dev"} }},
-		{name: "instance running in the account's table", args: setDirArgs(movedQdir), want: "is running",
+		// The instance cases free the port the fake instance holds, so the
+		// refusal can only come from the instance table (the port probe's
+		// message also says "is running"; this wording is the instance's).
+		{name: "instance running in the ctl's table", args: setDirArgs(movedQdir), want: "instance qdrant-dev is running",
+			tweak: func(o *drivers.FakeOptions) { o.RunningInstances = []string{"qdrant-dev"} },
+			setup: func(_ *testing.T, oc jobs.Context, f *drivers.Fake) jobs.Context {
+				f.FakeProc().FreePort(oc.Tenant.Ports.QdrantHTTP)
+				return oc
+			}},
+		{name: "instance running in the account's table", args: setDirArgs(movedQdir), want: "instance qdrant-dev is running",
 			setup: func(_ *testing.T, oc jobs.Context, f *drivers.Fake) jobs.Context {
 				f.FakeInstances().StartInAccount("qdrant-" + oc.Tenant.ManifestName)
+				f.FakeProc().FreePort(oc.Tenant.Ports.QdrantHTTP)
 				return oc
 			}},
 		{name: "qdrant http port listening", args: setDirArgs(movedQdir), want: "listens on",
@@ -158,11 +166,22 @@ func TestSetStoreDirRefusals(t *testing.T) {
 				delete(f.FakeFiles().Dirs, defaultQdir+"/storage")
 				return oc
 			}},
+		{name: "--clear without default snapshots", args: clearArgs, want: defaultQdir + "/snapshots does not exist",
+			setup: func(_ *testing.T, oc jobs.Context, f *drivers.Fake) jobs.Context {
+				oc.Tenant.Stores.Qdrant.DataDir = movedQdir
+				delete(f.FakeFiles().Dirs, defaultQdir+"/snapshots")
+				return oc
+			}},
 		{name: "--clear with a symlinked default store", args: clearArgs, want: "symlink",
 			setup: func(_ *testing.T, oc jobs.Context, f *drivers.Fake) jobs.Context {
 				oc.Tenant.Stores.Qdrant.DataDir = movedQdir
 				delete(f.FakeFiles().Dirs, defaultQdir+"/storage")
 				f.FakeFiles().PutSymlink(defaultQdir + "/storage")
+				return oc
+			}},
+		{name: "decommissioned row", args: setDirArgs(movedQdir), want: "is decommissioned",
+			setup: func(_ *testing.T, oc jobs.Context, _ *drivers.Fake) jobs.Context {
+				oc.Tenant.State = registry.StateDecommissioned
 				return oc
 			}},
 		{name: "handover in flight", args: setDirArgs(movedQdir), want: "handover",

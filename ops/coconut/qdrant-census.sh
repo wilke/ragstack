@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # ops/coconut/qdrant-census.sh — what a qdrant holds, as stable JSON (READ-ONLY).
 #
-#   ./qdrant-census.sh <port-or-url>...
+#   ./qdrant-census.sh [--stable] <port-or-url>...
 #
 #   ./qdrant-census.sh 24041 > before.json      # a tenant's qdrant, by port
 #   ./qdrant-census.sh http://127.0.0.1:6333    # the shared qdrant, by URL
-#   diff before.json after.json                 # nothing printed = same store
+#   ./qdrant-census.sh 'http://[::1]:6333'      # bracketed IPv6
+#   ./qdrant-census.sh --stable 24041 > before.stable.json
+#   diff before.stable.json after.stable.json   # nothing printed = same data
 #
 # It is the verification primitive of docs/runbooks/qdrant-data-dir.md: run it
 # before a store is moved and after it is started from the new directory, and
@@ -16,11 +18,18 @@
 # are sorted by name, aliases by name, object keys sorted (jq -S), so two
 # censuses of the same store are byte-identical.
 #
+# status and segments_count are VOLATILE: a correctly moved store can come up
+# yellow while it loads and its optimizer may merge segments after a start.
+# --stable leaves both out and prints only what a move must preserve — name,
+# points_count, vector config, aliases — which is the diff to pass on. The
+# full census is the record; take it too.
+#
 # Calls only GET /collections, GET /aliases, GET /collections/{c} and POST
 # /collections/{c}/points/count, none of which writes. A bare number is
 # http://127.0.0.1:<port>. Any HTTP error, timeout or unparsable answer is
 # reported on stderr, recorded as "error" for that endpoint, and makes the exit
-# status 1; a bad argument is 2. Sources nothing; needs curl and jq (CURL / JQ
+# status 1; a bad argument is 2, and every argument is checked before the
+# first request, so a bad one never discards a census already taken. Sources nothing; needs curl and jq (CURL / JQ
 # override the binaries). No API key is sent: the tenant and shared qdrants on
 # coconut are unauthenticated on loopback.
 set -uo pipefail
@@ -30,19 +39,28 @@ JQ=${JQ:-jq}
 TIMEOUT=${CENSUS_TIMEOUT:-60}
 
 usage() {
-  sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '2,/^set -/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
+STABLE=0
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help) usage ;;
+    --stable) STABLE=1; shift ;;
+    --) shift; break ;;
+    -*) echo "qdrant-census: unknown option $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
 [[ $# -ge 1 ]] || usage
-case $1 in -h|--help) usage ;; esac
 
 # base_of turns an argument into a base URL without a trailing slash.
 base_of() {
   local a=$1
   if [[ $a =~ ^[0-9]{1,5}$ ]] && (( a >= 1 && a <= 65535 )); then
     printf 'http://127.0.0.1:%s' "$a"
-  elif [[ $a =~ ^https?://[A-Za-z0-9._:-]+(/[A-Za-z0-9._/-]*)?$ ]]; then
+  elif [[ $a =~ ^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(:[0-9]{1,5})?(/[A-Za-z0-9._/-]*)?$ ]]; then
     printf '%s' "${a%/}"
   else
     return 1
@@ -52,7 +70,8 @@ base_of() {
 # req METHOD URL [BODY] — prints the response body; nonzero unless HTTP 200.
 req() {
   local method=$1 url=$2 body=${3:-} out code
-  local args=(-sS -m "$TIMEOUT" -X "$method" -w '\n%{http_code}')
+  # -g: no URL globbing, so the brackets of an IPv6 literal reach the host.
+  local args=(-sS -g -m "$TIMEOUT" -X "$method" -w '\n%{http_code}')
   if [[ -n $body ]]; then
     args+=(-H 'Content-Type: application/json' --data "$body")
   fi
@@ -99,17 +118,22 @@ census() {
     fi
     rows+=("$row")
   done <<< "$names"
-  printf '%s\n' "${rows[@]}" | "$JQ" -cs --arg endpoint "$base" \
-    '{endpoint: $endpoint, collections: (map(select(. != null)) | sort_by(.name))}'
+  printf '%s\n' "${rows[@]}" | "$JQ" -cs --arg endpoint "$base" --argjson stable "$STABLE" \
+    '{endpoint: $endpoint, collections: (map(select(. != null)
+       | if $stable == 1 then del(.status, .segments_count) else . end) | sort_by(.name))}'
 }
 
-rc=0
-docs=()
+bases=()
 for arg in "$@"; do
   if ! base=$(base_of "$arg"); then
     echo "qdrant-census: $arg is neither a port nor an http(s) URL" >&2
     exit 2
   fi
+  bases+=("$base")
+done
+rc=0
+docs=()
+for base in "${bases[@]}"; do
   if doc=$(census "$base"); then
     docs+=("$doc")
   else

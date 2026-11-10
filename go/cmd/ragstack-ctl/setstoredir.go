@@ -33,8 +33,9 @@ then run this, then `+"`ragstack-ctl tenant start <name>`"+`.
                   directories (not symlinks, and no symlink anywhere between
                   the store root and <dir>) on a mounted volume.
   --clear         remove the field: back to <data_dir>/qdrant. Refused unless
-                  the qdrant is stopped and <data_dir>/qdrant/storage is a real
-                  directory (the default location must hold the store).
+                  the qdrant is stopped and <data_dir>/qdrant/storage and
+                  /snapshots are real directories (the default location must
+                  hold the store).
 
 Both set restart_pending. Setting the value already recorded is a no-op
 success. CLI-only and --direct only (implied; --server is refused): run it on

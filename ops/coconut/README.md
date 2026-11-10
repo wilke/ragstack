@@ -6,7 +6,7 @@
 | `pre-reboot.sh [--dry-run] [--all]` | graceful stop in reverse dependency order, by pid file / port / instance name with cwd+cmdline verification; never by name pattern | yes — stops services |
 | `restore.sh [--dry-run] [--only G] [--skip G] [--proxy]` | starts everything in dependency order with health waits; idempotent (skips what already runs) | yes — starts services |
 | `verify.sh [baseline-dir]` | fresh snapshot, diffed against the baseline; exit 1 on any regression | no — read-only |
-| `qdrant-census.sh <port-or-url>...` | per collection: status, exact `points_count`, `segments_count`, vector config, aliases — sorted JSON to diff before/after a qdrant data-dir move ([runbook](../../docs/runbooks/qdrant-data-dir.md)); exit 1 on any HTTP error | no — read-only |
+| `qdrant-census.sh [--stable] <port-or-url>...` | per collection: status, exact `points_count`, `segments_count`, vector config, aliases (`--stable`: without the volatile status/segments) — sorted JSON to diff before/after a qdrant data-dir move ([runbook](../../docs/runbooks/qdrant-data-dir.md)); exit 1 on any HTTP error | no — read-only |
 
 ## Which tenants these scripts know
 

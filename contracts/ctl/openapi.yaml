@@ -462,8 +462,8 @@ x-ctl-cli-op-args:
   # under a CTL_STORE_DATA_ROOTS entry or the row's own data_dir), is not the
   # default `<data_dir>/qdrant`, passes the registry's per-row and cross-row
   # rules, and `<dir>`, `<dir>/storage`, `<dir>/snapshots` are real
-  # directories on a mounted volume; for `clear`, `<data_dir>/qdrant/storage` is
-  # a real directory. Sets restart_pending; records no last_ops entry (older
+  # directories on a mounted volume; for `clear`, `<data_dir>/qdrant/storage`
+  # and `/snapshots` are real directories. Sets restart_pending; records no last_ops entry (older
   # ctl binaries validate last_ops' keys). Setting the value already recorded
   # is a no-op success.
   set-store-dir:

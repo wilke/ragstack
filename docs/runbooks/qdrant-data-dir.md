@@ -9,11 +9,14 @@ the field, the roots and the doctor codes are described in
 
 Two rules hold throughout:
 
-- **The source tree is never modified.** Nothing below writes into, deletes
-  from or moves `<data_dir>/qdrant` (or `/rag/data/qdrant`, `/rag/data/qdrant2`)
-  until the very last step, which renames it — and that rename waits for a
-  fenced backup of the moved store and an owner decision. Never `rsync
-  --delete` against a source, never `mv` a store directory.
+- **The SOURCE is never a destination, and nothing on the source is ever
+  deleted or moved** — `<data_dir>/qdrant`, `/rag/data/qdrant`,
+  `/rag/data/qdrant2` are only read, until the very last step, which renames
+  the old tree, and that waits for a fenced backup of the moved store and an
+  owner decision. Every rsync below has the source first and a `/qdrant/...`
+  destination second; never swap them, never `mv` a store directory.
+  (`--delete` removes files at the DESTINATION only; the shared stores' delta
+  pass needs it — see there.)
 - **`mountpoint -q /qdrant || exit`** before every step that copies to,
   starts from or repoints at `/qdrant`. If the volume is not mounted,
   `/qdrant/...` is a directory on the root filesystem: an rsync fills `/`, and
@@ -33,10 +36,12 @@ Read this before the first real move.
 - The instance supervisor's mount check (deepest mount holding the dir is not
   `/`) reads `/proc/self/mountinfo`; it has not been exercised with `/qdrant`
   unmounted on coconut.
-- How the copy runs as **svcbvbrc** is not settled: `ops/coconut/ctl-as-svc.sh`
-  runs `ragstack-ctl` only (its `CTL_BIN`), not `rsync`, and whether sudoers
-  admits `sudo -n -u svcbvbrc … rsync` on coconut has not been checked. The
-  owner decides how a svcbvbrc-owned store is copied (see step 4).
+- **Who can run rsync as svcbvbrc is not settled, and must be before the
+  first real move of a svcbvbrc-owned tenant.** The copy has to run as the
+  account that owns the row's files (see step 4), and
+  `ops/coconut/ctl-as-svc.sh` runs `ragstack-ctl` only (its `CTL_BIN`), not
+  `rsync`; whether sudoers admits `sudo -n -u svcbvbrc … rsync` on coconut has
+  not been checked.
 - `restore --as` from a bundle of a moved tenant, and a reboot with a moved
   tenant, have not been run.
 - `tenant decommission` (and so `purge`) **refuses** a row that sets
@@ -63,18 +68,24 @@ All of them, before the first tenant:
    `2775 svcbvbrc:cels`, writable by every cels member — any of whom could
    plant a symlink below it (`ln -s /rag/data/tenants/<victim>
    /qdrant/tenants`). In this order:
-   1. as svcbvbrc (the `ctl-as-svc.sh` sudo pattern), create the layout,
-      empty: `/qdrant/tenants/<m>/` per tenant to move (`<m>` is the row's
-      `manifest_name`; the copy creates `storage/` and `snapshots/` inside
-      it) and `/qdrant/shared/qdrant/`, `/qdrant/shared/qdrant2/`;
+   1. as svcbvbrc (the `ctl-as-svc.sh` sudo pattern), create the parents
+      `/qdrant/tenants/` and `/qdrant/shared/`;
    2. tighten the root to `2750` (or `0755`) so no other account can create
       entries in it;
-   3. svcbvbrc owns `/qdrant` and needs no grant. Any other account that has
-      to write a dir (wilke, for the shared stores or a wilke-run copy) gets
-      a grant **per directory**, run by the owner:
+   3. svcbvbrc owns `/qdrant` and needs no grant. An account that copies a
+      store it owns (wilke, for the shared stores) gets a grant on the
+      PARENT it will create its target in, run by the owner:
       `ops/coconut/ctl-as-svc.sh fleet grant --user wilke --roots
-      /qdrant/shared/qdrant` (likewise `…/qdrant2`, `…/tenants/<m>`). Never
-      make the root group-writable again.
+      /qdrant/shared`. Never make the root group-writable again.
+
+   **The target leaf** (`/qdrant/tenants/<m>`, `<m>` = the row's
+   `manifest_name`; `/qdrant/shared/qdrant`, `/qdrant/shared/qdrant2`) is
+   either absent — the copy creates it, owned by the copying account — or
+   already owned by the copying account. Never copy into a leaf another
+   account owns: `rsync -a src/ dst/` applies the source directory's mode
+   (and with `-A` its ACL) to `dst` itself, which a non-owner cannot do (rsync
+   exits 23) and which replaces whatever grant was on it. Grants on the leaf
+   come AFTER the copy (step 4a).
 
    `ctl-as-svc.sh doctor` must show no `store_data_root_writable` (warn) and
    no `store_data_roots_invalid` (error) afterwards. Nothing between
@@ -82,7 +93,17 @@ All of them, before the first tenant:
    instance supervisor's start, the drivers and `doctor`
    (`qdrant_data_dir_symlink`) all refuse one. `/qdrant` itself may be a link
    to the volume.
-6. The layout from 5.1 exists and the target dirs are empty.
+6. The parents from 5.1 exist; each target leaf is absent or empty and owned
+   by the account that will copy into it.
+
+**What the code enforces, and what it does not.** `set-store-dir --dir`, the
+instance supervisor's start, the files/instance drivers and `doctor` refuse
+a symlink anywhere from the store root down to the store's files, and refuse
+a moved dir whose deepest mount is `/`; `doctor` warns
+(`store_data_root_writable`) when a store root is group- or world-writable.
+Nothing in the ctl checks who OWNS `/qdrant/tenants/<m>` or its mode, whether
+the copy ran as the right account, or which ACLs the tree carries — those are
+the operator's, by the steps below.
 7. Free space on `/qdrant` is at least **1.2 ×** the apparent size of what is
    about to be copied (`du -s --apparent-size <source>`), checked per move.
 
@@ -96,11 +117,27 @@ Read-only (GET `/collections`, `/aliases`, `/collections/{c}`; POST
 `/collections/{c}/points/count {"exact":true}`). Per collection it prints
 name, status, the **exact** `points_count`, `segments_count`, the vector
 config and the aliases, sorted and key-sorted, so two censuses of the same
-store are byte-identical. Exit 1 on any HTTP error. A census is taken before
-the store stops and after it is started from the new directory, and the two
-are diffed: **`diff` printing nothing is the pass condition.** On a very large
-store raise the per-request timeout with `CENSUS_TIMEOUT=<seconds>` (default
-60).
+store are byte-identical. Exit 1 on any HTTP error; every argument is
+checked before the first request. Ports, `http(s)://host:port` and bracketed
+IPv6 (`http://[::1]:6333`) are accepted. On a very large store raise the
+per-request timeout with `CENSUS_TIMEOUT=<seconds>` (default 60).
+
+Take two censuses each time, before the store stops and after it is started
+from the new directory:
+
+```bash
+qdrant-census.sh <qport>          > census-<label>-<when>.json         # the record
+qdrant-census.sh --stable <qport> > census-<label>-<when>.stable.json  # the gate
+```
+
+**The pass condition is `diff` of the two `--stable` files printing
+nothing**: names, exact `points_count`, vector config and aliases. `status`
+and `segments_count` are volatile on a correct move — a store comes up
+`yellow` while it loads, and the optimizer may merge segments after a start
+— so `--stable` leaves them out. If only those differ in the full census:
+wait until every collection is `green` and take the full census again; a
+store that stays non-green, or a `--stable` diff of any size, is a failed
+move (roll back).
 
 ## Per-tenant procedure
 
@@ -113,13 +150,14 @@ wilke run `ragstack-ctl … --direct` as wilke. Stamp: `stamp=$(date -u
 | # | Step | Rollback from here |
 |---|---|---|
 | 1 | **Fenced backup.** `ctl-as-svc.sh tenant backup <t> --fence` | nothing changed |
-| 2 | **Census before.** `qdrant-census.sh <qport> > census-<t>-before.json` | nothing changed |
+| 2 | **Census before**, full and `--stable` (above): `census-<t>-before{,.stable}.json` | nothing changed |
 | 3 | **Stop the tenant.** `ctl-as-svc.sh tenant stop <t> --yes-destructive <t>` | `tenant start <t>` |
-| 4 | **Copy.** `mountpoint -q /qdrant \|\| exit`, then `rsync -aHAX --numeric-ids <data_dir>/qdrant/ /qdrant/tenants/<m>/` **as the account that will own the files** (svcbvbrc for a svcbvbrc row — see *not verified* above; wilke for a wilke row). | `tenant start <t>`; the copy under `/qdrant/tenants/<m>` is inert and may be removed |
-| 5 | **Verify the copy.** `rsync -aHAX --numeric-ids --checksum --dry-run --itemize-changes <data_dir>/qdrant/ /qdrant/tenants/<m>/` prints **nothing** (keep `--itemize-changes`: without it or `-v` a dry run prints nothing whatever it finds); `du -s --apparent-size` of both trees is equal; `find <tree> \| wc -l` of both trees is equal. Anything else: do not continue. | as step 4 |
-| 6 | **Repoint the row.** `ctl-as-svc.sh tenant set-store-dir <t> --store qdrant --dir /qdrant/tenants/<m> --dry-run`, read the plan, then run it without `--dry-run`. | `tenant set-store-dir <t> --store qdrant --clear`, then `tenant start <t>` |
-| 7 | **Start.** `ctl-as-svc.sh tenant start <t>` (a `--direct` run waits; the qdrant step succeeds only once the store answers, and the instance supervisor first re-checks the moved dir and its mount). | `set-store-dir --clear`, `tenant start <t>`, census (below) |
-| 8 | **Census after.** `qdrant-census.sh <qport> > census-<t>-after.json; diff census-<t>-before.json census-<t>-after.json` prints nothing. | stop, `set-store-dir --clear`, start, census again — must match *before* |
+| 4 | **Copy.** `mountpoint -q /qdrant \|\| exit`, then `rsync -aHX --numeric-ids <data_dir>/qdrant/ /qdrant/tenants/<m>/` **as the account that owns the row's files** (svcbvbrc for a svcbvbrc row — unsettled, see *not verified*; wilke for a wilke row). One pass with the store stopped, so the source does not change under it and nothing has to be deleted at the destination: no `--delete`. | `tenant start <t>`; the copy under `/qdrant/tenants/<m>` is inert and may be removed |
+| 4a | **Grant, after the copy.** If another account needs access, the leaf's owner runs `fleet grant --user <them> --roots /qdrant/tenants/<m>` now (a grant made before the copy is replaced by the source dir's mode). | as step 4 |
+| 5 | **Verify the copy, as the same account as the copy.** `rsync -aHX --numeric-ids --checksum --dry-run --itemize-changes <data_dir>/qdrant/ /qdrant/tenants/<m>/` prints **nothing** (keep `--itemize-changes`: without it or `-v` a dry run prints nothing whatever it finds); `du -s --apparent-size` of both trees is equal; `find <tree> \| wc -l` of both trees is equal. Anything else: do not continue. | as step 4 |
+| 6 | **Repoint the row.** `ctl-as-svc.sh tenant set-store-dir <t> --store qdrant --dir /qdrant/tenants/<m> --dry-run`, read the plan, then run it without `--dry-run`. After a refused or failed run, fix the cause and re-run with `--new-key` (the same command line replays the earlier failed job). | the three rollback commands below |
+| 7 | **Start.** `ctl-as-svc.sh tenant start <t>` (a `--direct` run waits; the qdrant step succeeds only once the store answers, and the instance supervisor first re-checks the moved dir and its mount). | the three rollback commands below (stop, `--clear`, start), then census |
+| 8 | **Census after**, full and `--stable`; `diff census-<t>-before.stable.json census-<t>-after.stable.json` prints nothing (status/segments: see the census section). | the three rollback commands below, then census — `--stable` must match *before* |
 | 9 | **Doctor.** `ctl-as-svc.sh doctor <t>` shows no `qdrant_data_dir_*` finding and nothing new. | as step 8 |
 | 10 | **Soak.** Leave it serving (owner sets the duration); watch the API log and `doctor`. | as step 8 |
 | 11 | **Retire the old tree.** `mv <data_dir>/qdrant <data_dir>/qdrant.migrated-$stamp` — a rename on the same filesystem, never a copy-and-delete. | `mv` it back; this must come first before any `--clear` (below) |
@@ -146,14 +184,23 @@ source tree:
 
 ```bash
 ctl-as-svc.sh tenant stop <t> --yes-destructive <t>     # if it is running
-ctl-as-svc.sh tenant set-store-dir <t> --store qdrant --clear
+ctl-as-svc.sh tenant set-store-dir <t> --store qdrant --clear   # add --new-key after a refused/failed run
 ctl-as-svc.sh tenant start <t>
-qdrant-census.sh <qport> | diff census-<t>-before.json -
+qdrant-census.sh --stable <qport> | diff census-<t>-before.stable.json -
 ```
 
-`--clear` refuses unless the qdrant is stopped and
-`<data_dir>/qdrant/storage` is a real directory, so after step 11 the rename
-has to be undone first. After `--clear` the row no longer carries the field
+**Why `-aHX` and not `-aHAX`.** `-A` would copy the source tree's POSIX ACL
+entries — the `/rag/data/tenants` grants (svcbvbrc, wilke, …) — onto every
+file on the new volume, and onto the leaf directory itself, where they would
+replace the grant step 4a makes. ACLs on `/qdrant` are `fleet grant`'s
+business, so they are not copied; qdrant needs none to run as the files'
+owner. `-H` keeps hard links, `-X` keeps user extended attributes (qdrant
+writes none today; it costs nothing), `--numeric-ids` keeps uids/gids
+unmapped.
+
+`--clear` refuses unless the qdrant is stopped and `<data_dir>/qdrant/storage`
+and `<data_dir>/qdrant/snapshots` are real directories, so after step 11 the
+rename has to be undone first. After `--clear` the row no longer carries the field
 and `set-store-dir` recorded no `last_ops` key, so an older ctl binary can
 read the registry again (provided no other row sets the field).
 
@@ -187,9 +234,11 @@ Two CLI facts that matter here:
 - `set-store-dir` is CLI-only and `--direct` only (implied; `--server` is
   refused, and the daemon has no route for it).
 - The idempotency key is derived from the request: re-running the **same**
-  command line returns the earlier job instead of running again — after a
-  `--clear`, a second `--dir` with the same path needs `--new-key`. Setting
-  the value the row already has is a no-op success that writes nothing.
+  command line returns the earlier job instead of running again — a refused
+  or failed run is replayed as that failure, and after a `--clear` a second
+  `--dir` with the same path is replayed too. Re-run with `--new-key` in both
+  cases. Setting the value the row already has is a no-op success that
+  writes nothing.
 
 ## The shared qdrant and qdrant2
 
@@ -203,21 +252,35 @@ world-writable; `restore.sh` refuses to run otherwise.
 **qdrant2 (:6343) first, as the rehearsal**, then qdrant (:6333, ≈1.6 TB).
 Each is a two-pass copy so the outage covers only the delta:
 
+Both passes and the verification run as the account that owns the source
+tree (wilke today), with the grant on `/qdrant/shared` from precondition 5.3;
+the copy creates `/qdrant/shared/qdrant2` owned by that account.
+
 1. Preconditions above; `mountpoint -q /qdrant || exit`; free space ≥ 1.2 ×
    `du -s --apparent-size /rag/data/qdrant2`.
 2. **Live pass** (store still serving):
-   `rsync -aHAX --numeric-ids /rag/data/qdrant2/ /qdrant/shared/qdrant2/`.
+   `rsync -aHX --numeric-ids /rag/data/qdrant2/ /qdrant/shared/qdrant2/`.
    This copy is inconsistent by design; only the delta pass makes it usable.
 3. **Announce** the outage to the tenants that use the store (qdrant2:
    lucid / lucid-next; qdrant: asm-next, demo, hackathon's routed collections).
-4. `qdrant-census.sh 6343 > census-qdrant2-before.json`.
+4. Census before, full and `--stable`: `census-qdrant2-before{,.stable}.json`.
 5. **Stop the tenants that use it, then the store:** each tenant's API
    (`ctl-as-svc.sh tenant stop <t> --only api --yes-destructive <t>`, or the
    tenant's own procedure for a `manual` row), then, as the instance's owner,
    `apptainer instance stop qdrant2`. Confirm nothing listens on :6343.
-6. **Delta pass:** `mountpoint -q /qdrant || exit`, then the same rsync again;
-   then the step-5 verification of the per-tenant procedure (checksum dry run
-   prints nothing; apparent sizes and file counts equal).
+6. **Delta pass, store stopped, WITH `--delete`:** `mountpoint -q /qdrant ||
+   exit`, then
+   `rsync -aHX --numeric-ids --delete /rag/data/qdrant2/ /qdrant/shared/qdrant2/`.
+   `--delete` removes files from the DESTINATION only: between the two passes
+   qdrant's optimizer replaced segment directories and truncated WAL files in
+   the source, and without `--delete` the stale copies stay in the
+   destination — the file counts disagree, or worse, qdrant starts over stale
+   segments. Verify with
+   `rsync -aHX --numeric-ids --delete --checksum --dry-run --itemize-changes
+   /rag/data/qdrant2/ /qdrant/shared/qdrant2/` printing **nothing** (with
+   `--delete` in the check, a stale destination file shows as a `*deleting`
+   line), and equal `du -s --apparent-size` and `find | wc -l`. The source
+   is still only read.
 7. Add `SHARED_QDRANT2_DIR=/qdrant/shared/qdrant2` to
    `/rag/config/stores.env` (create it if absent: owner wilke or root, mode
    0644 or tighter, not group/world-writable).
@@ -225,13 +288,13 @@ Each is a two-pass copy so the outage covers only the delta:
    --dry-run` — the qdrant2 binds must name `/qdrant/shared/qdrant2/storage`
    and `/snapshots` — then `/rag/bin/restore.sh --only stores`. It skips the
    stores that already run.
-9. `qdrant-census.sh 6343 > census-qdrant2-after.json`; `diff` prints nothing.
+9. Census after, full and `--stable`; the `--stable` diff prints nothing.
 10. Restart the tenants' APIs (`ctl-as-svc.sh tenant start <t>`, or their own
     procedure).
 
 **Rollback** (any step): stop the store, **remove the line** from
-`stores.env`, `restore.sh --only stores`, census — must match *before*. The
-source `/rag/data/qdrant2` was only ever read.
+`stores.env`, `restore.sh --only stores`, census — `--stable` must match
+*before*. The source `/rag/data/qdrant2` was only ever read.
 
 Repeat for qdrant (:6333) with `/rag/data/qdrant`, `/qdrant/shared/qdrant`,
 `SHARED_QDRANT_DIR` and port 6333. The live pass of 1.6 TB takes hours; the
