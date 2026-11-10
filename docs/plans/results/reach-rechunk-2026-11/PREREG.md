@@ -149,12 +149,62 @@ power (`raw_exclusion_cells`).
 4. Judge on demand for J: one gateway notice, OpenChia's ack, a hard stop on any provider notice.
 5. Run the report once, with the frozen decision wording.
 
-## 7. Gates (a third answer, as in the earlier preregs)
+## 7. Gates and decision rules
+
+### 7.1 Gates (a third answer, as in the earlier preregs)
 
 - Any retrieval leg with failed calls or a fired depth or reranker gate.
 - An S collection whose census differs from `build-summary.json`.
 - Unjudged pairs above 5 % for J.
 - Label-table integrity: merged tables may only add labels (the stage-1b guard).
+
+How `python/scripts/eval/reach_report.py` reads each gate:
+- **Retrieval** (both families, W and S): a run summary whose status is not `complete`; any condition with
+  a non-null `gate`; any failed call, missing row or duplicate row in any (corpus, retriever) leg. Also an
+  S run that is not the reach run (`study.mode` `rechunk` with `rechunk_scope` `all_records`).
+- **Census** (both families): per S collection, the summary's live census before and after (total and
+  stamps), the collection name, the load receipt's chunk count and sha256, all equal to
+  `build-summary.json`.
+- **Inputs** (both families): a top-10 chunk with no text in its side's exports; a W gold chunk missing; a
+  record count other than 1,091 or a Q-eligible count other than 1,089.
+- **Unjudged** (J only): on either side, more than 5 % of the unique (record, chunk) pairs J needs (the
+  top 10 of every list without a quote hit, all three retrievers) carry no *answers* / *not* label.
+- **Label integrity** (J only): a registry row without ids or with a `pair_id` that is not
+  sha256(record|chunk)[:16]; one (record, chunk) with two different judged labels in one registry; a new
+  S label for a key that already had a judged label (prior registry or content-hash rule); no S registry.
+
+The drift check (§3) is not a gate.
+
+### 7.2 Decision rules and the wording of each outcome
+
+Each family (Q, J) is decided on its own, in its primary cell (§4). Let n be the paired (record, corpus)
+units, r the records and k the papers behind them; S% and W% the two rates; D = S% − W% in points; b and
+c the units found under S only and under W only; π = (b + c) / n the observed discordance; p_NI the exact
+one-sided sign-flip p over papers on X_k = 100 T_k + m_k δ with δ = 3; p_sup the exact sign-flip p on
+T_k, computed only when non-inferiority holds. α = 0.05 one-sided, per family.
+
+| outcome | rule | the sentence (filled from the report) |
+|---|---|---|
+| **Superior** | gates pass, p_NI ≤ 0.05 and p_sup ≤ 0.05 | "Superior (F): under the default retriever pooled over the four corpus collections, <F's outcome> was S% under S against W% under W on n paired (record, corpus) units (r records in k papers), a difference of D points (b units found under S only, c under W only; discordance π). Non-inferiority at δ = 3 points holds (exact one-sided sign-flip over papers, p = p_NI), and S is superior to W (p = p_sup; hierarchical, no extra α)." |
+| **Non-inferior** | gates pass, p_NI ≤ 0.05, p_sup > 0.05 | "Non-inferior (F): <the same counts>. Non-inferiority at δ = 3 points holds (exact one-sided sign-flip over papers, p = p_NI): S is not worse than W by 3 points or more. Superiority is not shown (p = p_sup)." |
+| **Non-inferiority not shown** | gates pass, p_NI > 0.05 | "Non-inferiority not shown (F): <the same counts>. The exact one-sided sign-flip over papers gives p = p_NI > 0.05: a loss of 3 points or more under S is not ruled out by this test (this is not evidence that S is worse)." *Never* "S is inferior", *never* "S loses reach". |
+| **GATE-NOT-EVALUABLE** | any gate of §7.1 that applies to the family fails | "GATE-NOT-EVALUABLE (F): <each gate, with its count>. The test was computed (NI p = p_NI, n = n units) and decides nothing." The counts are still printed in full. |
+
+<F's outcome> is "quote@10 (the top 10 cover at least 90 % of the gold quote's characters)" for Q and
+"judged found@10 (quote@10, or a top-10 chunk the frozen alias judge labelled answers)" for J.
+
+Caveats appended to the sentence ("Caveats: …"):
+- **Size** (either family): when non-inferiority holds and π < 10 %, "low observed discordance (π): the
+  test's size is only asymptotically α", with the simulated size of the δ = 3 test from `power.json`
+  `size_cells` (0.0545 at 10 % and 0.0615 at 5 % under the measured correlations, up to 0.0766 over the
+  grid at 5 %; not simulated below 5 %, since δ = 3 needs a discordance of at least 3 %).
+- **J, always:** W's labels come from the 2026-11-04/06 judge runs and S's from new judging, so any judge
+  drift lands on S only; and J includes the 2 records whose quote is not verbatim in its gold chunk.
+- **J, judge drift:** when the drift check's agreement on W's *answers* labels is below 0.90, or cannot be
+  computed (no drift registry, or no original *answers* label in the re-judged sample).
+
+The report also writes, for each family, the secondary figures of §4 (not tested), the gates that fired,
+and the outcome name (`superior`, `non_inferior`, `ni_not_shown`, `gate_not_evaluable`).
 
 ## 8. Threats to validity
 
@@ -181,6 +231,11 @@ then a signed annotated tag, then the run. After the freeze, any change is a dat
 - A J on-demand builder: the lists without a quote hit, the reuse of existing labels by key and content hash,
   and the new pairs for `build-control --any-paper`.
 - The report: the paired sign-flip over papers, the families, the gates and the decision wording.
+
+Implemented (2026-11-09): the option is `rechunk: {all_records: true}` in `alias_study_run.py` (presence:
+`rechunk_prep.check_rechunk_export`); the builder is `reach_report.py j-seeds` (S seeds, the drift seeds,
+their export rows) and the report is `reach_report.py report` (§7). The analysis's p is `power.py`'s
+`sign_flip_p_exact`, imported from the committed file.
 
 ## 11. Owner decisions (2026-11-09)
 
