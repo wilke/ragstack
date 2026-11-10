@@ -1062,9 +1062,11 @@ func TestOpsCoversTheContractEnum(t *testing.T) {
 		"image-prepare",
 		// #714: the executable-surface env verbs (CLI-only, --direct only).
 		"env-set-surface", "env-unset-surface",
+		// PR3 of the per-qdrant data dir: repoint stores.qdrant.data_dir.
+		"set-store-dir",
 	}
-	if len(contract) != 35 {
-		t.Fatalf("the op list has 35 entries, this copy has %d", len(contract))
+	if len(contract) != 36 {
+		t.Fatalf("the op list has 36 entries, this copy has %d", len(contract))
 	}
 	got := Ops()
 	if len(got) != len(contract) {

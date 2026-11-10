@@ -474,6 +474,16 @@ var argSchemas = map[string]argSpec{
 		{Name: "supervisor", Kind: argString, Required: true, Enum: setSupervisors},
 		{Name: "desired_boot", Kind: argString, Enum: desiredBoots},
 	}},
+	// set-store-dir (PR3 of the per-qdrant data dir) repoints a row's
+	// stores.qdrant.data_dir and copies nothing. CLI-only and --direct-only
+	// (ops/setstoredir.go): it names a host directory a store is bound from.
+	// Exactly one of dir / clear is required; the op checks that, because the
+	// table has no oneOf.
+	"set-store-dir": {Verb: "set-store-dir", Fields: []argField{
+		{Name: "store", Kind: argString, Required: true, Enum: []string{"qdrant"}},
+		{Name: "dir", Kind: argString, Pattern: patAbsPath},
+		{Name: "clear", Kind: argBool},
+	}},
 	// env-pg-password takes no arguments: what it writes is derived from what
 	// is already on disk, and a value passed in would be a credential on a
 	// command line.
@@ -526,7 +536,7 @@ var ContractVerbs = []string{
 // route: the contract lists them under `x-ctl-cli-op-args` and the ops router
 // (api/jobs.go's opVerbs) does not know them, so POST …/ops/<verb> is 422.
 var CLIVerbs = []string{"artifact-prepare", "create-sandbox", "set-ui-mode", "set-bind", "set-supervisor",
-	"env-pg-password", "image-prepare", "env-set-surface", "env-unset-surface"}
+	"env-pg-password", "image-prepare", "env-set-surface", "env-unset-surface", "set-store-dir"}
 
 // ---------------------------------------------------------------- helpers
 

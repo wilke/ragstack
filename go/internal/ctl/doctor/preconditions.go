@@ -86,6 +86,11 @@ var preconditions = map[string][]string{
 	// the host the question that matters (can this account act on what the row
 	// will claim).
 	"set-supervisor": {RegistryManifestMismatch, ManifestUnknownRow},
+	// set-store-dir writes ONE registry field (stores.qdrant.data_dir) plus
+	// restart_pending, for a tenant whose qdrant is stopped; it is set-bind's
+	// reasoning again. Its own steps ask the host what matters (is the qdrant
+	// stopped, does the target dir hold a store on a mounted volume).
+	"set-store-dir": {RegistryManifestMismatch, ManifestUnknownRow},
 	// env-pg-password rewrites secrets.env and touches no process. It is run
 	// on a tenant that is being prepared for a handover — often one whose
 	// findings are exactly what the preparation exists to clear — so nothing
@@ -229,6 +234,16 @@ var tolerates = map[string][]string{
 	// state in which something is not listening — that is usually why the row
 	// needs correcting.
 	"set-supervisor": {PortNotListening},
+	// `set-store-dir` acts on a STOPPED tenant by definition (its step refuses
+	// a running qdrant), and it is the repair for a row whose moved qdrant dir
+	// doctor reports: `--clear` points the row back at <data_dir>/qdrant and
+	// `--dir` at a dir its own probe has just checked, so the qdrant_data_dir
+	// errors must not refuse the op that leaves them behind (env-normalize's
+	// lesson).
+	"set-store-dir": {
+		PortNotListening, QdrantDataDirMissing, QdrantDataDirSymlink, QdrantDataDirOutsideRoots,
+		QdrantDataDirRootNotMounted,
+	},
 }
 
 // handoverPreconditions is the handover row, per DESTINATION supervisor.
