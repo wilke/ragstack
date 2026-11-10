@@ -89,8 +89,9 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 - **Size, declared.** The randomisation p is exact, but the composite null does not make d + δ
   sign-symmetric, so the test's size is only asymptotically α.
   - Simulated size at the sizing case: 0.0545 (`power.json` `recommendation.size_at_sizing_case`).
-  - Up to 0.0775 at 2 % discordance under the measured correlations.
-  - Up to 0.138 in the worst grid cell (`power.json` `size_cells`).
+  - At δ = 3, across the ρ grid: at most 0.0586 at 10 % discordance and 0.0766 at 5 %
+    (`power.json` `size_summary_max_over_rho`). At 2 % discordance, δ = 3 is not evaluable in the grid.
+  - For comparison, δ = 2 reaches 0.138 at 2 % discordance.
 
   A rejection at low observed discordance is reported with this caveat.
 - **Secondary, not tested.** Each corpus and each retriever separately; G vs C records; context tokens;
