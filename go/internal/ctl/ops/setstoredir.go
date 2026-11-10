@@ -22,8 +22,9 @@ package ops
 //     Fleet.Validate and ValidateContract — the cross-row rule from PR1 (no
 //     sharing, no nesting under another row's data_dir or qdrant dir) refuses
 //     here with its own sentence rather than at the save;
-//   - `<dir>`, `<dir>/storage` and `<dir>/snapshots` must be real directories
-//     (not symlinks), and outside the rag root the deepest mount holding the
+//   - every component from the admitting root (the store root, or the row's
+//     data_dir) down to `<dir>`, and `<dir>/storage` and `<dir>/snapshots`,
+//     must be real directories (not symlinks), and outside the rag root the deepest mount holding the
 //     dir must not be `/` — the same run-time check the instance supervisor
 //     makes before it starts a moved qdrant (qdrantDataDirPrecheck);
 //   - `--clear` requires `<data_dir>/qdrant/storage` to be a real directory:
@@ -298,12 +299,13 @@ func (p *planner) addStoreDirProbe(want, def string) {
 	candidate.Stores.Qdrant.DataDir = want
 	tp := candidate.Paths(p.oc.Roots)
 	ragRoot, mountOf := p.oc.Roots.RagRoot, p.op.deps.MountOf
+	storeRoots := append([]string(nil), p.op.deps.StoreDataRoots...)
 	p.addFor("files", step{
-		Kind: "probe", Title: "check that " + want + " holds a store (storage/ and snapshots/ real directories, " +
-			"on a mounted volume)",
+		Kind: "probe", Title: "check that " + want + " holds a store (no symlink from its store root down, storage/ " +
+			"and snapshots/ real directories, on a mounted volume)",
 		Targets: []string{tp.QdrantDir, tp.QdrantStorage, tp.QdrantSnapshots},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			return qdrantDataDirPrecheck(ctx, sc, tp, ragRoot, mountOf)
+			return qdrantDataDirPrecheck(ctx, sc, tp, ragRoot, storeRoots, mountOf)
 		},
 	})
 }

@@ -134,6 +134,13 @@ func TestSetStoreDirRefusals(t *testing.T) {
 				delete(f.FakeFiles().Dirs, movedQdir+"/snapshots")
 				return oc
 			}},
+		{name: "an intermediate component is a symlink", args: setDirArgs(movedQdir), want: "/qdrant/tenants is a symlink",
+			setup: func(_ *testing.T, oc jobs.Context, f *drivers.Fake) jobs.Context {
+				// ln -s <elsewhere> /qdrant/tenants: dir, storage/ and
+				// snapshots/ still answer as directories (PR2 review F1).
+				f.FakeFiles().PutSymlink("/qdrant/tenants")
+				return oc
+			}},
 		{name: "volume not mounted", args: setDirArgs(movedQdir), mountOf: mountedOn("/"), want: "root filesystem"},
 		{name: "another row's qdrant dir", args: setDirArgs("/qdrant/tenants/other"), want: "share",
 			setup: func(t *testing.T, oc jobs.Context, _ *drivers.Fake) jobs.Context {
@@ -431,6 +438,17 @@ func TestSetStoreDirDirCheckFakeRealParity(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, func(f *drivers.FakeFiles, d string) { fdirs(f, d, d+"/snapshots"); f.PutSymlink(d + "/storage") }, false},
+		{"intermediate symlink", func(t *testing.T, d string) {
+			parent := filepath.Dir(d) // <store>/tenants
+			elsewhere := filepath.Dir(parent) + "-victim"
+			mk(t, elsewhere+"/dev/storage", elsewhere+"/dev/snapshots")
+			if err := os.Symlink(elsewhere, parent); err != nil {
+				t.Fatal(err)
+			}
+		}, func(f *drivers.FakeFiles, d string) {
+			fdirs(f, d, d+"/storage", d+"/snapshots")
+			f.PutSymlink(filepath.Dir(d))
+		}, false},
 		{"storage a file", func(t *testing.T, d string) {
 			mk(t, d+"/snapshots")
 			if err := os.WriteFile(d+"/storage", []byte("x"), 0o640); err != nil {
@@ -449,11 +467,11 @@ func TestSetStoreDirDirCheckFakeRealParity(t *testing.T) {
 			s.real(t, dir)
 			real := drivers.NewReal(drivers.RealOptions{Roots: paths.NewRoots(ragRoot, paths.Overrides{}),
 				StoreDataRoots: []string{store}})
-			realErr := storeDirCheck(t, real, ragRoot, dir)
+			realErr := storeDirCheck(t, real, ragRoot, store, dir)
 
 			_, fake := storeDirFixture(t, nil)
 			s.fake(fake.FakeFiles(), movedQdir+"-parity")
-			fakeErr := storeDirCheck(t, fake, "/rag", movedQdir+"-parity")
+			fakeErr := storeDirCheck(t, fake, "/rag", "/qdrant", movedQdir+"-parity")
 
 			if (realErr == nil) != s.ok || (fakeErr == nil) != s.ok {
 				t.Fatalf("%s: real = %v, fake = %v, want ok=%v", s.name, realErr, fakeErr, s.ok)
@@ -466,11 +484,11 @@ func TestSetStoreDirDirCheckFakeRealParity(t *testing.T) {
 }
 
 // storeDirCheck runs the verb's moved-dir probe against one driver set.
-func storeDirCheck(t *testing.T, d jobs.Drivers, ragRoot, dir string) error {
+func storeDirCheck(t *testing.T, d jobs.Drivers, ragRoot, storeRoot, dir string) error {
 	t.Helper()
 	roots := paths.NewRoots(ragRoot, paths.Overrides{})
 	tp := paths.TenantPaths(roots, "dev", "dev").WithQdrantDataDir(dir)
 	sc := &jobs.StepContext{Ops: jobs.Context{Roots: roots, Drivers: d}, Logf: func(string, ...any) {}}
-	_, err := qdrantDataDirPrecheck(context.Background(), sc, tp, ragRoot, mountedOn("/store"))
+	_, err := qdrantDataDirPrecheck(context.Background(), sc, tp, ragRoot, []string{storeRoot}, mountedOn("/store"))
 	return err
 }

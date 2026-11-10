@@ -30,7 +30,8 @@ then run this, then `+"`ragstack-ctl tenant start <name>`"+`.
                   not the default <data_dir>/qdrant (that is --clear), not
                   another row's qdrant dir and not inside another row's trees,
                   and <dir>, <dir>/storage and <dir>/snapshots are real
-                  directories (not symlinks) on a mounted volume.
+                  directories (not symlinks, and no symlink anywhere between
+                  the store root and <dir>) on a mounted volume.
   --clear         remove the field: back to <data_dir>/qdrant. Refused unless
                   the qdrant is stopped and <data_dir>/qdrant/storage is a real
                   directory (the default location must hold the store).

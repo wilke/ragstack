@@ -56,17 +56,33 @@ All of them, before the first tenant:
 2. `CTL_STORE_DATA_ROOTS=/qdrant` is in `/rag/config/ctl/ctl.env` and the
    daemon has been restarted (`sudo -n -u svcbvbrc /rag/bin/ctl-daemon.sh
    restart`, inside `script -qec "…" /dev/null` for the tty). A `--direct` run
-   reads the same line out of `ctl.env`.
+   re-reads `ctl.env` on every call.
 3. `ops/coconut/ctl-as-svc.sh selftest` is green on that build.
 4. `mountpoint -q /qdrant` succeeds.
-5. `/qdrant` is owned by svcbvbrc, group `cels`, mode `2775`, and svcbvbrc
-   has the ACL grant (`ragstack-ctl fleet grant --user svcbvbrc --roots
-   /qdrant`, run by the directory's owner).
-6. The layout exists, empty:
-   - `/qdrant/tenants/<manifest>/` (the copy creates `storage/` and
-     `snapshots/` inside it), one per tenant to move — `<manifest>` is the
-     row's `manifest_name`;
-   - `/qdrant/shared/qdrant/` and `/qdrant/shared/qdrant2/`.
+5. **`/qdrant` is tightened first.** Host fact (2026-11-10): `/qdrant` is
+   `2775 svcbvbrc:cels`, writable by every cels member — any of whom could
+   plant a symlink below it (`ln -s /rag/data/tenants/<victim>
+   /qdrant/tenants`). In this order:
+   1. as svcbvbrc (the `ctl-as-svc.sh` sudo pattern), create the layout,
+      empty: `/qdrant/tenants/<m>/` per tenant to move (`<m>` is the row's
+      `manifest_name`; the copy creates `storage/` and `snapshots/` inside
+      it) and `/qdrant/shared/qdrant/`, `/qdrant/shared/qdrant2/`;
+   2. tighten the root to `2750` (or `0755`) so no other account can create
+      entries in it;
+   3. svcbvbrc owns `/qdrant` and needs no grant. Any other account that has
+      to write a dir (wilke, for the shared stores or a wilke-run copy) gets
+      a grant **per directory**, run by the owner:
+      `ops/coconut/ctl-as-svc.sh fleet grant --user wilke --roots
+      /qdrant/shared/qdrant` (likewise `…/qdrant2`, `…/tenants/<m>`). Never
+      make the root group-writable again.
+
+   `ctl-as-svc.sh doctor` must show no `store_data_root_writable` (warn) and
+   no `store_data_roots_invalid` (error) afterwards. Nothing between
+   `/qdrant` and a store's files may be a symlink: `set-store-dir --dir`, the
+   instance supervisor's start, the drivers and `doctor`
+   (`qdrant_data_dir_symlink`) all refuse one. `/qdrant` itself may be a link
+   to the volume.
+6. The layout from 5.1 exists and the target dirs are empty.
 7. Free space on `/qdrant` is at least **1.2 ×** the apparent size of what is
    about to be copied (`du -s --apparent-size <source>`), checked per move.
 
@@ -117,8 +133,10 @@ on its HTTP or gRPC port); the path is absolute and clean, strictly under a
 default `<data_dir>/qdrant`; the registry with the new value passes the
 per-row contract and the cross-row rule (not another row's qdrant dir, not
 inside another row's `data_dir` or qdrant dir); `<dir>`, `<dir>/storage` and
-`<dir>/snapshots` are real directories (not symlinks), and outside `/rag` the
-deepest mount holding `<dir>` is not `/`. It then writes
+`<dir>/snapshots` are real directories, **no component from the store root
+(or the row's `data_dir`) down to `<dir>` is a symlink**, and outside `/rag`
+the deepest mount holding `<dir>` (resolved through a symlinked store root) is
+not `/`. It then writes
 `stores.qdrant.data_dir` and `restart_pending` through the normal registry
 save (lock, generation check, both validations) and nothing else — no
 `last_ops` entry. The job record is the audit trail.
@@ -138,6 +156,31 @@ qdrant-census.sh <qport> | diff census-<t>-before.json -
 has to be undone first. After `--clear` the row no longer carries the field
 and `set-store-dir` recorded no `last_ops` key, so an older ctl binary can
 read the registry again (provided no other row sets the field).
+
+### When `qdrant_data_dir_outside_roots` turns red
+
+A moved row whose dir is outside every configured store root (for example
+after `CTL_STORE_DATA_ROOTS` lost `/qdrant`, or a daemon started without it)
+gets `qdrant_data_dir_outside_roots`. On its own that finding is a **warn**;
+it is an error only for `start`, `restart` and `backup`, which also refuse
+the row at plan time. `stop` and `set-store-dir` are not blocked by it
+(`set-store-dir` tolerates the missing/symlink/outside_roots/
+root_not_mounted findings: it is their repair). Ways out, in order of preference:
+
+- put the volume back into `CTL_STORE_DATA_ROOTS` in `ctl.env`. A `--direct`
+  run (`ctl-as-svc.sh …`) re-reads `ctl.env` on every call, so it works at
+  once; the daemon needs a restart;
+- or, with the store still (or again) at `<data_dir>/qdrant`, `tenant stop`
+  then `tenant set-store-dir <t> --store qdrant --clear` — no hand edit
+  needed. `--dir` cannot point at a dir outside the roots, so it is not a way
+  out;
+- to stop a qdrant by hand, as svcbvbrc:
+  `APPTAINER_CONFIGDIR=/rag/data/ctl/apptainer/config apptainer instance stop
+  qdrant-<m>` (the ctl's instances are registered under its own config dir).
+
+`store_data_roots_invalid` (error) is different: a `--direct` run and the
+daemon both refuse to start on such a `CTL_STORE_DATA_ROOTS`, so no verb runs
+— `set-store-dir` included — until `ctl.env` is fixed.
 
 Two CLI facts that matter here:
 

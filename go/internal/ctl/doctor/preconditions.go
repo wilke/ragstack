@@ -239,7 +239,12 @@ var tolerates = map[string][]string{
 	// doctor reports: `--clear` points the row back at <data_dir>/qdrant and
 	// `--dir` at a dir its own probe has just checked, so the qdrant_data_dir
 	// errors must not refuse the op that leaves them behind (env-normalize's
-	// lesson).
+	// lesson). qdrant_data_dir_outside_roots is a warn on its own since PR2's
+	// F2 (red only for start/restart/backup); it stays listed so a later
+	// op-scoped raise can never reach this repair. store_data_root_writable is
+	// a warn this op does not gate on, and store_data_roots_invalid is not
+	// listed: a --direct engine refuses to build on such a value, so no row of
+	// this table could let the verb run.
 	"set-store-dir": {
 		PortNotListening, QdrantDataDirMissing, QdrantDataDirSymlink, QdrantDataDirOutsideRoots,
 		QdrantDataDirRootNotMounted,
