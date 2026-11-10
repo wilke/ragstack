@@ -67,9 +67,9 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
     a chunk's edge (the split-quote rule: a quote prefix that ends a text, a quote suffix that starts one).
     W windows start and end mid-sentence, so a chance edge match (a window that happens to end with the
     quote's first few characters) is slightly more available to W than to S, whose chunks end at sentence
-    boundaries. A chance edge match is a few characters long, so it can flip only a list whose genuine
-    coverage is already in [85, 90) % (a credit of at most 5 % of the quote, about 8 characters of a
-    160-character quote). The direction favours W, against the hypothesis.
+    boundaries. A chance edge match of k characters can flip only a list whose genuine coverage is in
+    [90 % − k/n, 90 %), n being the quote's length. Such matches are a few characters to a word long. This
+    is reasoned, not measured. The direction favours W, against the hypothesis.
 - **judged found@10 (J).** A question is found when quote@10 holds, **or** any top-10 chunk carries an
   *answers* label from the frozen alias judge.
   - This one rule applies on both sides. It replaces the alias study's gold-window shortcut, which has no

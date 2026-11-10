@@ -957,6 +957,7 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
                                                    for side, d in by_ret.items()},
                      "unjudged_by_retriever": by_ret},
         "drift_check": drift,
+        "label_row_duplicates": dict(sorted(inp.label_row_duplicates.items())),
         "discordant_by_gold_window_coverage_under_S": {k: dict(sorted(v.items())) for k, v in cov.items()},
         "context_tokens": tokens,
         "census": census_info,
