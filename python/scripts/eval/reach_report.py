@@ -957,8 +957,9 @@ class Inputs:
 
 
 class LabelRowsUnreadable(Exception):
-    """A judge dir's Qwen label rows cannot be read (a row without ``pair_id``, a row that is not an
-    object, a corrupt line). Used only for the drift check, so it is a J caveat, never a refusal."""
+    """A judge dir's Qwen label rows cannot be used (a row without ``pair_id``, a row that is not an
+    object). Used only for the drift check, so it is a J caveat, never a refusal. A line that is not
+    valid JSON mid-file is NOT caught: the shared reader refuses it (SystemExit), which fails closed."""
 
 
 def judge_dir_rows(finals: Sequence[Path]) -> tuple[dict[str, dict[str, dict[str, Any]]], int]:
