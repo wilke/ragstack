@@ -197,6 +197,41 @@ Rules:
 JUDGE_SYSTEMS: dict[str, str] = {"alias-judge/1": JUDGE_SYSTEM, "alias-judge/2": JUDGE_SYSTEM_V2,
                                  "alias-judge/2-p1": JUDGE_SYSTEM_V2_P1, "alias-judge/2-p2": JUDGE_SYSTEM_V2_P2,
                                  "alias-judge/2-p3": JUDGE_SYSTEM_V2_P3}
+
+#: Characters per input token on the gateway, per model family, for the ``~N tokens in`` of the
+#: GATEWAY SIZE-NOTICE (:func:`gateway_est_input_tokens`). A family is matched as a
+#: case-insensitive substring of the model id; any other model keeps the flat
+#: ``dr.CHARS_PER_TOKEN_GATEWAY`` (3.4).
+#:
+#: Calibration (the study's size-notice audit, 2026-11-10; gateway-reported prompt tokens per call
+#: over four runs): Gemini 4 Argon about 888, 892 and 922 input tokens per call; Claude Opus 5.5
+#: about 1,290, 1,352 and 1,288. The flat 3.4 notice read ~1,067 per call for both and was off by
+#: -16.9 % (Argon: measured = 0.831 x notice) and +21.1 % (Opus: measured = 1.211 x notice)
+#: in the first run. That notice counted the alias-judge/1 system (1,462 chars) for both judges,
+#: so its text was ~3.4 x 1,067 = ~3,630 chars per call. Opus is sent exactly that text
+#: (alias-judge/1): 3.4 / 1.211 = 2.81 chars/token. Argon is sent alias-judge/2, 153 chars longer:
+#: (3.4 x 888 / 0.831 + 153) / 888 = 4.26 chars/token. The ratio includes the chat framing; the
+#: other runs' tokens per call lie within -0.2 % to +4.8 % of the calibration run's, which the
+#: character count follows as their prompts' lengths differ. The direction (Gemini's
+#: tokenizer denser than 3.4, Claude's sparser) is the one under which both judges read the same
+#: ~1,067 per-call notice, as they must: their prompts are drawn from the same registry.
+GATEWAY_CHARS_PER_TOKEN: tuple[tuple[str, float], ...] = (("gemini", 4.26), ("claude", 2.81))
+
+
+def gateway_chars_per_token(model: str | None) -> float:
+    """The calibrated characters per input token of a gateway model (:data:`GATEWAY_CHARS_PER_TOKEN`)."""
+    m = str(model or "").casefold()
+    return next((r for fam, r in GATEWAY_CHARS_PER_TOKEN if fam in m), dr.CHARS_PER_TOKEN_GATEWAY)
+
+
+def gateway_est_input_tokens(model: str | None, system: str, prompts: Iterable[str], weights: Iterable[int]) -> int:
+    """The size notice's input-token estimate: the characters the calls will actually send (the
+    system message of the judge version and each pair's user message, once per planned call of
+    the pair, ``weights``) divided by the model's calibrated characters per token."""
+    chars = sum((len(system) + len(p)) * int(n) for p, n in zip(prompts, weights, strict=True))
+    return int(chars / gateway_chars_per_token(model))
+
+
 #: how thinking is switched for Qwen3 on vLLM: the chat template's ``enable_thinking`` flag,
 #: sent as ``chat_template_kwargs``; the server returns the thinking in ``message.reasoning``
 #: and counts it in ``usage.completion_tokens_details.reasoning_tokens``.
@@ -651,10 +686,14 @@ class Labeler:
     # -- plan / gate
     def plan(self, backend: str, reps: int) -> dict[str, Any]:
         pairs = self.qwen_pairs() if backend == "qwen" else self.w.pairs()
-        chars = [len(self.w.prompt(p)[0]) + len(JUDGE_SYSTEM) for p in pairs]
+        prompts = [self.w.prompt(p)[0] for p in pairs]
+        chars = [len(x) + len(JUDGE_SYSTEM) for x in prompts]
         calls = len(pairs) * (reps if backend == "opus" else 1)
         q = self.cfg["qwen"]
         est_in = int(sum(chars) / dr.CHARS_PER_TOKEN_GATEWAY) * (reps if backend == "opus" else 1)
+        if backend == "opus":                   # every rep sends the same text: one rep's estimate x reps
+            est_in = gateway_est_input_tokens(self.cfg["gateway"]["model"], JUDGE_SYSTEM, prompts,
+                                              [1] * len(prompts)) * reps
         plan = {"backend": backend, "pairs": len(pairs), "reps": reps if backend == "opus" else 1, "calls": calls,
                 "est_input_tokens": est_in, "judge_version": JUDGE_VERSION,
                 "pairs_sha256": g.file_sha(self.w.calib_dir / "pairs.jsonl"),
@@ -673,14 +712,16 @@ class Labeler:
             reps_sub = int(jg["subset_reps"])
             calls = len(pairs) + len(sub) * (reps_sub - 1)
             system = JUDGE_SYSTEMS[jg["judge_version"]]
+            in_sub = set(sub)
+            est_gw = gateway_est_input_tokens(jg["model"], system, prompts,
+                                              [reps_sub if p["pair_id"] in in_sub else 1 for p in pairs])
             plan.update({"model": jg["model"], "tag": jg["tag"], "base_url": str(jg["base_url"]),
                          "served_models": self.gw_served(), "judge_version": jg["judge_version"],
                          "system_sha256": g.sha_text(system), "max_tokens": jg["max_tokens"],
                          "temperature": jg["temperature"], "inflight": jg["inflight"], "reps": 1,
                          "subset_pairs": len(sub), "subset_reps": reps_sub,
                          "subset_sha256": g.file_sha(jg["subset_file"]) if jg["subset_file"] else None,
-                         "calls": calls, "est_input_tokens": int(sum(chars) / len(chars) / dr.CHARS_PER_TOKEN_GATEWAY
-                                                                 * calls) if chars else 0,
+                         "calls": calls, "est_input_tokens": est_gw,
                          "max_output_tokens": calls * int(jg["max_tokens"])})
         else:
             plan.update({"model": q["model"], "n": q["n"], "temperature": q["temperature"],
