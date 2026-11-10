@@ -14,6 +14,7 @@ package main
 // system.posix_acl_* xattrs itself — see internal/ctl/acl.
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"syscall"
 
 	"github.com/ragstack/ragstack/internal/ctl/acl"
+	"github.com/ragstack/ragstack/internal/ctl/api"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
@@ -38,7 +40,11 @@ goes through the daemon, which runs as the very account being granted.
 
   --user NAME     the account to grant (e.g. svcbvbrc). Required.
   --roots A,B,C   the roots to act on. Default: <rag-root>/data/tenants,
-                  <rag-root>/repos/tenants, <rag-root>/backups/tenants
+                  <rag-root>/repos/tenants, <rag-root>/backups/tenants.
+                  Each must be under the rag root, or be (or be under) a
+                  store data root — CTL_STORE_DATA_ROOTS, from the
+                  environment or <ctl config dir>/ctl.env — e.g. a moved
+                  qdrant volume: --roots /qdrant/tenants/<name>
   --rag-root DIR  deployment root (default /rag or $RAG_ROOT)
   --recursive     walk the whole tree (default true)
   --revoke        remove NAME's entries instead of adding them
@@ -95,7 +101,24 @@ func cmdFleetGrant(args []string, ragRoot string, jsonOut bool) int {
 	}
 	uid := uint32(resolved)
 
-	roots, rc := grantRoots(*rootsCSV, *root)
+	// The store data roots the daemon is configured with: a grant may also
+	// act on one of them (the volume a qdrant dir was moved to), and on
+	// nothing else outside the rag root. A malformed value is a usage error,
+	// exactly as it refuses the daemon's start.
+	cfgDir := api.RootsFromEnv(*root).CtlConfigDir
+	// An UNREADABLE ctl.env is not a usage error: a grant under the rag root
+	// needs no store roots. It is carried into the refusal of a root that
+	// would have needed one, which then says why instead of "none are
+	// configured".
+	unknown := ""
+	storeRoots, err := api.StoreDataRootsFrom(cfgDir)
+	switch {
+	case errors.Is(err, api.ErrCtlEnvUnreadable):
+		unknown, storeRoots = err.Error(), nil
+	case err != nil:
+		return usageErr("fleet grant: %v", err)
+	}
+	roots, rc := grantRoots(*rootsCSV, *root, storeRoots, unknown)
 	if rc != exitOK {
 		return rc
 	}
@@ -127,8 +150,14 @@ func cmdFleetGrant(args []string, ragRoot string, jsonOut bool) int {
 
 // grantRoots resolves --roots, defaulting to the three managed roots. Every
 // root must be absolute: a relative path would be resolved against whatever
-// directory the operator happened to be in.
-func grantRoots(csv, ragRoot string) ([]string, int) {
+// directory the operator happened to be in. And every root must be under the
+// rag root, or equal to or under one of storeRoots (CTL_STORE_DATA_ROOTS):
+// those are the only trees the ctl itself writes to.
+//
+// unknown, when non-empty, is why the store roots could not be read (an
+// unreadable ctl.env): a refusal then says so rather than "none are
+// configured", which would send the operator looking in the wrong place.
+func grantRoots(csv, ragRoot string, storeRoots []string, unknown string) ([]string, int) {
 	if csv == "" {
 		r := paths.NewRoots(ragRoot, paths.Overrides{})
 		return []string{r.DataDir, r.ReposDir, r.BackupsDir}, exitOK
@@ -142,18 +171,45 @@ func grantRoots(csv, ragRoot string) ([]string, int) {
 		if !filepath.IsAbs(p) {
 			return nil, usageErr("fleet grant: --roots entry %q is not an absolute path", p)
 		}
-		// Every root lives under the rag root: a grant is a recursive rewrite
-		// of group and other bits, and pointing it at a home directory would
-		// be a mistake this command must not be able to make.
-		if _, err := paths.SafePath(ragRoot, filepath.Clean(p)); err != nil {
-			return nil, usageErr("fleet grant: --roots entry %q is not under the rag root %s (%v)", p, ragRoot, err)
+		// A grant is a recursive rewrite of group and other bits, and
+		// pointing it at a home directory would be a mistake this command
+		// must not be able to make.
+		clean := filepath.Clean(p)
+		if _, err := paths.SafePath(ragRoot, clean); err != nil && !underStoreRoot(clean, storeRoots) {
+			named := "none are configured"
+			switch {
+			case len(storeRoots) > 0:
+				named = strings.Join(storeRoots, ", ")
+			case unknown != "":
+				named = unknown
+			}
+			return nil, usageErr("fleet grant: --roots entry %q is not under the rag root %s (%v) and is not a "+
+				"store data root or under one (CTL_STORE_DATA_ROOTS: %s)", p, ragRoot, err, named)
 		}
-		out = append(out, filepath.Clean(p))
+		out = append(out, clean)
 	}
 	if len(out) == 0 {
 		return nil, usageErr("fleet grant: --roots is empty")
 	}
 	return out, exitOK
+}
+
+// underStoreRoot reports whether p equals, or is strictly under, one of the
+// store data roots. Unlike the rag root, a store root may be granted WHOLE:
+// it is the volume the moved store dirs live on, and nothing else does.
+func underStoreRoot(p string, storeRoots []string) bool {
+	if _, err := paths.SafePath("/", p); err != nil {
+		return false
+	}
+	for _, r := range storeRoots {
+		if p == r {
+			return true
+		}
+		if _, err := paths.SafePath(r, p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // refuseUnowned is exit code 3's only cause here: a root somebody else owns.

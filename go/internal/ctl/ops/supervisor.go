@@ -155,6 +155,13 @@ func (systemdSupervisor) startLeg(p *planner, c component) error {
 			"Put the tenant on `instance` (`ragstack-ctl tenant set-supervisor %s instance`)",
 			p.t.Name, p.t.ServerImage.Name, p.t.Name)
 	}
+	// The unit binds the row's qdrant dir, so a moved dir outside every
+	// store root is refused here exactly as the instance supervisor refuses it.
+	if c.Leg == render.LegQdrant {
+		if err := p.refuseQdrantDataDir("start"); err != nil {
+			return err
+		}
+	}
 	p.addUnitStep("start", c)
 	return nil
 }
@@ -461,6 +468,22 @@ type storeLaunch struct {
 // storeLaunchOf renders the instance start of one store leg. A plan-time call:
 // it reads nothing off the host.
 func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
+	// A moved qdrant dir must be one the deployment admits (PR2): strictly
+	// under a CTL_STORE_DATA_ROOTS entry or under the row's own data_dir.
+	// Refused at plan time, before anything is touched.
+	var qdrantPrecheck func(context.Context, *jobs.StepContext) (string, error)
+	if c.Leg == render.LegQdrant {
+		if err := p.t.QdrantDataDirAllowed(p.op.deps.StoreDataRoots); err != nil {
+			return storeLaunch{}, err
+		}
+		if p.tpaths.QdrantOffLayout() {
+			tp, ragRoot, mountOf := p.tpaths, p.oc.Roots.RagRoot, p.op.deps.MountOf
+			storeRoots := append([]string(nil), p.op.deps.StoreDataRoots...)
+			qdrantPrecheck = func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+				return qdrantDataDirPrecheck(ctx, sc, tp, ragRoot, storeRoots, mountOf)
+			}
+		}
+	}
 	st, err := render.StoreArgv(p.t, c.Leg, p.unitConfig())
 	if err != nil {
 		return storeLaunch{}, err
@@ -487,6 +510,11 @@ func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
 	if seedInto != "" {
 		warnings = append(warnings, "the config bind "+seedInto+" is seeded from the image first when it is empty; "+
 			"an Elasticsearch whose config directory is empty exits before it logs why")
+	}
+	if qdrantPrecheck != nil {
+		warnings = append(warnings, "the qdrant dir is moved ("+p.tpaths.QdrantDir+"): before the start the step "+
+			"checks that it, storage/ and snapshots/ are real directories (not symlinks) and, outside the rag root, "+
+			"that its volume is mounted (the deepest mount holding it is not /); a failure refuses and starts nothing")
 	}
 	answer := storeAnswerFor(p, c, name)
 	port := c.Port
@@ -528,6 +556,13 @@ func storeLaunchOf(p *planner, c component) (storeLaunch, error) {
 			case listedGone:
 				sc.Logf("instance %s left the instance table while it was being checked; starting it", name)
 			}
+		}
+		if qdrantPrecheck != nil {
+			checked, err := qdrantPrecheck(ctx, sc)
+			if err != nil {
+				return "", err
+			}
+			sc.Logf("%s", checked)
 		}
 		if seedInto != "" {
 			seeded, err := seedESConfig(ctx, sc, sif, seedFrom, seedInto)

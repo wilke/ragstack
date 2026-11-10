@@ -492,19 +492,44 @@ const (
 	// preconditions.go) — the class of es_snapshots_dir_missing.
 	QdrantDataDirMissing = "qdrant_data_dir_missing"
 
-	// QdrantDataDirSymlink: the row's qdrant data dir, or its storage/, is a
-	// symlink. A bind is a mount of whatever the link resolves to, so a link
+	// QdrantDataDirSymlink: the row's qdrant data dir, its storage/, or any
+	// component between the root that admits it (a store root, or the row's
+	// data_dir) and the dir is a symlink. A bind is a mount of whatever the link resolves to, so a link
 	// is a store whose real location nothing in the registry records (and
 	// restore.sh refuses to start it). Error.
 	QdrantDataDirSymlink = "qdrant_data_dir_symlink"
 
-	// QdrantDataDirOutsideRoots: the row's qdrant data dir is not under any of
-	// the ctl drivers' approved roots (the tenants data dir, the ctl config
-	// and state dirs, the backups dir, the repos dir). The instance driver
-	// refuses a bind outside them and the files driver refuses to move a
-	// snapshot out of one, so start (in instance mode) and backup would both
-	// fail. WARN in PR1: the field is new and hand-set, and the driver's own
-	// refusal is the hard stop; configurable store roots are a later PR.
+	// StoreDataRootsInvalid: CTL_STORE_DATA_ROOTS does not parse, or one of
+	// its roots equals, contains or lies under an approved root or a
+	// CTL_API_BIND_ROOTS entry (internal/ctl/storeroots, the same check the
+	// daemon and --direct refuse their start with). Error.
+	StoreDataRootsInvalid = "store_data_roots_invalid"
+
+	// StoreDataRootsUnreadable: CTL_STORE_DATA_ROOTS is not in this
+	// process's environment and <ctl config dir>/ctl.env exists but this
+	// account cannot read it, so the store roots are UNKNOWN (not "none").
+	// Warn: every moved row is then judged against no store root, and this
+	// finding says why. An absent ctl.env raises nothing.
+	StoreDataRootsUnreadable = "store_data_roots_unreadable"
+
+	// StoreDataRootWritable: a store data root, or an existing directory
+	// between it and a row's moved qdrant dir (/qdrant/tenants), is writable
+	// by its group or by other, so any member could plant a symlink below it. Warn — the drivers
+	// and the pre-start check refuse to follow such a link — raised whether or
+	// not a row uses the root yet. Repair: create the tenant dirs as the ctl
+	// account, chmod the root 2750/0755 and grant per tenant dir.
+	StoreDataRootWritable = "store_data_root_writable"
+
+	// QdrantDataDirOutsideRoots: the row's qdrant data dir is neither
+	// strictly under one of the configured store data roots
+	// (CTL_STORE_DATA_ROOTS in ctl.env) nor strictly under the row's own
+	// data_dir (registry.Tenant.QdrantDataDirAllowed). start, restart and
+	// backup refuse such a row at plan time, and the files and instance
+	// drivers would refuse its paths anyway. WARN on its own, an ERROR for
+	// start, restart and backup (preconditions.go), so stop and the repair
+	// ops stay possible on the tenant. Repair: add the dir's volume to
+	// CTL_STORE_DATA_ROOTS (restart the daemon; a --direct run re-reads
+	// ctl.env every call), or move the store back and remove the field.
 	QdrantDataDirOutsideRoots = "qdrant_data_dir_outside_roots"
 
 	// QdrantDataDirRootNotMounted: the row's qdrant data dir is outside the
@@ -512,9 +537,8 @@ const (
 	// /proc/self/mountinfo) is the root filesystem itself. A dir moved off
 	// /rag is moved onto a store filesystem; landing on `/` means that
 	// filesystem is not mounted (or was never set up), and a qdrant started
-	// there writes its collections onto the root fs. Error. PR2 emits a unit
-	// mount condition from configured store roots; until then this is the
-	// check.
+	// there writes its collections onto the root fs. Error. The instance
+	// supervisor makes the same check before it starts the store (PR2).
 	QdrantDataDirRootNotMounted = "qdrant_data_dir_root_not_mounted"
 
 	// QdrantDataDirDropped: a re-adoption found the row's qdrant leg no longer

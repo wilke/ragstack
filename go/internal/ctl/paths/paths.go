@@ -382,3 +382,31 @@ func SafePath(root, p string) (string, error) {
 	}
 	return p, nil
 }
+
+// ResolveExisting is path with its deepest EXISTING ancestor resolved through
+// symlinks (filepath.EvalSymlinks) and the missing tail appended unchanged — a
+// component that does not exist cannot be a link. A relative path, or one
+// nothing of which resolves, is returned as given.
+//
+// It is how a host path is compared with mount points (hostfacts.MountOf) and
+// with the ctl's roots (storeroots.Check): both are about where a path really
+// is, and `/qdrant -> /rag/data/tenants/x` is lexically one thing and on disk
+// another.
+func ResolveExisting(path string) string {
+	if !filepath.IsAbs(path) {
+		return path
+	}
+	rest := ""
+	dir := filepath.Clean(path)
+	for {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+}

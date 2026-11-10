@@ -36,6 +36,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/seal"
+	"github.com/ragstack/ragstack/internal/ctl/storeroots"
 )
 
 // Defaults for the host-level checks.
@@ -116,6 +117,12 @@ type Options struct {
 	// falls back to DefaultAPIBindRoots. image_dir_outside_bind_roots is
 	// raised for a GOWE_IMAGE_DIRS entry outside all of them.
 	APIBindRoots []string
+	// StoreDataRoots are CTL_STORE_DATA_ROOTS: the roots a row's moved qdrant
+	// dir may be strictly under, besides its own data_dir. Nil reads the
+	// process environment, then <ctl config dir>/ctl.env (the same order
+	// api.StoreDataRootsFrom uses); an explicitly empty slice is "none".
+	// qdrant_data_dir_outside_roots is raised for a dir outside all of them.
+	StoreDataRoots []string
 	// AllowedEndpointHosts is CTL_ALLOWED_ENDPOINT_HOSTS, resolved (#714).
 	// Nil reads the process environment, then <ctl config dir>/ctl.env, then
 	// the default (loopback and this host). endpoint_host_not_allowed is
@@ -234,6 +241,15 @@ type run struct {
 	now      time.Time
 	ports    map[int]hostfacts.Listener
 	findings []model.Finding
+	// storeRoots is CTL_STORE_DATA_ROOTS as this run resolved it (once, in
+	// loadStoreRoots), and storeRootsErr why it is unusable (then storeRoots
+	// is empty and store_data_roots_invalid is raised).
+	storeRoots       []string
+	storeRootsErr    error
+	storeRootsLoaded bool
+	// storeRootsUnreadable is set when ctl.env exists but this account
+	// cannot read it (store_data_roots_unreadable).
+	storeRootsUnreadable error
 }
 
 func (d *run) listeners() {
@@ -289,6 +305,7 @@ func (d *run) hostChecks() {
 			d.add(model.LevelWarn, DiskLow, "", fmt.Sprintf("%s has %.1f GiB free, below the %d GiB reserve", d.roots.RagRoot, float64(free)/(1<<30), d.opts.MinFreeGB))
 		}
 	}
+	d.storeRootChecks()
 	d.heapSum()
 	d.bootHook()
 	d.jobStoreCheck()
@@ -1130,27 +1147,23 @@ func (d *run) storeChecks(t *registry.Tenant) {
 
 // qdrantDataDirChecks are the host facts of a row that moves its qdrant data
 // dir (stores.qdrant.data_dir). Nothing is raised for a row without one.
-// Store-root containment (configured store roots) is a later PR; this checks
-// only what would make the ctl's own drivers refuse the dir today.
+// Containment is registry.Tenant.QdrantDataDirAllowed over the configured
+// store roots — the rule the ops refuse with — so this finding and a refused
+// start or backup always agree.
 func (d *run) qdrantDataDirChecks(t *registry.Tenant) {
 	q := t.Stores.Qdrant.DataDir
 	if q == "" || t.Stores.Qdrant.Ownership != registry.OwnershipExclusive {
 		return
 	}
-	inRoots := false
-	for _, r := range []string{d.roots.DataDir, d.roots.CtlConfigDir, d.roots.CtlStateDir, d.roots.BackupsDir, d.roots.ReposDir} {
-		if r != "" && q != filepath.Clean(r) && under(q, r) {
-			inRoots = true
-			break
-		}
-	}
-	if !inRoots {
-		d.add(model.LevelWarn, QdrantDataDirOutsideRoots, t.Name, fmt.Sprintf(
-			"stores.qdrant.data_dir %s is outside the ctl's approved roots (%s, %s, %s, %s, %s): the instance driver "+
-				"would refuse its bind and the files driver would refuse to move a snapshot out of it",
-			q, d.roots.DataDir, d.roots.CtlConfigDir, d.roots.CtlStateDir, d.roots.BackupsDir, d.roots.ReposDir))
+	if err := t.QdrantDataDirAllowed(d.storeDataRoots()); err != nil {
+		// WARN on its own, raised to an error for start, restart and backup
+		// (preconditions.go) — the ops that refuse it at plan time. Stop and
+		// the repair ops stay possible (review F2).
+		d.add(model.LevelWarn, QdrantDataDirOutsideRoots, t.Name, err.Error()+
+			": start, restart and backup refuse this row until it is")
 	}
 	if rag := filepath.Clean(d.roots.RagRoot); d.roots.RagRoot != "" && !under(q, rag) {
+		// MountOf resolves a symlinked store root first (/qdrant -> /mnt/vol).
 		if mp, fs, err := d.host.MountOf(q); err == nil && mp == "/" {
 			d.add(model.LevelError, QdrantDataDirRootNotMounted, t.Name, fmt.Sprintf(
 				"stores.qdrant.data_dir %s is outside %s and the deepest mount holding it is the root filesystem "+
@@ -1159,7 +1172,25 @@ func (d *run) qdrantDataDirChecks(t *registry.Tenant) {
 		}
 	}
 	storage := filepath.Join(q, "storage")
-	for _, p := range []string{q, storage} {
+	// Every component from the root that admits the dir (a store root, else
+	// the row's data_dir) down to storage/: a link ANYWHERE in between moves
+	// the store somewhere the registry does not record (review F1). The root
+	// itself may be a link; nothing below it may.
+	chain := []string{q}
+	root := storeroots.Governing(q, d.storeDataRoots())
+	if root == "" && under(q, filepath.Clean(t.DataDir)) && q != filepath.Clean(t.DataDir) {
+		root = filepath.Clean(t.DataDir)
+	}
+	if root != "" {
+		chain = nil
+		rel, _ := filepath.Rel(root, q)
+		cur := root
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			cur = filepath.Join(cur, part)
+			chain = append(chain, cur)
+		}
+	}
+	for _, p := range append(chain, storage) {
 		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			d.add(model.LevelError, QdrantDataDirSymlink, t.Name, fmt.Sprintf(
 				"%s is a symlink: a bind mounts whatever it resolves to, so the store's real location is not the one "+

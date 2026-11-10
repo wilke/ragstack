@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/ragstack/ragstack/internal/ctl/acl"
+	"github.com/ragstack/ragstack/internal/ctl/api"
 )
 
 // grantRoot builds a /rag-shaped tree and skips the test when the filesystem
@@ -213,5 +214,112 @@ func TestFleetGrantUsageExplainsWhyItIsLocal(t *testing.T) {
 		if !strings.Contains(errs, want) {
 			t.Errorf("usage does not mention %q:\n%s", want, errs)
 		}
+	}
+}
+
+// --roots may name a store data root (CTL_STORE_DATA_ROOTS) or a dir under
+// one — the volume a qdrant dir was moved to — and nothing else outside the
+// rag root.
+func TestFleetGrantRootsAcceptAStoreDataRoot(t *testing.T) {
+	store := []string{"/qdrant"}
+	for _, ok := range []string{"/qdrant", "/qdrant/tenants/x", "/rag/data/tenants/dev"} {
+		if got, rc := grantRoots(ok, "/rag", store, ""); rc != exitOK || len(got) != 1 || got[0] != ok {
+			t.Errorf("grantRoots(%q) = %v, %d; want [%s], 0", ok, got, rc, ok)
+		}
+	}
+	for _, bad := range []string{"/home/x", "/qdrantx", "/", "/qdrant/../etc/x", "/rag"} {
+		if got, rc := grantRoots(bad, "/rag", store, ""); rc != exitUsage {
+			t.Errorf("grantRoots(%q) = %v, %d; want a usage error", bad, got, rc)
+		}
+	}
+	// No store root configured: /qdrant is outside the rag root like any other.
+	if got, rc := grantRoots("/qdrant/tenants/x", "/rag", nil, ""); rc != exitUsage {
+		t.Errorf("grantRoots(/qdrant/tenants/x) with no store roots = %v, %d; want a usage error", got, rc)
+	}
+}
+
+// The command reads the store roots the daemon is configured with: the
+// environment, else <ctl config dir>/ctl.env.
+func TestFleetGrantReadsTheStoreDataRoots(t *testing.T) {
+	ragRoot := grantRoot(t)
+	name, uid := self(t)
+	store := t.TempDir()
+	target := filepath.Join(store, "tenants", "x")
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Set(target, acl.KindAccess, acl.FromMode(0o750)); err != nil {
+		t.Skipf("skipping: %s has no POSIX ACL support: %v", store, err)
+	}
+	cfgDir := filepath.Join(ragRoot, "config", "ctl")
+	t.Setenv("CTL_CONFIG_DIR", cfgDir)
+
+	// Not configured: refused as outside the rag root.
+	t.Setenv("CTL_STORE_DATA_ROOTS", "")
+	if rc, _, errs := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", target); rc != exitUsage {
+		t.Fatalf("grant under an unconfigured store root: rc %d, want %d: %s", rc, exitUsage, errs)
+	}
+	// Configured in ctl.env: granted.
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "ctl.env"), []byte("CTL_STORE_DATA_ROOTS="+store+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errs := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", target)
+	if rc != exitOK {
+		t.Fatalf("grant under a store root named in ctl.env: rc %d: %s %s", rc, out, errs)
+	}
+	got, err := acl.Get(target, acl.KindAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Find(acl.TagUser, uid); !ok {
+		t.Errorf("no named entry for %s on %s: %s", name, target, got.Line())
+	}
+	// A home directory stays refused whatever the store roots say.
+	if rc, _, _ := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", t.TempDir()); rc != exitUsage {
+		t.Errorf("grant of a dir outside the rag root and every store root: rc %d, want %d", rc, exitUsage)
+	}
+	// A malformed value is a usage error, as it refuses the daemon's start.
+	t.Setenv("CTL_STORE_DATA_ROOTS", store+":rw")
+	if rc, _, _ := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", target); rc != exitUsage {
+		t.Errorf("grant with a malformed CTL_STORE_DATA_ROOTS: rc %d, want %d", rc, exitUsage)
+	}
+}
+
+// An unreadable ctl.env is said as such, not as "none are configured".
+func TestFleetGrantSaysWhenCtlEnvIsUnreadable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	cfg := t.TempDir()
+	p := filepath.Join(cfg, "ctl.env")
+	if err := os.WriteFile(p, []byte("CTL_STORE_DATA_ROOTS=/qdrant\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CTL_STORE_DATA_ROOTS", "")
+	_, err := api.StoreDataRootsFrom(cfg)
+	if !errors.Is(err, api.ErrCtlEnvUnreadable) || !strings.Contains(err.Error(), "could not read") ||
+		!strings.Contains(err.Error(), p) {
+		t.Fatalf("StoreDataRootsFrom(unreadable ctl.env) = %v, want ErrCtlEnvUnreadable naming the file", err)
+	}
+	why := err.Error()
+	name, _ := self(t)
+	t.Setenv("CTL_CONFIG_DIR", cfg)
+	rc, _, errs := capture(t, "fleet", "grant", "--user", name, "--rag-root", "/rag", "--roots", "/qdrant/tenants/x")
+	if rc != exitUsage || !strings.Contains(errs, "could not read") || strings.Contains(errs, "none are configured") {
+		t.Errorf("grant with an unreadable ctl.env: rc %d, stderr %q; want a usage error saying it could not read ctl.env", rc, errs)
+	}
+	if _, code := grantRoots("/qdrant/tenants/x", "/rag", nil, why); code != exitUsage {
+		t.Errorf("grantRoots with unknown store roots = %d, want a usage error", code)
+	}
+	if roots, err := api.StoreDataRootsFrom(t.TempDir()); err != nil || roots != nil {
+		t.Errorf("an absent ctl.env = %v, %v; want none and no error", roots, err)
+	}
+	// A grant under the rag root needs no store roots: an unreadable ctl.env
+	// does not stop it (only the refusal of a store path names the file).
+	if _, code := grantRoots("/rag/data/tenants/dev", "/rag", nil, why); code != exitOK {
+		t.Errorf("grantRoots under the rag root with unknown store roots = %d, want ok", code)
 	}
 }

@@ -33,7 +33,7 @@ var preconditions = map[string][]string{
 	"start": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
 		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
-		ServerImageMissing, ServerImageMismatch, QdrantDataDirMissing,
+		ServerImageMissing, ServerImageMismatch, QdrantDataDirMissing, QdrantDataDirOutsideRoots,
 	},
 	// Stopping needs to be sure it is stopping THIS tenant's processes.
 	"stop": {PortOwnerMismatch},
@@ -41,7 +41,7 @@ var preconditions = map[string][]string{
 	"restart": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
 		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
-		QdrantDataDirMissing,
+		QdrantDataDirMissing, QdrantDataDirOutsideRoots,
 	},
 	// A backup writes a bundle plus a transient snapshot copy; without the
 	// reserve it fills the filesystem the tenants run on. It must also know
@@ -50,7 +50,12 @@ var preconditions = map[string][]string{
 	// It also WRITES a bundle under <backups>/tenants: an account that can
 	// neither own nor reach that root produces a half-written bundle, which
 	// is worse than a refused backup.
-	"backup": {DiskLow, PortOwnerMismatch, PortNotListening, CtlAccountNoAccess},
+	//
+	// A moved qdrant dir outside every store root (qdrant_data_dir_outside_
+	// roots) blocks start, restart and backup — the ops that refuse it at
+	// plan time anyway — and nothing else, so `stop` and the repairs stay
+	// reachable on that tenant.
+	"backup": {DiskLow, PortOwnerMismatch, PortNotListening, CtlAccountNoAccess, QdrantDataDirOutsideRoots},
 	// A restore creates a fresh tenant and stages a whole bundle into it.
 	"restore": {DiskLow, StoreURLDisallowed, CtlAccountNoAccess},
 	// Handover's row is per DESTINATION (handoverPreconditions below); this
@@ -188,7 +193,9 @@ var preconditions = map[string][]string{
 //     elsewhere must still never reach these three.
 //
 // Nothing else may be listed here: tolerating a finding is a claim that the
-// op leaves the condition behind, not that the condition is acceptable.
+// op leaves the condition behind, not that the condition is acceptable — or,
+// for `stop` over a moved qdrant dir that is unmounted or symlinked, that the
+// op writes nothing there and is the way out.
 var tolerates = map[string][]string{
 	"env-normalize": {EnvNotSystemdParsable},
 	// `adopt --readopt --confirm-stores` is the ONLY way to clear
@@ -196,10 +203,16 @@ var tolerates = map[string][]string{
 	// on its own merits today; the row is here so that an op-scoped raise
 	// elsewhere can never reach the op that repairs it — the same lesson
 	// env-normalize taught.)
-	"adopt":        {StoresUnconfirmed},
-	"start":        {PortNotListening},
-	"restart":      {PortNotListening},
-	"stop":         {PortNotListening},
+	"adopt":   {StoresUnconfirmed},
+	"start":   {PortNotListening},
+	"restart": {PortNotListening},
+	// A moved qdrant tenant whose store volume vanished at reboot
+	// (qdrant_data_dir_root_not_mounted), or whose dir chain grew a symlink
+	// (qdrant_data_dir_symlink), must still be STOPPABLE without
+	// --force-with-doctor-diff: stopping leaves nothing written there, and
+	// it is the first step of every repair. Both stay errors for every other
+	// op.
+	"stop":         {PortNotListening, QdrantDataDirRootNotMounted, QdrantDataDirSymlink},
 	"decommission": {PortNotListening},
 	// A quarantined tenant is DOWN by construction: nothing of it listens.
 	"purge": {PortNotListening},

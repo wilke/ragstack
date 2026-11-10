@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
 	"github.com/ragstack/ragstack/internal/ctl/settings"
+	"github.com/ragstack/ragstack/internal/ctl/storeroots"
 )
 
 // Every CTL_* environment variable the daemon reads, in one place.
@@ -157,6 +159,21 @@ const (
 	// daemon's (and a --direct run's) start rather than being half-applied.
 	EnvAPIBindRoots = "CTL_API_BIND_ROOTS"
 
+	// EnvStoreDataRoots lists the directories a tenant's MOVED store data may
+	// live under (stores.qdrant.data_dir; `/qdrant` on coconut's store
+	// volume). Comma-separated absolute, clean directories, with NO `:ro`/`:rw`
+	// suffix — a store root is read/write by definition, so a suffix is a parse
+	// error rather than a mode. They join the approved roots of the files and
+	// instance drivers only (never git, build or proc) under the approved
+	// roots' strict rule, and a row's dir is honoured only strictly under one
+	// of them or under its own data_dir. Unset or blank is none: nothing
+	// changes. ctl.env, optional; a malformed value refuses the daemon's (and
+	// a --direct run's) start. A --direct run with the variable unset reads it
+	// out of <ctl config dir>/ctl.env, as for CTL_ALLOWED_ENDPOINT_HOSTS.
+	// ctl-daemon.sh parses ctl.env when the daemon STARTS, so a change needs a
+	// daemon restart.
+	EnvStoreDataRoots = storeroots.Env
+
 	// EnvAllowedEndpointHosts is the allowlist of hosts an executable-surface
 	// URL may name (#714: `env set-surface`, `create --set` under --direct,
 	// and doctor's endpoint_host_not_allowed). A comma list of host names or
@@ -234,6 +251,104 @@ func SetAPIBindRootsFromEnv(cfg *EngineConfig) error {
 	return nil
 }
 
+// ParseStoreDataRoots parses a CTL_STORE_DATA_ROOTS value. Blank is nil: no
+// store roots, and nothing changes.
+//
+// Every entry must be an absolute directory that is already clean (no `..`,
+// no trailing or doubled slash — unlike CTL_API_BIND_ROOTS nothing is
+// normalised, because a store root is compared exactly against registry rows),
+// in the safe path charset, not `/`, and listed once. A `:ro`/`:rw` suffix is
+// refused: a store root is read/write by definition, and a suffix copied from
+// CTL_API_BIND_ROOTS is an operator's mistake that must be loud. Overlap with
+// the approved roots and the bind roots is drivers.CheckStoreDataRoots' check,
+// made where both lists are known. The grammar lives in internal/ctl/storeroots
+// so that doctor, which api imports, parses it identically.
+func ParseStoreDataRoots(v string) ([]string, error) {
+	return storeroots.Parse(v)
+}
+
+// ErrCtlEnvUnreadable is returned (wrapped) when <ctl config dir>/ctl.env
+// EXISTS but this account cannot read it. It is distinct from an absent file
+// (which means "nothing configured") because the two must not look the same:
+// a --direct run or a doctor by an account outside the file's group would
+// otherwise report "no store roots" over a host that has them, and refuse
+// every moved row for a reason that is not true.
+var ErrCtlEnvUnreadable = errors.New("ctl.env exists but cannot be read")
+
+// ctlEnvValueStrict is CtlEnvValue that tells an unreadable file apart from
+// an absent one: absent (or the key unset) is "", nil; unreadable is
+// ErrCtlEnvUnreadable naming the path. A file that does not parse is still
+// read leniently, as CtlEnvValue does.
+func ctlEnvValueStrict(dir, key string) (string, error) {
+	path := filepath.Join(dir, "ctl.env")
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("%w: could not read %s (%v), so %s is unknown; set it in the environment for this "+
+			"run, or run as an account that can read the file", ErrCtlEnvUnreadable, path, err, key)
+	}
+	f, _, perr := envfile.ParseLenient(b)
+	if perr != nil {
+		return "", nil
+	}
+	v, _ := f.Get(key)
+	return v, nil
+}
+
+// StoreDataRootsFrom is CTL_STORE_DATA_ROOTS as this process should see it:
+// the environment's value, else (unset or blank) the one in <configDir>/ctl.env
+// (only that key is read), else none — parsed. The daemon (ctl-daemon.sh exports ctl.env),
+// a --direct run (ctl-as-svc.sh does not) and `fleet grant` (run by the
+// owner, outside both) therefore resolve the same list. A ctl.env that exists
+// and cannot be read is an error wrapping ErrCtlEnvUnreadable, never "none".
+func StoreDataRootsFrom(configDir string) ([]string, error) {
+	v := os.Getenv(EnvStoreDataRoots)
+	if strings.TrimSpace(v) == "" {
+		var err error
+		if v, err = ctlEnvValueStrict(configDir, EnvStoreDataRoots); err != nil {
+			return nil, err
+		}
+	}
+	return ParseStoreDataRoots(v)
+}
+
+// SetStoreDataRootsFromEnv fills cfg.StoreDataRoots (StoreDataRootsFrom over
+// cfg.Roots.CtlConfigDir). The daemon and the --direct CLI both call it,
+// beside SetAPIBindRootsFromEnv. A malformed value is an error: a typo in a
+// containment list must refuse the start.
+func SetStoreDataRootsFromEnv(cfg *EngineConfig) error {
+	roots, err := StoreDataRootsFrom(cfg.Roots.CtlConfigDir)
+	if err != nil {
+		return err
+	}
+	cfg.StoreDataRoots = roots
+	return nil
+}
+
+// CheckStoreDataRootsConfig holds cfg.StoreDataRoots to
+// drivers.CheckStoreDataRoots against the deployment's approved roots and the
+// bind roots (cfg.APIBindRoots, or the default when nil). The daemon calls it
+// at start-up, so an overlapping configuration refuses the start instead of
+// becoming a job engine that is "unavailable" and retried forever; the engine
+// builder calls it again for every other caller.
+func CheckStoreDataRootsConfig(cfg EngineConfig) error {
+	bind := cfg.APIBindRoots
+	if bind == nil {
+		var err error
+		if bind, err = ParseAPIBindRoots(""); err != nil {
+			return err
+		}
+	}
+	r := cfg.Roots
+	approved := []string{r.DataDir, r.CtlConfigDir, r.CtlStateDir, r.BackupsDir, r.ReposDir}
+	if err := drivers.CheckStoreDataRoots(cfg.StoreDataRoots, approved, bind); err != nil {
+		return fmt.Errorf("%s: %w", EnvStoreDataRoots, err)
+	}
+	return nil
+}
+
 // HostToolEnvKeys are the PR-D host-program variables, plus PR-F's
 // CTL_API_BIND_ROOTS (a host fact of the same kind, with a correct default).
 //
@@ -247,6 +362,7 @@ func HostToolEnvKeys() []string {
 	return []string{
 		EnvSystemctlBin, EnvGitBin, EnvNodeBin, EnvNpmBin, EnvApptainerBin,
 		EnvCrontabBin, EnvMirror, EnvNpmCache, EnvAPIBindRoots, EnvAllowedEndpointHosts,
+		EnvStoreDataRoots,
 	}
 }
 

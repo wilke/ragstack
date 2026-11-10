@@ -382,6 +382,7 @@ coconut's node does, which is the reason these exist.
 | `CTL_MIRROR` | `<rag-root>/repos/ragstack.git` | the BARE mirror artifacts are prepared from. The ctl never creates it — see the root items. |
 | `CTL_NPM_CACHE` | `<rag-root>/cache/npm` | the npm cache an artifact install writes through (never `~/.npm`). |
 | `CTL_API_BIND_ROOTS` | `/rag/cache:rw,/scout/containers:ro,/rag/config:ro` | extra directories an apptainer instance (a server-image API, PR-F) may bind beyond the approved roots. Comma-separated `<path>[:ro\|:rw]`, a bare path is read-only; a read-only root refuses a writable bind under it. Absolute, no `..`, not `/`; a malformed value refuses the daemon's start. |
+| `CTL_STORE_DATA_ROOTS` | *(unset: none)* | directories a tenant's **moved** store data may live under (`stores.qdrant.data_dir`; on coconut `/qdrant`, the store volume). Comma-separated absolute, clean paths with **no** `:ro`/`:rw` suffix — a store root is read/write by definition, and a suffix refuses the start. They become write roots of the files and instance drivers only (never git, build or proc), under the approved roots' strict rule: strictly under, never the root itself, no symlink at the leaf. `/`, relative paths, `..`, duplicates, nested roots, and any root that equals, contains or lies under an approved root or a `CTL_API_BIND_ROOTS` entry refuse the daemon's start (and a `--direct` run). A `--direct` run with the variable unset reads it out of `ctl.env`. `ctl-daemon.sh` parses `ctl.env` when the daemon **starts**: after adding or changing this row, restart the daemon (`sudo -n -u svcbvbrc /rag/bin/ctl-daemon.sh restart`, wrapped in `script -qec "…" /dev/null` for the tty). |
 | `CTL_ALLOWED_ENDPOINT_HOSTS` | `127.0.0.1,::1,localhost,<hostname>` | the hosts an executable-surface URL may name (#714: `env set-surface`, `tenant create --set` under `--direct`, doctor's `endpoint_host_not_allowed`). Comma-separated host names or IP literals — no scheme, port or wildcard; a configured list REPLACES the default (list loopback again if you want it). A malformed value refuses the start. A `--direct` run with the variable unset reads it out of `ctl.env` (ctl-as-svc.sh does not load that file). On coconut: `CTL_ALLOWED_ENDPOINT_HOSTS=127.0.0.1,::1,localhost,coconut,mango.cels.anl.gov,p3.theseed.org`. |
 
 Never `cat`, `echo` or `grep` `ctl-secrets.env` into a terminal afterwards.
@@ -485,29 +486,124 @@ and the store parents `elasticsearch/`, `postgres/`, `ui/` — so
 `<data_dir>/elasticsearch` and `<data_dir>/postgres/x` are both refused. A
 sibling such as `<data_dir>/qdrant-b` is legal.
 
-**Setting it (PR1: hand-edit only).** Nothing sets the field today. Set it
+**Setting it (hand-edit only until PR3).** Nothing sets the field today. Set it
 only after **every** ctl binary on the host — the daemon, the CLI, and anything
 cron runs — is a build that knows the field: an older binary refuses a
 registry carrying an unknown member, which would take the whole control plane
 down. Stop the store, move `storage/` and `snapshots/`, hand-edit the row, then
 check the edit with `ragstack-ctl registry validate` (read-only: it loads the
 file the way every reader does and writes nothing) before starting anything.
-In PR1 the dir must also be under one of the ctl's approved roots (the tenants
-data dir, the ctl config/state dirs, the backups dir, the repos dir): the
-instance driver refuses a bind outside them and the files driver refuses to
-move a backup snapshot out of one. `doctor` reports that case as
-`qdrant_data_dir_outside_roots` (a **warn** in PR1 — the driver's refusal is
-the hard stop); configurable store roots are PR2.
+
+**Where the dir may be (PR2).** A row's `stores.qdrant.data_dir` is honoured
+only when it is **strictly under** a `CTL_STORE_DATA_ROOTS` entry (see the
+`ctl.env` table above) or strictly under the row's own `data_dir`. Anything
+else — under another ctl root (backups, repos, state), a home directory, the
+store root itself — is refused: `tenant start`/`restart` (both supervisors)
+and a backup that takes store snapshots refuse at plan time, before the fence.
+`doctor` reports `qdrant_data_dir_outside_roots` as a **warn**, raised to an
+error (red) for `start`, `restart` and `backup` only — so `stop` and the
+repair ops stay possible on that tenant.
+
+Ways out of a row that is outside every root:
+
+- add the volume to `CTL_STORE_DATA_ROOTS` in `ctl.env`. The daemon needs a
+  restart to see it; a `--direct` run re-reads `ctl.env` on **every** call,
+  so a one-off `ops/coconut/ctl-as-svc.sh <verb> … --direct` works at once
+  without restarting the daemon;
+- or hand-edit the row back (remove `stores.qdrant.data_dir`, after moving
+  the store back) and check it with `ragstack-ctl registry validate`;
+- or, to stop a qdrant by hand, **as svcbvbrc** (the `ctl-as-svc.sh` sudo
+  pattern): `APPTAINER_CONFIGDIR=/rag/data/ctl/apptainer/config apptainer
+  instance stop qdrant-<manifest_name>` — the ctl's instances are registered
+  under its own config dir, and without it the stop looks in an empty
+  registry and reports nothing to stop. (`tenant stop` itself is not blocked
+  by this finding.)
+
+`CTL_STORE_DATA_ROOTS` itself is checked by `doctor` with the same code the
+daemon refuses its start with: `store_data_roots_invalid` (error) for a value
+that does not parse or overlaps an approved or bind root — compared both as
+written and as resolved on disk, so `/qdrant -> /rag/data/tenants/x` is
+refused while `/qdrant -> /mnt/vol` is fine. `ctl.env` on coconut is
+`svcbvbrc:cels 0640`; an account that cannot read it does not silently see
+"no store roots": a `--direct` run refuses with "could not read …/ctl.env",
+`doctor` raises `store_data_roots_unreadable` (warn), and `fleet grant` names
+the file when it refuses a store path. An absent `ctl.env` still means none.
+
+A moved tenant whose store volume vanished (`qdrant_data_dir_root_not_mounted`)
+or whose dir chain holds a symlink (`qdrant_data_dir_symlink`) is still
+stoppable: `stop` tolerates both, without `--force-with-doctor-diff`; they stay
+errors for every other op.
+
+**No symlink below a store root.** Nothing between a store root and a
+store's files may be a symlink: the files and instance drivers refuse a path
+under a store root that crosses one (and a path elsewhere that resolves INTO a
+store root), the pre-start check walks every component from the store root (or
+the row's `data_dir`) down to the dir, and `doctor` raises
+`qdrant_data_dir_symlink` (error) for a link anywhere on that chain. The store
+root itself may be a symlink (`/qdrant -> /mnt/vol`): the mount check resolves
+it first, so the volume's mount is what is checked. A store root that really
+is on the root filesystem is still refused.
+
+Whoever can write a store root can plant such a link (`ln -s
+/rag/data/tenants/<victim> /qdrant/tenants`). `doctor` raises
+`store_data_root_writable` (warn) for a store root its group or everybody may
+write, whether or not a row uses it yet, and for any existing directory
+between a store root and a row's moved dir (e.g. `/qdrant/tenants`). Host fact (2026-11-10): `/qdrant` is
+`2775 svcbvbrc:cels` — writable by every one of the ~1869 cels members.
+**Before any move, tighten it.**
+
+For `/qdrant` on coconut, in order:
+
+1. As svcbvbrc (via the `ctl-as-svc.sh` sudo pattern), create the layout the
+   ctl will use — `/qdrant/tenants/<manifest_name>` per tenant and
+   `/qdrant/shared/…` for the shared stores — then tighten the volume root to
+   `2750` (or `0755`) so no other account can create entries in it. Do not
+   leave a cels-writable root.
+2. Add `CTL_STORE_DATA_ROOTS=/qdrant` to `/rag/config/ctl/ctl.env` (hand-edited
+   on coconut, as svcbvbrc) and restart the daemon. A malformed or
+   overlapping value refuses the daemon's start and says which entry is
+   wrong.
+3. svcbvbrc OWNS `/qdrant`, so it needs no grant to write there. `fleet grant`
+   is for giving ANOTHER account access, and it must be run by the path's
+   owner — here svcbvbrc, through `ctl-as-svc.sh`:
+   `ops/coconut/ctl-as-svc.sh fleet grant --user wilke --roots /qdrant/tenants/<name>`.
+   `--roots` accepts a path under the rag root, or one that equals or is
+   under a store data root read from the environment or `<ctl config
+   dir>/ctl.env`; anything else is a usage error (and an unreadable
+   `ctl.env` is reported as such). The grant writes the named entry and a
+   DEFAULT ACL that also names the directory's owner. When the owner is the
+   granted account the owner entry adds nothing — so without such a grant,
+   wilke has **no** access to the files svcbvbrc creates under `/qdrant`.
+   Grant per tenant dir rather than making the root group-writable.
+4. Move the store and hand-edit the row as above.
+
+**Before a start (instance supervisor).** For a row whose qdrant dir is off the
+default layout, the start step checks — before the instance is run, and
+starting nothing on failure — that every component from the store root (or the
+row's `data_dir`) down to the dir, and `storage/` and `snapshots/`, exist, are
+directories and are not symlinks, and, for a dir outside `/rag`, that the
+deepest mount holding it (resolved through a symlinked store root) is not `/`
+(the store volume is mounted). A dir under the row's `data_dir` is on /rag's
+mount and skips the mount check.
+
+The settings surface (`env set-surface`, `create --set`) denies every row's
+`stores.qdrant.data_dir` and every store data root, as it denies the ctl's own
+dirs and other tenants' data dirs: no `*_STORE_PATH` may point into, or
+contain, a store tree.
 
 The qdrant unit keeps its single `ConditionPathIsMountPoint=/rag` and its
-`ConditionPathIsDirectory=<dir>/storage`; PR1 emits no mount condition for the
-moved dir's own filesystem (PR2 will, from configured store roots). Instead
-`doctor` raises `qdrant_data_dir_root_not_mounted` (error) when the dir is
-outside `/rag` and the deepest mount holding it is the root filesystem. Other
-findings: `qdrant_data_dir_missing` (no `<dir>/storage`; red for
-start/restart), `qdrant_data_dir_symlink` (error), and, on a re-adoption whose
-qdrant leg is no longer exclusive, `qdrant_data_dir_dropped` (warn: the field
-is not carried over and the dir is no longer named).
+`ConditionPathIsDirectory=<dir>/storage`; no mount condition is emitted for
+the moved dir's own filesystem. Instead `doctor` raises
+`qdrant_data_dir_root_not_mounted` (error) when the dir is outside `/rag` and
+the deepest mount holding it is the root filesystem, and the instance
+supervisor refuses the start on the same fact. Other findings:
+`qdrant_data_dir_outside_roots` (warn; red for start/restart/backup, above),
+`qdrant_data_dir_missing` (no `<dir>/storage`; red for start/restart),
+`qdrant_data_dir_symlink` (error, anywhere below the store root),
+`store_data_roots_invalid` (error), `store_data_root_writable` (warn),
+and, on a re-adoption whose qdrant leg is no longer exclusive,
+`qdrant_data_dir_dropped` (warn: the field is not carried over and the dir is
+no longer named).
 
 `tenant decommission` **refuses** a row that sets the field (the quarantine
 renames the data tree and would strand the moved dir); move the store back

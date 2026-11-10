@@ -72,8 +72,8 @@ func (d Deps) allowedHosts() []string {
 
 // surfaceContext is what settings.ValidateSurface needs for row: its own
 // dirs, the bind roots, the allowlist, and every directory a tenant setting
-// must never reach — the ctl's config, state and backups, and every OTHER
-// tenant's data dir.
+// must never reach — the ctl's config, state and backups, every OTHER
+// tenant's data dir, every row's moved qdrant dir and the store data roots.
 func (p *planner) surfaceContext(row *registry.Tenant) settings.SurfaceContext {
 	r := p.oc.Roots
 	c := settings.SurfaceContext{
@@ -85,6 +85,11 @@ func (p *planner) surfaceContext(row *registry.Tenant) settings.SurfaceContext {
 			{Path: r.BackupsDir, Why: "every tenant's backup bundles"},
 		},
 	}
+	// The store data roots (CTL_STORE_DATA_ROOTS): every tenant's moved store
+	// data lives under them, so no setting may reach one — or contain one.
+	for _, r := range p.op.deps.StoreDataRoots {
+		c.Denied = append(c.Denied, settings.DeniedRoot{Path: r, Why: "a store data root (CTL_STORE_DATA_ROOTS)"})
+	}
 	if p.oc.Fleet != nil {
 		names := make([]string, 0, len(p.oc.Fleet.Tenants))
 		for name := range p.oc.Fleet.Tenants {
@@ -93,7 +98,16 @@ func (p *planner) surfaceContext(row *registry.Tenant) settings.SurfaceContext {
 		sort.Strings(names)
 		for _, name := range names {
 			t := p.oc.Fleet.Tenants[name]
-			if name == row.Name || t == nil || t.DataDir == "" {
+			if t == nil {
+				continue
+			}
+			// EVERY row's moved qdrant dir, this row's included: it holds the
+			// store's files outside the data dir, and a *_STORE_PATH pointed
+			// into it would hand the API a second writer of qdrant's segments.
+			if q := t.Stores.Qdrant.DataDir; q != "" {
+				c.Denied = append(c.Denied, settings.DeniedRoot{Path: q, Why: "tenant " + name + "'s qdrant data dir"})
+			}
+			if name == row.Name || t.DataDir == "" {
 				continue
 			}
 			c.Denied = append(c.Denied, settings.DeniedRoot{Path: t.DataDir, Why: "tenant " + name + "'s data dir"})

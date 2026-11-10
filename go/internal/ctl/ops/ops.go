@@ -93,6 +93,17 @@ type Deps struct {
 	// beside the tenant's data dir, a surface PATH may be under. Nil means
 	// none — only the data dir — which fails closed; the engine always sets it.
 	APIBindRoots []string
+	// StoreDataRoots are CTL_STORE_DATA_ROOTS: the directories a row's moved
+	// qdrant dir (stores.qdrant.data_dir) may be strictly under, besides the
+	// row's own data_dir (registry.Tenant.QdrantDataDirAllowed). Nil is none,
+	// which admits only a dir under the row's data_dir. They are also denied
+	// to every executable-surface path, with every row's qdrant dir.
+	StoreDataRoots []string
+	// MountOf is hostfacts' deepest-mount lookup, for the pre-start check of
+	// a moved qdrant dir (a store volume that is not mounted leaves the dir on
+	// the root filesystem). Nil refuses that check — a moved dir is never
+	// started on a mount nobody looked at; the engine always sets it.
+	MountOf func(path string) (mountPoint, fsType string, err error)
 }
 
 // Sealer is the age half of internal/ctl/seal behind a two-method seam, so

@@ -1223,6 +1223,9 @@ func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
 	if spec.SIF == "" {
 		return fmt.Errorf("%w: instance %s has no image to run", jobs.ErrRefused, spec.Name)
 	}
+	if err := i.containQdrantBinds(spec); err != nil {
+		return err
+	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.Specs = append(i.Specs, copyInstanceSpec(spec))
@@ -1320,6 +1323,37 @@ func (i *FakeInstances) killStarter(pid int) {
 			}
 		}
 	}
+}
+
+// containQdrantBinds is the real driver's bind containment for a QDRANT
+// instance, lexically: each bind's host side is strictly under one of the
+// files driver's roots (the approved roots plus the store roots, as the engine
+// builds them) and neither it nor any component above it is a recorded
+// symlink. It is limited to qdrant — the store whose data dir can move — and
+// to a fake built WITH roots: the many fixtures that build a fake without
+// roots run other instances and bind paths nobody vouches for, and widening
+// the check to them would be a different change.
+func (i *FakeInstances) containQdrantBinds(spec jobs.InstanceSpec) error {
+	if !strings.HasPrefix(spec.Name, "qdrant-") || i.files == nil {
+		return nil
+	}
+	i.files.mu.Lock()
+	defer i.files.mu.Unlock()
+	if len(i.files.Roots) == 0 {
+		return nil
+	}
+	for _, b := range spec.Binds {
+		host, _, _ := strings.Cut(b, ":")
+		if !contained(host, i.files.Roots) {
+			return fmt.Errorf("%w: bind %q: %s is outside every approved root %v", jobs.ErrRefused, b, host, i.files.Roots)
+		}
+		for p := host; p != "/" && p != "."; p = filepath.Dir(p) {
+			if i.files.Links[p] {
+				return fmt.Errorf("%w: bind %q: %s is a symlink; the ctl never binds through one", jobs.ErrRefused, b, p)
+			}
+		}
+	}
+	return nil
 }
 
 // maybeInitdb models the one thing the postgres image's entrypoint does that a

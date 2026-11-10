@@ -8,12 +8,14 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/storeroots"
 )
 
 // A row that moves its qdrant data dir (stores.qdrant.data_dir): the healthy
 // shape raises nothing; a missing storage/ is qdrant_data_dir_missing (warn,
 // red for start/restart); a symlink is qdrant_data_dir_symlink; a dir outside
-// the drivers' roots is qdrant_data_dir_outside_roots; and the dir is under the
+// the row's data_dir and every configured store root is
+// qdrant_data_dir_outside_roots (an error since PR2); and the dir is under the
 // permission checks.
 func TestQdrantDataDirChecks(t *testing.T) {
 	qdirCodes := []string{QdrantDataDirMissing, QdrantDataDirSymlink, QdrantDataDirOutsideRoots, QdrantDataDirRootNotMounted}
@@ -27,9 +29,9 @@ func TestQdrantDataDirChecks(t *testing.T) {
 		}
 	}
 
-	// Healthy: under the tenants root, storage/ present.
+	// Healthy: under the row's own data_dir, storage/ present.
 	w = newWorld(t)
-	qdir := filepath.Join(w.roots.DataDir, "qdrant-stores", "dev")
+	qdir := filepath.Join(w.tenant.DataDir, "qdrant-b")
 	if err := os.MkdirAll(filepath.Join(qdir, "storage"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -79,18 +81,55 @@ func TestQdrantDataDirChecks(t *testing.T) {
 		t.Error("a symlink was ALSO reported missing")
 	}
 
-	// Outside every approved root.
+	// Outside every root that may hold it (no store root configured): a WARN
+	// on its own, RED for start, restart and backup only (review F2) — the
+	// ops that refuse it at plan time — so stop and the repairs stay possible.
 	w = newWorld(t)
-	outside := filepath.Join(t.TempDir(), "qdrant", "dev")
+	w.opts.StoreDataRoots = []string{}
+	storeRoot := t.TempDir()
+	outside := filepath.Join(storeRoot, "qdrant", "dev")
 	if err := os.MkdirAll(filepath.Join(outside, "storage"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	w.tenant.Stores.Qdrant.DataDir = outside
 	got = byCode(w.run(t))
 	f, ok = got[QdrantDataDirOutsideRoots]
-	if !ok || f.Level != model.LevelWarn || !strings.Contains(f.Detail, outside) {
-		t.Fatalf("outside roots: %+v (present=%v), want a warn naming the dir", f, ok)
+	if !ok || f.Level != model.LevelWarn || !strings.Contains(f.Detail, outside) ||
+		!strings.Contains(f.Detail, "CTL_STORE_DATA_ROOTS") {
+		t.Fatalf("outside roots: %+v (present=%v), want a warn naming the dir and the setting", f, ok)
 	}
+	{
+		// On a mounted volume, so the only finding about the dir is this one.
+		mounted := newWorld(t)
+		mounted.opts.StoreDataRoots = []string{}
+		mounted.tenant.Stores.Qdrant.DataDir = outside
+		mounted.host.Mounts = map[string]string{"/": "ext4", storeRoot: "xfs"}
+		for op, want := range map[string]model.Status{"start": model.StatusRed, "restart": model.StatusRed,
+			"backup": model.StatusRed, "stop": "", "": ""} {
+			mounted.opts.Op = op
+			resp := mounted.run(t)
+			got := byCode(resp)[QdrantDataDirOutsideRoots]
+			if want == model.StatusRed && (resp.Status != model.StatusRed || got.Level != model.LevelError) {
+				t.Errorf("--op %s over a dir outside every root = %s (%s), want red", op, resp.Status, got.Level)
+			}
+			if want == "" && got.Level != model.LevelWarn {
+				t.Errorf("--op %q over a dir outside every root raised it at %s, want warn", op, got.Level)
+			}
+		}
+	}
+	// The same dir under a configured store root: no finding. (The store
+	// root is what PR2 made configurable; with it the dir is honoured.)
+	w.opts.StoreDataRoots = []string{storeRoot}
+	if f, ok := byCode(w.run(t))[QdrantDataDirOutsideRoots]; ok {
+		t.Errorf("a dir under a store root raised %s: %s", QdrantDataDirOutsideRoots, f.Detail)
+	}
+	// Another ctl root no longer admits it: only the row's data_dir does.
+	w.opts.StoreDataRoots = []string{}
+	w.tenant.Stores.Qdrant.DataDir = filepath.Join(w.roots.BackupsDir, "dev-qdrant")
+	if f, ok := byCode(w.run(t))[QdrantDataDirOutsideRoots]; !ok {
+		t.Errorf("a dir under the backups root = %+v (present=%v), want the finding", f, ok)
+	}
+	w.tenant.Stores.Qdrant.DataDir = outside
 	// Outside /rag and the deepest mount holding it is "/" (the fake's mount
 	// table is empty): the store filesystem is not mounted.
 	f, ok = got[QdrantDataDirRootNotMounted]
@@ -116,5 +155,204 @@ func TestQdrantDataDirUnderRagSkipsTheMountCheck(t *testing.T) {
 	w.tenant.Stores.Qdrant.DataDir = qdir
 	if f, ok := byCode(w.run(t))[QdrantDataDirRootNotMounted]; ok {
 		t.Errorf("a dir under the rag root raised %s: %s", QdrantDataDirRootNotMounted, f.Detail)
+	}
+}
+
+// With Options.StoreDataRoots nil, doctor reads CTL_STORE_DATA_ROOTS from the
+// environment, then from <ctl config dir>/ctl.env — the order the daemon and
+// --direct resolve it in — so the CLI and live doctors (which pass nothing)
+// agree with the engine's.
+func TestQdrantDataDirStoreRootsFromEnvironmentAndCtlEnv(t *testing.T) {
+	storeRoot := t.TempDir()
+	qdir := filepath.Join(storeRoot, "dev")
+	if err := os.MkdirAll(filepath.Join(qdir, "storage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raised := func(w *world) bool {
+		_, ok := byCode(w.run(t))[QdrantDataDirOutsideRoots]
+		return ok
+	}
+
+	t.Setenv(storeroots.Env, "")
+	w := newWorld(t)
+	w.tenant.Stores.Qdrant.DataDir = qdir
+	if !raised(w) {
+		t.Fatal("nothing configured: the finding is missing")
+	}
+	if err := os.MkdirAll(w.roots.CtlConfigDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.roots.CtlConfigDir, "ctl.env"),
+		[]byte("CTL_STORE_DATA_ROOTS="+storeRoot+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if raised(w) {
+		t.Error("ctl.env names the store root, and the finding is still raised")
+	}
+	t.Setenv(storeroots.Env, "/elsewhere")
+	if !raised(w) {
+		t.Error("the environment overrides ctl.env, and the finding is missing")
+	}
+}
+
+// Review F1: a symlink anywhere between the store root and the dir is
+// qdrant_data_dir_symlink, not only one at the dir or at storage/.
+func TestQdrantDataDirSymlinkBelowTheStoreRoot(t *testing.T) {
+	w := newWorld(t)
+	store := t.TempDir()
+	victim := filepath.Join(w.roots.DataDir, "victim")
+	if err := os.MkdirAll(filepath.Join(victim, "dev", "storage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(store, "tenants")); err != nil {
+		t.Fatal(err)
+	}
+	w.opts.StoreDataRoots = []string{store}
+	w.host.Mounts = map[string]string{"/": "ext4", store: "xfs"}
+	w.tenant.Stores.Qdrant.DataDir = filepath.Join(store, "tenants", "dev")
+	f, ok := byCode(w.run(t))[QdrantDataDirSymlink]
+	if !ok || f.Level != model.LevelError || !strings.Contains(f.Detail, filepath.Join(store, "tenants")) {
+		t.Fatalf("an intermediate symlink below the store root: %+v (present=%v), want an error naming it", f, ok)
+	}
+}
+
+// Review F4: the standalone doctor holds CTL_STORE_DATA_ROOTS to the check the
+// daemon refuses to start on; and it flags a group/other-writable store root
+// even when no row uses it.
+func TestStoreDataRootChecks(t *testing.T) {
+	codes := func(w *world) map[string]model.Finding { return byCode(w.run(t)) }
+	w := newWorld(t)
+	t.Setenv(storeroots.Env, "")
+	w.opts.APIBindRoots = []string{"/srv/cache"}
+	for _, bad := range [][]string{{"/srv/cache"}, {w.roots.DataDir}, {w.roots.RagRoot}} {
+		w.opts.StoreDataRoots = bad
+		if f, ok := codes(w)[StoreDataRootsInvalid]; !ok || f.Level != model.LevelError {
+			t.Errorf("store roots %v: %+v (present=%v), want store_data_roots_invalid (error)", bad, f, ok)
+		}
+	}
+	// From the environment, malformed.
+	w.opts.StoreDataRoots = nil
+	t.Setenv(storeroots.Env, "/qdrant:rw")
+	if _, ok := codes(w)[StoreDataRootsInvalid]; !ok {
+		t.Error("a malformed CTL_STORE_DATA_ROOTS in the environment raised nothing")
+	}
+	t.Setenv(storeroots.Env, "")
+
+	// A cels-writable root, used by no row: warned; tightened: silent.
+	root := t.TempDir()
+	if err := os.Chmod(root, os.ModeSetgid|0o775); err != nil {
+		t.Fatal(err)
+	}
+	w.opts.StoreDataRoots = []string{root}
+	got := codes(w)
+	if _, ok := got[StoreDataRootsInvalid]; ok {
+		t.Errorf("a valid store root raised %s", StoreDataRootsInvalid)
+	}
+	if f, ok := got[StoreDataRootWritable]; !ok || f.Level != model.LevelWarn || !strings.Contains(f.Detail, "2775") {
+		t.Errorf("a 2775 store root: %+v (present=%v), want a warn naming the mode", f, ok)
+	}
+	if err := os.Chmod(root, os.ModeSetgid|0o750); err != nil {
+		t.Fatal(err)
+	}
+	if f, ok := codes(w)[StoreDataRootWritable]; ok {
+		t.Errorf("a 2750 store root raised %s: %s", StoreDataRootWritable, f.Detail)
+	}
+}
+
+// Second review item 2: a moved tenant whose volume is gone (root fs) or
+// whose dir chain holds a symlink is still stoppable — both findings are
+// tolerated by `stop` — and stays red for start.
+func TestStopToleratesAnUnmountedOrSymlinkedQdrantDir(t *testing.T) {
+	w := newWorld(t)
+	store := t.TempDir()
+	w.opts.StoreDataRoots = []string{store}
+	qdir := filepath.Join(store, "dev")
+	if err := os.MkdirAll(filepath.Join(qdir, "storage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w.tenant.Stores.Qdrant.DataDir = qdir
+	// The fake mount table is empty: the dir is on "/", the volume is gone.
+	// And storage/ is replaced by a link.
+	if err := os.RemoveAll(filepath.Join(qdir, "storage")); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := t.TempDir()
+	if err := os.Symlink(elsewhere, filepath.Join(qdir, "storage")); err != nil {
+		t.Fatal(err)
+	}
+	for op, wantLevel := range map[string]model.Level{"stop": model.LevelWarn, "start": model.LevelError} {
+		w.opts.Op = op
+		got := byCode(w.run(t))
+		for _, code := range []string{QdrantDataDirRootNotMounted, QdrantDataDirSymlink} {
+			f, ok := got[code]
+			if !ok || f.Level != wantLevel {
+				t.Errorf("--op %s: %s = %+v (present=%v), want %s", op, code, f, ok, wantLevel)
+			}
+		}
+	}
+}
+
+// Second review nit 4: an existing directory between a store root and a
+// row's moved dir that is group/other-writable is warned too.
+func TestStoreDataRootWritableIntermediate(t *testing.T) {
+	w := newWorld(t)
+	store := t.TempDir()
+	if err := os.Chmod(store, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	mid := filepath.Join(store, "tenants")
+	qdir := filepath.Join(mid, "dev")
+	if err := os.MkdirAll(filepath.Join(qdir, "storage"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(mid, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	w.opts.StoreDataRoots = []string{store}
+	w.host.Mounts = map[string]string{"/": "ext4", store: "xfs"}
+	w.tenant.Stores.Qdrant.DataDir = qdir
+	f, ok := byCode(w.run(t))[StoreDataRootWritable]
+	if !ok || !strings.Contains(f.Detail, mid) {
+		t.Fatalf("a 0775 %s between the store root and the moved dir: %+v (present=%v), want a warn naming it", mid, f, ok)
+	}
+	if err := os.Chmod(mid, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if f, ok := byCode(w.run(t))[StoreDataRootWritable]; ok {
+		t.Errorf("a 0750 intermediate raised %s: %s", StoreDataRootWritable, f.Detail)
+	}
+}
+
+// Second review item 5: an unreadable ctl.env is store_data_roots_unreadable
+// (and not silence); an absent one raises nothing. Item 3: a store root that
+// resolves into an approved root is store_data_roots_invalid.
+func TestStoreDataRootsUnreadableAndResolvedOverlap(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	t.Setenv(storeroots.Env, "")
+	w := newWorld(t)
+	if _, ok := byCode(w.run(t))[StoreDataRootsUnreadable]; ok {
+		t.Fatal("an absent ctl.env raised store_data_roots_unreadable")
+	}
+	if err := os.MkdirAll(w.roots.CtlConfigDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(w.roots.CtlConfigDir, "ctl.env")
+	if err := os.WriteFile(p, []byte("CTL_STORE_DATA_ROOTS=/qdrant\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if f, ok := byCode(w.run(t))[StoreDataRootsUnreadable]; !ok || !strings.Contains(f.Detail, p) {
+		t.Errorf("an unreadable ctl.env: %+v (present=%v), want a finding naming it", f, ok)
+	}
+
+	w3 := newWorld(t)
+	alias := filepath.Join(t.TempDir(), "qdrant")
+	if err := os.Symlink(w3.tenant.DataDir, alias); err != nil {
+		t.Fatal(err)
+	}
+	w3.opts.StoreDataRoots = []string{alias}
+	if f, ok := byCode(w3.run(t))[StoreDataRootsInvalid]; !ok || !strings.Contains(f.Detail, "resolves to") {
+		t.Errorf("a store root resolving into the tenants root: %+v (present=%v), want store_data_roots_invalid", f, ok)
 	}
 }

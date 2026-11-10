@@ -526,8 +526,14 @@ func (r *Real) MountOf(path string) (string, string, error) {
 	for _, e := range self {
 		m[e.mountPoint] = e.fsType // a later (over)mount of the same point wins, as in the kernel
 	}
-	return deepestMount(path, m)
+	return deepestMount(resolveExisting(path), m)
 }
+
+// resolveExisting is paths.ResolveExisting. MountOf asks it first: mount
+// points are real paths, so `/qdrant/tenants/dev` with `/qdrant -> /mnt/vol`
+// compared lexically would answer `/` for a dir that sits on the mounted
+// volume.
+func resolveExisting(path string) string { return paths.ResolveExisting(path) }
 
 // deepestMount picks, from mount point → fstype, the longest mount point that
 // is path or a parent of it. "/" (fstype from the table, or ext4) is the floor.
