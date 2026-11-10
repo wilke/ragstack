@@ -28,6 +28,11 @@ from reach_fixture import paper, rid, sid, wid  # noqa: E402
 DEAD = "http://127.0.0.1:1"
 
 
+def pre_args() -> list[str]:
+    """``report``'s required prereg pair: this checkout's committed PREREG.md and its sha."""
+    return ["--prereg", str(rr.PREREG_FILE), "--prereg-sha256", asc.sha256_file(rr.PREREG_FILE)]
+
+
 @pytest.fixture(autouse=True)
 def _no_stores(monkeypatch: pytest.MonkeyPatch) -> None:
     for k in ("QDRANT_URL", "ELASTICSEARCH_URL", "RAGSTACK_BASE_URL"):
@@ -103,8 +108,11 @@ def scenario(w: fx.World) -> dict[str, Any]:
 
 
 def inputs(w: fx.World, paths: dict[str, Any], *, s_final: bool = True, prior: list[Path] | None = None,
-           drift: list[Path] | None = None, build: Path | None | bool = True) -> rr.Inputs:
-    extra = ["--w-final", str(paths["w_final"])]
+           drift: list[Path] | None = None, build: Path | None | bool = True, main_skip: tuple[str, ...] = (),
+           prior_pairs: list[Path] | None = None) -> rr.Inputs:
+    extra = ["--w-final", str(paths["w_final"]), "--main-pairs", str(w.main_pairs(skip=main_skip)), *pre_args()]
+    for p in prior_pairs or []:
+        extra += ["--s-prior-pairs", str(p)]
     if s_final:
         extra += ["--s-final", str(paths["s_final"])]
     for p in prior or []:
@@ -309,6 +317,18 @@ def test_j_only_gates(tmp_path: Path) -> None:
 
 # ------------------------------------------------------------------ drift
 
+def qwen_row(pid: str, *, prompt: str = "p", system: str = "s", reasoning: str | None = None) -> dict[str, Any]:
+    """A Qwen label row (the harness's fields the drift check reads); the reasoning defaults to a
+    distinct >= 200-character text per call site."""
+    text = reasoning if reasoning is not None else f"reasoning {pid} {random.random()} " + "x" * 220
+    return {"k": f"q|{pid}", "pair_id": pid, "prompt_sha256": prompt, "system_sha256": system,
+            "reasoning_sample": [text], "texts_sample": ["t"], "ct": 10, "verdicts": [1]}
+
+
+def qwen_rows(pairs: Any, **kw: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    return {be: {aj.pair_id(r, c): qwen_row(aj.pair_id(r, c), **kw) for r, c in pairs} for be in ("C", "E")}
+
+
 def test_drift_sample_and_agreement(tmp_path: Path) -> None:
     pairs = [(f"r{i // 7}", f"c{i}") for i in range(100)]
     s = rr.drift_sample(pairs)
@@ -316,21 +336,68 @@ def test_drift_sample_and_agreement(tmp_path: Path) -> None:
     assert s == sorted(s, key=lambda p: asc.seeded_key("261109|reach|drift|W", *p))
     assert len(rr.drift_sample(pairs[:30])) == 2 and len(rr.drift_sample(pairs[:10])) == 1  # 0.5 rounds up
     assert len(rr.drift_sample(pairs[:9])) == 0
+    # PREREG §3: 5 % of 12,310 is 615.5, which rounds half up to 616
+    assert rr.round_half_up(0.05 * 12310) == 616
     w_need = {p: [] for p in pairs}
     w_labels = {p: ("answers" if i % 2 else "not") for i, p in enumerate(pairs)}
     sample = rr.drift_sample(pairs)
     flips = {p: ("not" if w_labels[p] == "answers" else w_labels[p]) for p in sample}
     reg = rr.Registry(dict(flips), [], len(flips), [])
-    d = rr.drift_summary(w_need, w_labels, reg)
+    d = rr.drift_summary(w_need, w_labels, reg, qwen_rows(sample), qwen_rows(sample))
     n_ans = sum(w_labels[p] == "answers" for p in sample)
     assert d["sample"] == 5 and d["rejudged"] == 5 and d["evaluable"] is True
+    assert d["prompt_identity"] == {"status": "identical", "compared_rows": 10,
+                                    "differs": {"C": {"prompt": 0, "system": 0}, "E": {"prompt": 0, "system": 0}}}
+    assert d["cache_check"]["flag"] is False
     assert n_ans == 2 and d["answers_judged_both"] == 2
     assert d["agreement_on_answers"] == 0.0 and d["caveat"].startswith("judge drift:")
     assert d["by_original_label"]["answers"] == {"not": 2} and d["agreement"] == 0.6
     same = rr.Registry({p: w_labels[p] for p in sample}, [], 5, [])
-    d = rr.drift_summary(w_need, w_labels, same)
+    d = rr.drift_summary(w_need, w_labels, same, qwen_rows(sample), qwen_rows(sample))
     assert d["agreement"] == 1.0 and d["agreement_on_answers"] == 1.0 and d["caveat"] is None
     assert rr.drift_summary(w_need, w_labels, None)["caveat"].startswith("judge drift check not evaluable")
+    # without label rows the prompt identity cannot be verified: not evaluable
+    d = rr.drift_summary(w_need, w_labels, same)
+    assert d["evaluable"] is False and d["prompt_identity"]["status"] == "absent"
+    assert d["caveat"] == "judge drift check not evaluable (no label rows given)"
+
+
+def test_drift_prompt_identity_and_cache_check() -> None:
+    """The alias-confirm §6.9 rule, reused on the drift re-judge: a prompt or system sha that differs
+    from the original row makes the drift check not evaluable; a byte-identical reasoning text flags
+    cache suspected; reasoning too short on every pair reads cache check not evaluable."""
+    pairs = [(f"r{i // 7}", f"c{i}") for i in range(100)]
+    w_need = {p: [] for p in pairs}
+    w_labels = dict.fromkeys(pairs, "answers")
+    sample = rr.drift_sample(pairs)
+    same = rr.Registry(dict.fromkeys(sample, "answers"), [], 5, [])
+    orig = qwen_rows(sample)
+    # one re-judged row with another prompt: not evaluable, whatever the agreement
+    other = qwen_rows(sample)
+    other["C"][aj.pair_id(*sample[0])]["prompt_sha256"] = "other"
+    d = rr.drift_summary(w_need, w_labels, same, orig, other)
+    assert d["evaluable"] is False and d["prompt_identity"]["status"] == "mismatch"
+    assert d["prompt_identity"]["differs"]["C"] == {"prompt": 1, "system": 0}
+    assert d["caveat"].startswith("judge drift check not evaluable (the re-judge prompt differs from the original on 1")
+    other = qwen_rows(sample)
+    other["E"][aj.pair_id(*sample[1])]["system_sha256"] = "other"
+    assert rr.drift_summary(w_need, w_labels, same, orig, other)["prompt_identity"]["status"] == "mismatch"
+    # no original row of any re-judged pair id: not evaluable
+    d = rr.drift_summary(w_need, w_labels, same, {"C": {}, "E": {}}, other)
+    assert d["prompt_identity"]["status"] == "no_compared_rows" and d["evaluable"] is False
+    # a replayed reasoning text on one pair: cache suspected (a caveat; the check stays evaluable)
+    replay = qwen_rows(sample)
+    pid = aj.pair_id(*sample[2])
+    replay["E"][pid]["reasoning_sample"] = list(orig["E"][pid]["reasoning_sample"])
+    d = rr.drift_summary(w_need, w_labels, same, orig, replay)
+    assert d["evaluable"] is True and d["cache_check"]["flag"] is True
+    assert d["caveat"] == "cache suspected: 1 re-judged (backend, pair) row(s) with Qwen reasoning byte-identical to " \
+                         "the original's"
+    # identical but short reasoning (< 200 characters) is not eligible: cache check not evaluable
+    short = qwen_rows(sample, reasoning="short")
+    d = rr.drift_summary(w_need, w_labels, same, short, qwen_rows(sample, reasoning="short"))
+    assert d["cache_check"]["flag"] == "not_evaluable" and d["evaluable"] is True
+    assert d["caveat"].startswith("cache check not evaluable")
 
 
 # ------------------------------------------------------------------ j-seeds
@@ -412,16 +479,15 @@ def test_j_seeds_refuse_inside_the_repository(tmp_path: Path) -> None:
 def test_report_cli_writes_a_public_counts_only_file(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     paths = scenario(w)
-    pre = tmp_path / "PREREG.md"
-    pre.write_text("frozen\n")
     out = tmp_path / "reach-report.json"
     rc = rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--s-final", str(paths["s_final"]),
-                        "--build-summary", str(paths["build"]), "--tokenizer", "none", "--prereg", str(pre),
-                        "--prereg-sha256", asc.sha256_file(pre), "--expected-records", "13",
+                        "--main-pairs", str(w.main_pairs()), "--build-summary", str(paths["build"]),
+                        "--tokenizer", "none", *pre_args(), "--expected-records", "13",
                         "--expected-eligible", "12", "--out", str(out)))
     assert rc == 0
     rec = json.loads(out.read_text())
     assert rec["schema"] == "reach-report/1" and rec["confirmatory"] is True
+    assert rec["prereg"]["sha256"] == asc.sha256_file(rr.PREREG_FILE)
     assert set(rec["families"]) == {"Q", "J"} and rec["context_tokens"]["computed"] is False
     assert rec["code_sha256"]["power_py"] == asc.sha256_file(rr.POWER_PY)
     assert "host" not in rec["provenance"]
@@ -431,9 +497,24 @@ def test_report_cli_writes_a_public_counts_only_file(tmp_path: Path) -> None:
     for row in w.w_rows + w.s_rows:
         assert row["chunk_id"] not in text and row["doc_id"] not in text
     # a wrong prereg sha is refused before anything is read
+    mp = str(w.main_pairs())
     with pytest.raises(SystemExit, match="the prereg's sha256"):
-        rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--tokenizer", "none", "--prereg", str(pre),
-                       "--prereg-sha256", "0" * 64, "--out", str(tmp_path / "x.json")))
+        rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--main-pairs", mp, "--tokenizer", "none",
+                       "--prereg", str(rr.PREREG_FILE), "--prereg-sha256", "0" * 64, "--out", str(tmp_path / "x.json")))
+    # another file with its own matching sha is refused: the sha must be the committed PREREG.md's
+    pre = tmp_path / "PREREG.md"
+    pre.write_text("another text\n")
+    with pytest.raises(SystemExit, match="not the committed PREREG.md"):
+        rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--main-pairs", mp, "--tokenizer", "none",
+                       "--prereg", str(pre), "--prereg-sha256", asc.sha256_file(pre), "--out", str(tmp_path / "x.json")))
+    with pytest.raises(SystemExit, match="64 lower-case hex"):
+        rr.check_prereg(pre, "ABC")
+    with pytest.raises(SystemExit, match="needs --prereg"):
+        rr.check_prereg(None, None)
+    # both are required on the command line (argparse refuses before anything runs)
+    with pytest.raises(SystemExit):
+        rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--main-pairs", mp, "--tokenizer", "none",
+                       "--out", str(tmp_path / "x.json")))
     assert not (tmp_path / "x.json").exists()
 
 
@@ -455,7 +536,7 @@ def test_report_refuses_a_public_file_that_would_leak(tmp_path: Path, monkeypatc
         out = tmp_path / f"leak-{key}.json"
         with pytest.raises(SystemExit, match="REFUSED: the public file"):
             rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--s-final", str(paths["s_final"]),
-                           "--tokenizer", "none", "--out", str(out)))
+                           "--main-pairs", str(w.main_pairs()), "--tokenizer", "none", *pre_args(), "--out", str(out)))
         assert not out.exists()
 
 
@@ -479,7 +560,8 @@ def test_parse_exports_and_registry_reading(tmp_path: Path) -> None:
 
 def test_report_reads_the_drift_registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The drift sample the report recomputes is the one j-seeds wrote; agreeing re-judged labels
-    lift the J caveat, flipped answers labels raise it."""
+    lift the J caveat, flipped answers labels raise it; the label rows come from the judge dirs of
+    the final files (W: the --w-final dir; drift: the --drift-final dir)."""
     w = fx.World(tmp_path)
     paths = scenario(w)
     monkeypatch.setattr(rr, "DRIFT_SHARE", 0.5)
@@ -488,11 +570,16 @@ def test_report_reads_the_drift_registry(tmp_path: Path, monkeypatch: pytest.Mon
     sample = rr.drift_sample(w_need)
     assert len(sample) == rr.round_half_up(0.5 * len(w_need)) > 0
     orig = inp.w_reg.labels
-    same = fx.write_jsonl(tmp_path / "drift-same.jsonl", [fx.label_row(r, c, int(orig[(r, c)] == "answers"))
-                                                          for r, c in sample])
+    ddir = tmp_path / "drift-judge"
+    for be, f in (("C", "labels-qwen-C.jsonl"), ("E", "labels-qwen-E.jsonl")):
+        fx.write_jsonl(tmp_path / f, list(qwen_rows(sorted(w_need))[be].values()))
+        fx.write_jsonl(ddir / f, list(qwen_rows(sample)[be].values()))
+    same = fx.write_jsonl(ddir / "final.jsonl", [fx.label_row(r, c, int(orig[(r, c)] == "answers")) for r, c in sample])
     rec = report(w, inputs(w, paths, drift=[same]))
     d = rec["drift_check"]
     assert d["evaluable"] and d["rejudged"] == len(sample) and d["agreement"] == 1.0
+    assert d["prompt_identity"]["status"] == "identical" and d["prompt_identity"]["compared_rows"] == 2 * len(sample)
+    assert d["cache_check"]["flag"] is False
     # every W pair J uses is labelled not in this world: the answers agreement cannot be computed
     assert d["answers_judged_both"] == 0 and d["caveat"].endswith("(no original answers label re-judged)")
     assert d["caveat"] in rec["families"]["J"]["sentence"]
@@ -502,9 +589,109 @@ def test_report_reads_the_drift_registry(tmp_path: Path, monkeypatch: pytest.Mon
     wf = paths["w_final"].read_text().replace(json.dumps(fx.label_row(*first, 0)), json.dumps(fx.label_row(*first, 1)))
     w2 = tmp_path / "w-final-2.jsonl"
     w2.write_text(wf)
-    flipped = fx.write_jsonl(tmp_path / "drift-flip.jsonl", [fx.label_row(r, c, 0) for r, c in sample])
+    flipped = fx.write_jsonl(ddir / "final-flip.jsonl", [fx.label_row(r, c, 0) for r, c in sample])
     rec = report(w, inputs(w, {**paths, "w_final": w2}, drift=[flipped]))
     d = rec["drift_check"]
     assert d["answers_judged_both"] == 1 and d["agreement_on_answers"] == 0.0
     assert d["caveat"].startswith("judge drift: the re-judged W answers labels agree") and d["caveat"] in rec[
         "families"]["J"]["sentence"]
+    # a re-judge prompt that differs: the drift check is not evaluable, and the J sentence says so
+    rows = asc.read_jsonl(ddir / "labels-qwen-C.jsonl")
+    rows[0]["prompt_sha256"] = "another prompt"
+    fx.write_jsonl(ddir / "labels-qwen-C.jsonl", rows)
+    rec = report(w, inputs(w, paths, drift=[same]))
+    d = rec["drift_check"]
+    assert d["evaluable"] is False and d["prompt_identity"]["status"] == "mismatch"
+    assert "judge drift check not evaluable (the re-judge prompt differs" in rec["families"]["J"]["sentence"]
+    # a drift registry in a W judge dir is refused (its rows would be compared with themselves)
+    with pytest.raises(SystemExit, match="shares a judge dir"):
+        inputs(w, paths, drift=[fx.write_jsonl(tmp_path / "drift-here.jsonl", [])])
+
+
+# ------------------------------------------------------------------ orphans, the favourable bound, the unjudged gate
+
+def test_orphans_count_as_not_answering_and_the_favourable_bound(tmp_path: Path) -> None:
+    """PREREG §3: an S pair J needs whose record has no stage-A pair (an orphan) is never judged and
+    counts as not answering; the favourable bound scores it answers, and when that changes the J
+    outcome the sentence says so (§7.2)."""
+    w = fx.World(tmp_path)
+    paths = scenario(w)
+    g1 = rid(1, "g")
+    # g1 has no stage-A pair: its two S pairs (scenario (a)) get no registry row
+    rows = [r for r in asc.read_jsonl(paths["s_final"]) if r["record_id"] != g1]
+    s_final = fx.write_jsonl(tmp_path / "s-final-orphan.jsonl", rows)
+    rec = report(w, inputs(w, {**paths, "s_final": s_final}, main_skip=(g1,)))
+    jl = rec["j_labels"]
+    assert jl["s_orphans"] == 2 and jl["s_unjudged_by_kind"] == {"orphan": 2} and jl["unjudged"]["S"] == 2
+    j = rec["families"]["J"]
+    # (a) is now W-only under J: S 47 of 52, the same as W, b = c = 1
+    assert j["counts"]["S"]["k"] == 47 and j["counts"]["S_only"] == 1 and j["counts"]["W_only"] == 1
+    b = j["favourable_bound"]
+    assert b["pairs"] == 2 and b["counts"]["S"]["k"] == 48 and b["counts"]["W_only"] == 0
+    assert b["test"]["ni"]["p"] == 0.015625 and b["outcome"] == "non_inferior"
+    # 2 of the 5 pairs J's primary cell needs on S are unjudged (> 5 %): the gate fires, the sentence is
+    # GATE-NOT-EVALUABLE, and it still names the favourable bound because the outcomes differ
+    assert any("pairs J's primary cell needs are unjudged" in g for g in j["gates"])
+    assert j["test"]["ni"]["reject"] is False and b["changes_outcome"] is True
+    assert "Favourable bound: with the 2 S pair(s) J needs that carry no judged label (unjudged or orphan) scored " \
+           "answers, the outcome would be non_inferior (NI p = 0.015625)" in j["sentence"]
+    # decide() states the bound only when it changes the outcome
+    res = {"counts": j["counts"], "test": j["test"]}
+    _, s_ = rr.decide("J", res, [], [], {**b, "test": j["test"]})
+    assert "Favourable bound" not in s_
+    _, s_ = rr.decide("J", res, [], [], b)
+    assert s_.startswith("Non-inferiority not shown (J)") and "Favourable bound" in s_
+    # with every record holding a stage-A pair, an S pair with no row is "no_registry_row", not an orphan
+    rec = report(w, inputs(w, {**paths, "s_final": s_final}))
+    assert rec["j_labels"]["s_unjudged_by_kind"] == {"no_registry_row": 2} and rec["j_labels"]["s_orphans"] == 0
+
+
+def test_unjudged_gate_reads_the_primary_cell_and_caveats_the_secondary(tmp_path: Path) -> None:
+    """§7.1 (owner default): the 5 % gate reads the pairs J's primary cell needs (default
+    retriever); a norerank / BM25 shortfall above 5 % is a caveat on that secondary figure."""
+    w = fx.World(tmp_path)
+    g2 = rid(2, "g")
+    w.s_over[(g2, "base", "bm25")] = [sid(2, 3), sid(3, 3)]  # an S BM25 miss whose pairs nobody judged
+    paths = scenario(w)
+    rec = report(w, inputs(w, paths))
+    assert rec["gates"]["J_only"] == [] and rec["families"]["J"]["outcome"] != "gate_not_evaluable"
+    by = rec["j_labels"]["unjudged_by_retriever"]["S"]
+    assert by["default"]["unjudged"] == 0 and by["bm25"]["unjudged"] == 2
+    sec = rec["families"]["J"]["secondary"]["by_retriever_pooled"]
+    assert sec["bm25"]["caveat"].startswith("S: 2 of ") and "this retriever's J needs are unjudged (> 5%)" in \
+        sec["bm25"]["caveat"]
+    assert sec["norerank"]["caveat"] is None and "caveat" not in sec["default"]
+    assert "caveat" not in rec["families"]["Q"]["secondary"]["by_retriever_pooled"]["bm25"]
+
+
+def test_prior_registry_content_sha_is_checked(tmp_path: Path) -> None:
+    """A prior S label is reused only for the bytes it was judged on: with the prior registry's
+    pairs.jsonl given, a reused key whose content_sha256 is not the S export's text is refused."""
+    w = fx.World(tmp_path)
+    paths = scenario(w)
+    g1 = rid(1, "g")
+    prior = fx.write_jsonl(tmp_path / "prior" / "final.jsonl", [fx.label_row(g1, sid(1, 3), 0)])
+    text = {r["chunk_id"]: r["content"] for r in w.s_rows}
+    good = fx.write_jsonl(tmp_path / "prior" / "pairs.jsonl", [
+        {"pair_id": aj.pair_id(g1, sid(1, 3)), "record_id": g1, "chunk_id": sid(1, 3),
+         "content_sha256": asc.sha_text(text[sid(1, 3)])}])
+    rows = [r for r in asc.read_jsonl(paths["s_final"]) if (r["record_id"], r["chunk_id"]) != (g1, sid(1, 3))]
+    s_final = fx.write_jsonl(tmp_path / "s-final-noprior.jsonl", rows)
+    rec = report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[good]))
+    assert rec["j_labels"]["s_prior_content_check"] == {"given": True, "reused_keys_checked": 1,
+                                                        "reused_keys_without_pairs_row": 0}
+    assert rec["gates"]["J_only"] == []
+    bad = fx.write_jsonl(tmp_path / "prior" / "pairs-bad.jsonl", [
+        {"pair_id": aj.pair_id(g1, sid(1, 3)), "record_id": g1, "chunk_id": sid(1, 3),
+         "content_sha256": asc.sha_text("other bytes")}])
+    with pytest.raises(SystemExit, match="content_sha256 is not the sha256 of the S export's text"):
+        report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[bad]))
+    # j-seeds refuses too, before writing anything
+    out = tmp_path / "private"
+    with pytest.raises(SystemExit, match="content_sha256"):
+        rr.main(w.args("j-seeds", "--w-final", str(paths["w_final"]), "--s-prior-final", str(prior),
+                       "--s-prior-pairs", str(bad), "--main-pairs", str(w.main_pairs()), "--out-dir", str(out)))
+    assert not out.exists()
+    # without pairs rows nothing is checked
+    rec = report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior]))
+    assert rec["j_labels"]["s_prior_content_check"] == {"given": False}
