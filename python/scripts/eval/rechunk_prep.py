@@ -840,6 +840,36 @@ def check_rechunk_presence(table: LabelTable, exports: Sequence[Path], corpus_ar
     want = set()
     for p in pairs:
         want |= {p["max_overlap_chunk_id"], *p["cover_any_chunk_ids"]}
+    chunks, sources = _check_export(exports, corpus_arm, expected_chunks, load_receipt)
+    absent = sorted(c for c in want if c not in chunks)
+    if absent:
+        raise f10.Refused(f"rechunk presence: {len(absent)} of the {len(want)} mapped chunk id(s) of the "
+                          f"{corpus_arm} pairs are absent from the arm's export (is it the rechunked export?)")
+    return {"pairs": len(pairs), "records": len(table.records(corpus_arm)), "mapped_chunks": len(want),
+            "present": len(want), "label_table_sha256": table.sha256,
+            "export_sha256": [asc.sha256_file(x) for x in exports], "chunks_in_export": len(chunks),
+            "expected_chunks": expected_chunks, "chunk_descriptor": DESCRIPTOR, "descriptor_checked_in": sources}
+
+
+def check_rechunk_export(exports: Sequence[Path], corpus_arm: str, *, expected_chunks: int,
+                         load_receipt: Path | None = None, records: int | None = None) -> dict[str, Any]:
+    """The presence check of ``alias_study_run``'s ``rechunk: {all_records: true}`` mode (the reach
+    comparison's S side, no label table): the export checks of :func:`check_rechunk_presence`
+    (chunk count = ``expected_chunks``; every row's descriptor, and the load receipt's when it
+    records one, :data:`DESCRIPTOR`), with the same refusals. ``records``: the records the run
+    asks, recorded."""
+    chunks, sources = _check_export(exports, corpus_arm, expected_chunks, load_receipt)
+    return {"scope": "all_records", "records": records, "export_sha256": [asc.sha256_file(x) for x in exports],
+            "chunks_in_export": len(chunks), "expected_chunks": expected_chunks, "chunk_descriptor": DESCRIPTOR,
+            "descriptor_checked_in": sources}
+
+
+def _check_export(exports: Sequence[Path], corpus_arm: str, expected_chunks: int, load_receipt: Path | None
+                  ) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The export half of the presence checks: ``(chunks, descriptor sources)``; ``found10.Refused``
+    on another chunk count or descriptor."""
+    import found10 as f10
+
     chunks = asc.read_chunk_exports(exports)
     if len(chunks) != expected_chunks:
         raise f10.Refused(f"rechunk presence: the {corpus_arm} export holds {len(chunks)} chunks, "
@@ -857,14 +887,7 @@ def check_rechunk_presence(table: LabelTable, exports: Sequence[Path], corpus_ar
                               f"not the confirmatory {DESCRIPTOR!r}")
         if rd is not None:
             sources.append("load_receipt")
-    absent = sorted(c for c in want if c not in chunks)
-    if absent:
-        raise f10.Refused(f"rechunk presence: {len(absent)} of the {len(want)} mapped chunk id(s) of the "
-                          f"{corpus_arm} pairs are absent from the arm's export (is it the rechunked export?)")
-    return {"pairs": len(pairs), "records": len(table.records(corpus_arm)), "mapped_chunks": len(want),
-            "present": len(want), "label_table_sha256": table.sha256,
-            "export_sha256": [asc.sha256_file(x) for x in exports], "chunks_in_export": len(chunks),
-            "expected_chunks": expected_chunks, "chunk_descriptor": DESCRIPTOR, "descriptor_checked_in": sources}
+    return chunks, sources
 
 
 # ------------------------------------------------------------------ stage1b-seed

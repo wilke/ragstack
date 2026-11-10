@@ -1,0 +1,732 @@
+{
+ "blinding": "W side, plus the S chunk exports (chunk texts, for S reachability and the prior-content check), the prior S registries' label and pairs files (integrity, content sha) and the stage-1 S run summaries (the settings gate; no per-record outcome); no S retrieval row and no S outcome was read",
+ "eligibility": {
+  "eligible": 1089,
+  "eligible_papers": 408,
+  "gold_documents": 560,
+  "non_eligible": 2,
+  "non_verbatim_raw": 26,
+  "non_verbatim_whitespace_normalised": 2,
+  "papers": 408,
+  "papers_by_eligible_records": {
+   "1": 25,
+   "2": 85,
+   "3": 298
+  },
+  "papers_by_raw_verbatim_records": {
+   "1": 27,
+   "2": 93,
+   "3": 284
+  },
+  "papers_by_records_all": {
+   "1": 25,
+   "2": 83,
+   "3": 300
+  },
+  "quotes_inside_one_w_window": 1089,
+  "records": 1091,
+  "s_gold_documents_found": 560,
+  "s_reach_of_w_verbatim": {
+   "single": 1088,
+   "split": 1
+  },
+  "s_reach_rule": "quote_cover(quote, every S chunk of the gold document) >= 0.90; split = reached only by the union of two or more S chunks (the quote crosses an S chunk boundary)",
+  "verbatim_raw": 1065,
+  "verbatim_whitespace_normalised": 1089
+ },
+ "orphans": {
+  "eligible_records": 746,
+  "note": "an S pair of an orphan record cannot be seeded (build-control needs a stage-A pair of the record as control_of) and counts as not answering and as unjudged (PREREG \u00a73)",
+  "papers": 383,
+  "primary_cell_units_of_eligible_orphan_records": 2984,
+  "records": 748,
+  "records_with_no_main_pair": 128,
+  "records_with_stage_b_pairs_only": 620,
+  "w_proxy_by_retriever": {
+   "bm25": {
+    "lists": 2992,
+    "lists_without_hit": 177,
+    "lists_without_hit_all_records": 976,
+    "unique_pairs_over_corpora": 1200,
+    "unique_pairs_over_corpora_all_records": 6850
+   },
+   "default": {
+    "lists": 2992,
+    "lists_without_hit": 0,
+    "lists_without_hit_all_records": 421,
+    "unique_pairs_over_corpora": 0,
+    "unique_pairs_over_corpora_all_records": 3149
+   },
+   "norerank": {
+    "lists": 2992,
+    "lists_without_hit": 0,
+    "lists_without_hit_all_records": 888,
+    "unique_pairs_over_corpora": 0,
+    "unique_pairs_over_corpora_all_records": 6609
+   }
+  }
+ },
+ "prior_content": {
+  "combined": {
+   "judged": {
+    "match": 1121,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   },
+   "judged_keys": 1121,
+   "keys": 1121,
+   "match": 1121,
+   "mismatch": 0,
+   "no_pairs_row": 0,
+   "no_s_text": 0
+  },
+  "per_registry": {
+   "control": {
+    "judged": {
+     "match": 351,
+     "mismatch": 0,
+     "no_pairs_row": 0,
+     "no_s_text": 0
+    },
+    "judged_keys": 351,
+    "keys": 351,
+    "match": 351,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   },
+   "cover_any": {
+    "judged": {
+     "match": 174,
+     "mismatch": 0,
+     "no_pairs_row": 0,
+     "no_s_text": 0
+    },
+    "judged_keys": 174,
+    "keys": 174,
+    "match": 174,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   },
+   "stage1b": {
+    "judged": {
+     "match": 671,
+     "mismatch": 0,
+     "no_pairs_row": 0,
+     "no_s_text": 0
+    },
+    "judged_keys": 671,
+    "keys": 671,
+    "match": 671,
+    "mismatch": 0,
+    "no_pairs_row": 0,
+    "no_s_text": 0
+   }
+  },
+  "rule": "match: the pairs rows' content_sha256 is exactly sha256 of the S export's text of the chunk; a judged label that does not match is not reused and counts as unjudged, a key with no pairs row is counted (caveats on J, PREREG \u00a73)"
+ },
+ "provenance": {
+  "commit": "7c7ac1a1bc4e6677c431d64d83a7059de2837339",
+  "dirty": false,
+  "implementation": "cpython",
+  "inputs_sha256": {
+   "corpus_neighbour": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+   "corpus_random1": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
+   "corpus_random2": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c",
+   "judge_final": "4e36010ccfacd389141508b6decf5d57a786902f19d26a3a29d1fed43515eecb",
+   "main_pairs": "04d39e3ce8299d397f37092dd4537c97d995f18bfb91a7c22c9a92aea987c378",
+   "oa_chunks": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+   "records": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f",
+   "runs_base": "6826ededf081ab9609723b24e346b2def66a38ef7d4dd8f78892f012372720ed",
+   "runs_neighbour": "4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882",
+   "runs_random1": "4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e",
+   "runs_random2": "ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87",
+   "runs_summary_base": "20936e99d9b0fb964de44d06b133fc20349b3c57bdd6c1cf90540935b6ab2fa7",
+   "runs_summary_neighbour": "7295a67826e178dd2cd75f15c1f2b35aa41b93efeeae7eb3a7a22c26903af40c",
+   "runs_summary_random1": "7d30412f716f79989ef1a9c28dac2a8bdaf8ba223a8631f87cfe96ea459e703b",
+   "runs_summary_random2": "302ffb23ff35bbdb808dfe29f365f7d5451fbd15879a5217dedb0d4924c531db",
+   "s_export_base": "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+   "s_export_neighbour": "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
+   "s_export_random1": "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
+   "s_export_random2": "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c",
+   "s_prior_final_control": "f0c6c7e6805c94a7be0c90c5dd69d96d4b03818273633c31bedd9b82e4065f99",
+   "s_prior_final_cover_any": "956fb547a5546e9d454a7c0d92cd7804f3dc11db55d654eb4e3e5fa3eb14fe4e",
+   "s_prior_final_stage1b": "af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a",
+   "s_prior_pairs_control": "6a2608200aa64c1f5e3a6b5ee90d4763c0e57e59de1698f47f435f955ec0f604",
+   "s_prior_pairs_cover_any": "f802cfd7106fff265466fa6c4a444aff34530b81a0c48d7669e876fae38df531",
+   "s_prior_pairs_stage1b": "aee3d117cf592a0087449f615eca9686f71d47c1f126ac44303d5acc03ecd2e6",
+   "s_stage1_summary_base": "4ebd768fc1c1b580bd817100bf24324f6dfff0aca377a345abe85403d413204d",
+   "s_stage1_summary_neighbour": "05b11e47d53e890a98fbe472504259c794ab43f6d65b387d413e1e06993742b3",
+   "s_stage1_summary_random1": "cc1456ceccd933643aefc5a26134faf334b7f924b74d41f9ed95aeaa0d8023e1",
+   "s_stage1_summary_random2": "4983af32f36c935e904d582268ffbd749c7190cf1743334780897779c6dcbc23"
+  },
+  "python": "3.12.13",
+  "reach_quote_sha256": "8f9e7e5d63ad689ac6b6a683e6e83781d8d8b4d78f249f741444eaf5c7bc1e84",
+  "script_sha256": "8d8806a583728bf6f62787d841910b0a85269f4087aa644dc336eada22e0f20d"
+ },
+ "registry": {
+  "label_rows_with_record_and_chunk": 24559,
+  "labelled_pairs": 24559
+ },
+ "registry_integrity": {
+  "W": {
+   "keys": 24559,
+   "problems": [],
+   "rows": 24559
+  },
+  "s_prior": {
+   "control": {
+    "keys": 351,
+    "problems": [],
+    "rows": 351
+   },
+   "cover_any": {
+    "keys": 174,
+    "problems": [],
+    "rows": 174
+   },
+   "stage1b": {
+    "keys": 671,
+    "problems": [],
+    "rows": 671
+   }
+  },
+  "s_prior_combined": {
+   "cross_registry_conflicts": 4,
+   "keys": 1121,
+   "rule": "answers if any registry says answers (declared, not gated)",
+   "within_registry_problems": []
+  }
+ },
+ "s_side_estimate": {
+  "assumption": "S lists without a quote hit = W's, per retriever and corpus; 10 slots each; S unique pairs = S slots x W's unique-per-slot ratio; no reuse of W labels counted for S (the content-hash rule can only lower this)",
+  "by_retriever": {
+   "bm25": {
+    "lists_without_hit": 976,
+    "slots": 9760
+   },
+   "default": {
+    "lists_without_hit": 421,
+    "slots": 4210
+   },
+   "norerank": {
+    "lists_without_hit": 888,
+    "slots": 8880
+   }
+  },
+  "calls": {
+   "both": {
+    "argon_calls": {
+     "12%": 1477,
+     "17%": 2093,
+     "7%": 862
+    },
+    "opus_calls_5%": 616,
+    "pairs": 12310
+   },
+   "s_side_default_retriever_only": {
+    "argon_calls": {
+     "12%": 378,
+     "17%": 535,
+     "7%": 220
+    },
+    "note": "if J were judged for the default retriever only (owner Q3 chose all three)",
+    "opus_calls_5%": 157,
+    "pairs": 3149
+   },
+   "s_side_unique_new": {
+    "argon_calls": {
+     "12%": 1477,
+     "17%": 2093,
+     "7%": 862
+    },
+    "opus_calls_5%": 616,
+    "pairs": 12310
+   },
+   "w_side_unique_unlabelled": {
+    "argon_calls": {
+     "12%": 0,
+     "17%": 0,
+     "7%": 0
+    },
+    "opus_calls_5%": 0,
+    "pairs": 0
+   }
+  },
+  "escalation_rates": [
+   0.07,
+   0.12,
+   0.17
+  ],
+  "opus_rate": 0.05,
+  "qwen_judge_calls_est": {
+   "note": "C and E each judge every new pair",
+   "s_side": 24620,
+   "w_side": 0
+  },
+  "slots": 22850,
+  "unique_pairs_est": 12310,
+  "unique_per_slot_from_w": 0.5387
+ },
+ "schema": "reach-rechunk-feasibility/1",
+ "scorer": {
+  "hit_threshold": 0.9,
+  "min_match": 20,
+  "module": "reach_quote",
+  "top_k": 10
+ },
+ "settings_gates": {
+  "expected_differences": [
+   "collection",
+   "index",
+   "census",
+   "study.collection_build",
+   "study.mode",
+   "study.rechunk_scope",
+   "study.stage",
+   "study.legs",
+   "study.leg_stages",
+   "study.prereg",
+   "exploratory",
+   "provenance",
+   "server./v1/version (reported)",
+   "utc",
+   "mode",
+   "study.exploratory",
+   "study.rechunk_presence",
+   "study.gold_presence",
+   "study.record_set.rechunk",
+   "study.record_set.rechunk_records",
+   "conditions.*.hit_stamps"
+  ],
+  "note": "stage-1 S: the rechunk stage-1 runs (the reach config but for out_dir and the rechunk keys, PREREG \u00a72); summaries only, no per-record outcome in rechunk mode",
+  "stage1_s_vs_w": {
+   "compared": [
+    "condition set",
+    "request",
+    "requested",
+    "found_k",
+    "server_assumed",
+    "study.retrievers",
+    "study.request_order",
+    "study.record_set.accepted_sha256",
+    "server config hash"
+   ],
+   "gates": [],
+   "per_corpus": {
+    "base": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    },
+    "neighbour": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    },
+    "random1": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    },
+    "random2": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.25",
+      "W": "1.6.22"
+     }
+    }
+   }
+  },
+  "stage1_s_vs_w_fields_not_compared": {
+   "differs": [
+    "calls",
+    "census.collection_build.chunk_cap.effective",
+    "census.collection_build.collection",
+    "census.collection_build.embed_provenance",
+    "census.collection_build.index",
+    "census.collection_build.load_receipt_sha256",
+    "census.collection_build.n_chunks",
+    "census.collection_build.provenance.image_commit",
+    "census.collection_build.provenance.image_version",
+    "census.collection_build.provenance.tool_image",
+    "census.collection_build.provenance.tool_image_digest",
+    "census.live_after.stamps.<stamp>",
+    "census.live_after.total",
+    "census.live_before.stamps.<stamp>",
+    "census.live_before.total",
+    "census.verified.total",
+    "collection",
+    "conditions.<condition>.hit_stamps.<stamp>",
+    "conditions.<condition>.identical_to_norerank.records",
+    "conditions.<condition>.ok",
+    "conditions.<condition>.records",
+    "conditions.<condition>.rows",
+    "index",
+    "provenance.commit",
+    "provenance.describe",
+    "provenance.recorded_at",
+    "provenance.segmentation",
+    "provenance.version",
+    "server./v1/version.git_sha",
+    "server./v1/version.git_tag",
+    "server./v1/version.started_at",
+    "server./v1/version.version",
+    "study.collection_build.chunk_cap.effective",
+    "study.collection_build.collection",
+    "study.collection_build.embed_provenance",
+    "study.collection_build.index",
+    "study.collection_build.load_receipt_sha256",
+    "study.collection_build.n_chunks",
+    "study.collection_build.provenance.image_commit",
+    "study.collection_build.provenance.image_version",
+    "study.collection_build.provenance.tool_image",
+    "study.collection_build.provenance.tool_image_digest",
+    "study.mode",
+    "study.per_leg_failed.<leg>.rows",
+    "utc"
+   ],
+   "s_only": [
+    "conditions.<condition>.outcomes",
+    "exploratory",
+    "mode",
+    "study.exploratory",
+    "study.prereg",
+    "study.rechunk_presence.chunk_descriptor",
+    "study.rechunk_presence.chunks_in_export",
+    "study.rechunk_presence.descriptor_checked_in",
+    "study.rechunk_presence.expected_chunks",
+    "study.rechunk_presence.export_sha256",
+    "study.rechunk_presence.label_table_sha256",
+    "study.rechunk_presence.mapped_chunks",
+    "study.rechunk_presence.pairs",
+    "study.rechunk_presence.present",
+    "study.rechunk_presence.records",
+    "study.record_set.rechunk",
+    "study.record_set.rechunk_records"
+   ],
+   "w_only": [
+    "conditions.<condition>.found10",
+    "study.gold_presence.chunks_in_export",
+    "study.gold_presence.export_sha256",
+    "study.gold_presence.gold_chunks",
+    "study.gold_presence.present",
+    "study.prereg.sha256",
+    "study.prereg.verified"
+   ]
+  },
+  "w_vs_w": {
+   "compared": [
+    "condition set",
+    "request",
+    "requested",
+    "found_k",
+    "server_assumed",
+    "study.retrievers",
+    "study.request_order",
+    "study.record_set.accepted_sha256",
+    "server config hash"
+   ],
+   "gates": [],
+   "per_corpus": {
+    "base": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    },
+    "neighbour": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    },
+    "random1": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    },
+    "random2": {
+     "differs": [],
+     "identical": true,
+     "server_version": {
+      "S": "1.6.22",
+      "W": "1.6.22"
+     }
+    }
+   }
+  }
+ },
+ "unresolved_chunk_texts": 0,
+ "w_miss_correlation": {
+  "indicator": "default retriever quote@10 miss on W, Q-eligible records",
+  "miss_rate": 0.0966,
+  "other_record_same_paper": {
+   "ordered_pairs": 31328,
+   "r": 0.0047
+  },
+  "same_record_other_corpus": {
+   "ordered_pairs": 13068,
+   "r": 0.7414
+  }
+ },
+ "w_side": {
+  "base": {
+   "bm25": {
+    "failed": 0,
+    "hits": 898,
+    "hits_eligible": 896,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 193,
+    "quote10": 0.8231,
+    "quote10_eligible": 0.8228,
+    "short_lists": 0,
+    "slots": 1930,
+    "slots_labelled": 1930,
+    "unique_pairs": 1930,
+    "unique_pairs_labelled": 1930,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 1028,
+    "hits_eligible": 1026,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 63,
+    "quote10": 0.9423,
+    "quote10_eligible": 0.9421,
+    "short_lists": 0,
+    "slots": 630,
+    "slots_labelled": 630,
+    "unique_pairs": 630,
+    "unique_pairs_labelled": 630,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 947,
+    "hits_eligible": 945,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 144,
+    "quote10": 0.868,
+    "quote10_eligible": 0.8678,
+    "short_lists": 0,
+    "slots": 1440,
+    "slots_labelled": 1440,
+    "unique_pairs": 1440,
+    "unique_pairs_labelled": 1440,
+    "unique_pairs_unlabelled": 0
+   }
+  },
+  "neighbour": {
+   "bm25": {
+    "failed": 0,
+    "hits": 805,
+    "hits_eligible": 803,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 286,
+    "quote10": 0.7379,
+    "quote10_eligible": 0.7374,
+    "short_lists": 0,
+    "slots": 2860,
+    "slots_labelled": 2860,
+    "unique_pairs": 2860,
+    "unique_pairs_labelled": 2860,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 957,
+    "hits_eligible": 955,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 134,
+    "quote10": 0.8772,
+    "quote10_eligible": 0.877,
+    "short_lists": 0,
+    "slots": 1340,
+    "slots_labelled": 1340,
+    "unique_pairs": 1340,
+    "unique_pairs_labelled": 1340,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 808,
+    "hits_eligible": 806,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 283,
+    "quote10": 0.7406,
+    "quote10_eligible": 0.7401,
+    "short_lists": 0,
+    "slots": 2830,
+    "slots_labelled": 2830,
+    "unique_pairs": 2830,
+    "unique_pairs_labelled": 2830,
+    "unique_pairs_unlabelled": 0
+   }
+  },
+  "random1": {
+   "bm25": {
+    "failed": 0,
+    "hits": 843,
+    "hits_eligible": 841,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 248,
+    "quote10": 0.7727,
+    "quote10_eligible": 0.7723,
+    "short_lists": 0,
+    "slots": 2480,
+    "slots_labelled": 2480,
+    "unique_pairs": 2480,
+    "unique_pairs_labelled": 2480,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 982,
+    "hits_eligible": 980,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 109,
+    "quote10": 0.9001,
+    "quote10_eligible": 0.8999,
+    "short_lists": 0,
+    "slots": 1090,
+    "slots_labelled": 1090,
+    "unique_pairs": 1090,
+    "unique_pairs_labelled": 1090,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 860,
+    "hits_eligible": 858,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 231,
+    "quote10": 0.7883,
+    "quote10_eligible": 0.7879,
+    "short_lists": 0,
+    "slots": 2310,
+    "slots_labelled": 2310,
+    "unique_pairs": 2310,
+    "unique_pairs_labelled": 2310,
+    "unique_pairs_unlabelled": 0
+   }
+  },
+  "random2": {
+   "bm25": {
+    "failed": 0,
+    "hits": 842,
+    "hits_eligible": 840,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 249,
+    "quote10": 0.7718,
+    "quote10_eligible": 0.7713,
+    "short_lists": 0,
+    "slots": 2490,
+    "slots_labelled": 2490,
+    "unique_pairs": 2490,
+    "unique_pairs_labelled": 2490,
+    "unique_pairs_unlabelled": 0
+   },
+   "default": {
+    "failed": 0,
+    "hits": 976,
+    "hits_eligible": 974,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 115,
+    "quote10": 0.8946,
+    "quote10_eligible": 0.8944,
+    "short_lists": 0,
+    "slots": 1150,
+    "slots_labelled": 1150,
+    "unique_pairs": 1150,
+    "unique_pairs_labelled": 1150,
+    "unique_pairs_unlabelled": 0
+   },
+   "norerank": {
+    "failed": 0,
+    "hits": 861,
+    "hits_eligible": 859,
+    "lists": 1091,
+    "lists_eligible": 1089,
+    "lists_without_hit": 230,
+    "quote10": 0.7892,
+    "quote10_eligible": 0.7888,
+    "short_lists": 0,
+    "slots": 2300,
+    "slots_labelled": 2300,
+    "unique_pairs": 2300,
+    "unique_pairs_labelled": 2300,
+    "unique_pairs_unlabelled": 0
+   }
+  }
+ },
+ "w_side_totals": {
+  "by_retriever": {
+   "bm25": {
+    "hits": 3388,
+    "lists": 4364,
+    "lists_without_hit": 976,
+    "slots": 9760,
+    "slots_labelled": 9760,
+    "unique_pairs_over_corpora": 6850,
+    "unique_pairs_over_corpora_labelled": 6850
+   },
+   "default": {
+    "hits": 3943,
+    "lists": 4364,
+    "lists_without_hit": 421,
+    "slots": 4210,
+    "slots_labelled": 4210,
+    "unique_pairs_over_corpora": 3149,
+    "unique_pairs_over_corpora_labelled": 3149
+   },
+   "norerank": {
+    "hits": 3476,
+    "lists": 4364,
+    "lists_without_hit": 888,
+    "slots": 8880,
+    "slots_labelled": 8880,
+    "unique_pairs_over_corpora": 6609,
+    "unique_pairs_over_corpora_labelled": 6609
+   }
+  },
+  "slots": 22850,
+  "slots_labelled": 22850,
+  "slots_unlabelled": 0,
+  "unique_pairs": 12310,
+  "unique_pairs_labelled": 12310,
+  "unique_pairs_unlabelled": 0,
+  "unique_per_slot": 0.5387
+ }
+}
