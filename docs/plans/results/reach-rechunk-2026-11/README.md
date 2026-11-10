@@ -1,6 +1,18 @@
 # Reach comparison: does the adopted chunking cost reach?
 
-**Status: DRAFT pre-registration, not frozen.** This folder pre-registers a confirmatory comparison. On the
+**Status: FROZEN 2026-11-10T17:38:07Z on the owner's go of 2026-11-10 ("Freeze and run retrieval"); S retrieval
+started 2026-11-10T17:40:47Z, not yet reported.** `PREREG.md` is frozen as written at commit
+`f78af6ee46e5d7f3604c10b1d14a77a7caa47b7d` (the merge of #989), sha256
+`1e3791ede2b7252cf43b940fd24f99a40a4126cabfc3a698f9f3a3ba3ade4458` (its own status line, which still reads *DRAFT*, is part of the frozen text).
+`power.json` sha256 `cfb6ddb49f894271623358b0b031626a279db7e1ebb5098581f64bcf2bf36276`; `feasibility.json` sha256
+`d68f11f66ad0f002d6ccdcd0bc9c829bf549e190b1555dacecb171bf27868eb8`; `frozen-inputs.json` sha256
+`35c24c2c6b4618c7c868352d004600344498c70c599ad0f0ebff7f8e7a6701a1`. Signed annotated tag
+`prereg-reach-rechunk-2026-11` (verify with `git tag -v`), whose message also lists every §9.1 input sha256; the
+sha256 and the UTC time are also in a private `PREREG.sha256`, written before the S retrieval (§9.2 step 2). The
+live server config hash at the start of the S run equals W's (`2e91056f…`). This is the one freeze-record commit of
+§9.2 step 4; the text below is kept as written at the freeze.
+
+This folder pre-registers a confirmatory comparison. On the
 alias study's 1,091 questions, it compares retrieval under the fixed 512-token windows (W) and under the
 adopted chunking (S): `sentence/512/0`, tokens, tolerance 0.25, section cuts, min_piece 128.
 
