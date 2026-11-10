@@ -107,10 +107,21 @@ def scenario(w: fx.World) -> dict[str, Any]:
     return paths
 
 
+def prior_pairs_of(w: fx.World, prior: Path) -> Path:
+    """A prior registry's pairs.jsonl beside it: each row's content_sha256 is the S export's text."""
+    text = {r["chunk_id"]: r["content"] for r in w.s_rows}
+    rows = [{"pair_id": r["pair_id"], "record_id": r["record_id"], "chunk_id": r["chunk_id"],
+             "content_sha256": asc.sha_text(text[r["chunk_id"]])} for r in asc.read_jsonl(prior)]
+    return fx.write_jsonl(prior.with_name(prior.stem + "-pairs.jsonl"), rows)
+
+
 def inputs(w: fx.World, paths: dict[str, Any], *, s_final: bool = True, prior: list[Path] | None = None,
            drift: list[Path] | None = None, build: Path | None | bool = True, main_skip: tuple[str, ...] = (),
            prior_pairs: list[Path] | None = None) -> rr.Inputs:
-    extra = ["--w-final", str(paths["w_final"]), "--main-pairs", str(w.main_pairs(skip=main_skip)), *pre_args()]
+    extra = ["--w-final", str(paths["w_final"]), "--main-pairs", str(w.main_pairs(skip=main_skip)), *pre_args(),
+             "--j-seeds", str(w.tmp / "j-seeds-unused.json")]
+    if prior and prior_pairs is None:
+        prior_pairs = [prior_pairs_of(w, p) for p in prior]
     for p in prior_pairs or []:
         extra += ["--s-prior-pairs", str(p)]
     if s_final:
@@ -146,8 +157,19 @@ def parser_args(argv: list[str]) -> Any:
     return captured["a"]
 
 
-def report(w: fx.World, inp: rr.Inputs, **kw: Any) -> dict[str, Any]:
-    return rr.build_report(inp, expected_records=len(w.records), expected_eligible=len(w.records) - 1, **kw)
+def report(w: fx.World, inp: rr.Inputs, eligible: int | None = None, **kw: Any) -> dict[str, Any]:
+    """``build_report`` with the prereg's counts set to the world's (13 records, 12 eligible)."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rr, "EXPECTED_RECORDS", len(w.records))
+        mp.setattr(rr, "EXPECTED_ELIGIBLE", len(w.records) - 1 if eligible is None else eligible)
+        return rr.build_report(inp, **kw)
+
+
+def j_seeds(w: fx.World, paths: dict[str, Any], out: Path, *extra: str) -> Path:
+    """Run ``j-seeds`` (private outputs in ``out``) and return its ``j-seeds.json``."""
+    assert rr.main(w.args("j-seeds", "--w-final", str(paths["w_final"]), "--main-pairs", str(w.main_pairs()),
+                          *extra, "--out-dir", str(out))) == 0
+    return out / "j-seeds.json"
 
 
 def test_quote_and_judged_outcomes(tmp_path: Path) -> None:
@@ -156,6 +178,12 @@ def test_quote_and_judged_outcomes(tmp_path: Path) -> None:
     inp = inputs(w, paths)
     rec = report(w, inp, token_counter=lambda t: len(t.split()), tokenizer_name="words")
     assert rec["records"] == 13 and rec["q_eligible"] == 12 and rec["papers"] == 6
+    # every W-verbatim quote is S-reachable; the g quotes only across the boundary of S chunks 0 and 1
+    assert rec["q_eligibility"]["w_verbatim"] == 12
+    assert rec["q_eligibility"]["s_reach_of_w_verbatim"] == {"single": 6, "split": 6}
+    assert rec["retrieval_settings"]["per_corpus"]["base"] == {
+        "identical": True, "differs": [], "server_version": {"W": "1.6.22", "S": "1.6.30"}}
+    assert "collection" in rec["retrieval_settings"]["expected_differences"]
     q, j = rec["families"]["Q"], rec["families"]["J"]
     # Q: 12 eligible records x 4 corpora; (a) and (b) are W-only, (c) is S-only; the split quote hits elsewhere
     assert q["counts"]["units"] == 48 and q["counts"]["S_only"] == 1 and q["counts"]["W_only"] == 2
@@ -184,6 +212,33 @@ def test_quote_and_judged_outcomes(tmp_path: Path) -> None:
     assert rec["context_tokens"]["S"]["by_retriever_pooled"]["default"]["lists"] == 52
 
 
+def test_q_eligibility_needs_s_reachability(tmp_path: Path) -> None:
+    """PREREG §2: a quote verbatim in its W gold window but not reachable under S (quote_cover over
+    every S chunk of the gold document < 0.90) is not Q-eligible; a quote reachable only across an S
+    chunk boundary (split) is."""
+    w = fx.World(tmp_path)
+    c5 = rid(5, "c")
+    # S chunk 2 of paper 5 loses the c quote: no S chunk of the document holds it any more
+    for r in w.s_rows:
+        if r["chunk_id"] == sid(5, 2):
+            r["content"] = f"Methods of {paper(5)}. Nothing quoted here. End."
+    fx.write_jsonl(w.s_export, w.s_rows)
+    paths = scenario(w)
+    inp = inputs(w, paths)
+    reach = rr.s_reach(w.records, inp.w_export.chunks, inp.s_export.doc_texts)
+    assert reach[c5] == "unreachable" and reach[rid(5, "g")] == "split" and reach[rid(4, "c")] == "single"
+    assert c5 not in rr.eligible_records(w.records, inp.w_export.chunks, inp.s_export.doc_texts)
+    rec = report(w, inp, eligible=11)
+    assert rec["q_eligible"] == 11 and rec["q_eligibility"]["w_verbatim"] == 12
+    assert rec["q_eligibility"]["s_reach_of_w_verbatim"] == {"single": 5, "split": 6, "unreachable": 1}
+    assert rec["families"]["Q"]["counts"]["records"] == 11 and rec["families"]["J"]["counts"]["records"] == 13
+    assert rec["gates"]["common"] == []
+    # against the prereg's eligible count the difference is a gate
+    assert "Q-eligible records: 11, the prereg's 12" in report(w, inp)["gates"]["common"]
+    # a gold document with no S chunk at all is unreachable
+    assert set(rr.s_reach(w.records, inp.w_export.chunks, {}).values()) == {"unreachable"}
+
+
 def test_decisions_and_wording(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     rec = report(w, inputs(w, scenario(w)))
@@ -204,16 +259,28 @@ def test_decisions_and_wording(tmp_path: Path) -> None:
            "test": rr.ni_test([(f"r{i}", f"P{i}", 1, 1) for i in range(20)])}
     out, s = rr.decide("Q", res, [], [])
     assert out == "non_inferior" and s.startswith("Non-inferior (Q)") and "not worse than W by 3 points" in s
+    assert "Non-inferiority at δ = 3 points holds" in s and "delta" not in s
+    # the fixed text of the frozen sentence is PREREG §7.2's, with its Greek letters
+    prereg = rr.PREREG_FILE.read_text(encoding="utf-8")
+    for frag in ("Non-inferiority at δ = 3 points holds (exact one-sided sign-flip over papers, p = ",
+                 "): S is not worse than W by 3 points or more. Superiority is not shown (p = "):
+        assert frag in s and frag in prereg
+    assert "under the default retriever pooled over the four corpus collections, " in prereg
+    for frag in (". The exact one-sided sign-flip over papers gives p = ", ": a loss of 3 points or more under S is "
+                 "not ruled out by this test (this is not evidence that S is worse)."):
+        assert frag in sentence and frag in prereg
     res = {"counts": rr.paired([(f"r{i}", f"P{i}", 1, 0) for i in range(20)]),
            "test": rr.ni_test([(f"r{i}", f"P{i}", 1, 0) for i in range(20)])}
     out, s = rr.decide("J", res, [], ["x"])
     assert out == "superior" and s.startswith("Superior (J)") and "hierarchical" in s and s.endswith("Caveats: x.")
+    assert "; hierarchical, no extra α)." in s and "; hierarchical, no extra α)." in prereg and "alpha" not in s
     out, s = rr.decide("J", res, ["S base default: 1 failed call(s)"], [])
     assert out == "gate_not_evaluable" and s.startswith("GATE-NOT-EVALUABLE (J): S base default: 1 failed call(s).")
     assert "decides nothing" in s
-    # the size caveat cites power.json's delta = 3 cells
+    # the size caveat cites power.json's δ = 3 cells
     note = rr.size_note(json.loads(rr.POWER_PY.with_name("power.json").read_text()))
     assert "0.0545 at 10 %" in note and "0.0615 at 5 %" in note and "0.0766" in note
+    assert note.startswith("simulated size at δ = 3:")
 
 
 def test_low_discordance_rejection_carries_the_size_caveat(tmp_path: Path) -> None:
@@ -231,7 +298,7 @@ def test_low_discordance_rejection_carries_the_size_caveat(tmp_path: Path) -> No
     q = rec["families"]["Q"]
     assert q["counts"]["discordance"] == 0.0 and q["test"]["ni"]["reject"] is True  # 6 papers: p = 1/64
     assert q["outcome"] == "non_inferior" and "low observed discordance" in q["sentence"]
-    assert "0.0545" in q["sentence"]
+    assert "0.0545" in q["sentence"] and "only asymptotically α" in q["sentence"]
 
 
 # ------------------------------------------------------------------ gates on forged inputs
@@ -276,10 +343,36 @@ def test_retrieval_and_census_gates(tmp_path: Path) -> None:
     assert "S base: not a reach run (rechunk mode with all_records)" in g
     assert "S neighbour default: 1 record(s) without a row" in g
     assert "S: 1 top-10 chunk id(s) with no text in the side's exports" in g
-    # the record count and the eligible count against the prereg's
+    # the record count and the eligible count against the prereg's (no override)
     rec = rr.build_report(inputs(w, paths))
     g = gates_of(rec)
     assert "records: 13, the prereg's 1091" in g and "Q-eligible records: 12, the prereg's 1089" in g
+
+
+def test_retrieval_settings_gate(tmp_path: Path) -> None:
+    """PREREG §7.1 (operator default): the S run summaries against the W run summaries; the
+    collection names (and builds, versions) differ by design and are declared, not gated."""
+    w = fx.World(tmp_path)
+    paths = scenario(w)
+    rec = report(w, inputs(w, paths))
+    assert rec["gates"]["common"] == []
+    req = fx.request("default")
+    w.write_runs("S", summary_over={
+        "base": {"conditions": {"base": {"gate": None, "request": {**req, "top_k": 20}, "requested": 50},
+                                "bm25": {"gate": None, "request": fx.request("bm25"), "requested": 50},
+                                "norerank": {"gate": None, "request": fx.request("norerank")}}},
+        "neighbour": {"server_assumed": {"retrieval_candidate_multiplier": 3, "rrf_k": 60}},
+        "random1": {"study": {"mode": "rechunk", "rechunk_scope": "all_records", "retrievers": list(asc.RETRIEVERS),
+                              "request_order": "record file order", "record_set": {"accepted_sha256": "accepted-sha"},
+                              "config_sha256_start": "d1" * 32, "config_sha256_end": "d2" * 32,
+                              "collection_build": {"n_chunks": 100, "load_receipt_sha256": "receipt-random1"}}}})
+    g = gates_of(report(w, inputs(w, paths)))
+    assert "settings base: the S run differs from the W run (default request, norerank requested)" in g
+    assert "settings neighbour: the S run differs from the W run (server_assumed)" in g
+    assert ("settings random1: the S run differs from the W run (server config hash (S at start vs W at start), "
+            "server config hash changed within the S run)") in g
+    assert not any(x.startswith("settings random2") for x in g)
+    assert rr.settings_gates(rr.read_runs(w.w_runs), rr.read_runs(w.w_runs))[0] == []
 
 
 def test_j_only_gates(tmp_path: Path) -> None:
@@ -412,7 +505,8 @@ def test_j_seeds_feed_build_control(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(rr, "DRIFT_SHARE", 0.5)
     out = tmp_path / "private"
     rc = rr.main(w.args("j-seeds", "--w-final", str(paths["w_final"]), "--s-prior-final", str(prior),
-                        "--main-pairs", str(main_pairs), "--out-dir", str(out)))
+                        "--s-prior-pairs", str(prior_pairs_of(w, prior)), "--main-pairs", str(main_pairs),
+                        "--out-dir", str(out)))
     assert rc == 0
     seeds = asc.read_jsonl(out / "s-seed.jsonl")
     keys = {(s["record_id"], s["chunk_id"]) for s in seeds}
@@ -423,9 +517,18 @@ def test_j_seeds_feed_build_control(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert keys | okeys == {(rid(1, "g"), sid(1, 0)), (x, sid(0, 3)), (x, sid(1, 3)), (rid(2, "c"), sid(2, 3))}
     assert okeys == {(rid(2, "c"), sid(2, 3))}  # its record has no stage-A pair
     summ = json.loads((out / "j-seeds.json").read_text())
-    assert summ["s_label_before_judging"] == {"prior_unjudged": 1, "reused_prior": 1, "reused_w_content_hash": 2,
-                                              "unlabelled": 3}
-    assert summ["s"]["orphans"] == 1 and summ["s"]["seeds"] == 3
+    detail = json.loads((out / "j-seeds-detail.json").read_text())
+    assert detail["s_label_before_judging"] == {"prior_unjudged": 1, "reused_prior": 1, "reused_w_content_hash": 2,
+                                                "unlabelled": 3}
+    assert detail["s_prior_content_check"] == {"given": True, "reused_keys_checked": 1,
+                                               "reused_keys_without_pairs_row": 0}
+    # PREREG §6 step 3: the public file carries totals per registry only; the breakdowns are private
+    assert summ["registries"]["S"] == {"seeds": 3, "orphans": 1} == {k: detail["s"][k] for k in ("seeds", "orphans")}
+    for k in ("s_pairs_needed_by_retriever", "s_label_before_judging", "s", "drift", "w_pairs_used", "s_pairs_needed"):
+        assert k not in summ and k in detail
+    assert "seeds_by_corpus_arm" in detail["s"] and "seeds_by_corpus_arm" not in json.dumps(summ)
+    assert summ["outputs_sha256"]["detail"] == asc.sha256_file(out / "j-seeds-detail.json")
+    assert summ["s_prior_cross_registry_conflicts"] == 0
     for s in seeds:
         assert s["stage"] == rr.S_STAGE and s["pair_id"] == aj.pair_id(s["record_id"], s["chunk_id"])
         assert s["control_of"] == aj.pair_id(s["record_id"], wid(int(s["record_id"].split("-")[2][4:]), 2))
@@ -445,8 +548,9 @@ def test_j_seeds_feed_build_control(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert counts["pairs"] == len(seeds) and counts["passage_paper_not_stage_a_window_paper"] == 1
     # drift: half of the W pairs J uses, a stage-A pair controlling itself where it is one
     dseeds = asc.read_jsonl(out / "drift-seed.jsonl")
-    w_used = summ["w_pairs_used"]
-    assert summ["drift"]["sample"] == rr.round_half_up(0.5 * w_used) == len(dseeds) + summ["drift"]["orphans"]
+    w_used = detail["w_pairs_used"]
+    dr = summ["registries"]["drift"]
+    assert dr["sample"] == rr.round_half_up(0.5 * w_used) == len(dseeds) + dr["orphans"] == dr["seeds"] + dr["orphans"]
     for s in dseeds:
         own = aj.pair_id(s["record_id"], s["chunk_id"])
         if s["chunk_id"] == wid(int(s["record_id"].split("-")[2][4:]), 2):
@@ -480,13 +584,27 @@ def test_report_cli_writes_a_public_counts_only_file(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     paths = scenario(w)
     out = tmp_path / "reach-report.json"
+    js = j_seeds(w, paths, tmp_path / "private")
     rc = rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--s-final", str(paths["s_final"]),
                         "--main-pairs", str(w.main_pairs()), "--build-summary", str(paths["build"]),
-                        "--tokenizer", "none", *pre_args(), "--expected-records", "13",
-                        "--expected-eligible", "12", "--out", str(out)))
+                        "--tokenizer", "none", *pre_args(), "--j-seeds", str(js), "--out", str(out)))
     assert rc == 0
     rec = json.loads(out.read_text())
     assert rec["schema"] == "reach-report/1" and rec["confirmatory"] is True
+    assert rec["j_seeds_check"] == {"sha256": asc.sha256_file(js), "inputs_match": True}
+    assert rec["inputs_sha256"]["j_seeds"] == asc.sha256_file(js)
+    # the prereg's counts are not overridable: this 13-record world fails the record-count gate
+    assert "records: 13, the prereg's 1091" in rec["gates"]["common"]
+    # PREREG §9.1: a report whose inputs differ from those j-seeds.json was computed from is refused
+    js2 = j_seeds(w, paths, tmp_path / "private-2", "--s-prior-final", str(paths["s_final"]), "--s-prior-pairs",
+                  str(prior_pairs_of(w, paths["s_final"])))
+    with pytest.raises(SystemExit, match=r"inputs differ from those j-seeds.json was computed from \(s_prior_final, "
+                                         r"s_prior_pairs\)"):
+        rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--s-final", str(paths["s_final"]),
+                       "--main-pairs", str(w.main_pairs()), "--build-summary", str(paths["build"]), "--tokenizer",
+                       "none", *pre_args(), "--j-seeds", str(js2), "--out", str(tmp_path / "x.json")))
+    with pytest.raises(SystemExit, match="not a reach-j-seeds/1 file"):
+        rr.check_j_seeds(paths["build"], {})
     assert rec["prereg"]["sha256"] == asc.sha256_file(rr.PREREG_FILE)
     assert set(rec["families"]) == {"Q", "J"} and rec["context_tokens"]["computed"] is False
     assert rec["code_sha256"]["power_py"] == asc.sha256_file(rr.POWER_PY)
@@ -500,27 +618,35 @@ def test_report_cli_writes_a_public_counts_only_file(tmp_path: Path) -> None:
     mp = str(w.main_pairs())
     with pytest.raises(SystemExit, match="the prereg's sha256"):
         rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--main-pairs", mp, "--tokenizer", "none",
-                       "--prereg", str(rr.PREREG_FILE), "--prereg-sha256", "0" * 64, "--out", str(tmp_path / "x.json")))
+                       "--prereg", str(rr.PREREG_FILE), "--prereg-sha256", "0" * 64, "--j-seeds", str(js),
+                       "--out", str(tmp_path / "x.json")))
     # another file with its own matching sha is refused: the sha must be the committed PREREG.md's
     pre = tmp_path / "PREREG.md"
     pre.write_text("another text\n")
     with pytest.raises(SystemExit, match="not the committed PREREG.md"):
         rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--main-pairs", mp, "--tokenizer", "none",
-                       "--prereg", str(pre), "--prereg-sha256", asc.sha256_file(pre), "--out", str(tmp_path / "x.json")))
+                       "--prereg", str(pre), "--prereg-sha256", asc.sha256_file(pre), "--j-seeds", str(js),
+                       "--out", str(tmp_path / "x.json")))
     with pytest.raises(SystemExit, match="64 lower-case hex"):
         rr.check_prereg(pre, "ABC")
     with pytest.raises(SystemExit, match="needs --prereg"):
         rr.check_prereg(None, None)
-    # both are required on the command line (argparse refuses before anything runs)
+    # both are required on the command line, and so is --j-seeds (argparse refuses before anything runs)
     with pytest.raises(SystemExit):
         rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--main-pairs", mp, "--tokenizer", "none",
-                       "--out", str(tmp_path / "x.json")))
+                       "--j-seeds", str(js), "--out", str(tmp_path / "x.json")))
+    with pytest.raises(SystemExit):
+        rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--main-pairs", mp, "--tokenizer", "none",
+                       *pre_args(), "--out", str(tmp_path / "x.json")))
+    with pytest.raises(SystemExit, match="needs --j-seeds"):
+        rr.check_j_seeds(None, {})
     assert not (tmp_path / "x.json").exists()
 
 
 def test_report_refuses_a_public_file_that_would_leak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     w = fx.World(tmp_path)
     paths = scenario(w)
+    js = j_seeds(w, paths, tmp_path / "private")
     real = rr.build_report
 
     def leaky(*a: Any, **kw: Any) -> dict[str, Any]:
@@ -536,7 +662,8 @@ def test_report_refuses_a_public_file_that_would_leak(tmp_path: Path, monkeypatc
         out = tmp_path / f"leak-{key}.json"
         with pytest.raises(SystemExit, match="REFUSED: the public file"):
             rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--s-final", str(paths["s_final"]),
-                           "--main-pairs", str(w.main_pairs()), "--tokenizer", "none", *pre_args(), "--out", str(out)))
+                           "--main-pairs", str(w.main_pairs()), "--tokenizer", "none", *pre_args(), "--j-seeds",
+                           str(js), "--out", str(out)))
         assert not out.exists()
 
 
@@ -550,7 +677,21 @@ def test_parse_exports_and_registry_reading(tmp_path: Path) -> None:
                                              fx.label_row("r-000000001", "chunk-b-0000", None)])
     reg = rr.read_registry([p], "T")
     assert reg.labels == {("r-000000001", "chunk-a-0000"): "answers", ("r-000000001", "chunk-b-0000"): "unjudged"}
-    assert reg.problems == [] and reg.rows == 3
+    assert reg.problems == [] and reg.rows == 3 and reg.per_registry == [{"rows": 3, "keys": 2}]
+    # PREREG §3: conflicts are checked per registry; across registries answers-if-any, counted, not gated
+    q = fx.write_jsonl(tmp_path / "g.jsonl", [fx.label_row("r-000000001", "chunk-a-0000", 0),
+                                             fx.label_row("r-000000001", "chunk-b-0000", 0),
+                                             fx.label_row("r-000000001", "chunk-c-0000", 0)])
+    reg = rr.read_registry([p, q], "T")
+    assert reg.problems == [] and reg.cross_conflicts == 1 and reg.rows == 6
+    assert reg.labels[("r-000000001", "chunk-a-0000")] == "answers"
+    assert reg.labels[("r-000000001", "chunk-b-0000")] == "not" and reg.labels[("r-000000001", "chunk-c-0000")] == "not"
+    assert rr.read_registry([q, p], "T").labels == reg.labels
+    within = fx.write_jsonl(tmp_path / "h.jsonl", [fx.label_row("r-000000001", "chunk-a-0000", 0),
+                                                  fx.label_row("r-000000001", "chunk-a-0000", 1)])
+    reg = rr.read_registry([p, within], "T")
+    assert reg.problems == ["T: one (record, chunk) with conflicting labels within one registry (1)"]
+    assert reg.labels[("r-000000001", "chunk-a-0000")] == "answers"
     # one chunk id with two contents on a side is refused
     rows = [fx.World.row("chunk-dup-0000", paper(0), "one", 0), fx.World.row("chunk-dup-0000", paper(0), "two", 0)]
     e = fx.write_jsonl(tmp_path / "e.jsonl", rows)
@@ -692,6 +833,14 @@ def test_prior_registry_content_sha_is_checked(tmp_path: Path) -> None:
         rr.main(w.args("j-seeds", "--w-final", str(paths["w_final"]), "--s-prior-final", str(prior),
                        "--s-prior-pairs", str(bad), "--main-pairs", str(w.main_pairs()), "--out-dir", str(out)))
     assert not out.exists()
-    # without pairs rows nothing is checked
-    rec = report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior]))
+    # --s-prior-pairs is required with --s-prior-final, from the same judge dir (PREREG §3)
+    with pytest.raises(SystemExit, match="needs --s-prior-pairs"):
+        report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[]))
+    elsewhere = fx.write_jsonl(tmp_path / "other" / "pairs.jsonl", asc.read_jsonl(good))
+    with pytest.raises(SystemExit, match="each --s-prior-final's judge dir"):
+        report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[elsewhere]))
+    with pytest.raises(SystemExit, match="without --s-prior-final"):
+        report(w, inputs(w, {**paths, "s_final": s_final}, prior_pairs=[good]))
+    # no prior registry: nothing to check
+    rec = report(w, inputs(w, {**paths, "s_final": s_final}))
     assert rec["j_labels"]["s_prior_content_check"] == {"given": False}

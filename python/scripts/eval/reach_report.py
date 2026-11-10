@@ -4,13 +4,14 @@ builder and the report. W = the alias study's fixed 512-token windows, S = the a
 
     reach_report.py j-seeds --records ACCEPTED.jsonl --w-runs W_RUNS --s-runs S_RUNS \\
         --w-export ARM=PATH [...] --s-export ARM=PATH [...] --w-final FINAL.jsonl [...] \\
-        [--s-prior-final FINAL.jsonl ... [--s-prior-pairs PAIRS.jsonl ...]] --main-pairs MAIN_JUDGE/pairs.jsonl \\
+        [--s-prior-final FINAL.jsonl ... --s-prior-pairs PAIRS.jsonl ...] --main-pairs MAIN_JUDGE/pairs.jsonl \\
         --out-dir PRIVATE_DIR
     reach_report.py report --records ACCEPTED.jsonl --w-runs W_RUNS --s-runs S_RUNS \\
         --w-export ARM=PATH [...] --s-export ARM=PATH [...] --w-final FINAL.jsonl [...] \\
-        --s-final FINAL.jsonl [...] [--s-prior-final FINAL.jsonl ... [--s-prior-pairs PAIRS.jsonl ...]] \\
+        --s-final FINAL.jsonl [...] [--s-prior-final FINAL.jsonl ... --s-prior-pairs PAIRS.jsonl ...] \\
         [--drift-final FINAL.jsonl ...] --main-pairs MAIN_JUDGE/pairs.jsonl --build-summary BUILD.json \\
-        [--power-json power.json] --prereg PREREG.md --prereg-sha256 SHA [--tokenizer NAME|none] --out PUBLIC.json
+        --j-seeds PRIVATE_DIR/j-seeds.json [--power-json power.json] --prereg PREREG.md --prereg-sha256 SHA \\
+        [--tokenizer NAME|none] --out PUBLIC.json
 
 **Inputs.** ``W_RUNS`` / ``S_RUNS``: run directories in ``alias_study_run.py``'s layout, read as
 ``<dir>/<corpus>/none.jsonl`` and ``none.summary.json`` for the four corpus arms (W: the alias main
@@ -19,24 +20,34 @@ run's stage-A legs; S: the reach run, ``rechunk: {all_records: true}``). ``--w-e
 papers; S: the image-derived exports the S collections were loaded from); a chunk's text is looked
 up by id within its side, and one id with two contents on a side is refused. ``--w-final``: the alias
 main judge registries' ``final.jsonl`` (stage A and B rows); ``--s-prior-final``: earlier registries
-of S chunks (the confirmatory control, cover-any, stage-1b runs), reused by (record, chunk) key;
-``--s-final``: the reach run's own S registry (``build-control --any-paper`` on the seeds below);
-``--drift-final``: the W re-judge registry. ``--s-prior-pairs``: the prior registries' ``pairs.jsonl``;
-when given, every reused prior key's ``content_sha256`` must equal the sha256 of the S export's
-text of that chunk (else refused: a prior label of other bytes is not reused). The judge dirs are
+of S chunks (PREREG §3: the rechunk confirm control registry, the cover-any registry, the stage-1b
+registry), reused by (record, chunk) key; ``--s-final``: the reach run's own S registry
+(``build-control --any-paper`` on the seeds below); ``--drift-final``: the W re-judge registry.
+``--s-prior-pairs``: the prior registries' ``pairs.jsonl``, **required** with ``--s-prior-final``
+(one per registry, in the same judge dirs): every reused prior key's ``content_sha256`` must equal
+the sha256 of the S export's text of that chunk (else refused: a prior label of other bytes is not
+reused). ``--j-seeds``: the ``j-seeds.json`` the S judging was seeded from; ``report`` refuses
+unless its own input shas (the inputs ``j-seeds`` reads) equal that file's ``inputs_sha256``. The
+judge dirs are
 the directories of the ``final.jsonl`` files: the drift check reads the Qwen label rows
 (``labels-qwen-C.jsonl``, ``labels-qwen-E.jsonl``) of the ``--w-final`` and ``--drift-final``
 dirs. Every input is read, never written.
 
 **quote@10 (Q; PREREG §3).** ``reach_quote.quote_hit`` on the texts of the list's top 10, the same
-function on both sides. Eligible: the records whose quote is verbatim in their W gold chunk after
-whitespace normalisation (``reach_quote.is_verbatim``; PREREG §2, §11 Q4: 1,089 of 1,091).
+function on both sides. Eligible (PREREG §2, §11 Q4): the records whose quote is verbatim in their W
+gold chunk after whitespace normalisation (``reach_quote.is_verbatim``) **and** reachable under S:
+``quote_cover(quote, every S chunk of the gold document) >= 0.90`` (1,089 of 1,091; all 1,089
+W-verbatim quotes are S-reachable, one only across an S chunk boundary).
 
 **judged found@10 (J; PREREG §3).** quote@10, **or** a top-10 chunk labelled *answers* for the
 record. Every record is in J (the 2 non-verbatim records too). Labels:
 
 - W: the ``--w-final`` rows, keyed (record, chunk); one key in several rows takes
   ``rechunk_prep.combine`` (answers if any says answers).
+- Each ``final.jsonl`` is one registry: two judged labels of one key **within** a registry are a
+  conflict (a J gate, §7.1); across registries the labels combine by the same rule (answers if any
+  registry says answers; PREREG §3, §11: it slightly favours keys judged twice) and the cross-registry
+  disagreements are counted, not gated.
 - S, in this order: (1) a judged (*answers* / *not*) ``--s-prior-final`` label of the key; (2) the
   **content-hash rule**: the S chunk's text is byte-identical (sha256 of the content) to a W chunk
   of the same record that carries a judged W label (several: combined); (3) the ``--s-final``
@@ -65,19 +76,24 @@ The pairs J needs are the top-10 (record, chunk) pairs of every list **without**
   itself when it is a stage-A pair, else as above), with their W export rows.
 - ``orphans.jsonl``: any seed whose record has no stage-A pair in the main registry
   (``build-control`` cannot take it; counted, never dropped silently).
-- ``j-seeds.json``: counts and shas only (``alias_control_chunks.write_summary``). It holds no
-  quote@10 or found@10 level, but its load counts (the S pairs J needs, about 10 per S list without
-  a quote hit) reveal roughly how many S lists miss the quote, i.e. about Q's S level, before J is
-  judged. PREREG §6 declares this; no discretionary step follows it.
+- ``j-seeds-detail.json`` (private): the breakdowns (S pairs J needs per retriever, seeds per
+  corpus arm and best rank, label sources before judging, the prior content check).
+- ``j-seeds.json``: totals per registry only (S seeds and orphans; drift sample, seeds and orphans),
+  the registry problems and the shas (``alias_control_chunks.write_summary``). It holds no quote@10
+  or found@10 level, but the S seed total (about 10 per S list without a quote hit, less reuse)
+  reveals roughly how many S lists miss the quote, i.e. about Q's S level, before J is judged.
+  PREREG §6 declares this; no discretionary step follows it.
 
 **report** (``reach-report/1``, public, counts only, written through
 ``alias_control_chunks.write_public``): per family (Q, J) the primary test (§4: default retriever,
 the four corpora pooled, records clustered by paper; the exact sign-flip over papers on
 ``X_k = 100 T_k + m_k δ`` with δ = 3 points, one-sided α = 0.05, by ``power.py``'s
 ``sign_flip_p_exact``, imported from the committed file; then superiority on ``T_k``, hierarchical),
-the decision and its frozen sentence (PREREG §7.2, :func:`decide`); the secondary figures (per corpus,
+the decision and its frozen sentence (PREREG §7.2, :func:`decide`, with δ and α as in the prereg); the
+secondary figures (per corpus,
 per retriever, G vs C, context tokens per query, discordant units by the S coverage of the gold
-window); the gates (§7.1); the judge drift summary (agreement, the prompt-identity check and the
+window); the gates (§7.1, with the retrieval-settings comparison of the W and S run summaries,
+:func:`settings_gates`); the judge drift summary (agreement, the prompt-identity check and the
 Qwen cache check of ``alias_control_chunks.cache_check``); provenance and input shas. ``report``
 requires ``--prereg PREREG.md --prereg-sha256 SHA`` and refuses unless the file hashes to the sha
 and the sha is this checkout's committed ``PREREG.md``.
@@ -102,7 +118,7 @@ for _p in (_HERE, _HERE / "glossbench", _HERE.parent):
         sys.path.insert(0, str(_p))
 
 import alias_study_common as asc  # noqa: E402
-from reach_quote import HIT_THRESHOLD, MIN_MATCH, is_verbatim, quote_hit  # noqa: E402
+from reach_quote import HIT_THRESHOLD, MIN_MATCH, is_verbatim, quote_cover, quote_hit  # noqa: E402
 
 SCHEMA = {"report": "reach-report/1", "seeds": "reach-j-seeds/1"}
 CORPORA = asc.CORPUS_ARMS
@@ -195,21 +211,23 @@ class Chunk:
 
 @dataclass
 class Export:
-    """The rows of one side's exports for the wanted ids, the spans of the wanted documents, and
-    the files' shas."""
+    """The rows of one side's exports for the wanted ids, the spans and the chunk texts of the
+    wanted documents (``doc -> chunk id -> text``), and the files' shas."""
     chunks: dict[str, Chunk]
     spans: dict[str, list[tuple[int, int]]]
     sha256: dict[str, str]
+    doc_texts: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 def read_export(spec: Mapping[str, Sequence[Path]], want: set[str], docs: Iterable[str] = ()) -> Export:
-    """Stream the exports once: the wanted chunks (content, doc, span, paper) and every span of the
-    documents in ``docs``. One id with two contents is refused."""
+    """Stream the exports once: the wanted chunks (content, doc, span, paper) and every span and
+    chunk text of the documents in ``docs``. One id with two contents is refused."""
     import _glossbench_r2 as g
 
     docs = set(docs)
     chunks: dict[str, Chunk] = {}
     spans: dict[str, set[tuple[int, int]]] = defaultdict(set)
+    texts: dict[str, dict[str, str]] = defaultdict(dict)
     shas = {}
     for path in export_files(spec):
         shas[path.name] = asc.sha256_file(path)
@@ -220,6 +238,9 @@ def read_export(spec: Mapping[str, Sequence[Path]], want: set[str], docs: Iterab
                 row = g.parse_chunk(json.loads(line), f"{path.name}:{i}")
                 if row.doc_id in docs:
                     spans[row.doc_id].add((row.start_char, row.end_char))
+                    prev_t = texts[row.doc_id].setdefault(row.chunk_id, row.content)
+                    if prev_t != row.content:
+                        raise SystemExit(f"{path.name}:{i}: chunk {row.chunk_id[:8]}… seen with other content")
                 if row.chunk_id not in want:
                     continue
                 prev = chunks.get(row.chunk_id)
@@ -229,7 +250,7 @@ def read_export(spec: Mapping[str, Sequence[Path]], want: set[str], docs: Iterab
                     continue
                 chunks[row.chunk_id] = Chunk(row.content, row.doc_id, row.start_char, row.end_char,
                                              g.paper_of(row, "path_root"))
-    return Export(chunks, {d: sorted(v) for d, v in spans.items()}, shas)
+    return Export(chunks, {d: sorted(v) for d, v in spans.items()}, shas, dict(texts))
 
 
 @dataclass
@@ -270,25 +291,36 @@ def top_ids(runs: Runs, k: int = TOP_K) -> set[str]:
 @dataclass
 class Registry:
     """``(record, chunk) -> label word`` (``answers`` / ``not`` / ``unjudged``) of a set of
-    ``final.jsonl`` files, and the integrity problems found reading them."""
+    ``final.jsonl`` files (each file one registry), the integrity problems found reading them, and
+    the keys on which two registries disagree (declared, not a problem)."""
     labels: dict[tuple[str, str], str]
     problems: list[str]
     rows: int
     sha256: list[str]
+    #: keys with judged labels in two or more registries that differ (combined: answers if any)
+    cross_conflicts: int = 0
+    #: per registry (file order): rows read and distinct keys
+    per_registry: list[dict[str, int]] = field(default_factory=list)
 
 
 def read_registry(paths: Sequence[Path], what: str) -> Registry:
     """Batch rows (``k`` starting ``batch|``) are skipped. Every other row must carry
     ``record_id`` and ``chunk_id``, and its ``pair_id`` (when present) must be
-    ``sha256(record|chunk)[:16]``; one key with two different judged labels in this set is a
-    conflict. Problems are returned (they are gates), never repaired."""
+    ``sha256(record|chunk)[:16]``. Each file is one registry: one key with two different judged
+    labels **within** a file is a conflict (a problem). Across files the labels combine by
+    ``rechunk_prep.combine`` (answers if any registry says answers; PREREG §3, §11) and the keys on
+    which two files' judged labels differ are counted in ``cross_conflicts`` (declared, not a
+    problem). Problems are returned (they are gates), never repaired."""
     import alias_study_judge as aj
     import rechunk_prep as rp
 
-    per: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
     problems: Counter[str] = Counter()
     n = 0
-    for fi, path in enumerate(paths):
+    per_file: list[dict[tuple[str, str], str]] = []
+    per_registry: list[dict[str, int]] = []
+    for path in paths:
+        per: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
+        rows = 0
         for j, r in enumerate(read_rows(path)):
             k = str(r.get("k", ""))
             if k.startswith("batch|"):
@@ -302,16 +334,24 @@ def read_registry(paths: Sequence[Path], what: str) -> Registry:
                 continue
             w = rp.label_word(r)
             assert w is not None
-            per[(str(rid), str(cid))][f"{fi}:{j}"] = w
-            n += 1
+            per[(str(rid), str(cid))][str(j)] = w
+            rows += 1
+        mine: dict[tuple[str, str], str] = {}
+        for key, ws in per.items():
+            if len({v for v in ws.values() if v != "unjudged"}) > 1:
+                problems[f"{what}: one (record, chunk) with conflicting labels within one registry"] += 1
+            mine[key] = rp.combine(ws)
+        per_file.append(mine)
+        per_registry.append({"rows": rows, "keys": len(mine)})
+        n += rows
     labels: dict[tuple[str, str], str] = {}
-    for key, ws in per.items():
-        judged = {v for v in ws.values() if v != "unjudged"}
-        if len(judged) > 1:
-            problems[f"{what}: one (record, chunk) with conflicting labels"] += 1
+    cross = 0
+    for key in sorted({k for m in per_file for k in m}):
+        ws = {str(i): m[key] for i, m in enumerate(per_file) if key in m}
+        cross += int(len({v for v in ws.values() if v != "unjudged"}) > 1)
         labels[key] = rp.combine(ws)
     return Registry(labels, [f"{p} ({c})" for p, c in sorted(problems.items())], n,
-                    [asc.sha256_file(p) for p in paths])
+                    [asc.sha256_file(p) for p in paths], cross, per_registry)
 
 
 def judged(word: str | None) -> bool:
@@ -382,7 +422,8 @@ def check_prior_content(sl: SLabels, keys: Iterable[tuple[str, str]],
     prior registry must have been judged on the bytes the S export holds now. With the prior
     registries' ``pairs.jsonl`` rows given, a reused key whose ``content_sha256`` differs from
     sha256 of the S export's text of that chunk is **refused** (nothing is reused across other
-    bytes); a reused key with no pairs row is counted. Without pairs rows: not checked."""
+    bytes); a reused key with no pairs row is counted. Without prior registries there is nothing to
+    check (``--s-prior-pairs`` is required with ``--s-prior-final``, :func:`check_prior_args`)."""
     if prior_pairs is None:
         return {"given": False}
     sha_of: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -470,12 +511,36 @@ def drift_sample(pairs: Iterable[tuple[str, str]], share: float | None = None, s
     return ps[:round_half_up(share * len(ps))]
 
 
-def eligible_records(records: Sequence[Mapping[str, Any]], w_texts: Mapping[str, Chunk]) -> set[str]:
-    """§2 / §11 Q4: the quote is verbatim in the W gold chunk after whitespace normalisation."""
+def s_reach(records: Sequence[Mapping[str, Any]], w_texts: Mapping[str, Chunk],
+            s_doc_texts: Mapping[str, Mapping[str, str]]) -> dict[str, str]:
+    """PREREG §2: ``record -> 'single' | 'split' | 'unreachable'`` under S: ``quote_cover(quote,
+    every S chunk of the gold document) >= 0.90`` makes the record S-reachable (``single``: one S
+    chunk alone reaches 0.90; ``split``: only the union of two or more does, the quote crosses an S
+    chunk boundary). The gold document is the W gold chunk's (W and S share document ids); a gold
+    chunk not in the W exports, or a document without S chunks, is unreachable."""
+    out: dict[str, str] = {}
+    for r in records:
+        g = w_texts.get(str(r["gold_chunks"][0]))
+        texts = list((s_doc_texts.get(g.doc_id) or {}).values()) if g is not None else []
+        q = str(r["quote"])
+        if not texts or quote_cover(q, texts) < HIT_THRESHOLD:
+            out[str(r["record_id"])] = "unreachable"
+        elif any(quote_cover(q, [t]) >= HIT_THRESHOLD for t in texts):
+            out[str(r["record_id"])] = "single"
+        else:
+            out[str(r["record_id"])] = "split"
+    return out
+
+
+def eligible_records(records: Sequence[Mapping[str, Any]], w_texts: Mapping[str, Chunk],
+                     s_doc_texts: Mapping[str, Mapping[str, str]]) -> set[str]:
+    """§2 / §11 Q4: the quote is verbatim in the W gold chunk after whitespace normalisation **and**
+    reachable under S (:func:`s_reach`): reachability on both sides."""
+    reach = s_reach(records, w_texts, s_doc_texts)
     out = set()
     for r in records:
         g = w_texts.get(str(r["gold_chunks"][0]))
-        if g is not None and is_verbatim(str(r["quote"]), g.content):
+        if g is not None and is_verbatim(str(r["quote"]), g.content) and reach[str(r["record_id"])] != "unreachable":
             out.add(str(r["record_id"]))
     return out
 
@@ -518,7 +583,7 @@ def ni_test(units: Sequence[tuple[str, str, int, int]], delta_pts: int = DELTA_P
     ni = p_ni <= alpha
     out: dict[str, Any] = {"delta_pts": delta_pts, "alpha_one_sided": alpha, "clusters": len(cl),
                            "ni": {"p": round(p_ni, 6), "reject": ni,
-                                  "statistic": "sum_k X_k, X_k = 100 T_k + m_k delta"},
+                                  "statistic": "sum_k X_k, X_k = 100 T_k + m_k δ (δ in points)"},
                            "superiority": {"tested": ni, "p": None, "reject": False}}
     if ni:
         p_sup = sign_flip_p_exact([t for _, t in cl])
@@ -544,7 +609,7 @@ def size_note(power_json: Mapping[str, Any] | None) -> str:
         v = [c["size_score"] for c in cells if c["discordance"] == disc and c["size_score"] is not None
              and (not sizing or (c["rho_paper"] == 0.0 and c["rho_record"] == 0.75))]
         return max(v) if v else None
-    return (f"simulated size at delta = {DELTA_PTS}: {at(0.10, True)} at 10 % and {at(0.05, True)} at 5 % discordance "
+    return (f"simulated size at δ = {DELTA_PTS}: {at(0.10, True)} at 10 % and {at(0.05, True)} at 5 % discordance "
             f"under the measured correlations (up to {at(0.05, False)} over the grid at 5 %); not simulated below "
             "5 %")
 
@@ -584,11 +649,11 @@ def decide(family: str, res: Mapping[str, Any], gates: Sequence[str], caveats: S
         return "gate_not_evaluable", (f"GATE-NOT-EVALUABLE ({family}): " + "; ".join(gates) + f". The test was computed "
                                       f"(NI p = {p_ni}, n = {c['units']} units) and decides nothing." + tail)
     if t["ni"]["reject"] and t["superiority"]["reject"]:
-        return "superior", (f"Superior ({family}): {core}. Non-inferiority at delta = {DELTA_PTS} points holds (exact "
+        return "superior", (f"Superior ({family}): {core}. Non-inferiority at δ = {DELTA_PTS} points holds (exact "
                             f"one-sided sign-flip over papers, p = {p_ni}), and S is superior to W (p = {p_sup}; "
-                            "hierarchical, no extra alpha)." + tail)
+                            "hierarchical, no extra α)." + tail)
     if t["ni"]["reject"]:
-        return "non_inferior", (f"Non-inferior ({family}): {core}. Non-inferiority at delta = {DELTA_PTS} points holds "
+        return "non_inferior", (f"Non-inferior ({family}): {core}. Non-inferiority at δ = {DELTA_PTS} points holds "
                                 f"(exact one-sided sign-flip over papers, p = {p_ni}): S is not worse than W by "
                                 f"{DELTA_PTS} points or more. Superiority is not shown (p = {p_sup})." + tail)
     return "ni_not_shown", (f"Non-inferiority not shown ({family}): {core}. The exact one-sided sign-flip over papers "
@@ -630,6 +695,72 @@ def s_mode_gates(runs: Runs) -> list[str]:
         if st.get("mode") != "rechunk" or st.get("rechunk_scope") != "all_records":
             out.append(f"S {c}: not a reach run (rechunk mode with all_records)")
     return out
+
+
+#: PREREG §7.1 (retrieval settings): per corpus arm, the run-summary fields the S run must share with
+#: the W run (besides each condition's ``request`` and ``requested`` depth, the condition set and the
+#: server config hash, :func:`settings_gates`)
+SETTINGS_SAME = ("found_k", "server_assumed", "study.retrievers", "study.request_order",
+                 "study.record_set.accepted_sha256")
+#: the declared, expected differences (reported or ignored, never gated): the collections and their
+#: builds, the run mode and its stamps, the code and server versions, the clock
+SETTINGS_EXPECTED = ("collection", "index", "census", "study.collection_build", "study.mode", "study.rechunk_scope",
+                     "study.stage", "study.legs", "study.leg_stages", "study.prereg", "exploratory", "provenance",
+                     "server./v1/version (reported)", "utc")
+
+
+def _dig(d: Mapping[str, Any], dotted: str) -> Any:
+    cur: Any = d
+    for k in dotted.split("."):
+        if not isinstance(cur, Mapping):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def config_hash(summary: Mapping[str, Any], which: str) -> Any:
+    """The server config hash (``/v1/config``) the harness recorded at the run's start or end."""
+    return _dig(summary, f"study.config_sha256_{which}") or _dig(summary, f"server.config_sha256_{which}")
+
+
+def settings_gates(w: Runs, s: Runs) -> tuple[list[str], dict[str, Any]]:
+    """PREREG §7.1 (retrieval settings, operator default): per corpus arm, the S run summary against
+    the W run summary: the same condition set, each condition's ``request`` (with the collection
+    placeholder) and ``requested`` depth, the fields of :data:`SETTINGS_SAME`, and the server config
+    hash (S at start = W at start, and unchanged within each run). A field absent on either side
+    counts as a difference. The differences of :data:`SETTINGS_EXPECTED` are declared and not
+    compared; the server version is reported beside."""
+    out: list[str] = []
+    per: dict[str, Any] = {}
+    for c in CORPORA:
+        ws, ss = w.summaries[c], s.summaries[c]
+        diffs: list[str] = []
+        wc, sc = ws.get("conditions") or {}, ss.get("conditions") or {}
+        if set(wc) != set(sc) or not wc:
+            diffs.append("condition set")
+        for cond in sorted(set(wc) & set(sc)):
+            ret = asc.CONDITION_TO_RETRIEVER.get(cond, cond)
+            for k in ("request", "requested"):
+                a, b = (wc[cond] or {}).get(k), (sc[cond] or {}).get(k)
+                if a is None or a != b:
+                    diffs.append(f"{ret} {k}")
+        for f in SETTINGS_SAME:
+            a, b = _dig(ws, f), _dig(ss, f)
+            if a is None or a != b:
+                diffs.append(f)
+        h = {side: (config_hash(x, "start"), config_hash(x, "end")) for side, x in (("W", ws), ("S", ss))}
+        if h["W"][0] is None or h["S"][0] != h["W"][0]:
+            diffs.append("server config hash (S at start vs W at start)")
+        for side in ("W", "S"):
+            if h[side][1] != h[side][0]:
+                diffs.append(f"server config hash changed within the {side} run")
+        per[c] = {"identical": not diffs, "differs": diffs,
+                  "server_version": {side: _dig(x, "server./v1/version.version") for side, x in (("W", ws), ("S", ss))}}
+        if diffs:
+            out.append(f"settings {c}: the S run differs from the W run ({', '.join(diffs)})")
+    return out, {"per_corpus": per, "compared": ["condition set", "request", "requested", *SETTINGS_SAME,
+                                                 "server config hash"],
+                 "expected_differences": list(SETTINGS_EXPECTED)}
 
 
 def census_gates(runs: Runs, build: Mapping[str, Any] | None) -> tuple[list[str], dict[str, Any]]:
@@ -727,7 +858,20 @@ def judge_dir_rows(finals: Sequence[Path]) -> tuple[dict[str, dict[str, dict[str
     return out, dup
 
 
+def check_prior_args(a: argparse.Namespace) -> None:
+    """PREREG §3: ``--s-prior-pairs`` is required with ``--s-prior-final``: one ``pairs.jsonl`` per
+    prior registry, in the same judge dirs (so every reused label's content sha is checked)."""
+    finals, pairs = list(getattr(a, "s_prior_final", None) or []), list(getattr(a, "s_prior_pairs", None) or [])
+    if finals and not pairs:
+        raise SystemExit("REFUSED: --s-prior-final needs --s-prior-pairs (each prior registry's pairs.jsonl)")
+    if pairs and not finals:
+        raise SystemExit("REFUSED: --s-prior-pairs without --s-prior-final")
+    if sorted(str(f.parent.resolve()) for f in finals) != sorted(str(f.parent.resolve()) for f in pairs):
+        raise SystemExit("REFUSED: --s-prior-pairs must be the pairs.jsonl of each --s-prior-final's judge dir, one each")
+
+
 def load_inputs(a: argparse.Namespace, *, report: bool) -> Inputs:
+    check_prior_args(a)
     recs = asc.read_jsonl(a.records)
     for i, r in enumerate(recs, 1):
         for k in ("record_id", "paper", "kind", "quote", "gold_chunks"):
@@ -776,14 +920,18 @@ def gold_coverage_band(rec: Mapping[str, Any], w: Export, s: Export) -> str:
     return acc.band(best / (g.end - g.start), acc.COVERAGE_BANDS)
 
 
-def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, tokenizer_name: str | None = None,
-                 expected_records: int | None = EXPECTED_RECORDS, expected_eligible: int | None = EXPECTED_ELIGIBLE
+def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, tokenizer_name: str | None = None
                  ) -> dict[str, Any]:
-    """Every figure of the report (a pure function of the inputs; no I/O)."""
+    """Every figure of the report (a pure function of the inputs; no I/O). The record and eligible
+    counts are checked against :data:`EXPECTED_RECORDS` / :data:`EXPECTED_ELIGIBLE` (the prereg's;
+    no override)."""
     recs = inp.records
     by_id = {str(r["record_id"]): r for r in recs}
     paper = {rid: str(r["paper"]) for rid, r in by_id.items()}
-    eligible = eligible_records(recs, inp.w_export.chunks)
+    eligible = eligible_records(recs, inp.w_export.chunks, inp.s_export.doc_texts)
+    reach = s_reach(recs, inp.w_export.chunks, inp.s_export.doc_texts)
+    w_verbatim = {str(r["record_id"]) for r in recs if str(r["gold_chunks"][0]) in inp.w_export.chunks
+                  and is_verbatim(str(r["quote"]), inp.w_export.chunks[str(r["gold_chunks"][0])].content)}
     w_sc = score_lists(recs, inp.w_runs, inp.w_export.chunks)
     s_sc = score_lists(recs, inp.s_runs, inp.s_export.chunks)
 
@@ -828,14 +976,16 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
               + s_mode_gates(inp.s_runs))
     cg, census_info = census_gates(inp.s_runs, inp.build)
     common += cg
+    sg, settings_info = settings_gates(inp.w_runs, inp.s_runs)
+    common += sg
     unres = {"W": sum(s.unresolved for s in w_sc.values()), "S": sum(s.unresolved for s in s_sc.values())}
     for side, n in unres.items():
         if n:
             common.append(f"{side}: {n} top-10 chunk id(s) with no text in the side's exports")
-    if expected_records is not None and len(recs) != expected_records:
-        common.append(f"records: {len(recs)}, the prereg's {expected_records}")
-    if expected_eligible is not None and len(eligible) != expected_eligible:
-        common.append(f"Q-eligible records: {len(eligible)}, the prereg's {expected_eligible}")
+    if len(recs) != EXPECTED_RECORDS:
+        common.append(f"records: {len(recs)}, the prereg's {EXPECTED_RECORDS}")
+    if len(eligible) != EXPECTED_ELIGIBLE:
+        common.append(f"Q-eligible records: {len(eligible)}, the prereg's {EXPECTED_ELIGIBLE}")
     missing_gold = sum(str(r["gold_chunks"][0]) not in inp.w_export.chunks for r in recs)
     if missing_gold:
         common.append(f"{missing_gold} W gold chunk(s) not in the W exports")
@@ -906,7 +1056,7 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
         disc = res["counts"]["discordance"]
         if res["test"]["ni"]["reject"] and disc is not None and disc < LOW_DISCORDANCE:
             caveats.append(f"low observed discordance ({100 * disc:.1f} %): the test's size is only asymptotically "
-                           f"alpha ({size_note(inp.power_json)})")
+                           f"α ({size_note(inp.power_json)})")
         bound = None
         if f == "J":
             caveats.append("W labels are from the 2026-11-04/06 judge runs and S labels from new judging; any judge "
@@ -942,6 +1092,14 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
         "schema": SCHEMA["report"],
         "records": len(recs), "papers": len(set(paper.values())), "records_by_kind": dict(sorted(kinds.items())),
         "q_eligible": len(eligible), "q_eligible_papers": len({paper[r] for r in eligible}),
+        "q_eligibility": {"w_verbatim": len(w_verbatim),
+                          "s_reach_of_w_verbatim": dict(sorted(Counter(reach[r] for r in w_verbatim).items())),
+                          "rule": "verbatim in the W gold chunk (whitespace-normalised) and quote_cover over every S "
+                                  "chunk of the gold document >= 0.90; split = only the union of 2+ S chunks reaches it"},
+        "registries": {name: {"per_registry": reg.per_registry, "cross_registry_conflicts": reg.cross_conflicts,
+                              "combined_keys": len(reg.labels)}
+                       for name, reg in (("W", inp.w_reg), ("S_prior", inp.s_prior), ("S_new", inp.s_new),
+                                         ("drift", inp.drift)) if reg is not None},
         "primary_cell": {"retriever": PRIMARY_RETRIEVER, "corpora": list(CORPORA), "cluster": "paper",
                          "delta_pts": DELTA_PTS, "alpha_one_sided": ALPHA},
         "families": fam,
@@ -961,6 +1119,7 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
         "discordant_by_gold_window_coverage_under_S": {k: dict(sorted(v.items())) for k, v in cov.items()},
         "context_tokens": tokens,
         "census": census_info,
+        "retrieval_settings": settings_info,
         "unresolved_chunk_texts": unres,
         "scorer": {"module": "reach_quote", "min_match": MIN_MATCH, "hit_threshold": HIT_THRESHOLD, "top_k": TOP_K},
     }
@@ -1132,30 +1291,54 @@ def check_prereg(path: Path | None, sha: str | None, committed: Path | None = No
     return {"prereg": "reach-rechunk-2026-11", "sha256": have, "verified": True}
 
 
+def seed_input_shas(a: argparse.Namespace, inp: Inputs) -> dict[str, Any]:
+    """The shas of the inputs ``j-seeds`` reads: ``j-seeds.json``'s ``inputs_sha256``, and what
+    ``report`` compares with it (:func:`check_j_seeds`)."""
+    return {"records": asc.sha256_file(a.records), "w_runs": inp.w_runs.sha256, "s_runs": inp.s_runs.sha256,
+            "w_final": inp.w_reg.sha256, "s_prior_final": inp.s_prior.sha256,
+            "main_pairs": asc.sha256_file(a.main_pairs),
+            "s_prior_pairs": [asc.sha256_file(p) for p in a.s_prior_pairs or []],
+            "w_exports": inp.w_export.sha256, "s_exports": inp.s_export.sha256}
+
+
+def check_j_seeds(path: Path | None, want: Mapping[str, Any]) -> dict[str, Any]:
+    """PREREG §6 step 5 / §9.1: ``report`` refuses unless the ``j-seeds.json`` the S judging was
+    seeded from was computed from the very inputs ``report`` reads (its ``inputs_sha256`` equals
+    :func:`seed_input_shas` of this call)."""
+    if path is None:
+        raise SystemExit("REFUSED: report needs --j-seeds (the j-seeds.json the S judging was seeded from)")
+    js = json.loads(path.read_text(encoding="utf-8"))
+    if js.get("schema") != SCHEMA["seeds"]:
+        raise SystemExit(f"REFUSED: --j-seeds is not a {SCHEMA['seeds']} file")
+    have = js.get("inputs_sha256") or {}
+    bad = sorted(k for k in set(have) | set(want) if have.get(k) != want.get(k))
+    if bad:
+        raise SystemExit(f"REFUSED: the report's inputs differ from those j-seeds.json was computed from ({', '.join(bad)})")
+    return {"sha256": asc.sha256_file(path), "inputs_match": True}
+
+
 def run_report(a: argparse.Namespace, token_counter: TokenCounter | None = None) -> dict[str, Any]:
     import alias_control_chunks as acc
     import rechunk_prep as rp
 
     prereg = check_prereg(a.prereg, a.prereg_sha256)
     inp = load_inputs(a, report=True)
+    seeds_check = check_j_seeds(getattr(a, "j_seeds", None), seed_input_shas(a, inp))
     name = None
     if token_counter is None and a.tokenizer and a.tokenizer != "none":
         token_counter, name = hf_token_counter(a.tokenizer), a.tokenizer
     elif token_counter is not None:
         name = a.tokenizer or "injected"
-    rec = build_report(inp, token_counter=token_counter, tokenizer_name=name,
-                       expected_records=a.expected_records, expected_eligible=a.expected_eligible)
+    rec = build_report(inp, token_counter=token_counter, tokenizer_name=name)
     here = Path(__file__).resolve()
-    inputs = {"records": asc.sha256_file(a.records), "w_runs": inp.w_runs.sha256, "s_runs": inp.s_runs.sha256,
-              "w_exports": inp.w_export.sha256, "s_exports": inp.s_export.sha256, "w_final": inp.w_reg.sha256,
-              "s_prior_final": inp.s_prior.sha256, "s_final": inp.s_new.sha256 if inp.s_new else [],
-              "drift_final": inp.drift.sha256 if inp.drift else [], "main_pairs": asc.sha256_file(a.main_pairs),
-              "s_prior_pairs": [asc.sha256_file(p) for p in a.s_prior_pairs or []]}
+    inputs = {**seed_input_shas(a, inp), "s_final": inp.s_new.sha256 if inp.s_new else [],
+              "drift_final": inp.drift.sha256 if inp.drift else [], "j_seeds": seeds_check["sha256"]}
     if a.build_summary:
         inputs["build_summary"] = asc.sha256_file(a.build_summary)
     if a.power_json:
         inputs["power_json"] = asc.sha256_file(a.power_json)
     rec.update({"prereg": prereg, "confirmatory": bool(prereg.get("verified")), "inputs_sha256": inputs,
+                "j_seeds_check": seeds_check,
                 "code_sha256": {"reach_report": hashlib.sha256(here.read_bytes()).hexdigest(),
                                 "reach_quote": asc.sha256_file(_HERE / "reach_quote.py"),
                                 "power_py": asc.sha256_file(POWER_PY)},
@@ -1287,7 +1470,16 @@ def run_seeds(a: argparse.Namespace) -> dict[str, Any]:
                                           "".join(w_lines[c] for c in sorted(d_ids)).encode(), "the drift export rows"),
         "orphans": acc.write_private(out / "orphans.jsonl", acc.jsonl_bytes(res["orphans"]), "the orphan seeds"),
     }
-    rec = {"schema": SCHEMA["seeds"], **res["counts"],
+    c = res["counts"]
+    shas["detail"] = acc.write_private(out / "j-seeds-detail.json",
+                                       (json.dumps(c, indent=1, sort_keys=True) + "\n").encode(),
+                                       "the j-seeds breakdowns")
+    rec = {"schema": SCHEMA["seeds"],
+           "registries": {"S": {"seeds": c["s"]["seeds"], "orphans": c["s"]["orphans"]},
+                          "drift": {"sample": c["drift"]["sample"], "seeds": c["drift"]["seeds"],
+                                    "orphans": c["drift"]["orphans"]}},
+           "detail": "j-seeds-detail.json (private): the per-retriever and per-corpus breakdowns, label sources "
+                     "and the prior content check (PREREG §6 step 3: only these totals are public)",
            "rule": "S pairs J needs = top-10 (record, chunk) of every S list without a quote hit, all retrievers; "
                    "seeded unless a judged label exists by key (prior S registry) or by the content-hash rule; an "
                    "orphan (no stage-A pair for the record) cannot be seeded and counts as not answering (PREREG §3)",
@@ -1295,12 +1487,9 @@ def run_seeds(a: argparse.Namespace) -> dict[str, Any]:
                             "export s-export.jsonl); a second registry for drift-seed.jsonl (control export "
                             "drift-export.jsonl)",
            "outputs_sha256": shas,
-           "inputs_sha256": {"records": asc.sha256_file(a.records), "w_runs": inp.w_runs.sha256,
-                             "s_runs": inp.s_runs.sha256, "w_final": inp.w_reg.sha256,
-                             "s_prior_final": inp.s_prior.sha256, "main_pairs": asc.sha256_file(a.main_pairs),
-                             "s_prior_pairs": [asc.sha256_file(p) for p in a.s_prior_pairs or []],
-                             "w_exports": inp.w_export.sha256, "s_exports": inp.s_export.sha256},
+           "inputs_sha256": seed_input_shas(a, inp),
            "registry_problems": inp.w_reg.problems + inp.s_prior.problems,
+           "s_prior_cross_registry_conflicts": inp.s_prior.cross_conflicts,
            "provenance": acc.public_provenance(rp.experiment_provenance())}
     forbidden = forbidden_ids(inp) | {s[k] for s in res["s_seeds"] + res["drift_seeds"] + res["orphans"]
                                       for k in ("pair_id", "chunk_id", "record_id")}
@@ -1320,7 +1509,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--w-final", required=True, action="append", type=Path)
     p.add_argument("--s-prior-final", action="append", type=Path, default=None)
     p.add_argument("--s-prior-pairs", action="append", type=Path, default=None,
-                   help="a prior S registry's pairs.jsonl (repeatable): reused keys' content_sha256 is checked")
+                   help="each prior S registry's pairs.jsonl (repeatable; required with --s-prior-final): reused "
+                        "keys' content_sha256 is checked")
     p.add_argument("--main-pairs", required=True, type=Path, help="the alias main judge registry's pairs.jsonl")
 
 
@@ -1335,21 +1525,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     r.add_argument("--s-final", action="append", type=Path, default=None)
     r.add_argument("--drift-final", action="append", type=Path, default=None)
     r.add_argument("--build-summary", type=Path, default=None)
+    r.add_argument("--j-seeds", required=True, type=Path, help="the j-seeds.json the S judging was seeded from")
     r.add_argument("--power-json", type=Path, default=POWER_PY.with_name("power.json"))
     r.add_argument("--prereg", required=True, type=Path)
     r.add_argument("--prereg-sha256", required=True)
     r.add_argument("--tokenizer", default="Salesforce/SFR-Embedding-Mistral", help="a local HF tokenizer, or none")
-    r.add_argument("--expected-records", type=int, default=EXPECTED_RECORDS)
-    r.add_argument("--expected-eligible", type=int, default=EXPECTED_ELIGIBLE)
     r.add_argument("--out", required=True, type=Path)
     a = ap.parse_args(argv)
     if a.cmd == "j-seeds":
         rec = run_seeds(a)
-        print(json.dumps({k: rec[k] for k in ("s_pairs_needed", "s", "drift")}, indent=1))
+        print(json.dumps(rec["registries"], indent=1))
         return 0
     rec = run_report(a)
     print(json.dumps({f: {"outcome": rec["families"][f]["outcome"], "sentence": rec["families"][f]["sentence"]}
-                      for f in FAMILIES}, indent=1))
+                      for f in FAMILIES}, indent=1, ensure_ascii=False))
     return 0
 
 

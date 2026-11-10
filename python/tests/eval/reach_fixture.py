@@ -24,6 +24,15 @@ STAMP = "alias-none/1+attach=mention@file/1"
 N_PAPERS = 6
 
 
+CONFIG_SHA = "c0" * 32
+
+
+def request(ret: str) -> dict[str, Any]:
+    """A condition's request as the harness records it (the collection a placeholder)."""
+    return {"collection": "<collection>", "query": "<question>", "top_k": 50, "rerank": ret == "default",
+            "retrieval_mode": "bm25" if ret == "bm25" else "hybrid", "context_window": 0}
+
+
 def write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
@@ -142,13 +151,22 @@ class World:
                     rows.append({"record_id": rec["record_id"], "condition": cond, "failed": bad,
                                  "ranked_chunk_ids": None if bad else top})
             write_jsonl(d / c / "none.jsonl", rows)
-            s: dict[str, Any] = {"status": "complete", "conditions": {cond: {"gate": None} for cond in asc.RETRIEVERS.values()},
-                                 "collection": f"bench-rechunk-{c}" if side == "S" else f"bench-alias-{c}-none"}
+            s: dict[str, Any] = {"status": "complete", "found_k": 10,
+                                 "conditions": {cond: {"gate": None, "request": request(ret), "requested": 50}
+                                                for ret, cond in asc.RETRIEVERS.items()},
+                                 "collection": f"bench-rechunk-{c}" if side == "S" else f"bench-alias-{c}-none",
+                                 "server_assumed": {"retrieval_candidate_multiplier": 2, "rrf_k": 60},
+                                 "server": {"/v1/version": {"version": "1.6.22" if side == "W" else "1.6.30"}}}
+            study: dict[str, Any] = {"retrievers": list(asc.RETRIEVERS), "request_order": "record file order",
+                                     "record_set": {"accepted_sha256": "accepted-sha"},
+                                     "config_sha256_start": CONFIG_SHA, "config_sha256_end": CONFIG_SHA,
+                                     "mode": "main"}
             if side == "S":
                 live = {"total": 100, "stamps": {STAMP: 100}}
                 s["census"] = {"live_before": live, "live_after": live}
-                s["study"] = {"mode": "rechunk", "rechunk_scope": "all_records",
-                              "collection_build": {"n_chunks": 100, "load_receipt_sha256": f"receipt-{c}"}}
+                study.update({"mode": "rechunk", "rechunk_scope": "all_records",
+                              "collection_build": {"n_chunks": 100, "load_receipt_sha256": f"receipt-{c}"}})
+            s["study"] = study
             s.update((summary_over or {}).get(c, {}))
             (d / c / "none.summary.json").write_text(json.dumps(s))
         return d

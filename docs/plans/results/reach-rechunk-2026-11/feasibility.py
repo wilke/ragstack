@@ -1,24 +1,41 @@
 #!/usr/bin/env python3
-"""W-side feasibility counts for the reach comparison (PREREG.md §3, §5, §10). Counts only.
+"""Feasibility counts for the reach comparison (PREREG.md §2, §3, §5, §8, §10). Counts only.
 
-    python3 -I -B feasibility.py --records ACCEPTED.jsonl --oa-chunks CHUNKS-OA.jsonl \\
-        --corpus-dir CORPUS_DIR --runs-dir RUNS_DIR --judge-final FINAL.jsonl [--out feasibility.json]
+    python -I -B feasibility.py --records ACCEPTED.jsonl --oa-chunks CHUNKS-OA.jsonl \\
+        --corpus-dir CORPUS_DIR --runs-dir RUNS_DIR --judge-final FINAL.jsonl \\
+        --main-pairs MAIN_JUDGE/pairs.jsonl --s-export ARM=PATH [...] \\
+        --s-prior-final NAME=FINAL.jsonl [...] [--out feasibility.json]
 
-Standard library plus the committed scorer ``python/scripts/eval/reach_quote.py`` (the function
-that will score W and S, imported from this checkout). Reads only W-side inputs: the accepted
-records, the W chunk exports (the base export plus ``chunks-{neighbour,random-1,random-2}-v4.jsonl``
-in CORPUS_DIR; each corpus collection is the base export plus its own added documents), the alias
-study's stage-A retrieval runs ``RUNS_DIR/<corpus>/none.jsonl`` and the alias judge registry
-(``final.jsonl``; stage A and stage B rows, keyed by record_id and chunk_id). **Nothing on the S side
-is read** (the prereg's blinding). Paths are arguments, never written: the output holds counts,
-rates and input sha256 digests only, and :func:`assert_no_identifiers` refuses to write any string
-that looks like a path, host, record, paper or chunk id.
+The committed scorer ``python/scripts/eval/reach_quote.py`` (the function that will score W and S)
+and ``reach_report.read_registry`` (the registry reader the report gates on), both imported from
+this checkout; run it with the ragstack environment's Python (3.12). Reads the W-side inputs: the
+accepted records, the W chunk exports (the base export plus
+``chunks-{neighbour,random-1,random-2}-v4.jsonl`` in CORPUS_DIR; each corpus collection is the base
+export plus its own added documents), the alias study's stage-A retrieval runs
+``RUNS_DIR/<corpus>/none.jsonl``, the alias judge registry (``final.jsonl``; stage A and stage B
+rows, keyed by record_id and chunk_id) and its ``pairs.jsonl`` (``--main-pairs``: which records
+have a stage-A pair). On the S side it reads **only the S chunk exports** (``--s-export``: chunk
+texts, for the reachability check of §2) and the **prior S registries' label files**
+(``--s-prior-final``: the integrity check of §3). **No S retrieval output and no S outcome is read**
+(the prereg's blinding). Paths are arguments, never written: the output holds counts, rates and
+input sha256 digests only, and :func:`assert_no_identifiers` refuses to write any string that looks
+like a path, host, record, paper or chunk id.
 
 Outputs (``feasibility.json``):
 
 * ``eligibility``: records; quotes that are verbatim substrings of their gold chunk, raw and after
-  whitespace normalisation (``reach_quote.is_verbatim``); the paper-cluster size histogram of the
-  eligible set (the counts ``power.py`` embeds).
+  whitespace normalisation (``reach_quote.is_verbatim``); **S reachability** of the W-verbatim
+  quotes (``quote_cover(quote, every S chunk of the gold document) >= 0.90``; ``split``: reached only
+  by the union of two or more S chunks, the quote crosses an S chunk boundary); the Q-eligible set
+  (W-verbatim and S-reachable) and its paper-cluster size histogram (the counts ``power.py``
+  embeds).
+* ``orphans``: records without a stage-A pair in the main registry (``build-control`` cannot take
+  an S pair of theirs, PREREG §3), and a W-side proxy of what they carry: W lists without a quote
+  hit, and the unique pairs in them, on orphan records per retriever.
+* ``registry_integrity``: per registry (the W registry and each prior S registry), the rows, the
+  distinct keys and the problems ``reach_report.read_registry`` finds (malformed rows, forged pair
+  ids, conflicting labels within the registry); for the prior S registries read together, the keys
+  on which two registries' judged labels differ (combined answers-if-any, declared, not gated).
 * ``w_side[corpus][retriever]``: lists; quote@10 hits (``reach_quote.quote_hit`` on the top-10 texts),
   for all records and for the Q-eligible ones; lists without a hit; top-10 slots in those lists;
   how many of those slots already carry a final label in the registry (by (record_id, chunk_id));
@@ -46,10 +63,17 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 _EVAL = Path(__file__).resolve().parents[4] / "python" / "scripts" / "eval"
-if str(_EVAL) not in sys.path:
-    sys.path.insert(0, str(_EVAL))
+#: this checkout's eval scripts and its ``ragstack`` package (``reach_report``'s imports need both;
+#: ``-I`` ignores PYTHONPATH)
+for _p in (_EVAL.parents[1], _EVAL):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-from reach_quote import HIT_THRESHOLD, MIN_MATCH, is_verbatim, quote_hit  # noqa: E402
+from reach_quote import HIT_THRESHOLD, MIN_MATCH, is_verbatim, quote_cover, quote_hit  # noqa: E402
+
+S_ARMS = ("base", "neighbour", "random1", "random2")
+#: PREREG §3: the prior S registries reused by (record, chunk) key
+PRIOR_NAMES = ("control", "cover_any", "stage1b")
 
 CORPORA = ("base", "neighbour", "random1", "random2")
 CORPUS_FILES = {"neighbour": "chunks-neighbour-v4.jsonl", "random1": "chunks-random-1-v4.jsonl",
@@ -132,12 +156,30 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--corpus-dir", type=Path, required=True)
     ap.add_argument("--runs-dir", type=Path, required=True)
     ap.add_argument("--judge-final", type=Path, required=True)
+    ap.add_argument("--main-pairs", type=Path, required=True, help="the alias main judge registry's pairs.jsonl")
+    ap.add_argument("--s-export", action="append", required=True, help="ARM=PATH (repeatable): the S chunk exports")
+    ap.add_argument("--s-prior-final", action="append", default=[],
+                    help=f"NAME=PATH (repeatable), NAME one of {list(PRIOR_NAMES)}: a prior S registry's final.jsonl")
     ap.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "feasibility.json")
     a = ap.parse_args(argv)
     here = Path(__file__).resolve()
     state = git_state(here.parent)
 
-    inputs = {"records": a.records, "oa_chunks": a.oa_chunks, "judge_final": a.judge_final}
+    def named(specs: list[str], names: tuple[str, ...], flag: str) -> dict[str, Path]:
+        out: dict[str, Path] = {}
+        for spec in specs:
+            k, sep, v = spec.partition("=")
+            if not sep or k not in names or not v or k in out:
+                raise SystemExit(f"{flag} {spec!r}: NAME=PATH, NAME one of {list(names)}, each once")
+            out[k] = Path(v)
+        return out
+    s_exports = named(a.s_export, S_ARMS, "--s-export")
+    priors = named(a.s_prior_final, PRIOR_NAMES, "--s-prior-final")
+
+    inputs = {"records": a.records, "oa_chunks": a.oa_chunks, "judge_final": a.judge_final,
+              "main_pairs": a.main_pairs}
+    inputs.update({f"s_export_{k}": v for k, v in s_exports.items()})
+    inputs.update({f"s_prior_final_{k}": v for k, v in priors.items()})
     inputs.update({f"corpus_{c}": a.corpus_dir / f for c, f in CORPUS_FILES.items()})
     inputs.update({f"runs_{c}": a.runs_dir / c / "none.jsonl" for c in CORPORA})
 
@@ -146,10 +188,14 @@ def main(argv: list[str] | None = None) -> int:
     needed = {cid for c in CORPORA for row in runs[c] for cid in row["ranked_chunk_ids"][:TOP_K]}
     needed |= {r["gold_chunks"][0] for r in recs.values()}
 
+    gold = {r["gold_chunks"][0] for r in recs.values()}
     base_text: dict[str, str] = {}
+    gold_doc: dict[str, str] = {}
     for d in read_jsonl(a.oa_chunks):
         if d["chunk_id"] in needed:
             base_text[d["chunk_id"]] = d["content"]
+            if d["chunk_id"] in gold:
+                gold_doc[d["chunk_id"]] = d["doc_id"]
     added: dict[str, dict[str, str]] = {}
     for c, fn in CORPUS_FILES.items():
         added[c] = {d["chunk_id"]: d["content"] for d in read_jsonl(a.corpus_dir / fn) if d["chunk_id"] in needed}
@@ -162,9 +208,41 @@ def main(argv: list[str] | None = None) -> int:
     # eligibility (PREREG §2, §11 Q4)
     verb_raw = {rid for rid, r in recs.items() if r["quote"] in base_text.get(r["gold_chunks"][0], "")}
     verb_norm = {rid for rid, r in recs.items() if is_verbatim(r["quote"], base_text.get(r["gold_chunks"][0], ""))}
-    paper_n = Counter(recs[rid]["paper"] for rid in verb_norm)
+
+    # S reachability (PREREG §2): the S chunk exports only (chunk texts; W and S share document ids)
+    docs = set(gold_doc.values())
+    s_doc_texts: dict[str, dict[str, str]] = defaultdict(dict)
+    for k in S_ARMS:
+        if k not in s_exports:
+            continue
+        for d in read_jsonl(s_exports[k]):
+            if d["doc_id"] in docs:
+                prev = s_doc_texts[d["doc_id"]].setdefault(d["chunk_id"], d["content"])
+                if prev != d["content"]:
+                    raise SystemExit("an S chunk id with two contents in the S exports")
+    reach: dict[str, str] = {}
+    for rid in verb_norm:
+        r = recs[rid]
+        texts = list(s_doc_texts.get(gold_doc.get(r["gold_chunks"][0], ""), {}).values())
+        if not texts or quote_cover(r["quote"], texts) < HIT_THRESHOLD:
+            reach[rid] = "unreachable"
+        elif any(quote_cover(r["quote"], [t]) >= HIT_THRESHOLD for t in texts):
+            reach[rid] = "single"
+        else:
+            reach[rid] = "split"
+    eligible = {rid for rid in verb_norm if reach[rid] != "unreachable"}
+    paper_n = Counter(recs[rid]["paper"] for rid in eligible)
     paper_n_raw = Counter(recs[rid]["paper"] for rid in verb_raw)
     paper_n_all = Counter(r["paper"] for r in recs.values())
+
+    # orphans (PREREG §3): records without a stage-A pair in the main registry
+    stage_a: set[str] = set()
+    stage_b: set[str] = set()
+    for d in read_jsonl(a.main_pairs):
+        (stage_a if d.get("stage", "A") == "A" else stage_b).add(d["record_id"])
+    orphan = {rid for rid in recs if rid not in stage_a}
+    orph_lists: dict[str, Counter] = {r: Counter() for r in RETRIEVERS.values()}
+    orph_pairs: dict[str, set[tuple[str, str]]] = {r: set() for r in RETRIEVERS.values()}
 
     labelled: set[tuple[str, str]] = set()
     label_rows = 0
@@ -201,11 +279,16 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     texts.append(t)
             hit = quote_hit(recs[rid]["quote"], texts)
+            if rid in orphan:
+                orph_lists[ret]["lists"] += 1
+                orph_lists[ret]["lists_without_hit"] += not hit
+                if not hit:
+                    orph_pairs[ret].update((rid, cid) for cid in top)
             p = per[ret]
             p["lists"] += 1
             p["hits"] += hit
             p["short_lists"] += len(top) < TOP_K
-            if rid in verb_norm:
+            if rid in eligible:
                 p["lists_eligible"] += 1
                 p["hits_eligible"] += hit
                 if ret == "default":
@@ -303,21 +386,57 @@ def main(argv: list[str] | None = None) -> int:
             "miss_rate": round(m, 4), "same_record_other_corpus": {k: same_record[k] for k in ("r", "ordered_pairs")},
             "other_record_same_paper": cross_record}
 
+    # orphans: the W-side proxy per retriever (all corpora pooled)
+    orphans = {
+        "records": len(orphan), "eligible_records": len(orphan & eligible),
+        "records_with_stage_b_pairs_only": len(orphan & stage_b), "records_with_no_main_pair": len(orphan - stage_b),
+        "papers": len({recs[rid]["paper"] for rid in orphan}),
+        "w_proxy_by_retriever": {
+            ret: {"lists": orph_lists[ret]["lists"], "lists_without_hit": orph_lists[ret]["lists_without_hit"],
+                  "lists_without_hit_all_records": tot[ret]["lists_without_hit"],
+                  "unique_pairs_over_corpora": len(orph_pairs[ret]),
+                  "unique_pairs_over_corpora_all_records": tot[ret]["unique_pairs_over_corpora"]}
+            for ret in RETRIEVERS.values()},
+        "primary_cell_units_of_eligible_orphan_records": 4 * len(orphan & eligible),
+        "note": "an S pair of an orphan record cannot be seeded (build-control needs a stage-A pair of the record as "
+                "control_of) and counts as not answering and as unjudged (PREREG §3)"}
+
+    # registry integrity (PREREG §3, §7.1): the reader the report gates on, per registry
+    import reach_report as rr
+
+    def integ(reg: object) -> dict[str, object]:
+        return {"rows": reg.rows, "keys": len(reg.labels), "problems": list(reg.problems)}  # type: ignore[attr-defined]
+    integrity: dict[str, object] = {"W": integ(rr.read_registry([a.judge_final], "W registry"))}
+    integrity["s_prior"] = {k: integ(rr.read_registry([priors[k]], f"S prior registry {k}"))
+                            for k in PRIOR_NAMES if k in priors}
+    combined = rr.read_registry([priors[k] for k in PRIOR_NAMES if k in priors], "S prior registries")
+    integrity["s_prior_combined"] = {"keys": len(combined.labels), "within_registry_problems": list(combined.problems),
+                                     "cross_registry_conflicts": combined.cross_conflicts,
+                                     "rule": "answers if any registry says answers (declared, not gated)"}
+
     out = {
         "schema": "reach-rechunk-feasibility/1",
-        "blinding": "W side only; no S-side retrieval output was read",
+        "blinding": "W side, plus the S chunk exports (chunk texts, for S reachability) and the prior S registries' "
+                    "label files (integrity); no S retrieval output and no S outcome was read",
         "scorer": {"module": "reach_quote", "min_match": MIN_MATCH, "hit_threshold": HIT_THRESHOLD, "top_k": TOP_K},
         "eligibility": {
             "records": len(recs), "papers": len(paper_n_all),
             "verbatim_raw": len(verb_raw), "non_verbatim_raw": len(recs) - len(verb_raw),
             "verbatim_whitespace_normalised": len(verb_norm),
             "non_verbatim_whitespace_normalised": len(recs) - len(verb_norm),
+            "quotes_inside_one_w_window": len(verb_norm),
+            "s_reach_of_w_verbatim": dict(sorted(Counter(reach.values()).items())),
+            "s_reach_rule": "quote_cover(quote, every S chunk of the gold document) >= 0.90; split = reached only by "
+                            "the union of two or more S chunks (the quote crosses an S chunk boundary)",
+            "s_gold_documents_found": sum(d in s_doc_texts for d in docs), "gold_documents": len(docs),
+            "eligible": len(eligible), "non_eligible": len(recs) - len(eligible),
             "eligible_papers": len(paper_n),
             "papers_by_eligible_records": {str(k): v for k, v in sorted(Counter(paper_n.values()).items())},
             "papers_by_raw_verbatim_records": {str(k): v for k, v in sorted(Counter(paper_n_raw.values()).items())},
             "papers_by_records_all": {str(k): v for k, v in sorted(Counter(paper_n_all.values()).items())},
         },
         "registry": {"label_rows_with_record_and_chunk": label_rows, "labelled_pairs": len(labelled)},
+        "registry_integrity": integrity, "orphans": orphans,
         "unresolved_chunk_texts": unresolved,
         "w_side": w, "w_side_totals": totals, "s_side_estimate": s_est, "w_miss_correlation": corr,
         "provenance": {"script_sha256": hashlib.sha256(here.read_bytes()).hexdigest(),
@@ -327,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     assert_no_identifiers(out)
     a.out.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps({"eligibility": out["eligibility"], "w_quote10_default": {
+    print(json.dumps({"eligibility": out["eligibility"], "orphans": orphans, "registry_integrity": integrity,
+                      "w_quote10_default": {
         c: (w[c]["default"]["quote10"], w[c]["default"]["quote10_eligible"]) for c in CORPORA},
         "w_side_totals": totals, "s_unique_est": s_unique, "calls": calls, "corr": corr,
         "unresolved": unresolved}, indent=1))

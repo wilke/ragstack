@@ -16,4 +16,9 @@ adopted chunking (S): `sentence/512/0`, tokens, tolerance 0.25, section cuts, mi
 |---|---|---|
 | [PREREG.md](PREREG.md) | record, once frozen | question, data, outcomes, tests, power, procedure, gates and decision wording, threats, freeze and deviations, code, owner decisions, cost, release |
 | [power.py](power.py), [power.json](power.json) | record, once frozen | the seeded power simulation of the clustered design (standard library only), regenerated from a clean tree |
-| [feasibility.py](feasibility.py), [feasibility.json](feasibility.json) | record, once frozen | W-side counts only: baselines, eligibility, judging load; no S-side outcome |
+| [feasibility.py](feasibility.py), [feasibility.json](feasibility.json) | record, once frozen | W-side counts, baselines, eligibility (W-verbatim and S-reachable, from the S chunk texts), orphans, registry integrity and judging load; no S-side outcome |
+
+Note on the S run summaries: the harness's `rechunk` mode stamps every S `none.summary.json` with
+`exploratory: True`. That stamp comes from the mode, which was written for the exploratory stage-1 runs.
+Here the S summaries are **confirmatory input** to `reach_report.py`; the stamp does not change their
+status, and the report's settings gate lists it among the declared expected differences (PREREG §7.1).
