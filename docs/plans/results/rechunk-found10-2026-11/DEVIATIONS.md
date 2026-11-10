@@ -80,15 +80,15 @@ All three stopped the neighbour build before any store write, were fixed, and we
 The plan deletes the four collections after the analysis. The owner asked that nothing be deleted, so the
 collections and the stage-out register stay until the owner gives the teardown go.
 
-## D-9 (2026-11-10): the stage-1b gateway calls ran on the homes-mgrast gateway, not the Mac gateway
+## D-9 (2026-11-10): the stage-1b gateway calls ran on the second gateway, not the Mac gateway
 Stage 1b is described in [ADDENDUM-2026-11-10-stage1b.md](ADDENDUM-2026-11-10-stage1b.md). None of the
-figures below is in a committed artifact. They come from the homes gateway's audit, as read by MG-RAST at
+figures below is in a committed artifact. They come from the second gateway's audit, as read by that gateway's operator session at
 03:15Z, and from the gateway coordinator's (OpenChia's) review, both reported to the operator.
 
 - **What changed.** Every earlier stage's gateway calls ran on the Mac gateway, and its audit covered them.
-  The 114 stage-1b gateway calls ran on the homes-mgrast gateway instead. That gateway has its own Argo key
+  The 114 stage-1b gateway calls ran on the second gateway instead. That gateway has its own Argo key
   and its own audit.
-- **Why.** The Mac gateway was unreachable because the Mac's VPN was down. The owner chose the homes-mgrast
+- **Why.** The Mac gateway was unreachable because the Mac's VPN was down. The owner chose the second -mgrast
   gateway in chat on 2026-11-10. The declined alternative was to wait for a tunnel to the Mac gateway.
 - **The gateway.**
   - Started 03:02Z, with `--messages-native`, `--fallback ""` (no model fallback), and no access control.
@@ -109,7 +109,8 @@ figures below is in a committed artifact. They come from the homes gateway's aud
   - Exactly 12 streamed Opus calls to `/v1/messages` sit inside the Argon id range (ids 12, 21, 25, 33, 36,
     39, 48, 52, 60, 62, 95, 96), and 3 more at ids 100–102. They are attributed to the operator's own
     argo-agent review run, which started at 03:10:10Z.
-  - Ids 1–2 are 2 Haiku calls, MG-RAST's tests.
+  - Ids 1–2 are 2 Haiku calls, the second gateway operator's own tests. Ids 3–7 and 137–141 are the remaining
+    10 of the operator's 25 review-run calls, before and after the window.
   - Every chat-endpoint call in the window is one of the study's 114.
 - **What the coordinator established, and what it could not.**
   - OpenChia *reviewed* the reported totals and found them consistent:
@@ -118,7 +119,7 @@ figures below is in a committed artifact. They come from the homes gateway's aud
     - 591 non-escalated labels = 295 + 296;
     - drift sample 34 = round(33.55);
     - timing within the range observed on the Mac gateway.
-  - It has no access to the homes audit, so it could not reconcile the calls against an audit of its own, as
+  - It has no access to the second-gateway audit, so it could not reconcile the calls against an audit of its own, as
     it had for the earlier batches. The stage-1b gateway traffic is therefore **reviewed, not verified**.
 - **Identity evidence.**
   - Per-call input tokens match the Mac runs: Argon 887.6 against 892.4 in the exploratory null (0.5 %), and
@@ -131,7 +132,7 @@ figures below is in a committed artifact. They come from the homes gateway's aud
 - **Cost.** About $0.55 for stage 1b. The study's gateway total comes to about $9.8 across both gateways
   (the coordinator's figures).
 - **Consequence.** The study's gateway record now spans two gateways and two credentials. The Mac audit
-  covers every gateway call before stage 1b, and the homes audit covers the 114 stage-1b calls alone.
+  covers every gateway call before stage 1b, and the second-gateway audit covers the 114 stage-1b calls alone.
 - **Effect on the result.** The calls decided 80 tiebreak labels and the 34-call drift check. They touch only
   stage 1b's A, which saturates. They do not touch A_own, which is unchanged
   ([addendum](ADDENDUM-2026-11-10-stage1b.md)).

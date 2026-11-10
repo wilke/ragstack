@@ -25,7 +25,7 @@ for the default retriever.
 | seed | 2026-11-09 22:38:37 | `rechunk_prep.py stage1b-seed` at `8afb4ca` | seed `provenance.recorded_at`, `provenance.commit` |
 | registry | 2026-11-09 | `alias_study_judge.py build-control --any-paper`: 671 pairs | † operator record |
 | local judging | 2026-11-09 22:38–23:07 | Qwen C and E, 671 pairs each | † operator record |
-| gateway judging | 2026-11-10 03:11:12–03:13:44 | Gemini 4 Argon 80 calls, then Claude Opus 5.5 34 calls (D-9) | † homes gateway audit |
+| gateway judging | 2026-11-10 03:11:12–03:13:44 | Gemini 4 Argon 80 calls, then Claude Opus 5.5 34 calls (D-9) | † second gateway audit |
 | merge | 2026-11-10 03:14:14 | `rechunk_prep.py gold-map --extra-final` at `8afb4ca` | † private `gold-map-merged.json` |
 | report | 2026-11-10 03:14:15 | `rechunk_stage1.py --run-label-table` on the merged table, at `8afb4ca` | report `provenance.recorded_at`, `provenance.commit` |
 
@@ -59,13 +59,16 @@ for the default retriever.
   `build-control` refuses the other-paper seeds (`build_control_note`). They were built with
   `build-control --any-paper` (owner-approved), which takes the passage's paper and arm from the chunk's own
   paper.
-- **Export.** The private chunk export the judge read has 661 rows (`export_rows`).
+- **Export.** The private chunk export the judge read has 661 rows (`export_rows`), one per distinct chunk.
+  The 671 seeds are (question, chunk) pairs, and 10 chunks appear in the top 10 of two different questions.
 
 **The registry** (†, `build-control --any-paper` counts, operator record):
 - 671 pairs;
 - `same_paper` 197 (the passage's paper is the question's own paper);
 - `passage_paper_not_stage_a_window_paper` 497, which equals the seed's `seeds_other_paper`;
-- definitions coverage base 351/351, neighbour 148/148, random 170/172.
+- definitions coverage base 351/351, neighbour 148/148, random 170/172. Here the arm is the chunk's own
+  paper's corpus arm, as the any-paper mode assigns it. That is a different notion from the seed's
+  `seeds_by_corpus_arm` (214/206/139/112), which counts the collection the lost pair was retrieved in.
 
 The two "same paper" splits differ: 174 counts the lost pair's window paper, and 197 the question's paper.
 The 48 % breakdown below uses the registry's split, 197 against 474.
@@ -80,8 +83,8 @@ The 48 % breakdown below uses the registry's split, 197 against 474.
 | C/E disagreements, sent to the tiebreak | 80 of 671 (11.9 %) | † operator record |
 | for comparison: the confirmatory stratum's escalation rate | 7.0 % | † operator record |
 | for comparison: stage A's escalation rate | 17 % | † operator record |
-| Argon tiebreak calls | 80 | † homes audit (D-9) |
-| Opus drift-check calls | 34 (= round(33.55)) | † homes audit (D-9) |
+| Argon tiebreak calls | 80 | † second-gateway audit (D-9) |
+| Opus drift-check calls | 34 (= round(33.55)) | † second-gateway audit (D-9) |
 
 **Final labels.**
 
