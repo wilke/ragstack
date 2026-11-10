@@ -478,9 +478,12 @@ default is spelled only by absence: the contract refuses a row that names
 under another tenant's `data_dir` or qdrant dir. A row without the field
 serialises byte-identically, so an older daemon still reads the registry.
 
-The contract also refuses a dir under `<data_dir>/qdrant` or inside any
-directory the row's own layout provisions (`elasticsearch/data`, `state`,
-`postgres/data`, …); a sibling such as `<data_dir>/qdrant-b` is legal.
+The contract also refuses a dir under `<data_dir>/qdrant`, and a dir that is
+inside **or contains** a directory the row's own layout owns: the provisioned
+dirs (`elasticsearch/data`, `state`, `postgres/data`, …), `logs/`, `ui/dist`,
+and the store parents `elasticsearch/`, `postgres/`, `ui/` — so
+`<data_dir>/elasticsearch` and `<data_dir>/postgres/x` are both refused. A
+sibling such as `<data_dir>/qdrant-b` is legal.
 
 **Setting it (PR1: hand-edit only).** Nothing sets the field today. Set it
 only after **every** ctl binary on the host — the daemon, the CLI, and anything

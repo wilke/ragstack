@@ -283,7 +283,7 @@
         "sif": { "type": ["string", "null"], "pattern": "^/[A-Za-z0-9._/-]*$" },
         "extra_env": { "$ref": "#/$defs/ExtraEnv" },
         "data_dir": {
-          "description": "HOST directory holding this qdrant's `storage/` and `snapshots/`. Optional: ABSENT means `<tenant data_dir>/qdrant`, and that default is spelled only by absence (a row naming `<data_dir>/qdrant` explicitly is refused). Allowed only on an `exclusive` store; must be a clean absolute path that neither equals nor contains the tenant's data_dir, and no two rows may share one or nest it under another row's data_dir or qdrant dir. Left out of `required` so a row written without it loads under every deployed binary.",
+          "description": "HOST directory holding this qdrant's `storage/` and `snapshots/`. Optional: ABSENT means `<tenant data_dir>/qdrant`, and that default is spelled only by absence (a row naming `<data_dir>/qdrant` explicitly is refused). Allowed only on an `exclusive` store; must be a clean absolute path that neither equals nor contains the tenant's data_dir, is not under `<data_dir>/qdrant`, and is neither inside nor contains a directory the row's own layout owns (its provisioned dirs, logs/, ui/dist, and elasticsearch/, postgres/, ui/), and no two rows may share one or nest it under another row's data_dir or qdrant dir. Left out of `required` so a row written without it loads under every deployed binary.",
           "type": ["string", "null"],
           "pattern": "^/[A-Za-z0-9._/-]*$"
         }

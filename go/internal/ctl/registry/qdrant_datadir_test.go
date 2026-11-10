@@ -147,6 +147,15 @@ func TestQdrantDataDirRowRules(t *testing.T) {
 		{"containing the ui dist", func(f *Fleet) {
 			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/ui"
 		}, "contains /rag/data/tenants/dev/ui/dist"},
+		{"a sibling under the es dir", func(f *Fleet) {
+			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/elasticsearch/qdrant"
+		}, "inside /rag/data/tenants/dev/elasticsearch"},
+		{"a sibling under the postgres dir", func(f *Fleet) {
+			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/postgres/qdrant"
+		}, "inside /rag/data/tenants/dev/postgres"},
+		{"a sibling under the ui dir", func(f *Fleet) {
+			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/ui/qdrant"
+		}, "inside /rag/data/tenants/dev/ui"},
 		{"the logs dir", func(f *Fleet) {
 			f.Tenants["dev"].Stores.Qdrant.DataDir = "/rag/data/tenants/dev/logs"
 		}, "inside /rag/data/tenants/dev/logs"},

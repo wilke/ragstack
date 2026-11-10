@@ -360,7 +360,7 @@ reg_env() {
 # image, the ports, the binds and the environment the store is actually running
 # with. postgres is started through the tenant's own launcher, for the password.
 tenant_stores_up() {
-  local name=$1 data up kind inst port sif specs rc=0
+  local name=$1 data up kind inst port sif specs rc=0 qrc=0
   data=$(reg_get "$name" '.data_dir')
   [[ -n $data ]] || { say "  [$name] the registry row has no data_dir — stores NOT started"; return 1; }
   specs=$(tenant_store_specs "$name")
@@ -377,10 +377,17 @@ tenant_stores_up() {
   while read -r kind inst port; do
     [[ -n $inst ]] || continue
     case $kind in
-      qdrant)     tenant_qdrant_up "$name" "$data" "$inst" "$port" || rc=1 ;;
+      qdrant)     tenant_qdrant_up "$name" "$data" "$inst" "$port" || { rc=1; qrc=1; } ;;
       elasticsearch) tenant_es_up "$name" "$data" "$inst" "$port" || rc=1 ;;
       postgres)
-        if up=$(tenant_up_script "$data") && moved_qdrant_up_sh_is_stale "$name" "$up"; then
+        # tenant_store_specs lists qdrant first, so qrc is final here. A moved
+        # qdrant that was refused must not be started by up.sh's own qdrant leg
+        # either (whatever it binds), so postgres waits with it.
+        if (( qrc )) && [[ -n $(reg_get "$name" '.stores.qdrant.data_dir') ]]; then
+          say "  ✗ [$name] postgres $inst (:$port) NOT started: the moved qdrant leg did not start, and up.sh"
+          say "    (the only launcher holding the postgres password) would start qdrant too. Fix the qdrant leg first."
+          rc=1
+        elif up=$(tenant_up_script "$data") && moved_qdrant_up_sh_is_stale "$name" "$up"; then
           say "  ✗ [$name] postgres $inst (:$port) NOT started: the row moves its qdrant (stores.qdrant.data_dir)"
           say "    and $up is not the launcher for that dir (no QDIR=\"<data_dir>\" + \"\$QDIR/storage\" bind)."
           say "    Run blindly it could start qdrant on the wrong (empty) directory."
@@ -413,15 +420,15 @@ tenant_stores_up() {
 #
 # The match is POSITIVE and byte-for-byte what `render.UpSh` emits for the
 # row's current dir (golden up.sh.qdrant-data-dir): the line
-# QDIR="<data_dir>" and both "$QDIR/…" binds. Anything else — any spelling of
+# QDIR="<data_dir>" and both whole "    --bind "$QDIR/…" \" lines. Anything else — any spelling of
 # the default dir, a literal path, a QDIR from a previous move — is stale.
 moved_qdrant_up_sh_is_stale() {
   local qdir
   qdir=$(reg_get "$1" '.stores.qdrant.data_dir')
   [[ -n $qdir ]] || return 1
   grep -qxF "QDIR=\"$qdir\"" "$2" &&
-    grep -qF '"$QDIR/storage:/qdrant/storage"' "$2" &&
-    grep -qF '"$QDIR/snapshots:/qdrant/snapshots"' "$2" && return 1
+    grep -qxF '    --bind "$QDIR/storage:/qdrant/storage" \' "$2" &&
+    grep -qxF '    --bind "$QDIR/snapshots:/qdrant/snapshots" \' "$2" && return 1
   return 0
 }
 

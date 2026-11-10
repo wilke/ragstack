@@ -764,6 +764,10 @@ _CURRENT_BINDS = (
     ("braced default", True),       # ${TDIR}/qdrant — a blacklist on $TDIR/qdrant misses it
     ("literal path", True),         # the default dir spelled out
     ("previous move", True),        # a QDIR launcher rendered for an EARLIER data_dir
+    ("comment QDIR", True),         # QDIR only in a comment, stale $TDIR/qdrant binds
+    ("comment QDIR, current binds", True),  # QDIR never set: "$QDIR/storage" would be /storage
+    ("stale binds", True),          # exact QDIR line, but the binds still use $TDIR/qdrant
+    ("bind substring", True),       # the bind text inside a longer (comment) line only
     ("comment mention", False),     # current launcher whose comment names $TDIR/qdrant
     ("current", False),             # regenerated for the row's current dir
 ])
@@ -781,6 +785,16 @@ def test_a_moved_row_runs_only_the_up_sh_rendered_for_its_current_dir(tmp_path, 
         "braced default": '    --bind "${TDIR}/qdrant/storage:/qdrant/storage" \\\n',
         "literal path": f'    --bind "{data}/qdrant/storage:/qdrant/storage" \\\n',
         "previous move": f'QDIR="{tmp_path}/old-store/qdrant/qd"\n' + _CURRENT_BINDS,
+        "comment QDIR": f'# QDIR="{qdir}"\n'
+                        '    --bind "$TDIR/qdrant/storage:/qdrant/storage" \\\n'
+                        '    --bind "$TDIR/qdrant/snapshots:/qdrant/snapshots" \\\n',
+        "comment QDIR, current binds": f'# QDIR="{qdir}"\n' + _CURRENT_BINDS,
+        "stale binds": f'QDIR="{qdir}"\n'
+                       '    --bind "$TDIR/qdrant/storage:/qdrant/storage" \\\n'
+                       '    --bind "$TDIR/qdrant/snapshots:/qdrant/snapshots" \\\n',
+        "bind substring": f'QDIR="{qdir}"\n'
+                          '# --bind "$QDIR/storage:/qdrant/storage" --bind "$QDIR/snapshots:/qdrant/snapshots"\n'
+                          '    --bind "$TDIR/qdrant/storage:/qdrant/storage" \\\n',
         "comment mention": f'# was: $TDIR/qdrant/storage\nQDIR="{qdir}"\n' + _CURRENT_BINDS,
         "current": f'QDIR="{qdir}"\n' + _CURRENT_BINDS,
     }[case]
@@ -916,3 +930,27 @@ def test_restore_accepts_exactly_what_the_go_renderer_emits_for_a_moved_dir(tmp_
                           "--tenant", "qd")
     text = out.stdout + out.stderr
     assert "via " + str(up) in text and "NOT started" not in text, text
+
+
+@requires_shell
+def test_a_refused_moved_qdrant_keeps_postgres_down_even_with_a_current_up_sh(tmp_path):
+    """When the moved qdrant leg itself is refused (here: a symlinked
+    storage/), up.sh is not run for postgres either — even one rendered for the
+    current dir, because it would start qdrant on the refused path."""
+    qdir = tmp_path / "store2" / "qdrant" / "qd"
+    qdir.mkdir(parents=True)
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    (qdir / "storage").symlink_to(real)
+    bin_dir = tmp_path / "data" / "qd" / "bin"
+    bin_dir.mkdir(parents=True)
+    up = bin_dir / "up.sh"
+    up.write_text(f'#!/bin/bash\nQDIR="{qdir}"\n' + _CURRENT_BINDS)
+    up.chmod(0o755)
+    out = _qdrant_dry_run(tmp_path, _qdrant_registry(tmp_path, str(qdir), postgres_local=True),
+                          "--tenant", "qd")
+    text = out.stdout + out.stderr
+    assert out.returncode != 0, text
+    assert "qdrant-unittest NOT started" in text, text
+    assert "postgres postgres-unittest (:25865) NOT started: the moved qdrant leg did not start" in text, text
+    assert "via " + str(up) not in text, text

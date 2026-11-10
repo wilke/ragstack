@@ -99,3 +99,25 @@ func TestQdrantDataDirUnitHasOnlyTheRagMountCondition(t *testing.T) {
 		}
 	}
 }
+
+// The moved-qdrant header names the regeneration command for the tenant's
+// own store kind: a postgres-local tenant needs --store postgres-local, or
+// the regenerated up.sh would not start its postgres at all.
+func TestQdrantDataDirUpShHeaderNamesTheStoreKind(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	tn.Stores.Qdrant.DataDir = "/data2/qdrant/sandbox"
+	pg, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pg), `# "ragstack-ctl render up-sh sandbox --store postgres-local", which prints`) {
+		t.Errorf("postgres-local header:\n%s", strings.Join(strings.SplitN(string(pg), "\n", 7)[:6], "\n"))
+	}
+	lite, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(lite), "--store postgres-local") {
+		t.Error("a sqlite tenant's header names --store postgres-local")
+	}
+}
