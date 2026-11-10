@@ -104,11 +104,12 @@ func cmdFleetGrant(args []string, ragRoot string, jsonOut bool) int {
 	// act on one of them (the volume a qdrant dir was moved to), and on
 	// nothing else outside the rag root. A malformed value is a usage error,
 	// exactly as it refuses the daemon's start.
-	storeRoots, err := api.StoreDataRootsFrom(api.RootsFromEnv(*root).CtlConfigDir)
+	cfgDir := api.RootsFromEnv(*root).CtlConfigDir
+	storeRoots, err := api.StoreDataRootsFrom(cfgDir)
 	if err != nil {
 		return usageErr("fleet grant: %v", err)
 	}
-	roots, rc := grantRoots(*rootsCSV, *root, storeRoots)
+	roots, rc := grantRoots(*rootsCSV, *root, storeRoots, storeRootsUnknown(cfgDir))
 	if rc != exitOK {
 		return rc
 	}
@@ -143,7 +144,11 @@ func cmdFleetGrant(args []string, ragRoot string, jsonOut bool) int {
 // directory the operator happened to be in. And every root must be under the
 // rag root, or equal to or under one of storeRoots (CTL_STORE_DATA_ROOTS):
 // those are the only trees the ctl itself writes to.
-func grantRoots(csv, ragRoot string, storeRoots []string) ([]string, int) {
+//
+// unknown, when non-empty, is why the store roots could not be read (an
+// unreadable ctl.env): a refusal then says so rather than "none are
+// configured", which would send the operator looking in the wrong place.
+func grantRoots(csv, ragRoot string, storeRoots []string, unknown string) ([]string, int) {
 	if csv == "" {
 		r := paths.NewRoots(ragRoot, paths.Overrides{})
 		return []string{r.DataDir, r.ReposDir, r.BackupsDir}, exitOK
@@ -163,8 +168,11 @@ func grantRoots(csv, ragRoot string, storeRoots []string) ([]string, int) {
 		clean := filepath.Clean(p)
 		if _, err := paths.SafePath(ragRoot, clean); err != nil && !underStoreRoot(clean, storeRoots) {
 			named := "none are configured"
-			if len(storeRoots) > 0 {
+			switch {
+			case len(storeRoots) > 0:
 				named = strings.Join(storeRoots, ", ")
+			case unknown != "":
+				named = unknown
 			}
 			return nil, usageErr("fleet grant: --roots entry %q is not under the rag root %s (%v) and is not a "+
 				"store data root or under one (CTL_STORE_DATA_ROOTS: %s)", p, ragRoot, err, named)
@@ -175,6 +183,22 @@ func grantRoots(csv, ragRoot string, storeRoots []string) ([]string, int) {
 		return nil, usageErr("fleet grant: --roots is empty")
 	}
 	return out, exitOK
+}
+
+// storeRootsUnknown is why CTL_STORE_DATA_ROOTS could not be read, or "":
+// the environment does not carry it and <configDir>/ctl.env exists but cannot
+// be read by this account (it is svcbvbrc:ragops 0640; an owner who is not in
+// that group cannot see it).
+func storeRootsUnknown(configDir string) string {
+	if strings.TrimSpace(os.Getenv(api.EnvStoreDataRoots)) != "" {
+		return ""
+	}
+	path := filepath.Join(configDir, "ctl.env")
+	if _, err := os.ReadFile(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Sprintf("could not read %s (%v), so the configured store roots are unknown; set "+
+			"CTL_STORE_DATA_ROOTS in the environment for this run, or run the grant as an account that can read it", path, err)
+	}
+	return ""
 }
 
 // underStoreRoot reports whether p equals, or is strictly under, one of the
