@@ -4,7 +4,8 @@
     python -I -B feasibility.py --records ACCEPTED.jsonl --oa-chunks CHUNKS-OA.jsonl \\
         --corpus-dir CORPUS_DIR --runs-dir RUNS_DIR --judge-final FINAL.jsonl \\
         --main-pairs MAIN_JUDGE/pairs.jsonl --s-export ARM=PATH [...] \\
-        --s-prior-final NAME=FINAL.jsonl [...] [--out feasibility.json]
+        --s-prior-final NAME=FINAL.jsonl [...] --s-prior-pairs NAME=PAIRS.jsonl [...] \\
+        --s-stage1-runs STAGE1_RUNS_DIR [--out feasibility.json]
 
 The committed scorer ``python/scripts/eval/reach_quote.py`` (the function that will score W and S)
 and ``reach_report.read_registry`` (the registry reader the report gates on), both imported from
@@ -16,8 +17,11 @@ export plus its own added documents), the alias study's stage-A retrieval runs
 rows, keyed by record_id and chunk_id) and its ``pairs.jsonl`` (``--main-pairs``: which records
 have a stage-A pair). On the S side it reads **only the S chunk exports** (``--s-export``: chunk
 texts, for the reachability check of §2) and the **prior S registries' label files**
-(``--s-prior-final``: the integrity check of §3). **No S retrieval output and no S outcome is read**
-(the prereg's blinding). Paths are arguments, never written: the output holds counts, rates and
+(``--s-prior-final``: the integrity check of §3) and their ``pairs.jsonl`` (``--s-prior-pairs``: the
+prior-content check of §3), and the rechunk stage-1 S run **summaries** only
+(``--s-stage1-runs``: ``<corpus>/none.summary.json``, which hold no per-record outcome in rechunk mode;
+the settings gate of §7.1 run on real files). **No S retrieval output, no S run row and no S outcome
+is read** (the prereg's blinding; the reach runs do not exist yet). Paths are arguments, never written: the output holds counts, rates and
 input sha256 digests only, and :func:`assert_no_identifiers` refuses to write any string that looks
 like a path, host, record, paper or chunk id.
 
@@ -36,6 +40,16 @@ Outputs (``feasibility.json``):
   distinct keys and the problems ``reach_report.read_registry`` finds (malformed rows, forged pair
   ids, conflicting labels within the registry); for the prior S registries read together, the keys
   on which two registries' judged labels differ (combined answers-if-any, declared, not gated).
+* ``prior_content``: PREREG §3's check, run on every prior S key: per prior registry against its own
+  ``pairs.jsonl``, and combined (every key against all three registries' rows, as ``report`` reads
+  them), the keys whose ``content_sha256`` is the sha256 of the S export's text of the chunk
+  (``match``), another sha (``mismatch``), no S export row (``no_s_text``), no pairs row
+  (``no_pairs_row``); all keys and the keys with a judged label (``reach_report.prior_content_status``).
+* ``settings_gates``: ``reach_report.settings_gates`` on real summaries: the W summaries against
+  themselves (the gate's own fields exist and agree), and the stage-1 S summaries against the W ones
+  (the gate the reach run will face, on the stage-1 run of the same config but for ``out_dir`` and the
+  rechunk keys, §2); with, for the latter, the names of the summary fields the gate does not compare
+  that differ or exist on one side only (names only; no value is written).
 * ``w_side[corpus][retriever]``: lists; quote@10 hits (``reach_quote.quote_hit`` on the top-10 texts),
   for all records and for the Q-eligible ones; lists without a hit; top-10 slots in those lists;
   how many of those slots already carry a final label in the registry (by (record_id, chunk_id));
@@ -160,6 +174,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--s-export", action="append", required=True, help="ARM=PATH (repeatable): the S chunk exports")
     ap.add_argument("--s-prior-final", action="append", default=[],
                     help=f"NAME=PATH (repeatable), NAME one of {list(PRIOR_NAMES)}: a prior S registry's final.jsonl")
+    ap.add_argument("--s-prior-pairs", action="append", default=[],
+                    help=f"NAME=PATH (repeatable), NAME one of {list(PRIOR_NAMES)}: that registry's pairs.jsonl")
+    ap.add_argument("--s-stage1-runs", type=Path, required=True,
+                    help="the rechunk stage-1 runs dir: only <corpus>/none.summary.json is read")
     ap.add_argument("--out", type=Path, default=Path(__file__).resolve().parent / "feasibility.json")
     a = ap.parse_args(argv)
     here = Path(__file__).resolve()
@@ -175,13 +193,22 @@ def main(argv: list[str] | None = None) -> int:
         return out
     s_exports = named(a.s_export, S_ARMS, "--s-export")
     priors = named(a.s_prior_final, PRIOR_NAMES, "--s-prior-final")
+    prior_pairs = named(a.s_prior_pairs, PRIOR_NAMES, "--s-prior-pairs")
+    if set(prior_pairs) != set(priors):
+        raise SystemExit("--s-prior-pairs: one pairs.jsonl per --s-prior-final registry")
 
     inputs = {"records": a.records, "oa_chunks": a.oa_chunks, "judge_final": a.judge_final,
               "main_pairs": a.main_pairs}
     inputs.update({f"s_export_{k}": v for k, v in s_exports.items()})
     inputs.update({f"s_prior_final_{k}": v for k, v in priors.items()})
     inputs.update({f"corpus_{c}": a.corpus_dir / f for c, f in CORPUS_FILES.items()})
+    inputs.update({f"s_prior_pairs_{k}": v for k, v in prior_pairs.items()})
     inputs.update({f"runs_{c}": a.runs_dir / c / "none.jsonl" for c in CORPORA})
+    inputs.update({f"runs_summary_{c}": a.runs_dir / c / "none.summary.json" for c in CORPORA})
+    inputs.update({f"s_stage1_summary_{c}": a.s_stage1_runs / c / "none.summary.json" for c in CORPORA})
+    import reach_report as rr
+    prior_regs = {k: rr.read_registry([priors[k]], f"S prior registry {k}") for k in PRIOR_NAMES if k in priors}
+    prior_cids = {cid for reg in prior_regs.values() for _, cid in reg.labels}
 
     recs = {r["record_id"]: r for r in read_jsonl(a.records)}
     runs: dict[str, list[dict]] = {c: list(read_jsonl(inputs[f"runs_{c}"])) for c in CORPORA}
@@ -212,10 +239,14 @@ def main(argv: list[str] | None = None) -> int:
     # S reachability (PREREG §2): the S chunk exports only (chunk texts; W and S share document ids)
     docs = set(gold_doc.values())
     s_doc_texts: dict[str, dict[str, str]] = defaultdict(dict)
+    s_prior_text: dict[str, str] = {}
     for k in S_ARMS:
         if k not in s_exports:
             continue
         for d in read_jsonl(s_exports[k]):
+            if d["chunk_id"] in prior_cids:
+                if s_prior_text.setdefault(d["chunk_id"], d["content"]) != d["content"]:
+                    raise SystemExit("an S chunk id with two contents in the S exports")
             if d["doc_id"] in docs:
                 prev = s_doc_texts[d["doc_id"]].setdefault(d["chunk_id"], d["content"])
                 if prev != d["content"]:
@@ -401,23 +432,86 @@ def main(argv: list[str] | None = None) -> int:
         "note": "an S pair of an orphan record cannot be seeded (build-control needs a stage-A pair of the record as "
                 "control_of) and counts as not answering and as unjudged (PREREG §3)"}
 
-    # registry integrity (PREREG §3, §7.1): the reader the report gates on, per registry
-    import reach_report as rr
+    # the prior-content check (PREREG §3): every prior key's content_sha256 against the S export's text
+    pairs_rows = {k: list(read_jsonl(v)) for k, v in prior_pairs.items()}
 
+    def content(keys: dict[tuple[str, str], str], rows: list[dict]) -> dict[str, object]:
+        sha_of = rr.prior_content_sha_index(rows)
+        allk: Counter = Counter()
+        jud: Counter = Counter()
+        for key, word in keys.items():
+            st = rr.prior_content_status(key, sha_of, s_prior_text.get)
+            allk[st] += 1
+            if rr.judged(word):
+                jud[st] += 1
+        z = ("match", "mismatch", "no_s_text", "no_pairs_row")
+        return {"keys": len(keys), **{k: allk[k] for k in z},
+                "judged_keys": sum(jud.values()), "judged": {k: jud[k] for k in z}}
+    prior_combined = rr.read_registry([priors[k] for k in PRIOR_NAMES if k in priors], "S prior registries")
+    prior_content = {
+        "per_registry": {k: content(reg.labels, pairs_rows[k]) for k, reg in prior_regs.items()},
+        "combined": content(prior_combined.labels, [r for k in PRIOR_NAMES if k in pairs_rows for r in pairs_rows[k]]),
+        "rule": "match: the pairs rows' content_sha256 is exactly sha256 of the S export's text of the chunk; a "
+                "judged label that does not match is not reused and counts as unjudged, a key with no pairs row is "
+                "counted (caveats on J, PREREG §3)"}
+
+    # the settings gate (PREREG §7.1) on real summaries: W vs W, stage-1 S vs W (summaries only)
+    w_sum = rr.read_summaries(a.runs_dir)
+    s1_sum = rr.read_summaries(a.s_stage1_runs)
+    for c in CORPORA:
+        oc = [v.get("outcomes") for v in (s1_sum.summaries[c].get("conditions") or {}).values()]
+        if any(not isinstance(x, (str, type(None))) for x in oc) or any(
+                "found10" in (v or {}) for v in (s1_sum.summaries[c].get("conditions") or {}).values()):
+            raise SystemExit("REFUSED: a stage-1 S summary carries per-condition outcomes (blinding); stop")
+
+    def flat(d: object, pre: str = "") -> dict[str, object]:
+        if isinstance(d, dict):
+            out_: dict[str, object] = {}
+            for k_, v_ in d.items():
+                out_.update(flat(v_, f"{pre}.{k_}" if pre else str(k_)))
+            return out_
+        return {pre: d}
+
+    def field_name(k_: str) -> str:
+        k_ = re.sub(r"^conditions\.[^.]+\.", "conditions.<condition>.", k_)
+        k_ = re.sub(r"stamps\.[^.]+$", "stamps.<stamp>", k_)
+        return re.sub(r"^study\.per_leg_failed\.[^.]+\.", "study.per_leg_failed.<leg>.", k_)
+    compared_prefixes = ("conditions.<condition>.request", "conditions.<condition>.requested", *rr.SETTINGS_SAME,
+                         "study.config_sha256", "server.config_sha256")
+    uncmp: dict[str, set[str]] = defaultdict(set)
+    for c in CORPORA:
+        fw, fs = flat(w_sum.summaries[c]), flat(s1_sum.summaries[c])
+        for k_ in set(fw) | set(fs):
+            st = "w_only" if k_ not in fs else "s_only" if k_ not in fw else None if fw[k_] == fs[k_] else "differs"
+            name = field_name(k_)
+            if st and not name.startswith(compared_prefixes):
+                uncmp[st].add(name)
+
+    def gate_rec(w_: object, s_: object) -> dict[str, object]:
+        g, info = rr.settings_gates(w_, s_)  # type: ignore[arg-type]
+        return {"gates": g, "per_corpus": info["per_corpus"], "compared": info["compared"]}
+    settings = {"w_vs_w": gate_rec(w_sum, w_sum), "stage1_s_vs_w": gate_rec(w_sum, s1_sum),
+                "stage1_s_vs_w_fields_not_compared": {k: sorted(v) for k, v in sorted(uncmp.items())},
+                "expected_differences": list(rr.SETTINGS_EXPECTED),
+                "note": "stage-1 S: the rechunk stage-1 runs (the reach config but for out_dir and the rechunk keys, "
+                        "PREREG §2); summaries only, no per-record outcome in rechunk mode"}
+
+    # registry integrity (PREREG §3, §7.1): the reader the report gates on, per registry
     def integ(reg: object) -> dict[str, object]:
         return {"rows": reg.rows, "keys": len(reg.labels), "problems": list(reg.problems)}  # type: ignore[attr-defined]
     integrity: dict[str, object] = {"W": integ(rr.read_registry([a.judge_final], "W registry"))}
-    integrity["s_prior"] = {k: integ(rr.read_registry([priors[k]], f"S prior registry {k}"))
-                            for k in PRIOR_NAMES if k in priors}
-    combined = rr.read_registry([priors[k] for k in PRIOR_NAMES if k in priors], "S prior registries")
+    integrity["s_prior"] = {k: integ(reg) for k, reg in prior_regs.items()}
+    combined = prior_combined
     integrity["s_prior_combined"] = {"keys": len(combined.labels), "within_registry_problems": list(combined.problems),
                                      "cross_registry_conflicts": combined.cross_conflicts,
                                      "rule": "answers if any registry says answers (declared, not gated)"}
 
     out = {
         "schema": "reach-rechunk-feasibility/1",
-        "blinding": "W side, plus the S chunk exports (chunk texts, for S reachability) and the prior S registries' "
-                    "label files (integrity); no S retrieval output and no S outcome was read",
+        "blinding": "W side, plus the S chunk exports (chunk texts, for S reachability and the prior-content check), "
+                    "the prior S registries' label and pairs files (integrity, content sha) and the stage-1 S run "
+                    "summaries (the settings gate; no per-record outcome); no S retrieval row and no S outcome was "
+                    "read",
         "scorer": {"module": "reach_quote", "min_match": MIN_MATCH, "hit_threshold": HIT_THRESHOLD, "top_k": TOP_K},
         "eligibility": {
             "records": len(recs), "papers": len(paper_n_all),
@@ -436,7 +530,8 @@ def main(argv: list[str] | None = None) -> int:
             "papers_by_records_all": {str(k): v for k, v in sorted(Counter(paper_n_all.values()).items())},
         },
         "registry": {"label_rows_with_record_and_chunk": label_rows, "labelled_pairs": len(labelled)},
-        "registry_integrity": integrity, "orphans": orphans,
+        "registry_integrity": integrity, "prior_content": prior_content, "settings_gates": settings,
+        "orphans": orphans,
         "unresolved_chunk_texts": unresolved,
         "w_side": w, "w_side_totals": totals, "s_side_estimate": s_est, "w_miss_correlation": corr,
         "provenance": {"script_sha256": hashlib.sha256(here.read_bytes()).hexdigest(),
@@ -447,6 +542,8 @@ def main(argv: list[str] | None = None) -> int:
     assert_no_identifiers(out)
     a.out.write_text(json.dumps(out, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps({"eligibility": out["eligibility"], "orphans": orphans, "registry_integrity": integrity,
+                      "prior_content": prior_content, "settings_gates": {
+                          k: v for k, v in settings.items() if k != "expected_differences"},
                       "w_quote10_default": {
         c: (w[c]["default"]["quote10"], w[c]["default"]["quote10_eligible"]) for c in CORPORA},
         "w_side_totals": totals, "s_unique_est": s_unique, "calls": calls, "corr": corr,

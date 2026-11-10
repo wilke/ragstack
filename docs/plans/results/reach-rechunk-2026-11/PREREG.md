@@ -34,7 +34,7 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 - **Orphans.** 748 of the 1,091 records have no stage-A pair (`feasibility.json` `orphans`). `build-control`
   cannot judge their S chunks, so J's unjudged gate would almost surely fire (§5).
 - **Saturation.** Rechunk stage 1b showed that "any chunk answers" saturates for these questions: A 75/75 on
-  the lost pairs (stage 1b, 2026-11-10; `../rechunk-found10-2026-11/` once its write-up merges).
+  the lost pairs (stage 1b, 2026-11-10; `../rechunk-found10-2026-11/ADDENDUM-2026-11-10-stage1b.md`).
 
 **Hypothesis.** HQ is the only hypothesis tested (owner, §11 Q2):
 - **HQ:** quote@10(S) − quote@10(W) > −δ, with **δ = 3 points** (owner, 2026-11-09, from `power.json`). If
@@ -67,9 +67,17 @@ drawn from it.
 - **S side (to be run).** The four bench collections of rechunk stage 1, `bench-rechunk-{base,neighbour,random1,random2}`
   (glossary none, 452,729 chunks, `../rechunk-found10-2026-11/artifacts/build-summary.json`). Run with the
   same harness settings as W: top 50 requested, top 10 read, the same three retrievers and server settings.
-  The run config is `reach-config.json` (private; path and sha256 in §9.1): the alias study's run config
-  with only `out_dir` changed and `rechunk: {all_records: true}` added. The report checks the settings
-  against the W run summaries (§7.1, *retrieval settings*).
+  The run config is `reach-config.json` (private; path and sha256 in §9.1). It is derived from the rechunk
+  stage-1 run config, `/rag/tmp/rechunk-found10-2026-11/ops/study-config.json` (sha256 `273318f7…`), and
+  every changed key is listed here (56 keys on each side, flattened; nothing else differs):
+  - `out_dir`: `…/runs/stage1` → `…/runs/reach`;
+  - `rechunk.label_table` (`…/labels/label-table.jsonl`, the stage-1 lost-pair table): removed;
+  - `rechunk.all_records: true`: added.
+
+  The run summaries do not record the config's sha256, so the pin is enforced by the report's settings
+  check against the W run summaries (§7.1, *retrieval settings*). That check has been run on real files
+  (`feasibility.json` `settings_gates`): the W summaries against themselves, and the stage-1 S summaries
+  (same config but for the keys above) against the W ones, both without a difference.
 - **Prior S-side exposure, declared.** Rechunk stage 1 retrieved the S collections for the 218 questions of
   the confirmatory test. It computed no quote@10 and no found@10 for any of them. Those questions are re-run
   here with the rest (§11 Q5: kept).
@@ -108,8 +116,15 @@ drawn from it.
     - the stage-1b registry (`rechunk-found10-2026-11/stage1b/judge`).
 
     Each registry's `pairs.jsonl` is required beside its `final.jsonl` (`--s-prior-pairs`; `j-seeds` and
-    `report` refuse without it). Every reused prior key's `content_sha256` must equal the sha256 of the S
-    export's text of that chunk; `j-seeds` and `report` refuse otherwise. Label conflicts are checked
+    `report` refuse without it). A prior label is reused only if its key's `content_sha256` equals the
+    sha256 of the S export's text of that chunk. A judged prior label whose sha differs (or whose chunk has
+    no S export text) is **not reused**: the key is not seeded and counts as unjudged, and the count is a
+    caveat on J (§7.1). A reused key with no pairs row is counted, also a caveat on J. Neither refuses: J is
+    descriptive, and its tooling never blocks Q (owner decision, 2026-11-10). The check has been run now
+    on all 1,121 prior keys against the pinned S exports (`feasibility.json` `prior_content`): every key's
+    `content_sha256` matches, in each registry and combined (control 351 of 351, cover-any 174 of 174,
+    stage-1b 671 of 671; combined 1,121 of 1,121), with no mismatch, no key without S text and no key without
+    a pairs row. Label conflicts are checked
     **per registry**: two judged labels of one key within one registry are a caveat on J (§7.1). **Across
     registries** the labels combine by the stage-1 rule: *answers* if any registry says answers. The
     disagreements are counted (`registries.S_prior.cross_registry_conflicts`) but not gated. The rule's
@@ -127,7 +142,9 @@ drawn from it.
       as `control_of`, so `build-control` cannot take it (owner, earlier: no judge-harness change to allow
       stage-B `control_of`);
     - a pair the judge left **unjudged** (its final row has `source` `unjudged`), or one with no registry
-      row.
+      row;
+    - a pair whose prior label is not reused (above), or whose chunk has no export text, so it could not be
+      seeded (`s_unjudged_by_kind` `prior_content_mismatch`, `no_export_text`).
 
     Orphans are written to the private `orphans.jsonl` and counted in `j-seeds.json` and in the report
     (`j_labels.s_orphans`, `s_unjudged_by_kind`).
@@ -177,8 +194,9 @@ drawn from it.
 - **Statistic** (Q). The paired difference per record and corpus, S − W, in {−1, 0, +1}. For
   non-inferiority, a sign-flip over papers on the null-shifted cluster sums X_k = 100·T_k + m_k·δ, with δ in
   points (T_k is the sum of the cluster's paired differences, m_k their number), one-sided, α = 0.05. The p
-  is computed exactly by lattice convolution (`power.py` `sign_flip_p_exact`). Superiority, after
-  non-inferiority, is the exact sign-flip on T_k.
+  is computed exactly by lattice convolution (`power.py` `sign_flip_p_exact`). `power.json`'s
+  `primary_test` writes the same statistic with δ as a proportion, X_k = T_k + m_k·δ with δ = 0.03: the
+  same test, scaled by 100. Superiority, after non-inferiority, is the exact sign-flip on T_k.
 - **Size, declared.** The randomisation p is exact, but the composite null does not make d + δ
   sign-symmetric, so the test's size is only asymptotically α.
   - Simulated size at the sizing case: 0.0545 (`power.json` `recommendation.size_at_sizing_case`). That is
@@ -277,7 +295,10 @@ among the 2,992 J primary-cell units of orphan records (about 0.7 %) are therefo
      prior content check;
    - public `artifacts/j-seeds.json`, holding **totals per registry only** (operator default, §11): S seeds
      and orphans; the drift sample, its seeds and orphans. It also holds the registry problems, the
-     `inputs_sha256` and `outputs_sha256`, and the provenance.
+     `inputs_sha256` and `outputs_sha256`, and the provenance; and `not_seeded`: the needed S pairs whose
+     prior label is not reused (§3) or whose chunk has no S export text, and the drift-sample pairs whose
+     chunk has no W export text. Those are counted, never refused (each a caveat on J, §7.1):
+     `j-seeds.json` is always written, so J's inputs never block Q.
 
    quote@10 is computed inside it, by the committed function, only to find the lists without a quote hit.
    **Declared exposure:** `j-seeds.json` holds no quote@10 or found@10 level. But its S seed total (about
@@ -299,7 +320,10 @@ among the 2,992 J primary-cell units of orphan records (about 0.7 %) are therefo
    or another file stops before anything is read. It also takes `--j-seeds artifacts/j-seeds.json`, and it
    refuses unless the shas of its own inputs equal that file's `inputs_sha256`. Those inputs are the
    records, the W and S runs and summaries, the W and S exports, the W registry, the prior S registries and
-   their `pairs.jsonl`, and the main pairs (operator default, §11). It computes quote@10 on both sides with
+   their `pairs.jsonl`, and the main pairs (operator default, §11). It also refuses unless its pre-freeze
+   inputs are the §9.1 pins: the committed `frozen-inputs.json` must be §9.1's table (generated from it by
+   `reach_report.py frozen-inputs`), and, per command-line flag, the shas of the files given must be exactly
+   the table's (order-insensitive; a missing, extra or swapped file refuses). It computes quote@10 on both sides with
    one committed function, Q's test and gates, J's descriptive figures and caveats with the labels of §3,
    and the frozen wording of §7.2 → public `artifacts/reach-report.json`.
 6. `RESULTS.md` in this directory, with Q's decision sentence and J's descriptive sentence of §7.2
@@ -327,7 +351,9 @@ Gates on Q:
 becomes a **caveat on J's descriptive figures**: it is printed, with its count, in J's caveats and sentence
 (§7.2), and it never yields an outcome for J. That covers every gate on Q above, and J's own checks:
 - unjudged pairs above 5 % in J's primary cell;
-- label-table integrity: merged tables may only add labels (the stage-1b guard).
+- label-table integrity: merged tables may only add labels (the stage-1b guard);
+- J's label inputs: prior labels not reused (content sha differs), reused keys without a pairs row, and
+  needed or drift-sample pairs without export text (§3, §6 step 3).
 
 How `python/scripts/eval/reach_report.py` reads each check:
 - **Retrieval** (a gate on Q, a caveat on J; W and S): a run summary whose status is not `complete`; any
@@ -345,15 +371,30 @@ How `python/scripts/eval/reach_report.py` reads each check:
   A field missing on either side counts as a difference. Declared expected differences, not compared:
   - the collection names and indexes;
   - the census and the collection build;
-  - the run mode and its stamps (`study.mode`, `rechunk_scope`, `stage`, `legs`, `exploratory`);
+  - the run mode and its stamps (`mode`, `study.mode`, `rechunk_scope`, `stage`, `legs`, `exploratory`,
+    `study.exploratory`, the presence checks `study.rechunk_presence` / `study.gold_presence`,
+    `study.record_set.rechunk` / `rechunk_records`, and each condition's `hit_stamps`);
   - the prereg block, the provenance and the clock;
   - the server version (`/v1/version`), printed beside the comparison.
+
+  **Run on real files now** (`feasibility.json` `settings_gates`, summaries only): the W summaries
+  against themselves gate on nothing, so every compared field exists in the 2026-11-04 W summaries and
+  the rule needed no change; the rechunk stage-1 S summaries (the reach config but for the keys of §2)
+  against the W summaries gate on nothing either, in all four corpora (server config hash equal; server
+  version 1.6.25 against W's 1.6.22, printed, not compared). The stage-1 summaries hold no per-record
+  outcome (checked before use). The run-mode stamps and names in the list above that were not named before
+  (`mode`, `study.exploratory`, the presence checks, `record_set.rechunk*`, `hit_stamps`) were added after
+  that comparison; `feasibility.json` lists by name every field the gate does not compare that differs.
 - **Census** (a gate on Q, a caveat on J): per S collection, the summary's live census before and after
   (total and stamps), the collection name, the load receipt's chunk count and sha256, all equal to
   `build-summary.json`.
 - **Inputs** (a gate on Q, a caveat on J): a top-10 chunk with no text in its side's exports; a W gold chunk
   missing; a record count other than 1,091; a Q-eligible count (W-verbatim and S-reachable, §2) other than
-  1,089. Both counts are fixed in the code, with no command-line override.
+  1,089. Both counts are fixed in the code, with no command-line override. The inputs that are not the
+  §9.1 pins (`frozen-inputs.json`) or not those `j-seeds` read are refused (§6 step 5). J's own label
+  inputs are caveats on J, never refusals or gates: a prior label not reused because its content sha
+  differs, a reused key with no pairs row (§3), a needed S pair or drift-sample pair with no export text
+  (counted by `j-seeds`, §6 step 3).
 - **Unjudged** (a caveat on J; owner default, 2026-11-09, a gate until the owner decision of 2026-11-10):
   on either side, more than 5 % of the unique (record, chunk) pairs that J's **primary cell** needs (the
   top 10 of every default-retriever list without a quote hit, four corpora) carry no *answers* / *not*
@@ -412,7 +453,7 @@ Caveats appended to the sentence ("Caveats: …"):
   retrieval, settings, census and inputs gates of Q, the unjudged share above 5 % in J's primary cell, and
   label integrity.
 - **J, always:** W's labels come from the 2026-11-04/06 judge runs and S's from new judging, so any judge
-  drift lands on S only; and J includes the 2 records whose quote is not verbatim in its gold chunk.
+  drift lands on S only; and J includes the 2 records that are not Q-eligible (§2).
 - **J, judge drift:** when the drift check's agreement on W's *answers* labels is below 0.90, or cannot be
   computed (no drift registry, no original *answers* label in the re-judged sample, no label rows to
   compare, or a re-judge prompt that differs from the original: *judge drift check not evaluable*); and
@@ -439,7 +480,9 @@ caveats with the check each came from, the sentence and the secondary figures. J
   logs show per-registry counts before the report exists. §6 forbids reading them and requires any look to
   be reported; this is a rule, not a mechanism.
 - The W runs date from 2026-11-04 and the S runs will be later. The same server settings are required by
-  the retrieval-settings gate (§7.1). The tools image and API versions are recorded, and the server
+  the retrieval-settings gate (§7.1), which passes on the stage-1 S runs of the same config (§2).
+- Inputs: `report` refuses unless its pre-freeze inputs are the §9.1 pins (`frozen-inputs.json`) and its
+  inputs are those `j-seeds` read; a mechanism, not a rule (§6 step 5). The tools image and API versions are recorded, and the server
   version is printed beside the comparison.
 - J asymmetry: W's labels come from the 2026-11-04/06 judge runs and S's from new judging, so any judge drift
   lands on S only. The content-hash reuse rule will rarely apply, because S and W chunk texts are seldom
@@ -454,7 +497,8 @@ caveats with the check each came from, the sentence and the secondary figures. J
 At **one `main` commit**, named by the owner's go:
 - this text, `PREREG.md`;
 - `power.py` and `power.json`, `feasibility.py` and `feasibility.json`, each JSON produced from a clean tree
-  at the commit its provenance names (`dirty` false);
+  at the commit its provenance names (`dirty` false); `frozen-inputs.json`, the table below as `report`
+  reads it (`reach_report.py frozen-inputs`; a test checks it equals the table);
 - `python/scripts/eval/reach_quote.py` (the scorer: `MIN_MATCH` 20, `HIT_THRESHOLD` 0.90; `TOP_K` 10),
   `python/scripts/eval/reach_report.py` (`j-seeds`, `report`), `python/scripts/eval/alias_study_run.py` (the
   `rechunk: {all_records: true}` mode), `python/scripts/eval/rechunk_prep.py`;
@@ -463,7 +507,9 @@ At **one `main` commit**, named by the owner's go:
 - the S collections as built (`../rechunk-found10-2026-11/artifacts/build-summary.json`);
 - the S run config and every input file of `j-seeds` and `report` that exists before §6 step 2, by sha256
   (operator default, §11; the tag message carries them, §9.2). `report` refuses unless its inputs are the
-  ones `j-seeds` read (§6 step 5).
+  ones `j-seeds` read and, for every row with a flag, the files below (`frozen-inputs.json`; §6 step 5).
+  Each row names its flag; a blank input cell is a second file of the row above. The S run config is not a
+  `report` input: the settings check enforces it (§2, §7.1).
 
 | input | file | sha256 |
 |---|---|---|
@@ -471,28 +517,28 @@ At **one `main` commit**, named by the owner's go:
 | records (`--records`) | `/rag/tmp/alias-study-2026-11/out/main/accepted-alias-O.jsonl` | `09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f` |
 | W run, base (`--w-runs`) | `/rag/tmp/alias-study-2026-11/main/runs/base/none.jsonl` | `6826ededf081ab9609723b24e346b2def66a38ef7d4dd8f78892f012372720ed` |
 | | `…/base/none.summary.json` | `20936e99d9b0fb964de44d06b133fc20349b3c57bdd6c1cf90540935b6ab2fa7` |
-| W run, neighbour | `…/runs/neighbour/none.jsonl` | `4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882` |
+| W run, neighbour (`--w-runs`) | `…/runs/neighbour/none.jsonl` | `4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882` |
 | | `…/neighbour/none.summary.json` | `7295a67826e178dd2cd75f15c1f2b35aa41b93efeeae7eb3a7a22c26903af40c` |
-| W run, random1 | `…/runs/random1/none.jsonl` | `4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e` |
+| W run, random1 (`--w-runs`) | `…/runs/random1/none.jsonl` | `4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e` |
 | | `…/random1/none.summary.json` | `7d30412f716f79989ef1a9c28dac2a8bdaf8ba223a8631f87cfe96ea459e703b` |
-| W run, random2 | `…/runs/random2/none.jsonl` | `ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87` |
+| W run, random2 (`--w-runs`) | `…/runs/random2/none.jsonl` | `ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87` |
 | | `…/random2/none.summary.json` | `302ffb23ff35bbdb808dfe29f365f7d5451fbd15879a5217dedb0d4924c531db` |
 | W export, base (`--w-export`) | `/rag/tmp/glossbench-round2-2026-11/exports/chunks-oa.jsonl` | `ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d` |
-| W export, neighbour | `/rag/tmp/alias-study-2026-11/corpus/chunks-neighbour-v4.jsonl` | `0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f` |
-| W export, random1 | `…/corpus/chunks-random-1-v4.jsonl` | `2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1` |
-| W export, random2 | `…/corpus/chunks-random-2-v4.jsonl` | `f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c` |
+| W export, neighbour (`--w-export`) | `/rag/tmp/alias-study-2026-11/corpus/chunks-neighbour-v4.jsonl` | `0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f` |
+| W export, random1 (`--w-export`) | `…/corpus/chunks-random-1-v4.jsonl` | `2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1` |
+| W export, random2 (`--w-export`) | `…/corpus/chunks-random-2-v4.jsonl` | `f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c` |
 | S export, base (`--s-export`) | `/rag/tmp/rechunk-found10-2026-11/exports/base.chunks.jsonl` | `027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58` |
-| S export, neighbour | `…/exports/neighbour.image.chunks.jsonl` | `80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687` |
-| S export, random1 | `…/exports/random1.image.chunks.jsonl` | `ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026` |
-| S export, random2 | `…/exports/random2.image.chunks.jsonl` | `d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c` |
+| S export, neighbour (`--s-export`) | `…/exports/neighbour.image.chunks.jsonl` | `80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687` |
+| S export, random1 (`--s-export`) | `…/exports/random1.image.chunks.jsonl` | `ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026` |
+| S export, random2 (`--s-export`) | `…/exports/random2.image.chunks.jsonl` | `d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c` |
 | W registry (`--w-final`) | `/rag/tmp/alias-study-2026-11/main/judge/final.jsonl` | `4e36010ccfacd389141508b6decf5d57a786902f19d26a3a29d1fed43515eecb` |
 | main pairs (`--main-pairs`) | `/rag/tmp/alias-study-2026-11/main/judge/pairs.jsonl` | `04d39e3ce8299d397f37092dd4537c97d995f18bfb91a7c22c9a92aea987c378` |
 | prior S, control (`--s-prior-final`) | `/rag/tmp/alias-study-2026-11/confirm/judge-control/final.jsonl` | `f0c6c7e6805c94a7be0c90c5dd69d96d4b03818273633c31bedd9b82e4065f99` |
-| (`--s-prior-pairs`) | `…/confirm/judge-control/pairs.jsonl` | `6a2608200aa64c1f5e3a6b5ee90d4763c0e57e59de1698f47f435f955ec0f604` |
-| prior S, cover-any | `/rag/tmp/alias-study-2026-11/confirm/judge-cover/final.jsonl` | `956fb547a5546e9d454a7c0d92cd7804f3dc11db55d654eb4e3e5fa3eb14fe4e` |
-| | `…/confirm/judge-cover/pairs.jsonl` | `f802cfd7106fff265466fa6c4a444aff34530b81a0c48d7669e876fae38df531` |
-| prior S, stage-1b | `/rag/tmp/rechunk-found10-2026-11/stage1b/judge/final.jsonl` | `af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a` |
-| | `…/stage1b/judge/pairs.jsonl` | `aee3d117cf592a0087449f615eca9686f71d47c1f126ac44303d5acc03ecd2e6` |
+| prior S pairs, control (`--s-prior-pairs`) | `…/confirm/judge-control/pairs.jsonl` | `6a2608200aa64c1f5e3a6b5ee90d4763c0e57e59de1698f47f435f955ec0f604` |
+| prior S, cover-any (`--s-prior-final`) | `/rag/tmp/alias-study-2026-11/confirm/judge-cover/final.jsonl` | `956fb547a5546e9d454a7c0d92cd7804f3dc11db55d654eb4e3e5fa3eb14fe4e` |
+| prior S pairs, cover-any (`--s-prior-pairs`) | `…/confirm/judge-cover/pairs.jsonl` | `f802cfd7106fff265466fa6c4a444aff34530b81a0c48d7669e876fae38df531` |
+| prior S, stage-1b (`--s-prior-final`) | `/rag/tmp/rechunk-found10-2026-11/stage1b/judge/final.jsonl` | `af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a` |
+| prior S pairs, stage-1b (`--s-prior-pairs`) | `…/stage1b/judge/pairs.jsonl` | `aee3d117cf592a0087449f615eca9686f71d47c1f126ac44303d5acc03ecd2e6` |
 | build summary (`--build-summary`) | `../rechunk-found10-2026-11/artifacts/build-summary.json` (in the repository) | `a7fbaa0385a13bb2074cfbb0ae17adf6c52dfebd39566b40f0ae88f113145256` |
 
 The inputs made after the freeze (the S runs, `j-seeds.json`, the S and drift registries) are pinned by the
@@ -574,6 +620,21 @@ After the owner decision of 2026-11-10 (J descriptive, §11):
   caveats, each listed under the check it came from (`caveat_sources`);
 - the J gate tests are now caveat tests.
 
+After the third review (2026-11-10; operator defaults, §11):
+- J's tooling never blocks Q: `j-seeds` and `report` no longer refuse on a prior label whose
+  `content_sha256` differs from the S export's text (not reused, counted unjudged), on a needed S pair or a
+  drift pair without export text (counted, `not_seeded`), or on a reused key without a pairs row
+  (counted); each is a caveat on J (`caveat_sources.label_reuse`, the drift caveat), and `j-seeds.json` is
+  always written (§3, §6 step 3, §7.1);
+- `report` refuses unless its pre-freeze input shas are the §9.1 pins: `frozen-inputs.json` (generated from
+  §9.1 by `reach_report.py frozen-inputs`, tested equal to the table) per flag, order-insensitive; the
+  `j-seeds.json` check is order-insensitive too (§6 step 5, §9.1);
+- `read_export` refuses two export files of one side with the same basename (the shas are keyed by it);
+- J's caveat on the non-eligible records reads "not Q-eligible (§2)" (§7.2);
+- `feasibility.py` runs the prior-content check on all 1,121 prior keys (`prior_content`) and the
+  settings gate on real summaries, W against W and stage-1 S against W (`settings_gates`; `--s-prior-pairs`,
+  `--s-stage1-runs`, summaries only).
+
 ## 11. Owner decisions (2026-11-09, 2026-11-10)
 
 | question | owner's answer |
@@ -593,7 +654,8 @@ After the owner decision of 2026-11-10 (J descriptive, §11):
 | exposure (after the second review) | **operator default**: the public `j-seeds.json` carries totals per registry only, and the breakdowns are private (§6 step 3). Without a resume after a hard stop, J is reported as it stands under the written gates and the decision is recorded (§6 step 4; since 2026-11-10, under its caveats) |
 | wording (after the second review) | **operator default**: the frozen form is the §7.2 text with its Greek letters; `RESULTS.md` carries §7.2 verbatim; the report prints δ and α in Unicode |
 | corrections (after the second review) | **operator default**: §4's formula is X_k = 100·T_k + m_k·δ (δ in points). §5's W baseline uses the eligible rates (random-1 BM25 77.2, random-2 default 89.4, random-2 BM25 77.1), and all 12 cells were rechecked against `quote10_eligible`. §4 notes that 0.0545 is just above α + 2 MC SE |
-| **2026-11-10: J's status** (owner decision) | **J is descriptive; quote@10 (Q) is the sole confirmatory family**, tested at α = 0.05 one-sided (§4). Reason: 748 of the 1,091 records have no stage-A pair (`feasibility.json` `orphans`), so `build-control` cannot judge their S chunks and J's unjudged gate would almost surely fire (§5); and rechunk stage 1b showed that "any chunk answers" saturates for these questions (A 75/75 on the lost pairs; stage 1b, 2026-11-10, `../rechunk-found10-2026-11/` once its write-up merges). Consequences: HJ is withdrawn (§1); J gets one descriptive sentence, with the favourable bound and the unjudged counts, and no outcome (§7.2); J's gates become caveats on its figures (§7.1); J's judging stays as planned, descriptive, with the drift check (§12). Q, `power.json` and `feasibility.json` are unchanged |
+| J's inputs and the pins (after the third review, 2026-11-10) | **operator default**: J's label inputs never block Q; a prior label with another content sha is not reused and counts unjudged, and pairs without export text are counted, each a caveat on J (§3, §6 step 3, §7.1); the prior-content check (1,121 of 1,121 match) and the settings gate (W vs W, stage-1 S vs W: no difference) were run on real files (`feasibility.json`); `report` checks the §9.1 pins through `frozen-inputs.json` (§6 step 5); `reach-config.json`'s derivation from the stage-1 config is listed key by key (§2); the run-mode stamps found in that comparison are declared (§7.1) |
+| **2026-11-10: J's status** (owner decision) | **J is descriptive; quote@10 (Q) is the sole confirmatory family**, tested at α = 0.05 one-sided (§4). Reason: 748 of the 1,091 records have no stage-A pair (`feasibility.json` `orphans`), so `build-control` cannot judge their S chunks and J's unjudged gate would almost surely fire (§5); and rechunk stage 1b showed that "any chunk answers" saturates for these questions (A 75/75 on the lost pairs; stage 1b, 2026-11-10, `../rechunk-found10-2026-11/ADDENDUM-2026-11-10-stage1b.md`). Consequences: HJ is withdrawn (§1); J gets one descriptive sentence, with the favourable bound and the unjudged counts, and no outcome (§7.2); J's gates become caveats on its figures (§7.1); J's judging stays as planned, descriptive, with the drift check (§12). Q, `power.json` and `feasibility.json` are unchanged |
 
 ## 12. Cost (planning figures)
 

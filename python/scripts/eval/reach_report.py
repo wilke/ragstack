@@ -10,26 +10,31 @@ builder and the report. W = the alias study's fixed 512-token windows, S = the a
         --w-export ARM=PATH [...] --s-export ARM=PATH [...] --w-final FINAL.jsonl [...] \\
         --s-final FINAL.jsonl [...] [--s-prior-final FINAL.jsonl ... --s-prior-pairs PAIRS.jsonl ...] \\
         [--drift-final FINAL.jsonl ...] --main-pairs MAIN_JUDGE/pairs.jsonl --build-summary BUILD.json \\
-        --j-seeds PRIVATE_DIR/j-seeds.json [--power-json power.json] --prereg PREREG.md --prereg-sha256 SHA \\
+        --j-seeds artifacts/j-seeds.json [--power-json power.json] --prereg PREREG.md --prereg-sha256 SHA \\
         [--tokenizer NAME|none] --out PUBLIC.json
+    reach_report.py frozen-inputs [--out frozen-inputs.json]
 
 **Inputs.** ``W_RUNS`` / ``S_RUNS``: run directories in ``alias_study_run.py``'s layout, read as
 ``<dir>/<corpus>/none.jsonl`` and ``none.summary.json`` for the four corpus arms (W: the alias main
 run's stage-A legs; S: the reach run, ``rechunk: {all_records: true}``). ``--w-export`` /
 ``--s-export``: the chunk exports, ``ARM=PATH`` repeatable (W: the base export plus each arm's added
 papers; S: the image-derived exports the S collections were loaded from); a chunk's text is looked
-up by id within its side, and one id with two contents on a side is refused. ``--w-final``: the alias
+up by id within its side, and one id with two contents on a side is refused, as are two export files
+of one side with the same basename (the shas are keyed by basename). ``--w-final``: the alias
 main judge registries' ``final.jsonl`` (stage A and B rows); ``--s-prior-final``: earlier registries
 of S chunks (PREREG §3: the rechunk confirm control registry, the cover-any registry, the stage-1b
 registry), reused by (record, chunk) key; ``--s-final``: the reach run's own S registry
 (``build-control --any-paper`` on the seeds below); ``--drift-final``: the W re-judge registry.
 ``--s-prior-pairs``: the prior registries' ``pairs.jsonl``, **required** with ``--s-prior-final``
-(one per registry, in the same judge dirs): every reused prior key's ``content_sha256`` must equal
-the sha256 of the S export's text of that chunk (else refused: a prior label of other bytes is not
-reused). ``--j-seeds``: the ``j-seeds.json`` the S judging was seeded from; ``report`` refuses
-unless its own input shas (the inputs ``j-seeds`` reads) equal that file's ``inputs_sha256``. The
-judge dirs are
-the directories of the ``final.jsonl`` files: the drift check reads the Qwen label rows
+(one per registry, in the same judge dirs): a prior label is reused only when its key's
+``content_sha256`` equals the sha256 of the S export's text of that chunk. A mismatched prior label is
+**not reused** and counts as unjudged (never seeded; a caveat on J), and a reused key with no pairs row
+is counted (a caveat on J); neither refuses (PREREG §3: J is descriptive, and its tooling never
+blocks Q). ``--j-seeds``: the ``j-seeds.json`` the S judging was seeded from; ``report`` refuses
+unless its own input shas (the inputs ``j-seeds`` reads) equal that file's ``inputs_sha256``, and
+unless its pre-freeze input shas equal the committed ``frozen-inputs.json`` (generated from PREREG
+§9.1's table by :func:`frozen_inputs`; ``reach_report.py frozen-inputs`` writes it). The judge dirs
+are the directories of the ``final.jsonl`` files: the drift check reads the Qwen label rows
 (``labels-qwen-C.jsonl``, ``labels-qwen-E.jsonl``) of the ``--w-final`` and ``--drift-final``
 dirs. Every input is read, never written.
 
@@ -52,8 +57,9 @@ Labels:
   conflict (a caveat on J, §7.1); across registries the labels combine by the same rule (answers if any
   registry says answers; PREREG §3, §11: it slightly favours keys judged twice) and the cross-registry
   disagreements are counted, not gated.
-- S, in this order: (1) a judged (*answers* / *not*) ``--s-prior-final`` label of the key; (2) the
-  **content-hash rule**: the S chunk's text is byte-identical (sha256 of the content) to a W chunk
+- S, in this order: (1) a judged (*answers* / *not*) ``--s-prior-final`` label of the key whose
+  content sha matches (a mismatched one is dropped: then only (2) can label the key, else it is
+  unjudged); (2) the **content-hash rule**: the S chunk's text is byte-identical (sha256 of the content) to a W chunk
   of the same record that carries a judged W label (several: combined); (3) the ``--s-final``
   label. A key labelled *unjudged* (or never) counts as not answering and as **unjudged**: so does
   an **orphan** (a pair whose record has no stage-A pair in ``--main-pairs``, so ``build-control``
@@ -81,7 +87,14 @@ The pairs J needs are the top-10 (record, chunk) pairs of every list **without**
 - ``orphans.jsonl``: any seed whose record has no stage-A pair in the main registry
   (``build-control`` cannot take it; counted, never dropped silently).
 - ``j-seeds-detail.json`` (private): the breakdowns (S pairs J needs per retriever, seeds per
-  corpus arm and best rank, label sources before judging, the prior content check).
+  corpus arm and best rank, label sources before judging, the prior content check, the S pairs and
+  drift pairs left unseeded because their chunk has no export row).
+
+``j-seeds`` never refuses on J's label inputs (PREREG §3, §6 step 3): a prior label whose content sha
+mismatches is not reused and the pair is not seeded (it counts as unjudged); an S pair whose chunk
+has no S export row, or a drift pair whose chunk has no W export row, cannot be built and is left
+unseeded and counted. ``j-seeds.json`` with its ``inputs_sha256`` is always written. (A top-10
+chunk without text is a gate on Q in ``report``, §7.1.)
 - ``j-seeds.json``: totals per registry only (S seeds and orphans; drift sample, seeds and orphans),
   the registry problems and the shas (``alias_control_chunks.write_summary``). It holds no quote@10
   or found@10 level, but the S seed total (about 10 per S list without a quote hit, less reuse)
@@ -111,6 +124,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -126,7 +140,7 @@ for _p in (_HERE, _HERE / "glossbench", _HERE.parent):
 import alias_study_common as asc  # noqa: E402
 from reach_quote import HIT_THRESHOLD, MIN_MATCH, is_verbatim, quote_cover, quote_hit  # noqa: E402
 
-SCHEMA = {"report": "reach-report/1", "seeds": "reach-j-seeds/1"}
+SCHEMA = {"report": "reach-report/1", "seeds": "reach-j-seeds/1", "frozen": "reach-frozen-inputs/1"}
 CORPORA = asc.CORPUS_ARMS
 #: prereg retriever name -> the run's condition name
 RETRIEVERS: dict[str, str] = dict(asc.RETRIEVERS)
@@ -154,6 +168,8 @@ OUTCOMES = ("superior", "non_inferior", "ni_not_shown", "gate_not_evaluable")
 POWER_PY = _HERE.parents[2] / "docs" / "plans" / "results" / "reach-rechunk-2026-11" / "power.py"
 #: PREREG §9: ``report`` refuses unless the given prereg's sha is this file's (read at call time)
 PREREG_FILE = POWER_PY.with_name("PREREG.md")
+#: PREREG §9.1: the pre-freeze input shas, generated from the §9.1 table (:func:`frozen_inputs`)
+FROZEN_INPUTS = POWER_PY.with_name("frozen-inputs.json")
 #: PREREG §3 / §7.1: the Qwen backends whose label rows the drift check compares
 QWEN_BACKENDS = ("C", "E")
 
@@ -230,7 +246,8 @@ class Export:
 
 def read_export(spec: Mapping[str, Sequence[Path]], want: set[str], docs: Iterable[str] = ()) -> Export:
     """Stream the exports once: the wanted chunks (content, doc, span, paper) and every span and
-    chunk text of the documents in ``docs``. One id with two contents is refused."""
+    chunk text of the documents in ``docs``. One id with two contents is refused, and so are two
+    files with the same basename (the shas are keyed by basename)."""
     import _glossbench_r2 as g
 
     docs = set(docs)
@@ -238,7 +255,12 @@ def read_export(spec: Mapping[str, Sequence[Path]], want: set[str], docs: Iterab
     spans: dict[str, set[tuple[int, int]]] = defaultdict(set)
     texts: dict[str, dict[str, str]] = defaultdict(dict)
     shas = {}
-    for path in export_files(spec):
+    files = export_files(spec)
+    dup = sorted(n for n, k in Counter(p.name for p in files).items() if k > 1)
+    if dup:
+        raise SystemExit(f"REFUSED: two export files of one side share the basename {dup[0]!r} (the input shas are "
+                         "keyed by basename)")
+    for path in files:
         shas[path.name] = asc.sha256_file(path)
         with g._open_text(path) as fh:
             for i, line in enumerate(fh, 1):
@@ -289,6 +311,21 @@ def read_runs(d: Path) -> Runs:
                 dup += 1
             rows[key] = r
     return Runs(rows, summaries, shas, dup)
+
+
+def read_summaries(d: Path) -> Runs:
+    """The four ``<dir>/<corpus>/none.summary.json`` only, never the rows: what
+    :func:`settings_gates` compares (``feasibility.py`` runs it on the real W summaries and on the
+    rechunk stage-1 S summaries, which hold no outcome)."""
+    summaries: dict[str, dict[str, Any]] = {}
+    shas: dict[str, str] = {}
+    for c in CORPORA:
+        sp = d / c / "none.summary.json"
+        if not sp.is_file():
+            raise SystemExit(f"REFUSED: no run summary for the {c} corpus arm")
+        shas[f"{c}/none.summary.json"] = asc.sha256_file(sp)
+        summaries[c] = json.loads(sp.read_text(encoding="utf-8"))
+    return Runs({}, summaries, shas)
 
 
 def top_ids(runs: Runs, k: int = TOP_K) -> set[str]:
@@ -391,10 +428,16 @@ class SLabels:
     hash_index: dict[tuple[str, str], str]
     texts: Mapping[str, Chunk]
     hash_prior_disagree: int = 0
+    #: prior keys whose judged label is not reused: its pairs.jsonl content_sha256 is not the S
+    #: export's text (:func:`check_prior_content`; PREREG §3)
+    reject_prior: set[tuple[str, str]] = field(default_factory=set)
 
     def pre_judging(self, rid: str, cid: str) -> tuple[str | None, str | None]:
-        """The label available before the reach judging: ``(word, source)``."""
-        w = self.prior.labels.get((rid, cid))
+        """The label available before the reach judging: ``(word, source)``. A rejected prior label
+        is skipped; with no content-hash label either, the key reads ``('unjudged',
+        'prior_content_mismatch')``: never seeded, counted as unjudged."""
+        rejected = (rid, cid) in self.reject_prior
+        w = None if rejected else self.prior.labels.get((rid, cid))
         if judged(w):
             return w, "prior"
         ch = self.texts.get(cid)
@@ -402,11 +445,13 @@ class SLabels:
             h = self.hash_index.get((rid, sha_content(ch.content)))
             if h is not None:
                 return h, "w_content_hash"
+        if rejected:
+            return "unjudged", "prior_content_mismatch"
         return w, ("prior" if w is not None else None)
 
     def label(self, rid: str, cid: str) -> tuple[str | None, str | None]:
         w, src = self.pre_judging(rid, cid)
-        if judged(w):
+        if judged(w) or src == "prior_content_mismatch":
             return w, src
         if self.new is not None and (rid, cid) in self.new.labels:
             return self.new.labels[(rid, cid)], "new"
@@ -425,38 +470,73 @@ class SLabels:
                 "(prior registry or content-hash rule); the new registry may only add labels"] if relabel else []
 
 
-def check_prior_content(sl: SLabels, keys: Iterable[tuple[str, str]],
-                        prior_pairs: Sequence[Mapping[str, Any]] | None) -> dict[str, Any]:
-    """PREREG §3 (the reuse rule's integrity): every needed S key whose label is reused from a
-    prior registry must have been judged on the bytes the S export holds now. With the prior
-    registries' ``pairs.jsonl`` rows given, a reused key whose ``content_sha256`` differs from
-    sha256 of the S export's text of that chunk is **refused** (nothing is reused across other
-    bytes); a reused key with no pairs row is counted. Without prior registries there is nothing to
-    check (``--s-prior-pairs`` is required with ``--s-prior-final``, :func:`check_prior_args`)."""
-    if prior_pairs is None:
-        return {"given": False}
+def prior_content_sha_index(prior_pairs: Iterable[Mapping[str, Any]]) -> dict[tuple[str, str], set[str]]:
+    """``(record, chunk) -> {content_sha256, …}`` of the prior registries' ``pairs.jsonl`` rows."""
     sha_of: dict[tuple[str, str], set[str]] = defaultdict(set)
     for p in prior_pairs:
         if p.get("record_id") and p.get("chunk_id") and p.get("content_sha256"):
             sha_of[(str(p["record_id"]), str(p["chunk_id"]))].add(str(p["content_sha256"]))
-    checked = without = bad = 0
+    return sha_of
+
+
+def prior_content_status(key: tuple[str, str], sha_of: Mapping[tuple[str, str], set[str]],
+                         text_of: Callable[[str], str | None]) -> str:
+    """PREREG §3: one prior key against the S export: ``match`` (its pairs rows' content_sha256 is
+    exactly the sha256 of the S export's text of the chunk), ``mismatch`` (another sha),
+    ``no_s_text`` (the chunk has no S export row), ``no_pairs_row``."""
+    shas = sha_of.get(key)
+    if not shas:
+        return "no_pairs_row"
+    t = text_of(key[1])
+    if t is None:
+        return "no_s_text"
+    return "match" if shas == {sha_content(t)} else "mismatch"
+
+
+def check_prior_content(sl: SLabels, keys: Iterable[tuple[str, str]],
+                        prior_pairs: Sequence[Mapping[str, Any]] | None) -> dict[str, Any]:
+    """PREREG §3 (the reuse rule's integrity): a needed S key's label is reused from a prior
+    registry only if it was judged on the bytes the S export holds now. With the prior registries'
+    ``pairs.jsonl`` rows given, a key whose ``content_sha256`` is not the sha256 of the S export's
+    text of that chunk (or whose chunk has no S text) is put in ``sl.reject_prior``: its prior
+    label is **not reused**, and the key counts as unjudged unless the content-hash rule labels it
+    (a caveat on J). A reused key with no pairs row is counted (a caveat on J). Never refuses: J is
+    descriptive, and its tooling never blocks Q (owner decision 2026-11-10; PREREG §3). Without
+    prior registries there is nothing to check (``--s-prior-pairs`` is required with
+    ``--s-prior-final``, :func:`check_prior_args`)."""
+    if prior_pairs is None:
+        return {"given": False}
+    sha_of = prior_content_sha_index(prior_pairs)
+
+    def text_of(cid: str) -> str | None:
+        ch = sl.texts.get(cid)
+        return None if ch is None else ch.content
+    n: Counter[str] = Counter()
     for key in sorted(set(keys)):
-        w, src = sl.pre_judging(*key)
-        if not (judged(w) and src == "prior"):
+        w = sl.prior.labels.get(key)
+        if not judged(w):
             continue
-        shas = sha_of.get(key)
-        if not shas:
-            without += 1
-            continue
-        ch = sl.texts.get(key[1])
-        if ch is None or shas != {sha_content(ch.content)}:
-            bad += 1
-            continue
-        checked += 1
+        st = prior_content_status(key, sha_of, text_of)
+        n[st] += 1
+        if st in ("mismatch", "no_s_text"):
+            sl.reject_prior.add(key)
+    return {"given": True, "reused_keys_checked": n["match"], "reused_keys_without_pairs_row": n["no_pairs_row"],
+            "not_reused_content_mismatch": n["mismatch"], "not_reused_no_s_text": n["no_s_text"]}
+
+
+def prior_content_caveats(pc: Mapping[str, Any]) -> list[str]:
+    """J's caveats from the prior content check (PREREG §3, §7.1)."""
+    if not pc.get("given"):
+        return []
+    out = []
+    bad = int(pc.get("not_reused_content_mismatch", 0)) + int(pc.get("not_reused_no_s_text", 0))
     if bad:
-        raise SystemExit(f"REFUSED: {bad} reused prior S label(s) whose prior pairs.jsonl content_sha256 is not the "
-                         "sha256 of the S export's text of that chunk; a label of other bytes is not reused")
-    return {"given": True, "reused_keys_checked": checked, "reused_keys_without_pairs_row": without}
+        out.append(f"{bad} prior S label(s) not reused: their prior pairs.jsonl content_sha256 is not the sha256 of the "
+                   "S export's text of the chunk (or the chunk has no S text); those pairs count as unjudged")
+    if pc.get("reused_keys_without_pairs_row"):
+        out.append(f"{pc['reused_keys_without_pairs_row']} reused prior S label(s) with no prior pairs.jsonl row: "
+                   "their content sha could not be checked")
+    return out
 
 
 # ------------------------------------------------------------------ scoring
@@ -730,7 +810,11 @@ SETTINGS_SAME = ("found_k", "server_assumed", "study.retrievers", "study.request
 #: builds, the run mode and its stamps, the code and server versions, the clock
 SETTINGS_EXPECTED = ("collection", "index", "census", "study.collection_build", "study.mode", "study.rechunk_scope",
                      "study.stage", "study.legs", "study.leg_stages", "study.prereg", "exploratory", "provenance",
-                     "server./v1/version (reported)", "utc")
+                     "server./v1/version (reported)", "utc",
+                     # stamps and names of the run mode, declared after the stage-1 S summaries were compared
+                     # with the W ones (feasibility.json settings_gates; PREREG §7.1)
+                     "mode", "study.exploratory", "study.rechunk_presence", "study.gold_presence",
+                     "study.record_set.rechunk", "study.record_set.rechunk_records", "conditions.*.hit_stamps")
 
 
 def _dig(d: Mapping[str, Any], dotted: str) -> Any:
@@ -1025,9 +1109,14 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
     has_stage_a = None if inp.main_pairs is None else set(stage_a_pairs(inp.main_pairs))
 
     def s_unjudged_kind(rid: str, cid: str) -> str:
-        """An S pair J needs without a judged label: an orphan (no stage-A pair for the record, so no
-        registry could take it), unjudged by the judge (a registry row says unjudged), or with no
-        registry row."""
+        """An S pair J needs without a judged label: its prior label not reused (content sha
+        mismatch, §3), its chunk with no S export text (never seeded), an orphan (no stage-A pair
+        for the record, so no registry could take it), unjudged by the judge (a registry row says
+        unjudged), or with no registry row."""
+        if sl.label(rid, cid)[1] == "prior_content_mismatch":
+            return "prior_content_mismatch"
+        if cid not in inp.s_export.chunks:
+            return "no_export_text"
         if has_stage_a is not None and rid not in has_stage_a:
             return "orphan"
         if inp.s_new is not None and (rid, cid) in inp.s_new.labels:
@@ -1068,7 +1157,8 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
         integrity.append("S registry: not given")
 
     # drift (descriptive, PREREG §3)
-    drift = drift_summary(w_need, w_labels, inp.drift, inp.w_label_rows, inp.drift_label_rows)
+    drift = drift_summary(w_need, w_labels, inp.drift, inp.w_label_rows, inp.drift_label_rows,
+                          w_texts=inp.w_export.chunks)
 
     # the confirmatory family: Q only (PREREG §4; owner decision, 2026-11-10)
     fam: dict[str, Any] = {}
@@ -1092,15 +1182,21 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
     pc_unj = [(r, c) for r, c in pc_need if not judged(s_label(r, c))]
     pc_kind = Counter(s_unjudged_kind(r, c) for r, c in pc_unj)
     ub = units("J", PRIMARY_RETRIEVER, s_lab=s_label_bound)
-    j_sources = {"retrieval_and_inputs": list(common), "unjudged_primary": j_unjudged, "label_integrity": integrity}
-    j_caveats = [*common, *j_unjudged, *integrity,
+    # J's label inputs (PREREG §3, §7.1): prior labels not reused, S pairs with no export text; caveats
+    label_reuse = prior_content_caveats(prior_content)
+    if s_unj_kind.get("no_export_text"):
+        label_reuse.append(f"{s_unj_kind['no_export_text']} S pair(s) J needs have no S export text (never seeded); "
+                           "they count as unjudged")
+    j_sources = {"retrieval_and_inputs": list(common), "unjudged_primary": j_unjudged, "label_integrity": integrity,
+                 "label_reuse": label_reuse}
+    j_caveats = [*common, *j_unjudged, *integrity, *label_reuse,
                  "W labels are from the 2026-11-04/06 judge runs and S labels from new judging; any judge drift lands "
                  "on S only"]
     if drift["caveat"]:
         j_caveats.append(drift["caveat"])
     ne = len(by_id) - len(eligible)
     if ne:
-        j_caveats.append(f"J includes the {ne} record(s) whose quote is not verbatim in its gold chunk")
+        j_caveats.append(f"J includes the {ne} record(s) that are not Q-eligible (§2)")
     j: dict[str, Any] = {
         "tested": False,
         "status": "descriptive (owner decision 2026-11-10; PREREG §1, §4, §7.2): no test, no outcome, no gate",
@@ -1218,7 +1314,8 @@ def context_tokens(w_sc: Mapping[tuple[str, str, str], ListScore], s_sc: Mapping
 
 def drift_summary(w_need: Mapping[tuple[str, str], Any], w_labels: Mapping[tuple[str, str], str],
                   drift: Registry | None, w_rows: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
-                  drift_rows: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None) -> dict[str, Any]:
+                  drift_rows: Mapping[str, Mapping[str, Mapping[str, Any]]] | None = None,
+                  w_texts: Mapping[str, Chunk] | None = None) -> dict[str, Any]:
     """PREREG §3 (descriptive): the seeded 5 % of the W pairs J uses, re-judged; agreement of the new
     labels with the originals, overall and by original label; the *judge drift* caveat when the
     agreement on the original *answers* labels is below 0.90 (or cannot be computed).
@@ -1236,8 +1333,13 @@ def drift_summary(w_need: Mapping[tuple[str, str], Any], w_labels: Mapping[tuple
 
     sample = drift_sample(w_need)
     base: dict[str, Any] = {"seed": DRIFT_SEED, "share": DRIFT_SHARE, "w_pairs_used": len(w_need), "sample": len(sample)}
+    # a sampled pair whose chunk has no W export text was never seeded (j-seeds counts it): a caveat
+    no_text = None if w_texts is None else sum(k[1] not in w_texts for k in sample)
+    base["sample_without_w_text"] = no_text
+    no_text_cav = (f"{no_text} drift sample pair(s) have no W export text (never re-judged)" if no_text else None)
     if drift is None:
-        return {**base, "evaluable": False, "caveat": "judge drift check not evaluable (no drift registry given)"}
+        return {**base, "evaluable": False, "caveat": "; ".join(
+            x for x in ("judge drift check not evaluable (no drift registry given)", no_text_cav) if x)}
     keys = set(sample)
     extra = sum(k not in keys for k in drift.labels)
     by: dict[str, Counter[str]] = defaultdict(Counter)
@@ -1285,6 +1387,8 @@ def drift_summary(w_need: Mapping[tuple[str, str], Any], w_labels: Mapping[tuple
     elif cache["flag"] == "not_evaluable" and compared:
         caveats.append("cache check not evaluable (a backend with compared rows has no pair with reasoning on both "
                        "sides)")
+    if no_text_cav:
+        caveats.append(no_text_cav)
     return {**base, "evaluable": evaluable, "rejudged": sum(k in drift.labels for k in sample),
             "labels_outside_sample": extra, "judged_both": len(both), "agreement": r_all,
             "agreement_on_answers": r_ans, "answers_judged_both": len(ans),
@@ -1332,28 +1436,120 @@ def check_prereg(path: Path | None, sha: str | None, committed: Path | None = No
 
 def seed_input_shas(a: argparse.Namespace, inp: Inputs) -> dict[str, Any]:
     """The shas of the inputs ``j-seeds`` reads: ``j-seeds.json``'s ``inputs_sha256``, and what
-    ``report`` compares with it (:func:`check_j_seeds`)."""
+    ``report`` compares with it (:func:`check_j_seeds`). The lists are sorted: the order the
+    repeatable flags are given in is not an input (review F3)."""
     return {"records": asc.sha256_file(a.records), "w_runs": inp.w_runs.sha256, "s_runs": inp.s_runs.sha256,
-            "w_final": inp.w_reg.sha256, "s_prior_final": inp.s_prior.sha256,
+            "w_final": sorted(inp.w_reg.sha256), "s_prior_final": sorted(inp.s_prior.sha256),
             "main_pairs": asc.sha256_file(a.main_pairs),
-            "s_prior_pairs": [asc.sha256_file(p) for p in a.s_prior_pairs or []],
+            "s_prior_pairs": sorted(asc.sha256_file(p) for p in a.s_prior_pairs or []),
             "w_exports": inp.w_export.sha256, "s_exports": inp.s_export.sha256}
+
+
+def _order_free(v: Any) -> Any:
+    return sorted(v) if isinstance(v, list) else v
 
 
 def check_j_seeds(path: Path | None, want: Mapping[str, Any]) -> dict[str, Any]:
     """PREREG §6 step 5 / §9.1: ``report`` refuses unless the ``j-seeds.json`` the S judging was
     seeded from was computed from the very inputs ``report`` reads (its ``inputs_sha256`` equals
-    :func:`seed_input_shas` of this call)."""
+    :func:`seed_input_shas` of this call; sha lists compared as sets of their order)."""
     if path is None:
         raise SystemExit("REFUSED: report needs --j-seeds (the j-seeds.json the S judging was seeded from)")
     js = json.loads(path.read_text(encoding="utf-8"))
     if js.get("schema") != SCHEMA["seeds"]:
         raise SystemExit(f"REFUSED: --j-seeds is not a {SCHEMA['seeds']} file")
     have = js.get("inputs_sha256") or {}
-    bad = sorted(k for k in set(have) | set(want) if have.get(k) != want.get(k))
+    bad = sorted(k for k in set(have) | set(want) if _order_free(have.get(k)) != _order_free(want.get(k)))
     if bad:
         raise SystemExit(f"REFUSED: the report's inputs differ from those j-seeds.json was computed from ({', '.join(bad)})")
     return {"sha256": asc.sha256_file(path), "inputs_match": True}
+
+
+# ------------------------------------------------------------------ the §9.1 pins
+
+#: the report input of each §9.1 flag (:func:`report_input_shas`)
+FROZEN_FLAGS = ("--records", "--w-runs", "--w-export", "--s-export", "--w-final", "--main-pairs",
+                "--s-prior-final", "--s-prior-pairs", "--build-summary")
+
+
+def parse_freeze_table(text: str) -> list[dict[str, Any]]:
+    """The rows of PREREG §9.1's freeze table: ``{flag, file, sha256}``, ``file`` the basename. A
+    row's flag is the ```(`--flag`)``` in its *input* cell; a blank input cell continues the row
+    above (the second file of one input); an input cell with no flag (the S run config) is not a
+    ``report`` input (``flag`` None)."""
+    try:
+        sec = text.split("\n### 9.1 ", 1)[1].split("\n### 9.2 ", 1)[0]
+    except IndexError:
+        raise SystemExit("REFUSED: the prereg has no §9.1 / §9.2") from None
+    rows: list[dict[str, Any]] = []
+    flag: str | None = None
+    for line in sec.splitlines():
+        if not line.startswith("|") or line.startswith("|---") or line.startswith("| input |"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) != 3:
+            raise SystemExit(f"REFUSED: a §9.1 row without three cells: {line[:60]!r}")
+        inp_cell, file_cell, sha_cell = cells
+        if inp_cell:
+            m = re.search(r"\(`(--[a-z0-9-]+)`\)", inp_cell)
+            flag = m.group(1) if m else None
+        path = file_cell.split("`")[1] if "`" in file_cell else file_cell
+        sha = sha_cell.strip("`")
+        if len(sha) != 64 or any(ch not in "0123456789abcdef" for ch in sha):
+            raise SystemExit(f"REFUSED: a §9.1 row with no sha256: {line[:60]!r}")
+        rows.append({"flag": flag, "file": path.rsplit("/", 1)[-1], "sha256": sha})
+    return rows
+
+
+def frozen_inputs(text: str) -> dict[str, Any]:
+    """``frozen-inputs.json``: the §9.1 rows and, per ``report`` flag, the sorted shas."""
+    rows = parse_freeze_table(text)
+    by_flag: dict[str, list[str]] = defaultdict(list)
+    for r in rows:
+        if r["flag"] is not None:
+            by_flag[r["flag"]].append(r["sha256"])
+    return {"schema": SCHEMA["frozen"], "source": "PREREG.md §9.1 (generated by reach_report.py frozen-inputs)",
+            "rows": rows, "by_flag": {k: sorted(v) for k, v in sorted(by_flag.items())}}
+
+
+def report_input_shas(inputs: Mapping[str, Any]) -> dict[str, list[str]]:
+    """``report``'s pre-freeze input shas per §9.1 flag (sorted), from its ``inputs_sha256``."""
+    def vals(v: Any) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, Mapping):
+            return sorted(map(str, v.values()))
+        if isinstance(v, list):
+            return sorted(map(str, v))
+        return [str(v)]
+    w_runs = inputs.get("w_runs") or {}
+    return {"--records": vals(inputs.get("records")), "--w-runs": vals(w_runs),
+            "--w-export": vals(inputs.get("w_exports")), "--s-export": vals(inputs.get("s_exports")),
+            "--w-final": vals(inputs.get("w_final")), "--main-pairs": vals(inputs.get("main_pairs")),
+            "--s-prior-final": vals(inputs.get("s_prior_final")), "--s-prior-pairs": vals(inputs.get("s_prior_pairs")),
+            "--build-summary": vals(inputs.get("build_summary"))}
+
+
+def frozen_sources() -> tuple[dict[str, Any], str]:
+    """The committed ``frozen-inputs.json`` and PREREG text (read at call time)."""
+    if not FROZEN_INPUTS.is_file():
+        raise SystemExit(f"REFUSED: no {FROZEN_INPUTS.name} beside the prereg")
+    return (json.loads(FROZEN_INPUTS.read_text(encoding="utf-8")), PREREG_FILE.read_text(encoding="utf-8"))
+
+
+def check_frozen_inputs(inputs: Mapping[str, Any], frozen: Mapping[str, Any], prereg_text: str) -> dict[str, Any]:
+    """PREREG §6 step 5 / §9.1: ``report`` refuses unless ``frozen-inputs.json`` is §9.1's table
+    (:func:`frozen_inputs` of the committed prereg) and, per flag, the shas of the inputs it was
+    given are exactly the frozen ones (order-insensitive; a missing, extra or swapped file
+    refuses)."""
+    want = frozen_inputs(prereg_text)
+    if frozen.get("rows") != want["rows"] or frozen.get("by_flag") != want["by_flag"]:
+        raise SystemExit(f"REFUSED: {FROZEN_INPUTS.name} is not the prereg's §9.1 table")
+    have = report_input_shas(inputs)
+    bad = [f for f in FROZEN_FLAGS if have.get(f, []) != want["by_flag"].get(f, [])]
+    if bad:
+        raise SystemExit(f"REFUSED: the report's inputs are not the §9.1 pins ({', '.join(bad)})")
+    return {"verified": True, "rows": len(want["rows"]), "flags": len(want["by_flag"])}
 
 
 def run_report(a: argparse.Namespace, token_counter: TokenCounter | None = None) -> dict[str, Any]:
@@ -1363,6 +1559,8 @@ def run_report(a: argparse.Namespace, token_counter: TokenCounter | None = None)
     prereg = check_prereg(a.prereg, a.prereg_sha256)
     inp = load_inputs(a, report=True)
     seeds_check = check_j_seeds(getattr(a, "j_seeds", None), seed_input_shas(a, inp))
+    pre = {**seed_input_shas(a, inp), "build_summary": asc.sha256_file(a.build_summary) if a.build_summary else None}
+    frozen_check = check_frozen_inputs(pre, *frozen_sources())
     name = None
     if token_counter is None and a.tokenizer and a.tokenizer != "none":
         token_counter, name = hf_token_counter(a.tokenizer), a.tokenizer
@@ -1377,7 +1575,7 @@ def run_report(a: argparse.Namespace, token_counter: TokenCounter | None = None)
     if a.power_json:
         inputs["power_json"] = asc.sha256_file(a.power_json)
     rec.update({"prereg": prereg, "confirmatory": bool(prereg.get("verified")), "inputs_sha256": inputs,
-                "j_seeds_check": seeds_check,
+                "j_seeds_check": seeds_check, "frozen_inputs_check": frozen_check,
                 "code_sha256": {"reach_report": hashlib.sha256(here.read_bytes()).hexdigest(),
                                 "reach_quote": asc.sha256_file(_HERE / "reach_quote.py"),
                                 "power_py": asc.sha256_file(POWER_PY)},
@@ -1458,23 +1656,26 @@ def build_seeds(inp: Inputs, main_pairs: Sequence[Mapping[str, Any]]) -> dict[st
         w, s = sl.pre_judging(*key)
         if judged(w):
             src[f"reused_{s}"] += 1
+        elif s == "prior_content_mismatch":
+            src["prior_content_mismatch"] += 1  # not reused and not seeded: counts as unjudged (PREREG §3)
         else:
             src["prior_unjudged" if w == "unjudged" else "unlabelled"] += 1
             todo[key] = list(slots)
-    missing_text = sorted({cid for _, cid in todo if cid not in inp.s_export.chunks})
-    if missing_text:
-        raise SystemExit(f"REFUSED: {len(missing_text)} S seed chunk(s) have no export row; nothing written")
+    # J is descriptive: a pair J needs that cannot be seeded is counted (a caveat on J), never a refusal
+    # (owner decision 2026-11-10; PREREG §3, §6 step 3). A rejected prior label is not seeded either.
+    no_text = {k for k in todo if k[1] not in inp.s_export.chunks}
+    not_seeded = {"prior_content_mismatch": src["prior_content_mismatch"], "s_no_export_text": len(no_text)}
+    todo = {k: v for k, v in todo.items() if k not in no_text}
     by_rec = stage_a_pairs(main_pairs)
     s_seeds, s_orph, s_counts = seed_rows(todo, inp.s_export.chunks, by_rec, S_STAGE)
     w_need = needed_pairs(w_sc)
     sample = drift_sample(w_need)
-    d_need = {k: w_need[k] for k in sample}
-    missing_w = sorted({cid for _, cid in d_need if cid not in inp.w_export.chunks})
-    if missing_w:
-        raise SystemExit(f"REFUSED: {len(missing_w)} drift chunk(s) have no W export row; nothing written")
+    d_no_text = {k for k in sample if k[1] not in inp.w_export.chunks}
+    not_seeded["drift_no_w_export_text"] = len(d_no_text)
+    d_need = {k: w_need[k] for k in sample if k not in d_no_text}
     d_seeds, d_orph, d_counts = seed_rows(d_need, inp.w_export.chunks, by_rec, DRIFT_STAGE, self_control=True)
     counts = {"s_pairs_needed": len(s_need), "s_label_before_judging": dict(sorted(src.items())),
-              "s_prior_content_check": prior_content,
+              "s_prior_content_check": prior_content, "not_seeded": not_seeded,
               "s_pairs_needed_by_retriever": {r: len(needed_pairs(s_sc, [r])) for r in RETRIEVERS},
               "s": s_counts, "w_pairs_used": len(w_need),
               "w_pairs_used_unlabelled": sum(not judged(inp.w_reg.labels.get(k)) for k in w_need),
@@ -1526,6 +1727,10 @@ def run_seeds(a: argparse.Namespace) -> dict[str, Any]:
                             "export s-export.jsonl); a second registry for drift-seed.jsonl (control export "
                             "drift-export.jsonl)",
            "outputs_sha256": shas,
+           "not_seeded": c["not_seeded"],
+           "not_seeded_rule": "J is descriptive (owner decision 2026-11-10): a pair J needs whose prior label is not "
+                              "reused (content sha mismatch) or whose chunk has no export text is counted here, not "
+                              "refused; it counts as unjudged in J (PREREG §3, §6 step 3)",
            "inputs_sha256": seed_input_shas(a, inp),
            "registry_problems": inp.w_reg.problems + inp.s_prior.problems,
            "s_prior_cross_registry_conflicts": inp.s_prior.cross_conflicts,
@@ -1570,7 +1775,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     r.add_argument("--prereg-sha256", required=True)
     r.add_argument("--tokenizer", default="Salesforce/SFR-Embedding-Mistral", help="a local HF tokenizer, or none")
     r.add_argument("--out", required=True, type=Path)
+    f = sub.add_parser("frozen-inputs", help="frozen-inputs.json from the prereg's §9.1 table")
+    f.add_argument("--prereg", type=Path, default=PREREG_FILE)
+    f.add_argument("--out", type=Path, default=FROZEN_INPUTS)
     a = ap.parse_args(argv)
+    if a.cmd == "frozen-inputs":
+        rec = frozen_inputs(a.prereg.read_text(encoding="utf-8"))
+        a.out.write_text(json.dumps(rec, indent=1) + "\n", encoding="utf-8")
+        print(f"{a.out.name}: {len(rec['rows'])} rows, {len(rec['by_flag'])} report flags")
+        return 0
     if a.cmd == "j-seeds":
         rec = run_seeds(a)
         print(json.dumps(rec["registries"], indent=1))

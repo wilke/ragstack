@@ -41,6 +41,29 @@ def _no_stores(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(k, DEAD)
 
 
+#: the real §9.1 check; the fixture world's inputs are not the frozen files, so the CLI tests run it
+#: against a table of the world's own shas (:func:`_frozen_as_given`), and the tests below run it as is
+REAL_FROZEN_CHECK = rr.check_frozen_inputs
+
+
+def freeze_table(by_flag: dict[str, list[str]]) -> str:
+    """A §9.1 section listing ``by_flag``'s shas (one row per file; a flag's later rows blank)."""
+    lines = ["### 9.1 The freeze set", "", "| input | file | sha256 |", "|---|---|---|",
+             f"| S run config | `reach-config.json` | `{'0' * 64}` |"]
+    for flag, shas in by_flag.items():
+        for i, sha in enumerate(shas):
+            lines.append(f"| {'x (`' + flag + '`)' if i == 0 else ''} | `dir/f{i}` | `{sha}` |")
+    return "\n".join(["# t", "", *lines, "", "### 9.2 Freeze procedure", ""])
+
+
+@pytest.fixture(autouse=True)
+def _frozen_as_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    def as_given(inputs: Any, frozen: Any, text: str) -> dict[str, Any]:
+        t = freeze_table(rr.report_input_shas(inputs))
+        return REAL_FROZEN_CHECK(inputs, rr.frozen_inputs(t), t)
+    monkeypatch.setattr(rr, "check_frozen_inputs", as_given)
+
+
 # ------------------------------------------------------------------ the exact sign-flip
 
 def brute(xs: list[int]) -> float:
@@ -194,7 +217,7 @@ def test_quote_and_judged_outcomes(tmp_path: Path) -> None:
     assert j["counts"]["units"] == 52 and j["counts"]["S"]["k"] == 48 and j["counts"]["W"]["k"] == 47
     assert j["counts"]["S_only"] == 1 and j["counts"]["W_only"] == 0
     assert rec["gates"] == {"Q": []} and j["caveat_sources"] == {
-        "retrieval_and_inputs": [], "unjudged_primary": [], "label_integrity": []}
+        "retrieval_and_inputs": [], "unjudged_primary": [], "label_integrity": [], "label_reuse": []}
     src = rec["j_labels"]["s_label_source"]
     assert src["w_content_hash:answers"] == 1 and src["w_content_hash:not"] == 1 and src["new:answers"] == 1
     assert "none:unjudged" not in src
@@ -266,7 +289,7 @@ def test_decisions_and_wording(tmp_path: Path) -> None:
     for word in ("Superior", "Non-inferior", "Non-inferiority", "GATE-NOT-EVALUABLE", "p = ", "δ", "α"):
         assert word not in js
     assert "low observed discordance" not in js
-    assert "judge drift lands on S only" in js and "not verbatim" in js
+    assert "judge drift lands on S only" in js and "J includes the 1 record(s) that are not Q-eligible (§2)" in js
     assert "judge drift check not evaluable" in js
     # the fixed text of J's descriptive sentence is PREREG §7.2's
     prereg = rr.PREREG_FILE.read_text(encoding="utf-8")
@@ -574,7 +597,10 @@ def test_j_seeds_feed_build_control(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert detail["s_label_before_judging"] == {"prior_unjudged": 1, "reused_prior": 1, "reused_w_content_hash": 2,
                                                 "unlabelled": 3}
     assert detail["s_prior_content_check"] == {"given": True, "reused_keys_checked": 1,
-                                               "reused_keys_without_pairs_row": 0}
+                                               "reused_keys_without_pairs_row": 0, "not_reused_content_mismatch": 0,
+                                               "not_reused_no_s_text": 0}
+    assert detail["not_seeded"] == summ["not_seeded"] == {"prior_content_mismatch": 0, "s_no_export_text": 0,
+                                                          "drift_no_w_export_text": 0}
     # PREREG §6 step 3: the public file carries totals per registry only; the breakdowns are private
     assert summ["registries"]["S"] == {"seeds": 3, "orphans": 1} == {k: detail["s"][k] for k in ("seeds", "orphans")}
     for k in ("s_pairs_needed_by_retriever", "s_label_before_judging", "s", "drift", "w_pairs_used", "s_pairs_needed"):
@@ -863,7 +889,8 @@ def test_unjudged_gate_reads_the_primary_cell_and_caveats_the_secondary(tmp_path
 
 def test_prior_registry_content_sha_is_checked(tmp_path: Path) -> None:
     """A prior S label is reused only for the bytes it was judged on: with the prior registry's
-    pairs.jsonl given, a reused key whose content_sha256 is not the S export's text is refused."""
+    pairs.jsonl given, a key whose content_sha256 is not the S export's text is not reused and
+    counts as unjudged (a caveat on J); neither report nor j-seeds refuses (J never blocks Q)."""
     w = fx.World(tmp_path)
     paths = scenario(w)
     g1 = rid(1, "g")
@@ -875,20 +902,47 @@ def test_prior_registry_content_sha_is_checked(tmp_path: Path) -> None:
     rows = [r for r in asc.read_jsonl(paths["s_final"]) if (r["record_id"], r["chunk_id"]) != (g1, sid(1, 3))]
     s_final = fx.write_jsonl(tmp_path / "s-final-noprior.jsonl", rows)
     rec = report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[good]))
-    assert rec["j_labels"]["s_prior_content_check"] == {"given": True, "reused_keys_checked": 1,
-                                                        "reused_keys_without_pairs_row": 0}
-    assert rec["descriptive"]["J"]["caveat_sources"]["label_integrity"] == []
+    assert rec["j_labels"]["s_prior_content_check"] == {
+        "given": True, "reused_keys_checked": 1, "reused_keys_without_pairs_row": 0,
+        "not_reused_content_mismatch": 0, "not_reused_no_s_text": 0}
+    j = rec["descriptive"]["J"]
+    assert j["caveat_sources"]["label_integrity"] == [] and j["caveat_sources"]["label_reuse"] == []
+    assert rec["j_labels"]["s_label_source"]["prior:not"] == 1
     bad = fx.write_jsonl(tmp_path / "prior" / "pairs-bad.jsonl", [
         {"pair_id": aj.pair_id(g1, sid(1, 3)), "record_id": g1, "chunk_id": sid(1, 3),
          "content_sha256": asc.sha_text("other bytes")}])
-    with pytest.raises(SystemExit, match="content_sha256 is not the sha256 of the S export's text"):
-        report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[bad]))
-    # j-seeds refuses too, before writing anything
+    rec = report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[bad]))
+    pc = rec["j_labels"]["s_prior_content_check"]
+    assert pc["not_reused_content_mismatch"] == 1 and pc["reused_keys_checked"] == 0
+    assert rec["j_labels"]["s_label_source"]["prior_content_mismatch:unjudged"] == 1
+    assert rec["j_labels"]["s_unjudged_by_kind"]["prior_content_mismatch"] == 1
+    j = rec["descriptive"]["J"]
+    assert j["caveat_sources"]["label_reuse"] == [
+        "1 prior S label(s) not reused: their prior pairs.jsonl content_sha256 is not the sha256 of the S export's "
+        "text of the chunk (or the chunk has no S text); those pairs count as unjudged"]
+    assert j["caveat_sources"]["label_reuse"][0] in j["caveats"]
+    assert rec["gates"]["Q"] == []  # J's label inputs never gate Q
+    # even a new S label for that key is not taken over the rule: the key was never to be seeded
+    with_new = fx.write_jsonl(tmp_path / "s-final-with.jsonl", [*rows, fx.label_row(g1, sid(1, 3), 1)])
+    rec = report(w, inputs(w, {**paths, "s_final": with_new}, prior=[prior], prior_pairs=[bad]))
+    assert rec["j_labels"]["s_label_source"]["prior_content_mismatch:unjudged"] == 1
+    # j-seeds writes, with the mismatch counted and the key not seeded
     out = tmp_path / "private"
-    with pytest.raises(SystemExit, match="content_sha256"):
-        rr.main(w.args("j-seeds", "--w-final", str(paths["w_final"]), "--s-prior-final", str(prior),
-                       "--s-prior-pairs", str(bad), "--main-pairs", str(w.main_pairs()), "--out-dir", str(out)))
-    assert not out.exists()
+    assert rr.main(w.args("j-seeds", "--w-final", str(paths["w_final"]), "--s-prior-final", str(prior),
+                          "--s-prior-pairs", str(bad), "--main-pairs", str(w.main_pairs()), "--out-dir", str(out))) == 0
+    summ = json.loads((out / "j-seeds.json").read_text())
+    detail = json.loads((out / "j-seeds-detail.json").read_text())
+    assert summ["inputs_sha256"]["s_prior_pairs"] == [asc.sha256_file(bad)]
+    assert summ["not_seeded"] == {"prior_content_mismatch": 1, "s_no_export_text": 0, "drift_no_w_export_text": 0}
+    assert detail["s_label_before_judging"]["prior_content_mismatch"] == 1
+    assert (g1, sid(1, 3)) not in {(s_["record_id"], s_["chunk_id"]) for s_ in asc.read_jsonl(out / "s-seed.jsonl")}
+    # a reused key with no pairs row is counted (a caveat), not refused
+    nopairs = fx.write_jsonl(tmp_path / "prior" / "pairs-none.jsonl", [])
+    rec = report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[nopairs]))
+    assert rec["j_labels"]["s_prior_content_check"]["reused_keys_without_pairs_row"] == 1
+    assert rec["j_labels"]["s_label_source"]["prior:not"] == 1
+    assert rec["descriptive"]["J"]["caveat_sources"]["label_reuse"] == [
+        "1 reused prior S label(s) with no prior pairs.jsonl row: their content sha could not be checked"]
     # --s-prior-pairs is required with --s-prior-final, from the same judge dir (PREREG §3)
     with pytest.raises(SystemExit, match="needs --s-prior-pairs"):
         report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[]))
@@ -900,3 +954,139 @@ def test_prior_registry_content_sha_is_checked(tmp_path: Path) -> None:
     # no prior registry: nothing to check
     rec = report(w, inputs(w, {**paths, "s_final": s_final}))
     assert rec["j_labels"]["s_prior_content_check"] == {"given": False}
+
+
+def test_prior_content_status() -> None:
+    sha_of = rr.prior_content_sha_index([{"record_id": "r", "chunk_id": "a", "content_sha256": asc.sha_text("A")},
+                                         {"record_id": "r", "chunk_id": "b", "content_sha256": asc.sha_text("x")},
+                                         {"record_id": "r", "chunk_id": "c", "content_sha256": asc.sha_text("C")},
+                                         {"record_id": "r", "chunk_id": "c", "content_sha256": asc.sha_text("C2")},
+                                         {"record_id": "r", "chunk_id": "d", "content_sha256": asc.sha_text("D")}])
+    text = {"a": "A", "b": "B", "c": "C"}.get
+    got = {k: rr.prior_content_status(("r", k), sha_of, text) for k in "abcde"}
+    # two registries' rows of one key with different bytes: not the S text alone, a mismatch
+    assert got == {"a": "match", "b": "mismatch", "c": "mismatch", "d": "no_s_text", "e": "no_pairs_row"}
+
+
+def test_j_seeds_count_pairs_without_text_and_never_refuse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PREREG §6 step 3: an S pair J needs whose chunk has no S export row, or a drift pair with no
+    W export row, is counted (a caveat on J) and j-seeds.json is still written."""
+    w = fx.World(tmp_path)
+    paths = scenario(w)
+    monkeypatch.setattr(rr, "DRIFT_SHARE", 1.0)
+    g1 = rid(1, "g")
+    # S: (a)'s list carries a chunk with no S export row; W: one list of record g1 a chunk with no W row
+    w.s_over[(g1, "base", "default")] = [sid(1, 0), "schunk-ghost-0000"]
+    w.w_over[(g1, "base", "default")] = [wid(1, 1), "wchunk-ghost-0000"]
+    w.write_runs("W")
+    w.write_runs("S")
+    out = tmp_path / "private"
+    assert rr.main(w.args("j-seeds", "--w-final", str(paths["w_final"]), "--main-pairs", str(w.main_pairs()),
+                          "--out-dir", str(out))) == 0
+    summ = json.loads((out / "j-seeds.json").read_text())
+    assert summ["not_seeded"] == {"prior_content_mismatch": 0, "s_no_export_text": 1, "drift_no_w_export_text": 1}
+    assert set(summ["inputs_sha256"]) >= {"records", "w_runs", "s_runs", "s_exports", "w_exports"}
+    assert "ghost" not in (out / "s-seed.jsonl").read_text() + (out / "drift-seed.jsonl").read_text()
+    # report: the no-text pairs are J caveats (and the top-10 chunks without text stay Q gates, §7.1)
+    rec = report(w, inputs(w, paths))
+    j = rec["descriptive"]["J"]
+    assert rec["j_labels"]["s_unjudged_by_kind"]["no_export_text"] == 1
+    assert "1 S pair(s) J needs have no S export text (never seeded); they count as unjudged" in \
+        j["caveat_sources"]["label_reuse"]
+    assert "S: 1 top-10 chunk id(s) with no text in the side's exports" in rec["gates"]["Q"]
+    assert "W: 1 top-10 chunk id(s) with no text in the side's exports" in rec["gates"]["Q"]
+    assert rec["drift_check"]["sample_without_w_text"] == 1
+    assert "1 drift sample pair(s) have no W export text (never re-judged)" in rec["drift_check"]["caveat"]
+
+
+def test_j_seeds_check_is_order_insensitive(tmp_path: Path) -> None:
+    js = tmp_path / "j.json"
+    js.write_text(json.dumps({"schema": rr.SCHEMA["seeds"], "inputs_sha256": {"s_prior_pairs": ["b", "a"],
+                                                                              "w_final": ["x"]}}))
+    assert rr.check_j_seeds(js, {"s_prior_pairs": ["a", "b"], "w_final": ["x"]})["inputs_match"] is True
+    with pytest.raises(SystemExit, match=r"\(s_prior_pairs\)"):
+        rr.check_j_seeds(js, {"s_prior_pairs": ["a", "c"], "w_final": ["x"]})
+
+
+# ------------------------------------------------------------------ the §9.1 pins
+
+def test_frozen_inputs_json_is_the_prereg_table() -> None:
+    """``frozen-inputs.json`` is :func:`frozen_inputs` of the committed PREREG §9.1 table: 27 rows,
+    the S run config not a report input, and the per-flag counts of the table."""
+    text = rr.PREREG_FILE.read_text(encoding="utf-8")
+    want = rr.frozen_inputs(text)
+    assert json.loads(rr.FROZEN_INPUTS.read_text(encoding="utf-8")) == want
+    assert len(want["rows"]) == 27
+    assert [r for r in want["rows"] if r["flag"] is None] == [
+        {"flag": None, "file": "reach-config.json", "sha256": want["rows"][0]["sha256"]}]
+    assert {k: len(v) for k, v in want["by_flag"].items()} == {
+        "--records": 1, "--w-runs": 8, "--w-export": 4, "--s-export": 4, "--w-final": 1, "--main-pairs": 1,
+        "--s-prior-final": 3, "--s-prior-pairs": 3, "--build-summary": 1}
+    assert set(want["by_flag"]) == set(rr.FROZEN_FLAGS)
+    # the table's own sha cells, nothing else: every row's sha appears in §9.1 verbatim
+    sec = text.split("### 9.1 ", 1)[1].split("### 9.2 ", 1)[0]
+    assert all(f"`{r['sha256']}`" in sec for r in want["rows"])
+    assert sum(line.startswith("| ") for line in sec.splitlines()) == 28  # the header and 27 rows
+
+
+def test_frozen_inputs_check_refuses_other_inputs() -> None:
+    by = {"--records": ["a" * 64], "--w-runs": sorted(["b" * 64, "c" * 64]), "--w-export": ["d" * 64],
+          "--s-export": ["e" * 64], "--w-final": ["f" * 64], "--main-pairs": ["1" * 64], "--s-prior-final": ["2" * 64],
+          "--s-prior-pairs": ["3" * 64], "--build-summary": ["4" * 64]}
+    text = freeze_table(by)
+    frozen = rr.frozen_inputs(text)
+    inputs = {"records": "a" * 64, "w_runs": {"base/none.jsonl": "c" * 64, "base/none.summary.json": "b" * 64},
+              "s_runs": {"base/none.jsonl": "9" * 64}, "w_exports": {"x": "d" * 64}, "s_exports": {"y": "e" * 64},
+              "w_final": ["f" * 64], "main_pairs": "1" * 64, "s_prior_final": ["2" * 64], "s_prior_pairs": ["3" * 64],
+              "build_summary": "4" * 64}
+    assert REAL_FROZEN_CHECK(inputs, frozen, text)["verified"] is True  # order-free; the S runs are post-freeze
+    for k, v in (("records", "0" * 64), ("w_final", ["f" * 64, "5" * 64]), ("s_prior_pairs", []),
+                 ("build_summary", None), ("w_runs", {"base/none.jsonl": "c" * 64})):
+        with pytest.raises(SystemExit, match="not the §9.1 pins"):
+            REAL_FROZEN_CHECK({**inputs, k: v}, frozen, text)
+    with pytest.raises(SystemExit, match="is not the prereg's §9.1 table"):
+        REAL_FROZEN_CHECK(inputs, {**frozen, "rows": frozen["rows"][1:]}, text)
+    with pytest.raises(SystemExit, match="no §9.1"):
+        rr.parse_freeze_table("# nothing\n")
+
+
+def test_report_cli_refuses_inputs_that_are_not_the_frozen_ones(tmp_path: Path,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    w = fx.World(tmp_path)
+    paths = scenario(w)
+    js = j_seeds(w, paths, tmp_path / "private")
+    monkeypatch.setattr(rr, "check_frozen_inputs", REAL_FROZEN_CHECK)
+    out = tmp_path / "r.json"
+    with pytest.raises(SystemExit, match=r"not the §9.1 pins \(--records, --w-runs"):
+        rr.main(w.args("report", "--w-final", str(paths["w_final"]), "--s-final", str(paths["s_final"]),
+                       "--main-pairs", str(w.main_pairs()), "--build-summary", str(paths["build"]),
+                       "--tokenizer", "none", *pre_args(), "--j-seeds", str(js), "--out", str(out)))
+    assert not out.exists()
+
+
+def test_frozen_inputs_cli_writes_the_table(tmp_path: Path) -> None:
+    out = tmp_path / "f.json"
+    assert rr.main(["frozen-inputs", "--out", str(out)]) == 0
+    assert out.read_bytes() == rr.FROZEN_INPUTS.read_bytes()
+
+
+def test_read_export_refuses_duplicate_basenames(tmp_path: Path) -> None:
+    w = fx.World(tmp_path)
+    a = tmp_path / "a" / "chunks.jsonl"
+    b = tmp_path / "b" / "chunks.jsonl"
+    for p_ in (a, b):
+        p_.parent.mkdir()
+        p_.write_bytes(w.w_export.read_bytes())
+    with pytest.raises(SystemExit, match="share the basename 'chunks.jsonl'"):
+        rr.read_export(rr.parse_exports([f"base={a}", f"neighbour={b}"]), set())
+
+
+def test_read_summaries_reads_only_the_summaries(tmp_path: Path) -> None:
+    w = fx.World(tmp_path)
+    d = w.write_runs("W")
+    for c in rr.CORPORA:
+        (d / c / "none.jsonl").unlink()
+    runs = rr.read_summaries(d)
+    assert runs.rows == {} and set(runs.summaries) == set(rr.CORPORA)
+    assert set(runs.sha256) == {f"{c}/none.summary.json" for c in rr.CORPORA}
+    assert rr.settings_gates(runs, runs)[0] == []
