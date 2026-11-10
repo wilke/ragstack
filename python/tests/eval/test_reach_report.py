@@ -1,7 +1,8 @@
 """The reach comparison's report and J builder (``reach_report.py``; PREREG §3, §4, §7, §10):
 the exact NI sign-flip against brute force, the quote / judged outcome logic on both sides (the
-split quote, the content-hash rule, the prior-registry reuse), the hierarchical decision and its
-wording, every gate tripping on a forged input, the drift check, the seeds ``build-control
+split quote, the content-hash rule, the prior-registry reuse), Q's hierarchical decision and its
+wording, J's descriptive sentence (owner decision 2026-11-10: J is never decided), every gate
+tripping on a forged input (a gate on Q, a caveat on J), the drift check, the seeds ``build-control
 --any-paper`` reads, and the public file's hygiene. Fixtures only; no store, no network."""
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import itertools
 import json
 import random
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -184,14 +186,15 @@ def test_quote_and_judged_outcomes(tmp_path: Path) -> None:
     assert rec["retrieval_settings"]["per_corpus"]["base"] == {
         "identical": True, "differs": [], "server_version": {"W": "1.6.22", "S": "1.6.30"}}
     assert "collection" in rec["retrieval_settings"]["expected_differences"]
-    q, j = rec["families"]["Q"], rec["families"]["J"]
+    q, j = rec["families"]["Q"], rec["descriptive"]["J"]
     # Q: 12 eligible records x 4 corpora; (a) and (b) are W-only, (c) is S-only; the split quote hits elsewhere
     assert q["counts"]["units"] == 48 and q["counts"]["S_only"] == 1 and q["counts"]["W_only"] == 2
     assert q["counts"]["S"]["k"] == 46 and q["counts"]["W"]["k"] == 47 and q["counts"]["D_pts"] == -2.083
     # J: all 13 records; (a) found by the S label, (b) by the content-hash rule, (c) W misses, x never found
     assert j["counts"]["units"] == 52 and j["counts"]["S"]["k"] == 48 and j["counts"]["W"]["k"] == 47
     assert j["counts"]["S_only"] == 1 and j["counts"]["W_only"] == 0
-    assert rec["gates"]["common"] == [] and rec["gates"]["J_only"] == []
+    assert rec["gates"] == {"Q": []} and j["caveat_sources"] == {
+        "retrieval_and_inputs": [], "unjudged_primary": [], "label_integrity": []}
     src = rec["j_labels"]["s_label_source"]
     assert src["w_content_hash:answers"] == 1 and src["w_content_hash:not"] == 1 and src["new:answers"] == 1
     assert "none:unjudged" not in src
@@ -231,10 +234,10 @@ def test_q_eligibility_needs_s_reachability(tmp_path: Path) -> None:
     rec = report(w, inp, eligible=11)
     assert rec["q_eligible"] == 11 and rec["q_eligibility"]["w_verbatim"] == 12
     assert rec["q_eligibility"]["s_reach_of_w_verbatim"] == {"single": 5, "split": 6, "unreachable": 1}
-    assert rec["families"]["Q"]["counts"]["records"] == 11 and rec["families"]["J"]["counts"]["records"] == 13
-    assert rec["gates"]["common"] == []
+    assert rec["families"]["Q"]["counts"]["records"] == 11 and rec["descriptive"]["J"]["counts"]["records"] == 13
+    assert rec["gates"]["Q"] == []
     # against the prereg's eligible count the difference is a gate
-    assert "Q-eligible records: 11, the prereg's 12" in report(w, inp)["gates"]["common"]
+    assert "Q-eligible records: 11, the prereg's 12" in report(w, inp)["gates"]["Q"]
     # a gold document with no S chunk at all is unreachable
     assert set(rr.s_reach(w.records, inp.w_export.chunks, {}).values()) == {"unreachable"}
 
@@ -249,12 +252,29 @@ def test_decisions_and_wording(tmp_path: Path) -> None:
     assert "on 48 paired (record, corpus) units (12 records in 6 papers)" in sentence and "quote@10" in sentence
     assert sentence.startswith("Non-inferiority not shown (Q)") and "not evidence that S is worse" in sentence
     assert "-2.1 points (1 units found under S only, 2 under W only" in sentence
-    j = rec["families"]["J"]
-    # J: one S-only unit, no W-only: every paper's X_k > 0, p = 1/64; superiority p = 1/2
-    assert j["outcome"] == "non_inferior" and j["test"]["ni"]["p"] == 0.015625 and j["test"]["superiority"]["p"] == 0.5
-    assert "low observed discordance (1.9 %)" in j["sentence"]
-    assert "judge drift lands on S only" in j["sentence"] and "not verbatim" in j["sentence"]
-    assert "judge drift check not evaluable" in j["sentence"]
+    # J is descriptive (owner decision 2026-11-10): one S-only unit, no W-only, but no test, no outcome, no gate
+    assert set(rec["families"]) == {"Q"} and set(rec["descriptive"]) == {"J"}
+    j = rec["descriptive"]["J"]
+    assert j["tested"] is False and not {"test", "outcome", "gates"} & set(j)
+    assert j["counts"]["S_only"] == 1 and j["counts"]["W_only"] == 0
+    js = j["sentence"]
+    assert js.startswith("Descriptive (J, not tested): under the default retriever pooled over the four corpus "
+                         "collections, judged found@10 (quote@10, or a top-10 chunk the frozen alias judge labelled "
+                         "answers) was ")
+    assert "No test was computed for J; this sentence decides nothing." in js
+    assert "Favourable bound: with those 0 S pair(s) scored answers, J would be " in js
+    for word in ("Superior", "Non-inferior", "Non-inferiority", "GATE-NOT-EVALUABLE", "p = ", "δ", "α"):
+        assert word not in js
+    assert "low observed discordance" not in js
+    assert "judge drift lands on S only" in js and "not verbatim" in js
+    assert "judge drift check not evaluable" in js
+    # the fixed text of J's descriptive sentence is PREREG §7.2's
+    prereg = rr.PREREG_FILE.read_text(encoding="utf-8")
+    for frag in ("Descriptive (J, not tested): under the default retriever pooled over the four corpus collections, ",
+                 "Of the pairs this cell needs, ", " carry no judged label (S: ",
+                 "Favourable bound: with those ", " S pair(s) scored answers, J would be ",
+                 "No test was computed for J; this sentence decides nothing."):
+        assert frag in js and frag in prereg
     res = {"counts": rr.paired([(f"r{i}", f"P{i}", 1, 1) for i in range(20)]),
            "test": rr.ni_test([(f"r{i}", f"P{i}", 1, 1) for i in range(20)])}
     out, s = rr.decide("Q", res, [], [])
@@ -271,12 +291,15 @@ def test_decisions_and_wording(tmp_path: Path) -> None:
         assert frag in sentence and frag in prereg
     res = {"counts": rr.paired([(f"r{i}", f"P{i}", 1, 0) for i in range(20)]),
            "test": rr.ni_test([(f"r{i}", f"P{i}", 1, 0) for i in range(20)])}
-    out, s = rr.decide("J", res, [], ["x"])
-    assert out == "superior" and s.startswith("Superior (J)") and "hierarchical" in s and s.endswith("Caveats: x.")
+    out, s = rr.decide("Q", res, [], ["x"])
+    assert out == "superior" and s.startswith("Superior (Q)") and "hierarchical" in s and s.endswith("Caveats: x.")
     assert "; hierarchical, no extra α)." in s and "; hierarchical, no extra α)." in prereg and "alpha" not in s
-    out, s = rr.decide("J", res, ["S base default: 1 failed call(s)"], [])
-    assert out == "gate_not_evaluable" and s.startswith("GATE-NOT-EVALUABLE (J): S base default: 1 failed call(s).")
+    out, s = rr.decide("Q", res, ["S base default: 1 failed call(s)"], [])
+    assert out == "gate_not_evaluable" and s.startswith("GATE-NOT-EVALUABLE (Q): S base default: 1 failed call(s).")
     assert "decides nothing" in s
+    # decide() never produces a J sentence: J is descriptive
+    with pytest.raises(ValueError, match="J is descriptive"):
+        rr.decide("J", res, [], [])
     # the size caveat cites power.json's δ = 3 cells
     note = rr.size_note(json.loads(rr.POWER_PY.with_name("power.json").read_text()))
     assert "0.0545 at 10 %" in note and "0.0615 at 5 %" in note and "0.0766" in note
@@ -318,7 +341,12 @@ def test_retrieval_and_census_gates(tmp_path: Path) -> None:
     g = gates_of(rec)
     assert "S base bm25: 1 failed call(s)" in g and "S neighbour default: a fired gate" in g
     assert "S random2: run status 'hard_stop'" in g
-    assert rec["families"]["Q"]["outcome"] == rec["families"]["J"]["outcome"] == "gate_not_evaluable"
+    assert rec["families"]["Q"]["outcome"] == "gate_not_evaluable"
+    # on J the same failures are caveats on its descriptive figures, never an outcome
+    j = rec["descriptive"]["J"]
+    assert "outcome" not in j and j["caveat_sources"]["retrieval_and_inputs"] == g
+    assert all(x in j["caveats"] for x in g) and "S base bm25: 1 failed call(s)" in j["sentence"]
+    assert not j["sentence"].startswith("GATE-NOT-EVALUABLE")
     # census: another total in the build summary, and a live census that changed after the run
     w.write_runs("S", summary_over={"base": {"census": {"live_before": {"total": 100, "stamps": {fx.STAMP: 100}},
                                                         "live_after": {"total": 99, "stamps": {fx.STAMP: 99}}}}})
@@ -355,7 +383,7 @@ def test_retrieval_settings_gate(tmp_path: Path) -> None:
     w = fx.World(tmp_path)
     paths = scenario(w)
     rec = report(w, inputs(w, paths))
-    assert rec["gates"]["common"] == []
+    assert rec["gates"]["Q"] == []
     req = fx.request("default")
     w.write_runs("S", summary_over={
         "base": {"conditions": {"base": {"gate": None, "request": {**req, "top_k": 20}, "requested": 50},
@@ -375,36 +403,61 @@ def test_retrieval_settings_gate(tmp_path: Path) -> None:
     assert rr.settings_gates(rr.read_runs(w.w_runs), rr.read_runs(w.w_runs))[0] == []
 
 
-def test_j_only_gates(tmp_path: Path) -> None:
+def j_caveats(rec: dict[str, Any], source: str | None = None) -> list[str]:
+    """J's caveats (all, or those from one former-gate source: ``retrieval_and_inputs``,
+    ``unjudged_primary``, ``label_integrity``)."""
+    j = rec["descriptive"]["J"]
+    return j["caveats"] if source is None else j["caveat_sources"][source]
+
+
+def assert_j_descriptive(rec: dict[str, Any], caveats: Sequence[str]) -> None:
+    """J carries the caveats in its list and its sentence, and never an outcome, test or gate."""
+    j = rec["descriptive"]["J"]
+    assert not {"outcome", "test", "gates"} & set(j) and j["tested"] is False
+    assert j["sentence"].startswith("Descriptive (J, not tested): ")
+    for c in caveats:
+        assert c in j["caveats"] and c in j["sentence"]
+
+
+def test_j_integrity_problems_are_caveats_not_gates(tmp_path: Path) -> None:
+    """Owner decision 2026-11-10 (PREREG §7.1): what were J's gates (unjudged above 5 % in the
+    primary cell, label integrity) are caveats on J's descriptive figures; they never gate Q."""
     w = fx.World(tmp_path)
     paths = scenario(w)
     # no S registry: the S pairs are unjudged (> 5 %), and the registry is missing
     rec = report(w, inputs(w, paths, s_final=False))
-    gj = gates_of(rec, "J")
-    assert any(x.startswith("S: ") and "unjudged (> 5%)" in x for x in gj) and "S registry: not given" in gj
+    unj, integ = j_caveats(rec, "unjudged_primary"), j_caveats(rec, "label_integrity")
+    assert len(unj) == 1 and unj[0].startswith("S: ") and "unjudged (> 5%)" in unj[0]
+    assert integ == ["S registry: not given"]
+    assert_j_descriptive(rec, unj + integ)
     assert gates_of(rec, "Q") == [] and rec["families"]["Q"]["outcome"] != "gate_not_evaluable"
-    assert rec["families"]["J"]["outcome"] == "gate_not_evaluable"
+    assert rec["j_labels"]["unjudged_caveat"]["gate"] is False
     # a relabel: the new S registry labels a key a prior registry had already judged
     prior = fx.write_jsonl(tmp_path / "prior.jsonl", [fx.label_row(rid(1, "g"), sid(1, 0), 0)])
     rec = report(w, inputs(w, paths, prior=[prior]))
-    assert any("already had a judged label" in x for x in gates_of(rec, "J"))
+    integ = j_caveats(rec, "label_integrity")
+    assert any("already had a judged label" in x for x in integ)
+    assert_j_descriptive(rec, integ)
+    assert gates_of(rec, "Q") == []
     # a prior unjudged label may be judged anew (it adds, it does not flip)
     prior_u = fx.write_jsonl(tmp_path / "prior-u.jsonl", [fx.label_row(rid(1, "g"), sid(1, 0), None)])
     rec = report(w, inputs(w, paths, prior=[prior_u]))
-    assert gates_of(rec, "J") == []
+    assert j_caveats(rec, "label_integrity") == [] and j_caveats(rec, "unjudged_primary") == []
     # a relabel through the content-hash rule: the S registry judges S chunk 4 of record c2
     rows = paths["s_final"].read_text() + json.dumps(fx.label_row(rid(2, "c"), sid(2, 4), 0)) + "\n"
     forged = tmp_path / "s-final-forged.jsonl"
     forged.write_text(rows)
     rec = report(w, inputs(w, {**paths, "s_final": forged}))
-    assert any("already had a judged label" in x for x in gates_of(rec, "J"))
+    assert any("already had a judged label" in x for x in j_caveats(rec, "label_integrity"))
     # conflicting labels within one registry, a forged pair_id, a row without ids
     bad = [fx.label_row(rid(1, "g"), sid(1, 3), 1), fx.label_row(rid(5, "g"), sid(5, 3), 1, pid="0" * 16),
            {"k": "pair|x", "label": 1}]
     forged.write_text(paths["s_final"].read_text() + "".join(json.dumps(r) + "\n" for r in bad))
     rec = report(w, inputs(w, {**paths, "s_final": forged}))
-    gj = " | ".join(gates_of(rec, "J"))
+    integ = j_caveats(rec, "label_integrity")
+    gj = " | ".join(integ)
     assert "conflicting labels" in gj and "pair_id that is not" in gj and "without record_id/chunk_id" in gj
+    assert_j_descriptive(rec, integ)
     assert gates_of(rec, "Q") == []
 
 
@@ -594,7 +647,7 @@ def test_report_cli_writes_a_public_counts_only_file(tmp_path: Path) -> None:
     assert rec["j_seeds_check"] == {"sha256": asc.sha256_file(js), "inputs_match": True}
     assert rec["inputs_sha256"]["j_seeds"] == asc.sha256_file(js)
     # the prereg's counts are not overridable: this 13-record world fails the record-count gate
-    assert "records: 13, the prereg's 1091" in rec["gates"]["common"]
+    assert "records: 13, the prereg's 1091" in rec["gates"]["Q"]
     # PREREG §9.1: a report whose inputs differ from those j-seeds.json was computed from is refused
     js2 = j_seeds(w, paths, tmp_path / "private-2", "--s-prior-final", str(paths["s_final"]), "--s-prior-pairs",
                   str(prior_pairs_of(w, paths["s_final"])))
@@ -606,7 +659,8 @@ def test_report_cli_writes_a_public_counts_only_file(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="not a reach-j-seeds/1 file"):
         rr.check_j_seeds(paths["build"], {})
     assert rec["prereg"]["sha256"] == asc.sha256_file(rr.PREREG_FILE)
-    assert set(rec["families"]) == {"Q", "J"} and rec["context_tokens"]["computed"] is False
+    assert set(rec["families"]) == {"Q"} and set(rec["descriptive"]) == {"J"}
+    assert rec["context_tokens"]["computed"] is False
     assert rec["code_sha256"]["power_py"] == asc.sha256_file(rr.POWER_PY)
     assert "host" not in rec["provenance"]
     text = out.read_text()
@@ -723,8 +777,8 @@ def test_report_reads_the_drift_registry(tmp_path: Path, monkeypatch: pytest.Mon
     assert d["cache_check"]["flag"] is False
     # every W pair J uses is labelled not in this world: the answers agreement cannot be computed
     assert d["answers_judged_both"] == 0 and d["caveat"].endswith("(no original answers label re-judged)")
-    assert d["caveat"] in rec["families"]["J"]["sentence"]
-    assert d["labels_outside_sample"] == 0 and rec["gates"]["J_only"] == []
+    assert d["caveat"] in rec["descriptive"]["J"]["sentence"]
+    assert d["labels_outside_sample"] == 0 and rec["descriptive"]["J"]["caveat_sources"]["label_integrity"] == []
     # an original answers label in the sample, re-judged not: the drift caveat
     first = sample[0]
     wf = paths["w_final"].read_text().replace(json.dumps(fx.label_row(*first, 0)), json.dumps(fx.label_row(*first, 1)))
@@ -735,7 +789,7 @@ def test_report_reads_the_drift_registry(tmp_path: Path, monkeypatch: pytest.Mon
     d = rec["drift_check"]
     assert d["answers_judged_both"] == 1 and d["agreement_on_answers"] == 0.0
     assert d["caveat"].startswith("judge drift: the re-judged W answers labels agree") and d["caveat"] in rec[
-        "families"]["J"]["sentence"]
+        "descriptive"]["J"]["sentence"]
     # a re-judge prompt that differs: the drift check is not evaluable, and the J sentence says so
     rows = asc.read_jsonl(ddir / "labels-qwen-C.jsonl")
     rows[0]["prompt_sha256"] = "another prompt"
@@ -743,7 +797,7 @@ def test_report_reads_the_drift_registry(tmp_path: Path, monkeypatch: pytest.Mon
     rec = report(w, inputs(w, paths, drift=[same]))
     d = rec["drift_check"]
     assert d["evaluable"] is False and d["prompt_identity"]["status"] == "mismatch"
-    assert "judge drift check not evaluable (the re-judge prompt differs" in rec["families"]["J"]["sentence"]
+    assert "judge drift check not evaluable (the re-judge prompt differs" in rec["descriptive"]["J"]["sentence"]
     # a drift registry in a W judge dir is refused (its rows would be compared with themselves)
     with pytest.raises(SystemExit, match="shares a judge dir"):
         inputs(w, paths, drift=[fx.write_jsonl(tmp_path / "drift-here.jsonl", [])])
@@ -753,8 +807,8 @@ def test_report_reads_the_drift_registry(tmp_path: Path, monkeypatch: pytest.Mon
 
 def test_orphans_count_as_not_answering_and_the_favourable_bound(tmp_path: Path) -> None:
     """PREREG §3: an S pair J needs whose record has no stage-A pair (an orphan) is never judged and
-    counts as not answering; the favourable bound scores it answers, and when that changes the J
-    outcome the sentence says so (§7.2)."""
+    counts as not answering; the favourable bound scores it answers, and J's descriptive sentence
+    always states it (§7.2). The unjudged share above 5 % is a caveat on J, not a gate."""
     w = fx.World(tmp_path)
     paths = scenario(w)
     g1 = rid(1, "g")
@@ -764,24 +818,25 @@ def test_orphans_count_as_not_answering_and_the_favourable_bound(tmp_path: Path)
     rec = report(w, inputs(w, {**paths, "s_final": s_final}, main_skip=(g1,)))
     jl = rec["j_labels"]
     assert jl["s_orphans"] == 2 and jl["s_unjudged_by_kind"] == {"orphan": 2} and jl["unjudged"]["S"] == 2
-    j = rec["families"]["J"]
+    j = rec["descriptive"]["J"]
     # (a) is now W-only under J: S 47 of 52, the same as W, b = c = 1
     assert j["counts"]["S"]["k"] == 47 and j["counts"]["S_only"] == 1 and j["counts"]["W_only"] == 1
     b = j["favourable_bound"]
     assert b["pairs"] == 2 and b["counts"]["S"]["k"] == 48 and b["counts"]["W_only"] == 0
-    assert b["test"]["ni"]["p"] == 0.015625 and b["outcome"] == "non_inferior"
-    # 2 of the 5 pairs J's primary cell needs on S are unjudged (> 5 %): the gate fires, the sentence is
-    # GATE-NOT-EVALUABLE, and it still names the favourable bound because the outcomes differ
-    assert any("pairs J's primary cell needs are unjudged" in g for g in j["gates"])
-    assert j["test"]["ni"]["reject"] is False and b["changes_outcome"] is True
-    assert "Favourable bound: with the 2 S pair(s) J needs that carry no judged label (unjudged or orphan) scored " \
-           "answers, the outcome would be non_inferior (NI p = 0.015625)" in j["sentence"]
-    # decide() states the bound only when it changes the outcome
-    res = {"counts": j["counts"], "test": j["test"]}
-    _, s_ = rr.decide("J", res, [], [], {**b, "test": j["test"]})
-    assert "Favourable bound" not in s_
-    _, s_ = rr.decide("J", res, [], [], b)
-    assert s_.startswith("Non-inferiority not shown (J)") and "Favourable bound" in s_
+    assert not {"test", "outcome", "changes_outcome"} & set(b)
+    assert j["s_orphans_primary"] == 2 and j["s_unjudged_primary_by_kind"] == {"orphan": 2}
+    assert j["unjudged_primary"]["S"] == {"pairs_needed": 7, "unjudged": 2, "share": 0.2857}
+    # 2 of the 7 pairs J's primary cell needs on S are unjudged (> 5 %): a caveat on J's figures, not a gate
+    unj = j["caveat_sources"]["unjudged_primary"]
+    assert unj == ["S: 2 of 7 pairs J's primary cell needs are unjudged (> 5%)"]
+    assert_j_descriptive(rec, unj)
+    assert rec["families"]["Q"]["outcome"] != "gate_not_evaluable" and rec["gates"]["Q"] == []
+    # the sentence states the unjudged counts and the favourable bound, with no outcome under either
+    assert ("Of the pairs this cell needs, 2 of 7 on S and 0 of " in j["sentence"]
+            and " on W carry no judged label (S: 2 orphan(s)). Favourable bound: with those 2 S pair(s) scored "
+                "answers, J would be 92.3 % under S, a difference of +1.9 points. No test was computed for J; this "
+                "sentence decides nothing." in j["sentence"])
+    assert "non_inferior" not in j["sentence"] and "NI p" not in j["sentence"]
     # with every record holding a stage-A pair, an S pair with no row is "no_registry_row", not an orphan
     rec = report(w, inputs(w, {**paths, "s_final": s_final}))
     assert rec["j_labels"]["s_unjudged_by_kind"] == {"no_registry_row": 2} and rec["j_labels"]["s_orphans"] == 0
@@ -795,10 +850,11 @@ def test_unjudged_gate_reads_the_primary_cell_and_caveats_the_secondary(tmp_path
     w.s_over[(g2, "base", "bm25")] = [sid(2, 3), sid(3, 3)]  # an S BM25 miss whose pairs nobody judged
     paths = scenario(w)
     rec = report(w, inputs(w, paths))
-    assert rec["gates"]["J_only"] == [] and rec["families"]["J"]["outcome"] != "gate_not_evaluable"
+    j = rec["descriptive"]["J"]
+    assert j["caveat_sources"]["unjudged_primary"] == [] and "outcome" not in j
     by = rec["j_labels"]["unjudged_by_retriever"]["S"]
     assert by["default"]["unjudged"] == 0 and by["bm25"]["unjudged"] == 2
-    sec = rec["families"]["J"]["secondary"]["by_retriever_pooled"]
+    sec = rec["descriptive"]["J"]["secondary"]["by_retriever_pooled"]
     assert sec["bm25"]["caveat"].startswith("S: 2 of ") and "this retriever's J needs are unjudged (> 5%)" in \
         sec["bm25"]["caveat"]
     assert sec["norerank"]["caveat"] is None and "caveat" not in sec["default"]
@@ -821,7 +877,7 @@ def test_prior_registry_content_sha_is_checked(tmp_path: Path) -> None:
     rec = report(w, inputs(w, {**paths, "s_final": s_final}, prior=[prior], prior_pairs=[good]))
     assert rec["j_labels"]["s_prior_content_check"] == {"given": True, "reused_keys_checked": 1,
                                                         "reused_keys_without_pairs_row": 0}
-    assert rec["gates"]["J_only"] == []
+    assert rec["descriptive"]["J"]["caveat_sources"]["label_integrity"] == []
     bad = fx.write_jsonl(tmp_path / "prior" / "pairs-bad.jsonl", [
         {"pair_id": aj.pair_id(g1, sid(1, 3)), "record_id": g1, "chunk_id": sid(1, 3),
          "content_sha256": asc.sha_text("other bytes")}])

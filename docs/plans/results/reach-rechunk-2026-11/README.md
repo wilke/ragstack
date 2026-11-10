@@ -4,10 +4,11 @@
 alias study's 1,091 questions, it compares retrieval under the fixed 512-token windows (W) and under the
 adopted chunking (S): `sentence/512/0`, tokens, tolerance 0.25, section cuts, min_piece 128.
 
-- **Families:**
-  - **quote@10 (Q):** judge-free; the top 10 cover at least 90 % of the gold quote.
-  - **judged found@10 (J):** a quote hit, or any top-10 chunk labelled *answers* by the frozen alias judge.
-- **Primary test:** default retriever, pooled over four corpora, clustered by paper. Non-inferiority at
+- **Families** (owner decision, 2026-11-10: Q is the sole confirmatory family; PREREG §1, §11):
+  - **quote@10 (Q), confirmatory:** judge-free; the top 10 cover at least 90 % of the gold quote.
+  - **judged found@10 (J), descriptive:** a quote hit, or any top-10 chunk labelled *answers* by the frozen
+    alias judge. Reported with the favourable bound and the unjudged counts; not tested, no gate.
+- **Primary test (Q):** default retriever, pooled over four corpora, clustered by paper. Non-inferiority at
   δ = 3 points, then superiority.
 - **Freeze procedure:** PREREG §9. At the freeze, this status line records the owner's go verbatim, the
   frozen commit, the PREREG sha256 and the UTC time.

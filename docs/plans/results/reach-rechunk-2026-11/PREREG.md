@@ -1,8 +1,9 @@
 # Pre-registration: does the adopted chunking cost reach? (fixed 512-token windows vs boundary-respecting chunks) — DRAFT v1, 2026-11-09
 
-STATUS: DRAFT. Not frozen. The owner decided confirmatory (2026-11-09). The freeze follows the alias
-study's procedure (signed tag, private sha file) after two independent reviews (§9). The owner's decisions
-are in §11.
+STATUS: DRAFT. Not frozen. The owner decided confirmatory (2026-11-09). Since the owner decision of
+2026-11-10, quote@10 (Q) is the only confirmatory family and judged found@10 (J) is descriptive (§1, §4, §11).
+The freeze follows the alias study's procedure (signed tag, private sha file) after two independent reviews
+(§9). The owner's decisions are in §11.
 
 **Owner's go:** _(pending: the owner names, in writing in chat, the `main` commit to freeze, after the two
 reviews of this text and of the §10 code; recorded in this directory's `README.md` at the freeze, §9.2)._
@@ -25,14 +26,23 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 - The OA chunking evaluation (`../oa-chunking-eval-2026-10/`) compared related arms on another question set.
   Its passages sat inside a single section, so no gold quote crossed a section boundary.
 
-**Two outcome families,** each tested on its own (§4):
-- **Q (judge-free):** quote@10.
-- **J (judged):** found@10 with the frozen alias judge.
+**One confirmatory family, one descriptive** (owner decision, 2026-11-10; §4, §11):
+- **Q (judge-free, confirmatory):** quote@10. The only family tested.
+- **J (judged, descriptive):** found@10 with the frozen alias judge. Reported, not tested.
 
-**Hypotheses.** These depend on the owner's choice in §11 Q2. The draft takes non-inferiority as primary:
+**Why J is descriptive.** Two reasons, both known before any S-side outcome:
+- **Orphans.** 748 of the 1,091 records have no stage-A pair (`feasibility.json` `orphans`). `build-control`
+  cannot judge their S chunks, so J's unjudged gate would almost surely fire (§5).
+- **Saturation.** Rechunk stage 1b showed that "any chunk answers" saturates for these questions: A 75/75 on
+  the lost pairs (stage 1b, 2026-11-10; `../rechunk-found10-2026-11/` once its write-up merges).
+
+**Hypothesis.** HQ is the only hypothesis tested (owner, §11 Q2):
 - **HQ:** quote@10(S) − quote@10(W) > −δ, with **δ = 3 points** (owner, 2026-11-09, from `power.json`). If
   non-inferiority holds, superiority is tested next (hierarchical, no extra α).
-- **HJ:** the same, for judged found@10.
+
+There is no HJ. J is reported descriptively (§7.2): its rates, difference and discordance in the primary
+cell, the favourable bound (§3) and the unjudged counts (§7.1). No p is computed for J, and no decision is
+drawn from it.
 
 ## 2. Data (fixed before any S-side outcome exists)
 
@@ -82,8 +92,8 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
     boundaries. A chance edge match of k characters can flip only a list whose genuine coverage is in
     [90 % − k/n, 90 %), n being the quote's length. Such matches are a few characters to a word long. This
     is reasoned, not measured. The direction favours W, against the hypothesis.
-- **judged found@10 (J).** A question is found when quote@10 holds, **or** any top-10 chunk carries an
-  *answers* label from the frozen alias judge.
+- **judged found@10 (J; descriptive, §1).** A question is found when quote@10 holds, **or** any top-10
+  chunk carries an *answers* label from the frozen alias judge.
   - This one rule applies on both sides. It replaces the alias study's gold-window shortcut, which has no
     S counterpart.
   - Lists with no quote hit are judged on demand. Already-labelled (record, chunk) pairs are reused, and so
@@ -100,7 +110,7 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
     Each registry's `pairs.jsonl` is required beside its `final.jsonl` (`--s-prior-pairs`; `j-seeds` and
     `report` refuse without it). Every reused prior key's `content_sha256` must equal the sha256 of the S
     export's text of that chunk; `j-seeds` and `report` refuse otherwise. Label conflicts are checked
-    **per registry**: two judged labels of one key within one registry are a gate (§7.1). **Across
+    **per registry**: two judged labels of one key within one registry are a caveat on J (§7.1). **Across
     registries** the labels combine by the stage-1 rule: *answers* if any registry says answers. The
     disagreements are counted (`registries.S_prior.cross_registry_conflicts`) but not gated. The rule's
     direction, declared: it slightly favours S keys that were judged twice, because a key labelled *answers*
@@ -127,17 +137,17 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
     128 hold no pair at all. The main registry's stage-A pairs come from W's default and norerank lists
     without the gold window. So these are the records W finds under both retrievers: every W default and
     norerank list of an orphan record is a quote hit (0 lists without a hit). Under BM25, 177 of W's 976
-    lists without a hit belong to orphan records (1,200 of 6,850 unique pairs). The consequence for J's
-    unjudged gate is in §5.
+    lists without a hit belong to orphan records (1,200 of 6,850 unique pairs). The consequence for J is
+    in §5: it is one of the two reasons J is descriptive (§1).
   - **Favourable-bound sensitivity** (the alias boundary-confirm prereg's §6.8, carried over). The report
-    recomputes J's primary test with every unjudged or orphan S pair that the primary cell needs scored
-    *answers*, and prints it beside the primary (`favourable_bound`). It decides nothing. When the bound's
-    outcome differs from the primary's, the J sentence says so (§7.2).
+    recomputes J's primary-cell figures with every unjudged or orphan S pair that the primary cell needs
+    scored *answers*, and prints them beside J's figures (`favourable_bound`). Like J, it is descriptive and
+    decides nothing. J's sentence always states it (§7.2).
 - **Judge drift check** (owner, 2026-11-09). W's labels are from 2026-11-04/06; S's will be new. At run time, a
   seeded 5 % sample of the W (record, chunk) pairs that J uses (seed `261109|reach|drift|W`; ≈ 616 of
   12,310: `round_half_up(615.5)`) is re-judged by the frozen judge, in its own registry. The report gives
   the agreement between the original and the new labels, overall and by original label. This is
-  descriptive and does not enter the test. If agreement on W's *answers* labels falls below 0.90, the J
+  descriptive, as J is. If agreement on W's *answers* labels falls below 0.90, the J
   result carries a *judge drift* caveat. Two checks on the re-judge itself, on the Qwen label rows
   (`labels-qwen-C.jsonl`, `labels-qwen-E.jsonl`) of the W judge dirs and the drift judge dir, with
   `alias_control_chunks.cache_check` (the alias boundary-confirm prereg's §6.9 rule, reused):
@@ -156,13 +166,19 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 - **Primary cell** (§11 Q1). The default retriever, pooled over the four corpus collections, with records
   clustered by paper.
 - **Clusters.** Q: 408 papers holding 1,089 eligible records: 25, 85 and 298 papers with 1, 2 and 3 records.
-  J: 408 papers holding all 1,091 records: 25, 83 and 300 papers with 1, 2 and 3 records
+  J (descriptive): 408 papers holding all 1,091 records: 25, 83 and 300 papers with 1, 2 and 3 records
   (`feasibility.json` `papers_by_records_all`). Each record contributes one paired difference per corpus.
-- **Statistic.** The paired difference per record and corpus, S − W, in {−1, 0, +1}. For non-inferiority, a
-  sign-flip over papers on the null-shifted cluster sums X_k = 100·T_k + m_k·δ, with δ in points (T_k is
-  the sum of the cluster's paired differences, m_k their number), one-sided, α = 0.05. The p is computed exactly by lattice convolution
-  (`power.py` `sign_flip_p_exact`). Superiority, after non-inferiority, is the exact sign-flip on T_k. Each
-  family (Q, J) is tested at α = 0.05 on its own.
+- **One family** (owner decision, 2026-11-10; §11). Q is the only family tested, at α = 0.05 one-sided, so
+  there is no multiplicity across families. J is descriptive: its counts are reported (§7.2), and no p is
+  computed for it. The reason, stated in §1: 748 of the 1,091 records have no stage-A pair
+  (`feasibility.json` `orphans`), so `build-control` cannot judge their S chunks and J's unjudged gate would
+  almost surely fire (§5); and "any chunk answers" saturated for these questions in rechunk stage 1b (A 75/75
+  on the lost pairs; stage 1b, 2026-11-10).
+- **Statistic** (Q). The paired difference per record and corpus, S − W, in {−1, 0, +1}. For
+  non-inferiority, a sign-flip over papers on the null-shifted cluster sums X_k = 100·T_k + m_k·δ, with δ in
+  points (T_k is the sum of the cluster's paired differences, m_k their number), one-sided, α = 0.05. The p
+  is computed exactly by lattice convolution (`power.py` `sign_flip_p_exact`). Superiority, after
+  non-inferiority, is the exact sign-flip on T_k.
 - **Size, declared.** The randomisation p is exact, but the composite null does not make d + δ
   sign-symmetric, so the test's size is only asymptotically α.
   - Simulated size at the sizing case: 0.0545 (`power.json` `recommendation.size_at_sizing_case`). That is
@@ -173,7 +189,8 @@ For the alias study's 1,091 questions: does retrieval under S reach the answer a
 
   A rejection at low observed discordance is reported with this caveat.
 - **Secondary, not tested.** Each corpus and each retriever separately; G vs C records; context tokens;
-  discordant records broken down by coverage of the gold window under S.
+  discordant records broken down by coverage of the gold window under S. The same breakdowns are reported
+  for J, which is descriptive in every cell, the primary cell included.
 
 ## 5. Power (`power.py`, `power.json`, seeded `261109|reach|rechunk|power`, 10,000 studies per cell)
 
@@ -235,13 +252,14 @@ power (`raw_exclusion_cells`).
   calls (`feasibility.json` `s_side_estimate.calls`).
 - **Drift check:** about 616 more pairs (§3).
 
-**Orphans and J's unjudged gate (expected; declared, not a design change).** Every W default list of the
-748 orphan records is a quote hit (§3). So every S default miss on one of those records is a W-only unit,
-and its pairs are orphans: never judged, and unjudged for the gate. J's primary-cell gate fires above 5 % of
-the pairs that cell needs. At W's level that is about 157 of about 3,149 pairs, or about 21 lists at W's
-7.5 unique pairs per list without a hit. About 21 S default misses among the 2,992 J primary-cell units of
-orphan records (about 0.7 %) are therefore enough to make J GATE-NOT-EVALUABLE.
-- J is likely to be not evaluable, for this structural reason.
+**Orphans and J (one of the two reasons J is descriptive, §1).** Every W default list of the 748 orphan
+records is a quote hit (§3). So every S default miss on one of those records is a W-only unit, and its pairs
+are orphans: never judged, and counted as unjudged. Under the 5 % rule of §7.1, the unjudged share in J's
+primary cell is flagged above 5 % of the pairs that cell needs. At W's level that is about 157 of about
+3,149 pairs, or about 21 lists at W's 7.5 unique pairs per list without a hit. About 21 S default misses
+among the 2,992 J primary-cell units of orphan records (about 0.7 %) are therefore enough to cross it.
+- Had J kept its gate, it would almost surely have been GATE-NOT-EVALUABLE, for this structural reason.
+  Since the owner decision of 2026-11-10, J is descriptive, and the share is a caveat on J's figures (§7.1).
 - The favourable bound (§3) shows how much the not-answering rule carries.
 - Q is unaffected: it needs no judge.
 - The owner's earlier decision stands (§11: orphans count as not answering, and there is no judge-harness
@@ -274,17 +292,18 @@ orphan records (about 0.7 %) are therefore enough to make J GATE-NOT-EVALUABLE.
    served-model mismatch, the budget stop): the run halts, the state is reported, and the owner's word in
    chat is required to resume. A resume under the same frozen design is recorded in `RESULTS.md`; any change
    made while stopped is a deviation (§9.3). **Without a resume** (operator default, §11), J is reported as
-   it stands under the written gates. The pairs left unjudged count as unjudged, the 5 % gate of §7.1
-   decides whether J is evaluable, and the decision not to resume is recorded in `RESULTS.md`.
+   it stands. The pairs left unjudged count as unjudged and are printed as caveats on J's figures (§7.1),
+   and the decision not to resume is recorded in `RESULTS.md`. Q needs no judge and is unaffected.
 5. **`reach_report.py report`, run once**, with `--prereg PREREG.md --prereg-sha256 <the frozen sha>`. It
    refuses unless the file hashes to the sha **and** the sha is the committed `PREREG.md`'s, so a wrong sha
    or another file stops before anything is read. It also takes `--j-seeds artifacts/j-seeds.json`, and it
    refuses unless the shas of its own inputs equal that file's `inputs_sha256`. Those inputs are the
    records, the W and S runs and summaries, the W and S exports, the W registry, the prior S registries and
-   their `pairs.jsonl`, and the main pairs (operator default, §11). It computes quote@10 on both sides with one committed
-   function, J with the labels of §3, the tests, the gates and the frozen wording of §7.2 → public
-   `artifacts/reach-report.json`.
-6. `RESULTS.md` in this directory, with the two decision sentences of §7.2 verbatim.
+   their `pairs.jsonl`, and the main pairs (operator default, §11). It computes quote@10 on both sides with
+   one committed function, Q's test and gates, J's descriptive figures and caveats with the labels of §3,
+   and the frozen wording of §7.2 → public `artifacts/reach-report.json`.
+6. `RESULTS.md` in this directory, with Q's decision sentence and J's descriptive sentence of §7.2
+   verbatim.
 
 **Operator exposure.** Until step 5 has written `reach-report.json`, no one reads any S-side outcome: no S
 quote@10 or found@10, no S label counts (`final.jsonl`, `labels-*.jsonl`, `judge-summary.json`, the per-arm
@@ -296,20 +315,26 @@ seen and when. This is a rule, not a mechanism (§8).
 
 ## 7. Gates and decision rules
 
-### 7.1 Gates (a third answer, as in the earlier preregs)
+### 7.1 Gates on Q (a third answer, as in the earlier preregs) and caveats on J
 
+Gates on Q:
 - Any retrieval leg with failed calls or a fired depth or reranker gate.
 - An S run whose retrieval settings differ from the W run's beyond the declared differences.
 - An S collection whose census differs from `build-summary.json`.
-- Unjudged pairs above 5 % for J, in J's primary cell.
-- Label-table integrity: merged tables may only add labels (the stage-1b guard).
+- The inputs check below.
 
-How `python/scripts/eval/reach_report.py` reads each gate:
-- **Retrieval** (both families, W and S): a run summary whose status is not `complete`; any condition with
-  a non-null `gate`; any failed call, missing row or duplicate row in any (corpus, retriever) leg. Also an
-  S run that is not the reach run (`study.mode` `rechunk` with `rechunk_scope` `all_records`).
-- **Retrieval settings** (both families; operator default, §11): per corpus, the S run summary against the W
-  run summary. Compared:
+**J has no gates** (owner decision, 2026-11-10; J is descriptive, §1). Each check below that applies to J
+becomes a **caveat on J's descriptive figures**: it is printed, with its count, in J's caveats and sentence
+(§7.2), and it never yields an outcome for J. That covers every gate on Q above, and J's own checks:
+- unjudged pairs above 5 % in J's primary cell;
+- label-table integrity: merged tables may only add labels (the stage-1b guard).
+
+How `python/scripts/eval/reach_report.py` reads each check:
+- **Retrieval** (a gate on Q, a caveat on J; W and S): a run summary whose status is not `complete`; any
+  condition with a non-null `gate`; any failed call, missing row or duplicate row in any (corpus, retriever)
+  leg. Also an S run that is not the reach run (`study.mode` `rechunk` with `rechunk_scope` `all_records`).
+- **Retrieval settings** (a gate on Q, a caveat on J; operator default, §11): per corpus, the S run summary
+  against the W run summary. Compared:
   - the condition set;
   - each condition's `request` (the collection is a placeholder) and its `requested` depth (50);
   - `found_k`, `server_assumed`, `study.retrievers`, `study.request_order` and
@@ -323,32 +348,34 @@ How `python/scripts/eval/reach_report.py` reads each gate:
   - the run mode and its stamps (`study.mode`, `rechunk_scope`, `stage`, `legs`, `exploratory`);
   - the prereg block, the provenance and the clock;
   - the server version (`/v1/version`), printed beside the comparison.
-- **Census** (both families): per S collection, the summary's live census before and after (total and
-  stamps), the collection name, the load receipt's chunk count and sha256, all equal to
+- **Census** (a gate on Q, a caveat on J): per S collection, the summary's live census before and after
+  (total and stamps), the collection name, the load receipt's chunk count and sha256, all equal to
   `build-summary.json`.
-- **Inputs** (both families): a top-10 chunk with no text in its side's exports; a W gold chunk missing; a
-  record count other than 1,091; a Q-eligible count (W-verbatim and S-reachable, §2) other than 1,089. Both
-  counts are fixed in the code, with no command-line override.
-- **Unjudged** (J only; owner default, 2026-11-09): on either side, more than 5 % of the unique
-  (record, chunk) pairs that J's **primary cell** needs (the top 10 of every default-retriever list without
-  a quote hit, four corpora) carry no *answers* / *not* label. Orphans and pairs with no registry row count
-  as unjudged. For the norerank and BM25 J figures (secondary), a shortfall above 5 % on either side is a
-  caveat printed on that figure, not a gate. The unjudged counts by retriever and side are printed.
-- **Label integrity** (J only): a registry row without ids or with a `pair_id` that is not
-  sha256(record|chunk)[:16]; one (record, chunk) with two different judged labels **within one registry**
-  (each `final.jsonl` is one registry; disagreements across registries are combined answers-if-any and
-  counted, not gated, §3); a new S label for a key that already had a judged label (prior registry or
-  content-hash rule); no S registry.
+- **Inputs** (a gate on Q, a caveat on J): a top-10 chunk with no text in its side's exports; a W gold chunk
+  missing; a record count other than 1,091; a Q-eligible count (W-verbatim and S-reachable, §2) other than
+  1,089. Both counts are fixed in the code, with no command-line override.
+- **Unjudged** (a caveat on J; owner default, 2026-11-09, a gate until the owner decision of 2026-11-10):
+  on either side, more than 5 % of the unique (record, chunk) pairs that J's **primary cell** needs (the
+  top 10 of every default-retriever list without a quote hit, four corpora) carry no *answers* / *not*
+  label. Orphans and pairs with no registry row count as unjudged. For the norerank and BM25 J figures
+  (secondary), a shortfall above 5 % on either side is a caveat printed on that figure. The unjudged counts
+  by retriever and side are printed, and J's sentence states the primary cell's (§7.2).
+- **Label integrity** (a caveat on J; a gate until 2026-11-10): a registry row without ids or with a
+  `pair_id` that is not sha256(record|chunk)[:16]; one (record, chunk) with two different judged labels
+  **within one registry** (each `final.jsonl` is one registry; disagreements across registries are combined
+  answers-if-any and counted, not gated, §3); a new S label for a key that already had a judged label (prior
+  registry or content-hash rule); no S registry.
 
-The drift check (§3) and the favourable bound (§3) are not gates.
+The drift check (§3) and the favourable bound (§3) are not gates; neither is any caveat on J.
 
 ### 7.2 Decision rules and the wording of each outcome
 
-Each family (Q, J) is decided on its own, in its primary cell (§4). Let n be the paired (record, corpus)
-units, r the records and k the papers behind them; S% and W% the two rates; D = S% − W% in points; b and
-c the units found under S only and under W only; π = (b + c) / n the observed discordance; p_NI the exact
-one-sided sign-flip p over papers on X_k = 100 T_k + m_k δ with δ = 3; p_sup the exact sign-flip p on
-T_k, computed only when non-inferiority holds. α = 0.05 one-sided, per family.
+Q, the one confirmatory family, is decided in its primary cell (§4). J is not decided: it gets one
+descriptive sentence (below). Let n be the paired (record, corpus) units, r the records and k the papers
+behind them; S% and W% the two rates; D = S% − W% in points; b and c the units found under S only and under
+W only; π = (b + c) / n the observed discordance; p_NI the exact one-sided sign-flip p over papers on
+X_k = 100 T_k + m_k δ with δ = 3; p_sup the exact sign-flip p on T_k, computed only when non-inferiority
+holds. α = 0.05 one-sided, for Q.
 
 | outcome | rule | the sentence (filled from the report) |
 |---|---|---|
@@ -357,19 +384,33 @@ T_k, computed only when non-inferiority holds. α = 0.05 one-sided, per family.
 | **Non-inferiority not shown** | gates pass, p_NI > 0.05 | "Non-inferiority not shown (F): <the same counts>. The exact one-sided sign-flip over papers gives p = p_NI > 0.05: a loss of 3 points or more under S is not ruled out by this test (this is not evidence that S is worse)." *Never* "S is inferior", *never* "S loses reach". |
 | **GATE-NOT-EVALUABLE** | any gate of §7.1 that applies to the family fails | "GATE-NOT-EVALUABLE (F): <each gate, with its count>. The test was computed (NI p = p_NI, n = n units) and decides nothing." The counts are still printed in full. |
 
-<F's outcome> is "quote@10 (the top 10 cover at least 90 % of the gold quote's characters)" for Q and
-"judged found@10 (quote@10, or a top-10 chunk the frozen alias judge labelled answers)" for J.
+<F's outcome> is "quote@10 (the top 10 cover at least 90 % of the gold quote's characters)": F is Q, the
+one confirmatory family.
 
-**The frozen form** (operator default, §11) is this table's text, Greek letters included (δ, α). `decide()`
-in `reach_report.py` prints δ and α in Unicode, so the report's sentences match it character for character
-outside the filled values; π is filled as a percentage. `RESULTS.md` carries this §7.2 text verbatim, beside
-the two filled sentences as the report printed them.
+**J's descriptive sentence** (owner decision, 2026-11-10). J gets this one reporting sentence. It names no
+outcome (no *Superior*, *Non-inferior*, *Non-inferiority not shown* or *GATE-NOT-EVALUABLE*), states no test
+and no p, and decides nothing:
+
+> "Descriptive (J, not tested): under the default retriever pooled over the four corpus collections, judged found@10 (quote@10, or a top-10 chunk the frozen alias judge labelled answers) was S% under S against W% under W on n paired (record, corpus) units (r records in k papers), a difference of D points (b units found under S only, c under W only; discordance π). Of the pairs this cell needs, u_S of N_S on S and u_W of N_W on W carry no judged label (S: o orphan(s)). Favourable bound: with those u_S S pair(s) scored answers, J would be S_b% under S, a difference of D_b points. No test was computed for J; this sentence decides nothing."
+
+The sentence is on one line, like the table's, so that it can be matched character for character. u and N
+are the unjudged and needed pairs of J's primary cell on each side (§7.1), o the orphans among the S ones
+(§3), and S_b and D_b the favourable bound's S rate and difference (§3). The bound is always stated.
+
+**The frozen form** (operator default, §11) is the table's text, Greek letters included (δ, α), and J's
+sentence above. `decide()` in `reach_report.py` prints δ and α in Unicode, so the report's sentences match
+it character for character outside the filled values; π is filled as a percentage. `decide()` takes Q only
+and refuses J; J's sentence comes from `describe_j()`. `RESULTS.md` carries this §7.2 text verbatim, beside
+Q's filled decision sentence and J's filled descriptive sentence as the report printed them.
 
 Caveats appended to the sentence ("Caveats: …"):
-- **Size** (either family): when non-inferiority holds and π < 10 %, "low observed discordance (π): the
-  test's size is only asymptotically α", with the simulated size of the δ = 3 test from `power.json`
-  `size_cells` (0.0545 at 10 % and 0.0615 at 5 % under the measured correlations, up to 0.0766 over the
-  grid at 5 %; not simulated below 5 %, since δ = 3 needs a discordance of at least 3 %).
+- **Size** (Q): when non-inferiority holds and π < 10 %, "low observed discordance (π): the test's size is
+  only asymptotically α", with the simulated size of the δ = 3 test from `power.json` `size_cells` (0.0545
+  at 10 % and 0.0615 at 5 % under the measured correlations, up to 0.0766 over the grid at 5 %; not
+  simulated below 5 %, since δ = 3 needs a discordance of at least 3 %).
+- **J, checks (were gates until 2026-11-10):** every check of §7.1 that fires, each with its count: the
+  retrieval, settings, census and inputs gates of Q, the unjudged share above 5 % in J's primary cell, and
+  label integrity.
 - **J, always:** W's labels come from the 2026-11-04/06 judge runs and S's from new judging, so any judge
   drift lands on S only; and J includes the 2 records whose quote is not verbatim in its gold chunk.
 - **J, judge drift:** when the drift check's agreement on W's *answers* labels is below 0.90, or cannot be
@@ -377,14 +418,10 @@ Caveats appended to the sentence ("Caveats: …"):
   compare, or a re-judge prompt that differs from the original: *judge drift check not evaluable*); and
   *cache suspected* or *cache check not evaluable* from the cache check (§3).
 
-**The favourable bound in the J sentence.** When the favourable bound of §3 (every unjudged or orphan S pair
-of the primary cell scored *answers*) gives another outcome than the test, the J sentence adds, before the
-caveats: "Favourable bound: with the N S pair(s) J needs that carry no judged label (unjudged or orphan)
-scored answers, the outcome would be <outcome> (NI p = …); this decision scores them not answering and rests
-on that rule." It is added under any outcome, the gate sentence included; it never changes the outcome.
-
-The report also writes, for each family, the secondary figures of §4 (not tested), the gates that fired,
-and the outcome name (`superior`, `non_inferior`, `ni_not_shown`, `gate_not_evaluable`).
+The report writes Q under `families`: the secondary figures of §4 (not tested), the gates that fired, and
+the outcome name (`superior`, `non_inferior`, `ni_not_shown`, `gate_not_evaluable`). It writes J under
+`descriptive`: the primary-cell counts, the favourable bound, the unjudged counts (orphans among them), the
+caveats with the check each came from, the sentence and the secondary figures. J has no outcome name.
 
 ## 8. Threats to validity
 
@@ -393,8 +430,8 @@ and the outcome name (`superior`, `non_inferior`, `ni_not_shown`, `gate_not_eval
   single-passage judging, which the confirmatory test showed penalises answers split across S chunks.
 - Unjudged and orphan S pairs count as not answering, against S; the favourable bound (§3) shows how much
   that rule carries. 748 records are orphans and W finds every one of them under the default retriever, so
-  each S default miss on them is an orphan W-only unit. J's unjudged gate is therefore likely to fire
-  (§5).
+  each S default miss on them is an orphan W-only unit. J's unjudged gate would therefore almost surely
+  have fired (§5); this is one of the two reasons J is descriptive (§1). Q needs no judge.
 - Every eligible quote was drawn from inside one W window, so W never needs two chunks to reach it. S
   splits 1 of the 1,089 quotes across a chunk boundary (§2). quote@10 credits that quote under S only when
   both pieces are in the top 10. The sampling favours W, slightly, against the hypothesis.
@@ -486,12 +523,12 @@ in §6 runs before that tag exists.
 After the freeze, any change is a dated entry in `DEVIATIONS.md` in this directory, stating what changed,
 why, when, what had been seen at that time and which result it touches; a result whose computation depends
 on it says so in its sentence. What counts, at least: δ (3 points), α (0.05 one-sided), the primary cell
-(default retriever, four corpora, clusters by paper), the families and the test, the scorer constants
-(`MIN_MATCH`, `HIT_THRESHOLD`, `TOP_K`) and the eligibility rule, the seeds (`261109|reach|drift|W`,
-`261109|reach|rechunk|power`), the label rules (prior reuse, content hash, orphans and unjudged as not
-answering, the favourable bound), the judge configuration, the collections and the retriever settings, the
-gates and their thresholds (5 % unjudged, 0.90 drift agreement), the step order of §6, and the wording of
-§7.2. A resume after a hard stop under the same design is recorded in `RESULTS.md`, not a deviation; any
+(default retriever, four corpora, clusters by paper), the families and the test (Q confirmatory, J
+descriptive), the scorer constants (`MIN_MATCH`, `HIT_THRESHOLD`, `TOP_K`) and the eligibility rule, the
+seeds (`261109|reach|drift|W`, `261109|reach|rechunk|power`), the label rules (prior reuse, content hash,
+orphans and unjudged as not answering, the favourable bound), the judge configuration, the collections and
+the retriever settings, Q's gates, J's caveats and their thresholds (5 % unjudged, 0.90 drift agreement),
+the step order of §6, and the wording of §7.2. A resume after a hard stop under the same design is recorded in `RESULTS.md`, not a deviation; any
 change made while stopped is one.
 
 ## 10. Code needed (small)
@@ -529,7 +566,15 @@ After the second review (operator defaults, §11):
 - `feasibility.py` reads the S exports (reachability), the main pairs (orphans) and the prior S registries
   (integrity); run with the ragstack environment's Python.
 
-## 11. Owner decisions (2026-11-09)
+After the owner decision of 2026-11-10 (J descriptive, §11):
+- `decide()` takes Q only and refuses J, so the report holds no confirmatory J sentence;
+- J's figures, favourable bound, unjudged counts, caveats and sentence (`describe_j()`) go to the report's
+  `descriptive` block; Q's stay under `families`, and `gates` holds Q's only;
+- J's former gates (the primary cell's unjudged share, label integrity, and every gate on Q) are J's
+  caveats, each listed under the check it came from (`caveat_sources`);
+- the J gate tests are now caveat tests.
+
+## 11. Owner decisions (2026-11-09, 2026-11-10)
 
 | question | owner's answer |
 |---|---|
@@ -538,16 +583,17 @@ After the second review (operator defaults, §11):
 | Q3: J judging scope | **all three retrievers** (J's primary is still the default retriever), **plus a W re-judge drift check** on a seeded 5 % sample (owner, 2026-11-09, after the load estimate: about 12,300 new S pairs) |
 | Q4: non-verbatim quotes | restated by the owner (2026-11-09): **only the 2 that fail after whitespace normalisation are excluded from Q**, and they are kept in J; 1,089 records in Q |
 | Q5: 218 records retrieved on S in stage 1 | **kept** (no S-side outcome was ever computed for them; declared in §2) |
-| unjudged gate (after the first review) | **owner default**: gate on the primary cell's pairs at 5 %; norerank / BM25 shortfalls are caveats on those secondary figures (§7.1) |
+| unjudged gate (after the first review) | **owner default**: gate on the primary cell's pairs at 5 %; norerank / BM25 shortfalls are caveats on those secondary figures (§7.1). Since 2026-11-10 (row below): a caveat on J's descriptive figures, not a gate |
 | orphans (after the first review) | count as not answering, with the favourable bound printed; **no judge-harness change** for stage-B `control_of` (owner, declined earlier) |
-| prior S registries (after the second review) | **operator default**: three registries, named in §3 (rechunk confirm control, cover-any, stage-1b). Label conflicts are checked per registry and gate only within one registry. Across registries the stage-1 rule applies, *answers* if any registry says answers; it slightly favours S keys judged twice. The integrity check has been run now (§3: no problem; 4 cross-registry disagreements) |
+| prior S registries (after the second review) | **operator default**: three registries, named in §3 (rechunk confirm control, cover-any, stage-1b). Label conflicts are checked per registry and gate only within one registry (a caveat on J since 2026-11-10). Across registries the stage-1 rule applies, *answers* if any registry says answers; it slightly favours S keys judged twice. The integrity check has been run now (§3: no problem; 4 cross-registry disagreements) |
 | inputs pinned (after the second review) | **operator default**: every pre-freeze input listed with its sha256 (§9.1) and carried in the tag message (§9.2). `report` refuses unless its input shas equal `j-seeds.json`'s. `--s-prior-pairs` is required with `--s-prior-final`. The `--expected-records` / `--expected-eligible` overrides are removed |
 | S reachability (after the second review) | **operator default**: Q-eligible = W-verbatim **and** `quote_cover` over every S chunk of the gold document ≥ 0.90 (§2). Result: 1,089, unchanged (1 split quote). `power.json` is kept: the rule was to regenerate it only if the count moved by ≥ 1 % of the records |
 | retrieval settings (after the second review) | **operator default**: the S run config `reach-config.json` is in the freeze set (§9.1). `report` gates on unexpected differences between the S and W run summaries and declares the expected ones (§7.1) |
 | orphans counted (after the second review) | **operator default**: 748 orphan records, counted before the run (§3). The consequence for J's unjudged gate is declared (§5); the owner's orphan decision above is unchanged |
-| exposure (after the second review) | **operator default**: the public `j-seeds.json` carries totals per registry only, and the breakdowns are private (§6 step 3). Without a resume after a hard stop, J is reported as it stands under the written gates and the decision is recorded (§6 step 4) |
+| exposure (after the second review) | **operator default**: the public `j-seeds.json` carries totals per registry only, and the breakdowns are private (§6 step 3). Without a resume after a hard stop, J is reported as it stands under the written gates and the decision is recorded (§6 step 4; since 2026-11-10, under its caveats) |
 | wording (after the second review) | **operator default**: the frozen form is the §7.2 text with its Greek letters; `RESULTS.md` carries §7.2 verbatim; the report prints δ and α in Unicode |
 | corrections (after the second review) | **operator default**: §4's formula is X_k = 100·T_k + m_k·δ (δ in points). §5's W baseline uses the eligible rates (random-1 BM25 77.2, random-2 default 89.4, random-2 BM25 77.1), and all 12 cells were rechecked against `quote10_eligible`. §4 notes that 0.0545 is just above α + 2 MC SE |
+| **2026-11-10: J's status** (owner decision) | **J is descriptive; quote@10 (Q) is the sole confirmatory family**, tested at α = 0.05 one-sided (§4). Reason: 748 of the 1,091 records have no stage-A pair (`feasibility.json` `orphans`), so `build-control` cannot judge their S chunks and J's unjudged gate would almost surely fire (§5); and rechunk stage 1b showed that "any chunk answers" saturates for these questions (A 75/75 on the lost pairs; stage 1b, 2026-11-10, `../rechunk-found10-2026-11/` once its write-up merges). Consequences: HJ is withdrawn (§1); J gets one descriptive sentence, with the favourable bound and the unjudged counts, and no outcome (§7.2); J's gates become caveats on its figures (§7.1); J's judging stays as planned, descriptive, with the drift check (§12). Q, `power.json` and `feasibility.json` are unchanged |
 
 ## 12. Cost (planning figures)
 
@@ -567,6 +613,8 @@ After the second review (operator defaults, §11):
   chat (`label` refuses without `--notice-acknowledged`); if no acknowledgement arrives within about
   5 minutes, hold and ask the owner. **Hard stop** on any provider notice (§6 step 4); the owner's word in
   chat is required to resume, and the resume is recorded.
+- **J stays judged** (owner decision, 2026-11-10, §11): J is descriptive, but its judging and the drift check
+  run as planned above.
 - **Owner time:** the go, the acknowledgements, any resume.
 
 ## 13. What is released

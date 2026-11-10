@@ -39,13 +39,17 @@ gold chunk after whitespace normalisation (``reach_quote.is_verbatim``) **and** 
 ``quote_cover(quote, every S chunk of the gold document) >= 0.90`` (1,089 of 1,091; all 1,089
 W-verbatim quotes are S-reachable, one only across an S chunk boundary).
 
-**judged found@10 (J; PREREG §3).** quote@10, **or** a top-10 chunk labelled *answers* for the
-record. Every record is in J (the 2 non-verbatim records too). Labels:
+**judged found@10 (J; PREREG §3), descriptive.** quote@10, **or** a top-10 chunk labelled *answers*
+for the record. Every record is in J (the 2 non-verbatim records too). J is **descriptive** (owner
+decision, 2026-11-10; PREREG §1, §4, §11): no test, no outcome and no gate. Its figures, the
+favourable bound, the unjudged counts and its caveats (what were J's gates) go to the report's
+``descriptive`` block, with one reporting sentence (:func:`describe_j`); :func:`decide` takes Q only.
+Labels:
 
 - W: the ``--w-final`` rows, keyed (record, chunk); one key in several rows takes
   ``rechunk_prep.combine`` (answers if any says answers).
 - Each ``final.jsonl`` is one registry: two judged labels of one key **within** a registry are a
-  conflict (a J gate, §7.1); across registries the labels combine by the same rule (answers if any
+  conflict (a caveat on J, §7.1); across registries the labels combine by the same rule (answers if any
   registry says answers; PREREG §3, §11: it slightly favours keys judged twice) and the cross-registry
   disagreements are counted, not gated.
 - S, in this order: (1) a judged (*answers* / *not*) ``--s-prior-final`` label of the key; (2) the
@@ -53,9 +57,9 @@ record. Every record is in J (the 2 non-verbatim records too). Labels:
   of the same record that carries a judged W label (several: combined); (3) the ``--s-final``
   label. A key labelled *unjudged* (or never) counts as not answering and as **unjudged**: so does
   an **orphan** (a pair whose record has no stage-A pair in ``--main-pairs``, so ``build-control``
-  cannot take it; PREREG §3). The report prints the **favourable bound** beside the primary: J
-  recomputed with every unjudged or orphan S pair scored *answers*; when the bound's outcome
-  differs from the primary's, the J sentence says so (PREREG §7.2).
+  cannot take it; PREREG §3). The report prints the **favourable bound** beside J's primary-cell
+  figures: J recomputed with every unjudged or orphan S pair scored *answers*; J's descriptive
+  sentence always states it (PREREG §7.2).
 
 The pairs J needs are the top-10 (record, chunk) pairs of every list **without** a quote hit
 (failed calls excluded), all three retrievers (§11 Q3), unique per side.
@@ -85,15 +89,17 @@ The pairs J needs are the top-10 (record, chunk) pairs of every list **without**
   PREREG §6 declares this; no discretionary step follows it.
 
 **report** (``reach-report/1``, public, counts only, written through
-``alias_control_chunks.write_public``): per family (Q, J) the primary test (§4: default retriever,
-the four corpora pooled, records clustered by paper; the exact sign-flip over papers on
-``X_k = 100 T_k + m_k δ`` with δ = 3 points, one-sided α = 0.05, by ``power.py``'s
-``sign_flip_p_exact``, imported from the committed file; then superiority on ``T_k``, hierarchical),
-the decision and its frozen sentence (PREREG §7.2, :func:`decide`, with δ and α as in the prereg); the
-secondary figures (per corpus,
-per retriever, G vs C, context tokens per query, discordant units by the S coverage of the gold
-window); the gates (§7.1, with the retrieval-settings comparison of the W and S run summaries,
-:func:`settings_gates`); the judge drift summary (agreement, the prompt-identity check and the
+``alias_control_chunks.write_public``): for the one confirmatory family, Q (``families``), the
+primary test (§4: default retriever, the four corpora pooled, records clustered by paper; the exact
+sign-flip over papers on ``X_k = 100 T_k + m_k δ`` with δ = 3 points, one-sided α = 0.05, by
+``power.py``'s ``sign_flip_p_exact``, imported from the committed file; then superiority on ``T_k``,
+hierarchical), the decision and its frozen sentence (PREREG §7.2, :func:`decide`, with δ and α as in
+the prereg) and Q's gates (§7.1, with the retrieval-settings comparison of the W and S run
+summaries, :func:`settings_gates`); for J (``descriptive``), the primary-cell counts, the
+favourable bound, the unjudged counts, the caveats (every §7.1 gate that fired, J's unjudged share
+and label integrity, the judge caveats) and the descriptive sentence (:func:`describe_j`); for both,
+the secondary figures (per corpus, per retriever, G vs C, context tokens per query, discordant units
+by the S coverage of the gold window); the judge drift summary (agreement, the prompt-identity check and the
 Qwen cache check of ``alias_control_chunks.cache_check``); provenance and input shas. ``report``
 requires ``--prereg PREREG.md --prereg-sha256 SHA`` and refuses unless the file hashes to the sha
 and the sha is this checkout's committed ``PREREG.md``.
@@ -140,7 +146,10 @@ EXPECTED_ELIGIBLE = 1089
 S_STAGE = "reach-S"
 DRIFT_STAGE = "reach-drift-W"
 GATE = asc.GATE
-FAMILIES = ("Q", "J")
+#: the confirmatory family (owner decision, 2026-11-10: Q is the sole one; PREREG §1, §4, §11)
+FAMILIES = ("Q",)
+#: reported, never tested or gated (PREREG §7.2: one descriptive sentence, no outcome)
+DESCRIPTIVE = ("J",)
 OUTCOMES = ("superior", "non_inferior", "ni_not_shown", "gate_not_evaluable")
 POWER_PY = _HERE.parents[2] / "docs" / "plans" / "results" / "reach-rechunk-2026-11" / "power.py"
 #: PREREG §9: ``report`` refuses unless the given prereg's sha is this file's (read at call time)
@@ -614,37 +623,39 @@ def size_note(power_json: Mapping[str, Any] | None) -> str:
             "5 %")
 
 
-def ungated_outcome(res: Mapping[str, Any]) -> str:
-    """The outcome the test alone gives (the gates aside)."""
-    t = res["test"]
-    if t["ni"]["reject"]:
-        return "superior" if t["superiority"]["reject"] else "non_inferior"
-    return "ni_not_shown"
+def _pct(x: float | None) -> str:
+    return "n/a" if x is None else f"{100 * x:.1f} %"
 
 
-def decide(family: str, res: Mapping[str, Any], gates: Sequence[str], caveats: Sequence[str],
-           bound: Mapping[str, Any] | None = None) -> tuple[str, str]:
-    """The outcome and its frozen sentence (PREREG §7.2). ``bound`` (J): the favourable-bound
-    recomputation (``counts``, ``test``, ``pairs``: the unjudged and orphan S pairs it scored
-    *answers*); when its outcome differs from the test's, the sentence says so."""
+def _pts(d: float | None) -> str:
+    return "n/a" if d is None else format(d, "+.1f")
+
+
+def _core(family: str, c: Mapping[str, Any]) -> str:
+    """The counts clause both sentences share (PREREG §7.2)."""
+    return (f"under the default retriever pooled over the four corpus collections, {FAMILY_TEXT[family]} was "
+            f"{_pct(c['S']['rate'])} under S against {_pct(c['W']['rate'])} under W on {c['units']} paired (record, "
+            f"corpus) units ({c['records']} records in {c['papers']} papers), a difference of {_pts(c['D_pts'])} "
+            f"points ({c['S_only']} units found under S only, {c['W_only']} under W only; discordance "
+            f"{_pct(c['discordance'])})")
+
+
+def _caveat_tail(caveats: Sequence[str]) -> str:
+    return "" if not caveats else " Caveats: " + "; ".join(caveats) + "."
+
+
+def decide(family: str, res: Mapping[str, Any], gates: Sequence[str], caveats: Sequence[str]) -> tuple[str, str]:
+    """The outcome and its frozen sentence (PREREG §7.2), for the confirmatory family only: Q. J is
+    descriptive (owner decision, 2026-11-10) and is refused here; its sentence is
+    :func:`describe_j`'s."""
+    if family not in FAMILIES:
+        raise ValueError(f"decide(): {family!r} is not a confirmatory family (PREREG §4: Q only; J is descriptive, "
+                         "owner decision 2026-11-10)")
     c = res["counts"]
     t = res["test"]
-    s, w = c["S"]["rate"], c["W"]["rate"]
-
-    def pct(x: float | None) -> str:
-        return "n/a" if x is None else f"{100 * x:.1f} %"
-    core = (f"under the default retriever pooled over the four corpus collections, {FAMILY_TEXT[family]} was "
-            f"{pct(s)} under S against {pct(w)} under W on {c['units']} paired (record, corpus) units "
-            f"({c['records']} records in {c['papers']} papers), a difference of "
-            f"{'n/a' if c['D_pts'] is None else format(c['D_pts'], '+.1f')} points ({c['S_only']} units found under "
-            f"S only, {c['W_only']} under W only; discordance {pct(c['discordance'])})")
+    core = _core(family, c)
     p_ni, p_sup = t["ni"]["p"], t["superiority"]["p"]
-    tail = ""
-    if bound is not None and ungated_outcome(bound) != ungated_outcome(res):
-        tail += (f" Favourable bound: with the {bound['pairs']} S pair(s) J needs that carry no judged label (unjudged "
-                 f"or orphan) scored answers, the outcome would be {ungated_outcome(bound)} (NI p = "
-                 f"{bound['test']['ni']['p']}); this decision scores them not answering and rests on that rule.")
-    tail += "" if not caveats else " Caveats: " + "; ".join(caveats) + "."
+    tail = _caveat_tail(caveats)
     if gates:
         return "gate_not_evaluable", (f"GATE-NOT-EVALUABLE ({family}): " + "; ".join(gates) + f". The test was computed "
                                       f"(NI p = {p_ni}, n = {c['units']} units) and decides nothing." + tail)
@@ -659,6 +670,19 @@ def decide(family: str, res: Mapping[str, Any], gates: Sequence[str], caveats: S
     return "ni_not_shown", (f"Non-inferiority not shown ({family}): {core}. The exact one-sided sign-flip over papers "
                             f"gives p = {p_ni} > {ALPHA}: a loss of {DELTA_PTS} points or more under S is not ruled "
                             "out by this test (this is not evidence that S is worse)." + tail)
+
+
+def describe_j(j: Mapping[str, Any]) -> str:
+    """J's one reporting sentence (PREREG §7.2; owner decision, 2026-11-10): the primary-cell counts,
+    the unjudged counts, the favourable bound (always stated), then the caveats (J's former gates
+    among them). It names no outcome and states no test."""
+    c, b, un = j["counts"], j["favourable_bound"], j["unjudged_primary"]
+    return (f"Descriptive (J, not tested): {_core('J', c)}. Of the pairs this cell needs, {un['S']['unjudged']} of "
+            f"{un['S']['pairs_needed']} on S and {un['W']['unjudged']} of {un['W']['pairs_needed']} on W carry no judged "
+            f"label (S: {j['s_orphans_primary']} orphan(s)). Favourable bound: with those {b['pairs']} S pair(s) scored "
+            f"answers, J would be {_pct(b['counts']['S']['rate'])} under S, a difference of "
+            f"{_pts(b['counts']['D_pts'])} points. No test was computed for J; this sentence decides nothing."
+            + _caveat_tail(j["caveats"]))
 
 
 # ------------------------------------------------------------------ gates (PREREG §7.1)
@@ -1024,13 +1048,14 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
     s_unj_kind = Counter(s_unjudged_kind(r, c) for r, c in s_need if not judged(s_label(r, c)))
     by_ret = {side: {ret: unjudged_counts(sc, lab, [ret]) for ret in RETRIEVERS}
               for side, sc, lab in (("W", w_sc, w_label), ("S", s_sc, s_label))}
-    j_gates: list[str] = []
-    # §7.1 (owner default): the gate reads the primary cell's pairs (default retriever, four corpora)
+    # §7.1: the primary cell's pairs (default retriever, four corpora) unjudged above 5 %: once a J gate,
+    # a caveat on J's descriptive figures since the owner decision of 2026-11-10
+    j_unjudged: list[str] = []
     for side in ("W", "S"):
         pc = by_ret[side][PRIMARY_RETRIEVER]
         if pc["pairs_needed"] and pc["unjudged"] / pc["pairs_needed"] > UNJUDGED_MAX:
-            j_gates.append(f"{side}: {pc['unjudged']} of {pc['pairs_needed']} pairs J's primary cell needs are "
-                           f"unjudged (> {UNJUDGED_MAX:.0%})")
+            j_unjudged.append(f"{side}: {pc['unjudged']} of {pc['pairs_needed']} pairs J's primary cell needs are "
+                              f"unjudged (> {UNJUDGED_MAX:.0%})")
     #: norerank / BM25: a shortfall above 5 % is a caveat on those secondary J figures, not a gate
     secondary_unjudged_caveat = {
         ret: "; ".join(f"{side}: {by_ret[side][ret]['unjudged']} of {by_ret[side][ret]['pairs_needed']} pairs this "
@@ -1041,44 +1066,56 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
     integrity = inp.w_reg.problems + inp.s_prior.problems + (inp.s_new.problems if inp.s_new else []) + sl.integrity()
     if inp.s_new is None:
         integrity.append("S registry: not given")
-    j_gates += integrity
 
     # drift (descriptive, PREREG §3)
     drift = drift_summary(w_need, w_labels, inp.drift, inp.w_label_rows, inp.drift_label_rows)
 
-    # the families
+    # the confirmatory family: Q only (PREREG §4; owner decision, 2026-11-10)
     fam: dict[str, Any] = {}
     for f in FAMILIES:
         u = units(f, PRIMARY_RETRIEVER)
         res: dict[str, Any] = {"counts": paired(u), "test": ni_test(u)}
-        gates = common + (j_gates if f == "J" else [])
         caveats = []
         disc = res["counts"]["discordance"]
         if res["test"]["ni"]["reject"] and disc is not None and disc < LOW_DISCORDANCE:
             caveats.append(f"low observed discordance ({100 * disc:.1f} %): the test's size is only asymptotically "
                            f"α ({size_note(inp.power_json)})")
-        bound = None
-        if f == "J":
-            caveats.append("W labels are from the 2026-11-04/06 judge runs and S labels from new judging; any judge "
-                           "drift lands on S only")
-            if drift["caveat"]:
-                caveats.append(drift["caveat"])
-            ne = len(by_id) - len(eligible)
-            if ne:
-                caveats.append(f"J includes the {ne} record(s) whose quote is not verbatim in its gold chunk")
-            ub = units(f, PRIMARY_RETRIEVER, s_lab=s_label_bound)
-            pc_need = needed_pairs(s_sc, [PRIMARY_RETRIEVER])
-            bound = {"counts": paired(ub), "test": ni_test(ub),
-                     "pairs": sum(not judged(s_label(r, c)) for r, c in pc_need),
-                     "rule": "every unjudged or orphan S pair J's primary cell needs scored answers (favourable to S)"}
-            bound["outcome"] = ungated_outcome(bound)
-            bound["changes_outcome"] = bound["outcome"] != ungated_outcome(res)
-            res["favourable_bound"] = bound
-        res["gates"] = gates
+        res["gates"] = list(common)
         res["caveats"] = caveats
-        res["outcome"], res["sentence"] = decide(f, res, gates, caveats, bound)
-        res["secondary"] = secondary(f, units, by_id, secondary_unjudged_caveat if f == "J" else None)
+        res["outcome"], res["sentence"] = decide(f, res, res["gates"], caveats)
+        res["secondary"] = secondary(f, units, by_id)
         fam[f] = res
+
+    # J, descriptive (PREREG §1, §7.2; owner decision, 2026-11-10): no test, no outcome, no gate; what
+    # were J's gates (every §7.1 gate, the primary cell's unjudged share, label integrity) are caveats
+    pc_need = needed_pairs(s_sc, [PRIMARY_RETRIEVER])
+    pc_unj = [(r, c) for r, c in pc_need if not judged(s_label(r, c))]
+    pc_kind = Counter(s_unjudged_kind(r, c) for r, c in pc_unj)
+    ub = units("J", PRIMARY_RETRIEVER, s_lab=s_label_bound)
+    j_sources = {"retrieval_and_inputs": list(common), "unjudged_primary": j_unjudged, "label_integrity": integrity}
+    j_caveats = [*common, *j_unjudged, *integrity,
+                 "W labels are from the 2026-11-04/06 judge runs and S labels from new judging; any judge drift lands "
+                 "on S only"]
+    if drift["caveat"]:
+        j_caveats.append(drift["caveat"])
+    ne = len(by_id) - len(eligible)
+    if ne:
+        j_caveats.append(f"J includes the {ne} record(s) whose quote is not verbatim in its gold chunk")
+    j: dict[str, Any] = {
+        "tested": False,
+        "status": "descriptive (owner decision 2026-11-10; PREREG §1, §4, §7.2): no test, no outcome, no gate",
+        "counts": paired(units("J", PRIMARY_RETRIEVER)),
+        "favourable_bound": {"counts": paired(ub), "pairs": len(pc_unj),
+                             "rule": "every unjudged or orphan S pair J's primary cell needs scored answers "
+                                     "(favourable to S)"},
+        "unjudged_primary": {side: by_ret[side][PRIMARY_RETRIEVER] for side in ("W", "S")},
+        "s_unjudged_primary_by_kind": dict(sorted(pc_kind.items())),
+        "s_orphans_primary": pc_kind.get("orphan", 0),
+        "caveat_sources": j_sources,
+        "caveats": j_caveats,
+    }
+    j["sentence"] = describe_j(j)
+    j["secondary"] = secondary("J", units, by_id, secondary_unjudged_caveat)
 
     # discordant units by the S coverage of the gold window (Q, primary cell)
     cov: dict[str, Counter[str]] = {"S_only": Counter(), "W_only": Counter(), "both_or_neither": Counter()}
@@ -1103,10 +1140,12 @@ def build_report(inp: Inputs, *, token_counter: TokenCounter | None = None, toke
         "primary_cell": {"retriever": PRIMARY_RETRIEVER, "corpora": list(CORPORA), "cluster": "paper",
                          "delta_pts": DELTA_PTS, "alpha_one_sided": ALPHA},
         "families": fam,
-        "gates": {"common": common, "J_only": j_gates},
+        "descriptive": {"J": j},
+        "gates": {"Q": fam["Q"]["gates"]},
         "j_labels": {"pairs_needed": nneed, "unjudged": unj,
                      "unjudged_share": {k: round(unj[k] / nneed[k], 4) if nneed[k] else None for k in nneed},
-                     "unjudged_gate": {"cell": "primary (default retriever, four corpora)", "max_share": UNJUDGED_MAX},
+                     "unjudged_caveat": {"cell": "primary (default retriever, four corpora)", "max_share": UNJUDGED_MAX,
+                                         "gate": False},
                      "s_unjudged_by_kind": dict(sorted(s_unj_kind.items())),
                      "s_orphans": s_unj_kind.get("orphan", 0),
                      "s_label_source": dict(sorted(s_src.items())),
@@ -1537,8 +1576,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(rec["registries"], indent=1))
         return 0
     rec = run_report(a)
-    print(json.dumps({f: {"outcome": rec["families"][f]["outcome"], "sentence": rec["families"][f]["sentence"]}
-                      for f in FAMILIES}, indent=1, ensure_ascii=False))
+    out = {f: {"outcome": rec["families"][f]["outcome"], "sentence": rec["families"][f]["sentence"]} for f in FAMILIES}
+    out.update({f: {"descriptive": rec["descriptive"][f]["sentence"]} for f in DESCRIPTIVE})
+    print(json.dumps(out, indent=1, ensure_ascii=False))
     return 0
 
 
