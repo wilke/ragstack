@@ -1,0 +1,1078 @@
+{
+ "census": {
+  "base": {
+   "chunks": 38548,
+   "collection": true,
+   "live_after": true,
+   "live_before": true,
+   "load_receipt_sha256": true,
+   "n_chunks": true
+  },
+  "neighbour": {
+   "chunks": 141592,
+   "collection": true,
+   "live_after": true,
+   "live_before": true,
+   "load_receipt_sha256": true,
+   "n_chunks": true
+  },
+  "random1": {
+   "chunks": 136402,
+   "collection": true,
+   "live_after": true,
+   "live_before": true,
+   "load_receipt_sha256": true,
+   "n_chunks": true
+  },
+  "random2": {
+   "chunks": 136187,
+   "collection": true,
+   "live_after": true,
+   "live_before": true,
+   "load_receipt_sha256": true,
+   "n_chunks": true
+  }
+ },
+ "code_sha256": {
+  "power_py": "7289721c6aeb5a8aaa33ac73bdcd9d5ceabde7162028a362a13cc43e16b898c1",
+  "reach_quote": "8f9e7e5d63ad689ac6b6a683e6e83781d8d8b4d78f249f741444eaf5c7bc1e84",
+  "reach_report": "a481a43f2435f36daedd2671ad665e637d5180bd068f71686131549d9865f885"
+ },
+ "confirmatory": true,
+ "context_tokens": {
+  "S": {
+   "by_corpus_default": {
+    "base": {
+     "lists": 1091,
+     "mean": 4106.5,
+     "median": 4187
+    },
+    "neighbour": {
+     "lists": 1091,
+     "mean": 4180.4,
+     "median": 4272
+    },
+    "random1": {
+     "lists": 1091,
+     "mean": 4143.1,
+     "median": 4237
+    },
+    "random2": {
+     "lists": 1091,
+     "mean": 4137.3,
+     "median": 4241
+    }
+   },
+   "by_retriever_pooled": {
+    "bm25": {
+     "lists": 4364,
+     "mean": 3947.0,
+     "median": 4025.0
+    },
+    "default": {
+     "lists": 4364,
+     "mean": 4141.8,
+     "median": 4232.5
+    },
+    "norerank": {
+     "lists": 4364,
+     "mean": 3829.9,
+     "median": 3910.0
+    }
+   }
+  },
+  "W": {
+   "by_corpus_default": {
+    "base": {
+     "lists": 1091,
+     "mean": 4763.6,
+     "median": 4874
+    },
+    "neighbour": {
+     "lists": 1091,
+     "mean": 4808.6,
+     "median": 4948
+    },
+    "random1": {
+     "lists": 1091,
+     "mean": 4770.0,
+     "median": 4907
+    },
+    "random2": {
+     "lists": 1091,
+     "mean": 4767.3,
+     "median": 4893
+    }
+   },
+   "by_retriever_pooled": {
+    "bm25": {
+     "lists": 4364,
+     "mean": 4664.4,
+     "median": 4784.0
+    },
+    "default": {
+     "lists": 4364,
+     "mean": 4777.4,
+     "median": 4902.5
+    },
+    "norerank": {
+     "lists": 4364,
+     "mean": 4529.6,
+     "median": 4691.0
+    }
+   }
+  },
+  "computed": true,
+  "per_list": "sum of the top-10 chunk texts' tokens",
+  "tokenizer": "Salesforce/SFR-Embedding-Mistral"
+ },
+ "descriptive": {
+  "J": {
+   "caveat_sources": {
+    "label_integrity": [],
+    "label_reuse": [],
+    "retrieval_and_inputs": [],
+    "unjudged_primary": []
+   },
+   "caveats": [
+    "W labels are from the 2026-11-04/06 judge runs and S labels from new judging; any judge drift lands on S only",
+    "J includes the 2 record(s) that are not Q-eligible (\u00a72)"
+   ],
+   "counts": {
+    "D_pts": 0.092,
+    "S": {
+     "k": 4282,
+     "n": 4364,
+     "rate": 0.9812
+    },
+    "S_only": 42,
+    "W": {
+     "k": 4278,
+     "n": 4364,
+     "rate": 0.9803
+    },
+    "W_only": 38,
+    "discordance": 0.0183,
+    "papers": 408,
+    "records": 1091,
+    "units": 4364
+   },
+   "favourable_bound": {
+    "counts": {
+     "D_pts": 0.275,
+     "S": {
+      "k": 4290,
+      "n": 4364,
+      "rate": 0.983
+     },
+     "S_only": 42,
+     "W": {
+      "k": 4278,
+      "n": 4364,
+      "rate": 0.9803
+     },
+     "W_only": 30,
+     "discordance": 0.0165,
+     "papers": 408,
+     "records": 1091,
+     "units": 4364
+    },
+    "pairs": 71,
+    "rule": "every unjudged or orphan S pair J's primary cell needs scored answers (favourable to S)"
+   },
+   "s_orphans_primary": 71,
+   "s_unjudged_primary_by_kind": {
+    "orphan": 71
+   },
+   "secondary": {
+    "by_corpus_default": {
+     "base": {
+      "D_pts": 0.367,
+      "S": {
+       "k": 1080,
+       "n": 1091,
+       "rate": 0.9899
+      },
+      "S_only": 8,
+      "W": {
+       "k": 1076,
+       "n": 1091,
+       "rate": 0.9863
+      },
+      "W_only": 4,
+      "discordance": 0.011,
+      "papers": 408,
+      "records": 1091,
+      "units": 1091
+     },
+     "neighbour": {
+      "D_pts": 0.092,
+      "S": {
+       "k": 1070,
+       "n": 1091,
+       "rate": 0.9808
+      },
+      "S_only": 13,
+      "W": {
+       "k": 1069,
+       "n": 1091,
+       "rate": 0.9798
+      },
+      "W_only": 12,
+      "discordance": 0.0229,
+      "papers": 408,
+      "records": 1091,
+      "units": 1091
+     },
+     "random1": {
+      "D_pts": -0.092,
+      "S": {
+       "k": 1067,
+       "n": 1091,
+       "rate": 0.978
+      },
+      "S_only": 10,
+      "W": {
+       "k": 1068,
+       "n": 1091,
+       "rate": 0.9789
+      },
+      "W_only": 11,
+      "discordance": 0.0192,
+      "papers": 408,
+      "records": 1091,
+      "units": 1091
+     },
+     "random2": {
+      "D_pts": 0.0,
+      "S": {
+       "k": 1065,
+       "n": 1091,
+       "rate": 0.9762
+      },
+      "S_only": 11,
+      "W": {
+       "k": 1065,
+       "n": 1091,
+       "rate": 0.9762
+      },
+      "W_only": 11,
+      "discordance": 0.0202,
+      "papers": 408,
+      "records": 1091,
+      "units": 1091
+     }
+    },
+    "by_kind_primary": {
+     "C": {
+      "D_pts": -0.061,
+      "S": {
+       "k": 1629,
+       "n": 1632,
+       "rate": 0.9982
+      },
+      "S_only": 2,
+      "W": {
+       "k": 1630,
+       "n": 1632,
+       "rate": 0.9988
+      },
+      "W_only": 3,
+      "discordance": 0.0031,
+      "papers": 408,
+      "records": 408,
+      "units": 1632
+     },
+     "G": {
+      "D_pts": 0.183,
+      "S": {
+       "k": 2653,
+       "n": 2732,
+       "rate": 0.9711
+      },
+      "S_only": 40,
+      "W": {
+       "k": 2648,
+       "n": 2732,
+       "rate": 0.9693
+      },
+      "W_only": 35,
+      "discordance": 0.0275,
+      "papers": 383,
+      "records": 683,
+      "units": 2732
+     }
+    },
+    "by_retriever_pooled": {
+     "bm25": {
+      "D_pts": -1.375,
+      "S": {
+       "k": 3989,
+       "n": 4364,
+       "rate": 0.9141
+      },
+      "S_only": 130,
+      "W": {
+       "k": 4049,
+       "n": 4364,
+       "rate": 0.9278
+      },
+      "W_only": 190,
+      "caveat": "S: 1168 of 6221 pairs this retriever's J needs are unjudged (> 5%)",
+      "discordance": 0.0733,
+      "papers": 408,
+      "records": 1091,
+      "units": 4364
+     },
+     "default": {
+      "D_pts": 0.092,
+      "S": {
+       "k": 4282,
+       "n": 4364,
+       "rate": 0.9812
+      },
+      "S_only": 42,
+      "W": {
+       "k": 4278,
+       "n": 4364,
+       "rate": 0.9803
+      },
+      "W_only": 38,
+      "discordance": 0.0183,
+      "papers": 408,
+      "records": 1091,
+      "units": 4364
+     },
+     "norerank": {
+      "D_pts": 0.206,
+      "S": {
+       "k": 4120,
+       "n": 4364,
+       "rate": 0.9441
+      },
+      "S_only": 137,
+      "W": {
+       "k": 4111,
+       "n": 4364,
+       "rate": 0.942
+      },
+      "W_only": 128,
+      "caveat": "S: 499 of 5780 pairs this retriever's J needs are unjudged (> 5%)",
+      "discordance": 0.0607,
+      "papers": 408,
+      "records": 1091,
+      "units": 4364
+     }
+    },
+    "tested": false
+   },
+   "sentence": "Descriptive (J, not tested): under the default retriever pooled over the four corpus collections, judged found@10 (quote@10, or a top-10 chunk the frozen alias judge labelled answers) was 98.1 % under S against 98.0 % under W on 4364 paired (record, corpus) units (1091 records in 408 papers), a difference of +0.1 points (42 units found under S only, 38 under W only; discordance 1.8 %). Of the pairs this cell needs, 71 of 2758 on S and 0 of 3149 on W carry no judged label (S: 71 orphan(s)). Favourable bound: with those 71 S pair(s) scored answers, J would be 98.3 % under S, a difference of +0.3 points. No test was computed for J; this sentence decides nothing. Caveats: W labels are from the 2026-11-04/06 judge runs and S labels from new judging; any judge drift lands on S only; J includes the 2 record(s) that are not Q-eligible (\u00a72).",
+   "status": "descriptive (owner decision 2026-11-10; PREREG \u00a71, \u00a74, \u00a77.2): no test, no outcome, no gate",
+   "tested": false,
+   "unjudged_primary": {
+    "S": {
+     "pairs_needed": 2758,
+     "share": 0.0257,
+     "unjudged": 71
+    },
+    "W": {
+     "pairs_needed": 3149,
+     "share": 0.0,
+     "unjudged": 0
+    }
+   }
+  }
+ },
+ "discordant_by_gold_window_coverage_under_S": {
+  "S_only": {
+   "0.5-0.8": 57,
+   "<0.5": 27,
+   ">=0.8": 28
+  },
+  "W_only": {
+   "0.5-0.8": 36,
+   "<0.5": 1,
+   ">=0.8": 25
+  },
+  "both_or_neither": {
+   "0.5-0.8": 2215,
+   "<0.5": 308,
+   ">=0.8": 1659
+  }
+ },
+ "drift_check": {
+  "agreement": 0.9712,
+  "agreement_on_answers": 0.9327,
+  "answers_judged_both": 104,
+  "by_original_label": {
+   "answers": {
+    "answers": 97,
+    "not": 7,
+    "not_rejudged": 9
+   },
+   "not": {
+    "answers": 9,
+    "not": 442,
+    "not_rejudged": 52
+   }
+  },
+  "cache_check": {
+   "C": {
+    "compared": 555,
+    "ct_equal": 2,
+    "evaluable": true,
+    "prompt_sha256_differs": 0,
+    "reasoning_eligible": 555,
+    "reasoning_field_missing": 0,
+    "reasoning_identical": 0,
+    "retest_pairs": 555,
+    "system_sha256_differs": 0,
+    "texts_sample_identical": 4,
+    "verdict_agreement": {
+     "k": 548,
+     "n": 555,
+     "rate": 0.9874,
+     "wilson95": [
+      0.9741,
+      0.9939
+     ]
+    },
+    "without_retest_row": 0,
+    "without_stage_a_row": 0
+   },
+   "E": {
+    "compared": 555,
+    "ct_equal": 4,
+    "evaluable": true,
+    "prompt_sha256_differs": 0,
+    "reasoning_eligible": 550,
+    "reasoning_field_missing": 0,
+    "reasoning_identical": 0,
+    "retest_pairs": 555,
+    "system_sha256_differs": 0,
+    "texts_sample_identical": 27,
+    "verdict_agreement": {
+     "k": 538,
+     "n": 554,
+     "rate": 0.9711,
+     "wilson95": [
+      0.9536,
+      0.9822
+     ]
+    },
+    "without_retest_row": 0,
+    "without_stage_a_row": 0
+   },
+   "flag": false,
+   "min_reasoning_chars": 200,
+   "response_cache_status": "absent",
+   "rule": "reasoning_sample byte-identical to stage A's on either backend, where both are non-empty; not_evaluable when a backend with compared rows has no eligible pair",
+   "threshold_pairs": 1
+  },
+  "caveat": null,
+  "evaluable": true,
+  "judged_both": 555,
+  "labels_outside_sample": 0,
+  "prompt_identity": {
+   "compared_rows": 1110,
+   "differs": {
+    "C": {
+     "prompt": 0,
+     "system": 0
+    },
+    "E": {
+     "prompt": 0,
+     "system": 0
+    }
+   },
+   "status": "identical"
+  },
+  "registry_problems": 0,
+  "rejudged": 555,
+  "sample": 616,
+  "sample_without_w_text": 0,
+  "seed": "261109|reach|drift|W",
+  "share": 0.05,
+  "w_pairs_used": 12310
+ },
+ "families": {
+  "Q": {
+   "caveats": [
+    "low observed discordance (4.0 %): the test's size is only asymptotically \u03b1 (simulated size at \u03b4 = 3: 0.0545 at 10 % and 0.0615 at 5 % discordance under the measured correlations (up to 0.0766 over the grid at 5 %); not simulated below 5 %)"
+   ],
+   "counts": {
+    "D_pts": 1.148,
+    "S": {
+     "k": 3985,
+     "n": 4356,
+     "rate": 0.9148
+    },
+    "S_only": 112,
+    "W": {
+     "k": 3935,
+     "n": 4356,
+     "rate": 0.9034
+    },
+    "W_only": 62,
+    "discordance": 0.0399,
+    "papers": 408,
+    "records": 1089,
+    "units": 4356
+   },
+   "gates": [],
+   "outcome": "superior",
+   "secondary": {
+    "by_corpus_default": {
+     "base": {
+      "D_pts": 0.643,
+      "S": {
+       "k": 1033,
+       "n": 1089,
+       "rate": 0.9486
+      },
+      "S_only": 17,
+      "W": {
+       "k": 1026,
+       "n": 1089,
+       "rate": 0.9421
+      },
+      "W_only": 10,
+      "discordance": 0.0248,
+      "papers": 408,
+      "records": 1089,
+      "units": 1089
+     },
+     "neighbour": {
+      "D_pts": 1.745,
+      "S": {
+       "k": 974,
+       "n": 1089,
+       "rate": 0.8944
+      },
+      "S_only": 36,
+      "W": {
+       "k": 955,
+       "n": 1089,
+       "rate": 0.877
+      },
+      "W_only": 17,
+      "discordance": 0.0487,
+      "papers": 408,
+      "records": 1089,
+      "units": 1089
+     },
+     "random1": {
+      "D_pts": 0.826,
+      "S": {
+       "k": 989,
+       "n": 1089,
+       "rate": 0.9082
+      },
+      "S_only": 25,
+      "W": {
+       "k": 980,
+       "n": 1089,
+       "rate": 0.8999
+      },
+      "W_only": 16,
+      "discordance": 0.0376,
+      "papers": 408,
+      "records": 1089,
+      "units": 1089
+     },
+     "random2": {
+      "D_pts": 1.377,
+      "S": {
+       "k": 989,
+       "n": 1089,
+       "rate": 0.9082
+      },
+      "S_only": 34,
+      "W": {
+       "k": 974,
+       "n": 1089,
+       "rate": 0.8944
+      },
+      "W_only": 19,
+      "discordance": 0.0487,
+      "papers": 408,
+      "records": 1089,
+      "units": 1089
+     }
+    },
+    "by_kind_primary": {
+     "C": {
+      "D_pts": 0.307,
+      "S": {
+       "k": 1574,
+       "n": 1628,
+       "rate": 0.9668
+      },
+      "S_only": 14,
+      "W": {
+       "k": 1569,
+       "n": 1628,
+       "rate": 0.9638
+      },
+      "W_only": 9,
+      "discordance": 0.0141,
+      "papers": 407,
+      "records": 407,
+      "units": 1628
+     },
+     "G": {
+      "D_pts": 1.65,
+      "S": {
+       "k": 2411,
+       "n": 2728,
+       "rate": 0.8838
+      },
+      "S_only": 98,
+      "W": {
+       "k": 2366,
+       "n": 2728,
+       "rate": 0.8673
+      },
+      "W_only": 53,
+      "discordance": 0.0554,
+      "papers": 383,
+      "records": 682,
+      "units": 2728
+     }
+    },
+    "by_retriever_pooled": {
+     "bm25": {
+      "D_pts": 2.112,
+      "S": {
+       "k": 3472,
+       "n": 4356,
+       "rate": 0.7971
+      },
+      "S_only": 220,
+      "W": {
+       "k": 3380,
+       "n": 4356,
+       "rate": 0.7759
+      },
+      "W_only": 128,
+      "discordance": 0.0799,
+      "papers": 408,
+      "records": 1089,
+      "units": 4356
+     },
+     "default": {
+      "D_pts": 1.148,
+      "S": {
+       "k": 3985,
+       "n": 4356,
+       "rate": 0.9148
+      },
+      "S_only": 112,
+      "W": {
+       "k": 3935,
+       "n": 4356,
+       "rate": 0.9034
+      },
+      "W_only": 62,
+      "discordance": 0.0399,
+      "papers": 408,
+      "records": 1089,
+      "units": 4356
+     },
+     "norerank": {
+      "D_pts": 2.273,
+      "S": {
+       "k": 3567,
+       "n": 4356,
+       "rate": 0.8189
+      },
+      "S_only": 268,
+      "W": {
+       "k": 3468,
+       "n": 4356,
+       "rate": 0.7961
+      },
+      "W_only": 169,
+      "discordance": 0.1003,
+      "papers": 408,
+      "records": 1089,
+      "units": 4356
+     }
+    },
+    "tested": false
+   },
+   "sentence": "Superior (Q): under the default retriever pooled over the four corpus collections, quote@10 (the top 10 cover at least 90 % of the gold quote's characters) was 91.5 % under S against 90.3 % under W on 4356 paired (record, corpus) units (1089 records in 408 papers), a difference of +1.1 points (112 units found under S only, 62 under W only; discordance 4.0 %). Non-inferiority at \u03b4 = 3 points holds (exact one-sided sign-flip over papers, p = 0.0), and S is superior to W (p = 0.007889; hierarchical, no extra \u03b1). Caveats: low observed discordance (4.0 %): the test's size is only asymptotically \u03b1 (simulated size at \u03b4 = 3: 0.0545 at 10 % and 0.0615 at 5 % discordance under the measured correlations (up to 0.0766 over the grid at 5 %); not simulated below 5 %).",
+   "test": {
+    "alpha_one_sided": 0.05,
+    "clusters": 408,
+    "delta_pts": 3,
+    "ni": {
+     "p": 0.0,
+     "reject": true,
+     "statistic": "sum_k X_k, X_k = 100 T_k + m_k \u03b4 (\u03b4 in points)"
+    },
+    "superiority": {
+     "p": 0.007889,
+     "reject": true,
+     "tested": true
+    }
+   }
+  }
+ },
+ "frozen_inputs_check": {
+  "flags": 9,
+  "rows": 27,
+  "verified": true
+ },
+ "gates": {
+  "Q": []
+ },
+ "inputs_sha256": {
+  "build_summary": "a7fbaa0385a13bb2074cfbb0ae17adf6c52dfebd39566b40f0ae88f113145256",
+  "drift_final": [
+   "b561d54bce20f3de14e063acf3a2056701f4a55a053e8a322467d26771972399"
+  ],
+  "j_seeds": "e326679e9034aa7f17cd89a32c82af8b35cb9ee73a6752a19b63db678f948e50",
+  "main_pairs": "04d39e3ce8299d397f37092dd4537c97d995f18bfb91a7c22c9a92aea987c378",
+  "power_json": "cfb6ddb49f894271623358b0b031626a279db7e1ebb5098581f64bcf2bf36276",
+  "records": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f",
+  "s_exports": {
+   "base.chunks.jsonl": "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+   "neighbour.image.chunks.jsonl": "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
+   "random1.image.chunks.jsonl": "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
+   "random2.image.chunks.jsonl": "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c"
+  },
+  "s_final": [
+   "6a07a90ea072f4212f59533a25953c07ebcee88ee437a67f2c1f3c9e3d798891"
+  ],
+  "s_prior_final": [
+   "956fb547a5546e9d454a7c0d92cd7804f3dc11db55d654eb4e3e5fa3eb14fe4e",
+   "af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a",
+   "f0c6c7e6805c94a7be0c90c5dd69d96d4b03818273633c31bedd9b82e4065f99"
+  ],
+  "s_prior_pairs": [
+   "6a2608200aa64c1f5e3a6b5ee90d4763c0e57e59de1698f47f435f955ec0f604",
+   "aee3d117cf592a0087449f615eca9686f71d47c1f126ac44303d5acc03ecd2e6",
+   "f802cfd7106fff265466fa6c4a444aff34530b81a0c48d7669e876fae38df531"
+  ],
+  "s_runs": {
+   "base/none.jsonl": "378041dac4ae6d1f562fe6af84ca15f887677d871112dad5930961c40feb7475",
+   "base/none.summary.json": "7e7a16dcf08777997b49f462b459885d66e5dec260f20006067540204b792763",
+   "neighbour/none.jsonl": "2c772eaa8b845c15dd84a264cb5cd59e189b3d58cfc67d0f6bfd1a5b03164e64",
+   "neighbour/none.summary.json": "9416bb4dfdb82b6dea9a2103c33d6dcb43c6d25607bfc18b222a8456ac7852c6",
+   "random1/none.jsonl": "2b87f11f40faef0cadf5b9a9e3f41fcbaa7773ef26c78dd921d0e43ed0a236ab",
+   "random1/none.summary.json": "d4e4910ae9566bcefc85d25fad2313dc2fa8dbfa946e852cabbbbe0e8c64e171",
+   "random2/none.jsonl": "eeff5cd52f739a95bbcad599ac9d5e9263a47abd30eae01dcd695db9b16bb6ea",
+   "random2/none.summary.json": "c38654731bb8d3ebb10bff3e12425169f0fb15bd8b19f9c5c07224779f03f892"
+  },
+  "w_exports": {
+   "chunks-neighbour-v4.jsonl": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+   "chunks-oa.jsonl": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+   "chunks-random-1-v4.jsonl": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
+   "chunks-random-2-v4.jsonl": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c"
+  },
+  "w_final": [
+   "4e36010ccfacd389141508b6decf5d57a786902f19d26a3a29d1fed43515eecb"
+  ],
+  "w_runs": {
+   "base/none.jsonl": "6826ededf081ab9609723b24e346b2def66a38ef7d4dd8f78892f012372720ed",
+   "base/none.summary.json": "20936e99d9b0fb964de44d06b133fc20349b3c57bdd6c1cf90540935b6ab2fa7",
+   "neighbour/none.jsonl": "4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882",
+   "neighbour/none.summary.json": "7295a67826e178dd2cd75f15c1f2b35aa41b93efeeae7eb3a7a22c26903af40c",
+   "random1/none.jsonl": "4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e",
+   "random1/none.summary.json": "7d30412f716f79989ef1a9c28dac2a8bdaf8ba223a8631f87cfe96ea459e703b",
+   "random2/none.jsonl": "ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87",
+   "random2/none.summary.json": "302ffb23ff35bbdb808dfe29f365f7d5451fbd15879a5217dedb0d4924c531db"
+  }
+ },
+ "j_labels": {
+  "pairs_needed": {
+   "S": 10957,
+   "W": 12310
+  },
+  "pairs_needed_by_retriever": {
+   "S": {
+    "bm25": 6221,
+    "default": 2758,
+    "norerank": 5780
+   },
+   "W": {
+    "bm25": 6850,
+    "default": 3149,
+    "norerank": 6609
+   }
+  },
+  "s_label_source": {
+   "new:answers": 1456,
+   "new:not": 5740,
+   "none:unjudged": 1549,
+   "prior:answers": 371,
+   "prior:not": 234,
+   "w_content_hash:answers": 256,
+   "w_content_hash:not": 1351
+  },
+  "s_orphans": 1549,
+  "s_prior_content_check": {
+   "given": true,
+   "not_reused_content_mismatch": 0,
+   "not_reused_no_s_text": 0,
+   "reused_keys_checked": 605,
+   "reused_keys_without_pairs_row": 0
+  },
+  "s_unjudged_by_kind": {
+   "orphan": 1549
+  },
+  "unjudged": {
+   "S": 1549,
+   "W": 0
+  },
+  "unjudged_by_retriever": {
+   "S": {
+    "bm25": {
+     "pairs_needed": 6221,
+     "share": 0.1878,
+     "unjudged": 1168
+    },
+    "default": {
+     "pairs_needed": 2758,
+     "share": 0.0257,
+     "unjudged": 71
+    },
+    "norerank": {
+     "pairs_needed": 5780,
+     "share": 0.0863,
+     "unjudged": 499
+    }
+   },
+   "W": {
+    "bm25": {
+     "pairs_needed": 6850,
+     "share": 0.0,
+     "unjudged": 0
+    },
+    "default": {
+     "pairs_needed": 3149,
+     "share": 0.0,
+     "unjudged": 0
+    },
+    "norerank": {
+     "pairs_needed": 6609,
+     "share": 0.0,
+     "unjudged": 0
+    }
+   }
+  },
+  "unjudged_caveat": {
+   "cell": "primary (default retriever, four corpora)",
+   "gate": false,
+   "max_share": 0.05
+  },
+  "unjudged_share": {
+   "S": 0.1414,
+   "W": 0.0
+  }
+ },
+ "j_seeds_check": {
+  "inputs_match": true,
+  "sha256": "e326679e9034aa7f17cd89a32c82af8b35cb9ee73a6752a19b63db678f948e50"
+ },
+ "label_row_duplicates": {
+  "W": 0,
+  "drift": 0
+ },
+ "label_row_errors": {},
+ "papers": 408,
+ "prereg": {
+  "prereg": "reach-rechunk-2026-11",
+  "sha256": "1e3791ede2b7252cf43b940fd24f99a40a4126cabfc3a698f9f3a3ba3ade4458",
+  "verified": true
+ },
+ "primary_cell": {
+  "alpha_one_sided": 0.05,
+  "cluster": "paper",
+  "corpora": [
+   "base",
+   "neighbour",
+   "random1",
+   "random2"
+  ],
+  "delta_pts": 3,
+  "retriever": "default"
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "f78af6ee46e5d7f3604c10b1d14a77a7caa47b7d",
+  "describe": "v1.6.25-122-gf78af6ee",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-10T23:38:55Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+f78af6ee",
+  "warnings_n": 1
+ },
+ "q_eligibility": {
+  "rule": "verbatim in the W gold chunk (whitespace-normalised) and quote_cover over every S chunk of the gold document >= 0.90; split = only the union of 2+ S chunks reaches it",
+  "s_reach_of_w_verbatim": {
+   "single": 1088,
+   "split": 1
+  },
+  "w_verbatim": 1089
+ },
+ "q_eligible": 1089,
+ "q_eligible_papers": 408,
+ "records": 1091,
+ "records_by_kind": {
+  "C": 408,
+  "G": 683
+ },
+ "registries": {
+  "S_new": {
+   "combined_keys": 7196,
+   "cross_registry_conflicts": 0,
+   "per_registry": [
+    {
+     "keys": 7196,
+     "rows": 7196
+    }
+   ]
+  },
+  "S_prior": {
+   "combined_keys": 1121,
+   "cross_registry_conflicts": 4,
+   "per_registry": [
+    {
+     "keys": 351,
+     "rows": 351
+    },
+    {
+     "keys": 174,
+     "rows": 174
+    },
+    {
+     "keys": 671,
+     "rows": 671
+    }
+   ]
+  },
+  "W": {
+   "combined_keys": 24559,
+   "cross_registry_conflicts": 0,
+   "per_registry": [
+    {
+     "keys": 24559,
+     "rows": 24559
+    }
+   ]
+  },
+  "drift": {
+   "combined_keys": 555,
+   "cross_registry_conflicts": 0,
+   "per_registry": [
+    {
+     "keys": 555,
+     "rows": 555
+    }
+   ]
+  }
+ },
+ "retrieval_settings": {
+  "compared": [
+   "condition set",
+   "request",
+   "requested",
+   "found_k",
+   "server_assumed",
+   "study.retrievers",
+   "study.request_order",
+   "study.record_set.accepted_sha256",
+   "server config hash"
+  ],
+  "expected_differences": [
+   "collection",
+   "index",
+   "census",
+   "study.collection_build",
+   "study.mode",
+   "study.rechunk_scope",
+   "study.stage",
+   "study.legs",
+   "study.leg_stages",
+   "study.prereg",
+   "exploratory",
+   "provenance",
+   "server./v1/version (reported)",
+   "utc",
+   "mode",
+   "study.exploratory",
+   "study.rechunk_presence",
+   "study.gold_presence",
+   "study.record_set.rechunk",
+   "study.record_set.rechunk_records",
+   "conditions.*.hit_stamps"
+  ],
+  "per_corpus": {
+   "base": {
+    "differs": [],
+    "identical": true,
+    "server_version": {
+     "S": "1.6.25",
+     "W": "1.6.22"
+    }
+   },
+   "neighbour": {
+    "differs": [],
+    "identical": true,
+    "server_version": {
+     "S": "1.6.25",
+     "W": "1.6.22"
+    }
+   },
+   "random1": {
+    "differs": [],
+    "identical": true,
+    "server_version": {
+     "S": "1.6.25",
+     "W": "1.6.22"
+    }
+   },
+   "random2": {
+    "differs": [],
+    "identical": true,
+    "server_version": {
+     "S": "1.6.25",
+     "W": "1.6.22"
+    }
+   }
+  }
+ },
+ "schema": "reach-report/1",
+ "scorer": {
+  "hit_threshold": 0.9,
+  "min_match": 20,
+  "module": "reach_quote",
+  "top_k": 10
+ },
+ "unresolved_chunk_texts": {
+  "S": 0,
+  "W": 0
+ }
+}

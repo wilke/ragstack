@@ -1,4 +1,7 @@
+<!-- experiment: Reach comparison: fixed 512-token windows vs the adopted chunking (quote@10) | 2026-11-10 | CONFIRMATORY · SUPERIOR -->
 # Reach comparison: does the adopted chunking cost reach?
+
+**Status: RUN 2026-11-10 — Superior (Q, quote@10, the one confirmatory family; no gate fired): under the default retriever pooled over the four corpus collections, quote@10 was 91.5 % under S against 90.3 % under W on 4,356 paired units, +1.1 points, with the size caveat for low discordance (4.0 %). J (judged found@10) is descriptive: 98.1 % against 98.0 %. Reader's report: [REPORT.md](REPORT.md); record: [RESULTS.md](RESULTS.md), [`artifacts/reach-report.json`](artifacts/reach-report.json); test data: [TEST-DATA.md](TEST-DATA.md); deviations: [DEVIATIONS.md](DEVIATIONS.md) (D-1 the gateway share ran on the second gateway; D-2 procedural).** The freeze record below is kept as written at the freeze.
 
 **Status: FROZEN 2026-11-10T17:38:07Z on the owner's go of 2026-11-10 ("Freeze and run retrieval"); S retrieval
 started 2026-11-10T17:40:47Z, not yet reported.** `PREREG.md` is frozen as written at commit
@@ -31,6 +34,11 @@ adopted chunking (S): `sentence/512/0`, tokens, tolerance 0.25, section cuts, mi
 | [power.py](power.py), [power.json](power.json) | record, once frozen | the seeded power simulation of the clustered design (standard library only), regenerated from a clean tree |
 | [feasibility.py](feasibility.py), [feasibility.json](feasibility.json) | record, once frozen | W-side counts, baselines, eligibility (W-verbatim and S-reachable, from the S chunk texts), orphans, registry integrity, the prior-content check, the settings gate on real run summaries (W vs W, stage-1 S vs W) and judging load; no S-side outcome |
 | [frozen-inputs.json](frozen-inputs.json) | record, once frozen | the §9.1 input pins as `reach_report.py report` checks them, generated from PREREG §9.1 (`reach_report.py frozen-inputs`) |
+| [REPORT.md](REPORT.md) | reader's report, revised in place (like a paper; not record) | hypothesis → results summary → how it was tested → results → conclusion; cites RESULTS.md |
+| [TEST-DATA.md](TEST-DATA.md) | record | how the test data was generated: from the 1,091 questions and their quotes to the 4,356 primary units, the S collections, the J seeds and the judging registries, with counts and their artifacts |
+| [RESULTS.md](RESULTS.md) | record | the outcome, Q's decision sentence and J's descriptive sentence of PREREG §7.2 verbatim, the primary table, the secondary and descriptive cells, the gates and checks, the drift check, procedural notes, provenance |
+| [artifacts/](artifacts/) | record | `j-seeds.json` (§6 step 3, totals per registry only) and `reach-report.json` (§6 step 5), byte-identical to the run's outputs |
+| [DEVIATIONS.md](DEVIATIONS.md) | record, append-only | post-freeze deviations (PREREG §9.3): D-1 the gateway share of J's judging ran on the second gateway; D-2 procedural, the first report attempt stopped before computing |
 
 Note on the S run summaries: the harness's `rechunk` mode stamps every S `none.summary.json` with
 `exploratory: True`. That stamp comes from the mode, which was written for the exploratory stage-1 runs.

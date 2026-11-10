@@ -1,0 +1,112 @@
+{
+ "build_control": "alias_study_judge.py build-control --any-paper --seed-pairs s-seed.jsonl (control export s-export.jsonl); a second registry for drift-seed.jsonl (control export drift-export.jsonl)",
+ "detail": "j-seeds-detail.json (private): the per-retriever and per-corpus breakdowns, label sources and the prior content check (PREREG §6 step 3: only these totals are public)",
+ "inputs_sha256": {
+  "main_pairs": "04d39e3ce8299d397f37092dd4537c97d995f18bfb91a7c22c9a92aea987c378",
+  "records": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f",
+  "s_exports": {
+   "base.chunks.jsonl": "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+   "neighbour.image.chunks.jsonl": "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
+   "random1.image.chunks.jsonl": "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
+   "random2.image.chunks.jsonl": "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c"
+  },
+  "s_prior_final": [
+   "956fb547a5546e9d454a7c0d92cd7804f3dc11db55d654eb4e3e5fa3eb14fe4e",
+   "af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a",
+   "f0c6c7e6805c94a7be0c90c5dd69d96d4b03818273633c31bedd9b82e4065f99"
+  ],
+  "s_prior_pairs": [
+   "6a2608200aa64c1f5e3a6b5ee90d4763c0e57e59de1698f47f435f955ec0f604",
+   "aee3d117cf592a0087449f615eca9686f71d47c1f126ac44303d5acc03ecd2e6",
+   "f802cfd7106fff265466fa6c4a444aff34530b81a0c48d7669e876fae38df531"
+  ],
+  "s_runs": {
+   "base/none.jsonl": "378041dac4ae6d1f562fe6af84ca15f887677d871112dad5930961c40feb7475",
+   "base/none.summary.json": "7e7a16dcf08777997b49f462b459885d66e5dec260f20006067540204b792763",
+   "neighbour/none.jsonl": "2c772eaa8b845c15dd84a264cb5cd59e189b3d58cfc67d0f6bfd1a5b03164e64",
+   "neighbour/none.summary.json": "9416bb4dfdb82b6dea9a2103c33d6dcb43c6d25607bfc18b222a8456ac7852c6",
+   "random1/none.jsonl": "2b87f11f40faef0cadf5b9a9e3f41fcbaa7773ef26c78dd921d0e43ed0a236ab",
+   "random1/none.summary.json": "d4e4910ae9566bcefc85d25fad2313dc2fa8dbfa946e852cabbbbe0e8c64e171",
+   "random2/none.jsonl": "eeff5cd52f739a95bbcad599ac9d5e9263a47abd30eae01dcd695db9b16bb6ea",
+   "random2/none.summary.json": "c38654731bb8d3ebb10bff3e12425169f0fb15bd8b19f9c5c07224779f03f892"
+  },
+  "w_exports": {
+   "chunks-neighbour-v4.jsonl": "0050a538c9fdaf6691835b7c0f21436465def270f7a23c3b6fa7d84f35a78b9f",
+   "chunks-oa.jsonl": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
+   "chunks-random-1-v4.jsonl": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
+   "chunks-random-2-v4.jsonl": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c"
+  },
+  "w_final": [
+   "4e36010ccfacd389141508b6decf5d57a786902f19d26a3a29d1fed43515eecb"
+  ],
+  "w_runs": {
+   "base/none.jsonl": "6826ededf081ab9609723b24e346b2def66a38ef7d4dd8f78892f012372720ed",
+   "base/none.summary.json": "20936e99d9b0fb964de44d06b133fc20349b3c57bdd6c1cf90540935b6ab2fa7",
+   "neighbour/none.jsonl": "4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882",
+   "neighbour/none.summary.json": "7295a67826e178dd2cd75f15c1f2b35aa41b93efeeae7eb3a7a22c26903af40c",
+   "random1/none.jsonl": "4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e",
+   "random1/none.summary.json": "7d30412f716f79989ef1a9c28dac2a8bdaf8ba223a8631f87cfe96ea459e703b",
+   "random2/none.jsonl": "ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87",
+   "random2/none.summary.json": "302ffb23ff35bbdb808dfe29f365f7d5451fbd15879a5217dedb0d4924c531db"
+  }
+ },
+ "not_seeded": {
+  "drift_no_w_export_text": 0,
+  "prior_content_mismatch": 0,
+  "s_no_export_text": 0
+ },
+ "not_seeded_rule": "J is descriptive (owner decision 2026-11-10): a pair J needs whose prior label is not reused (content sha mismatch) or whose chunk has no export text is counted here, not refused; it counts as unjudged in J (PREREG §3, §6 step 3)",
+ "outputs_sha256": {
+  "detail": "43fa589f78cdb54bf8961fa33afab348b027e51d460ab3ea4b00360f6f30e8ba",
+  "drift_export": "c5dc207e2973972c37ba14cc92a30afb56ba80fa7e4c730b101c73ce50d13aec",
+  "drift_seed": "841f10e80bd3ade7478ed85da77a6af1cc4a9db0486bf04ba6e451c22223a599",
+  "orphans": "3d8a23631f9acd26254e0fad8ae25b412b7d3280023687c8e5f2f5478c91c8cf",
+  "s_export": "56b829e7578023717492216439c36fd09f0479b83eae367f89a8cdcb9869c5d1",
+  "s_seed": "7ff812fae2cd1eeb45b8c0b3f87cdbf603189958e81b8235d1dc213ea2a3dbcf"
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "f78af6ee46e5d7f3604c10b1d14a77a7caa47b7d",
+  "describe": "v1.6.25-122-gf78af6ee",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": "0.1.0",
+  "python": "3.12.13",
+  "recorded_at": "2026-11-10T17:50:31Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.10.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+f78af6ee",
+  "warnings_n": 1
+ },
+ "registries": {
+  "S": {
+   "orphans": 1549,
+   "seeds": 7196
+  },
+  "drift": {
+   "orphans": 61,
+   "sample": 616,
+   "seeds": 555
+  }
+ },
+ "registry_problems": [],
+ "rule": "S pairs J needs = top-10 (record, chunk) of every S list without a quote hit, all retrievers; seeded unless a judged label exists by key (prior S registry) or by the content-hash rule; an orphan (no stage-A pair for the record) cannot be seeded and counts as not answering (PREREG §3)",
+ "s_prior_cross_registry_conflicts": 4,
+ "schema": "reach-j-seeds/1"
+}
