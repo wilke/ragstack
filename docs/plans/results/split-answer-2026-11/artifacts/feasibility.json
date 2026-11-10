@@ -1,0 +1,2373 @@
+{
+ "adopted_cuts_in_window": {
+  "kept_changed": {
+   "cuts": 258,
+   "cuts_section_wall": 159,
+   "cuts_size": 99,
+   "pairs": 220,
+   "pairs_no_cut": 11,
+   "pairs_only_size_cuts": 78,
+   "pairs_only_wall_cuts": 114,
+   "pairs_with_a_wall_cut": 131,
+   "per_pair": {
+    "max": 3,
+    "mean": 1.173,
+    "min": 0,
+    "n": 220,
+    "p10": 1,
+    "p50": 1,
+    "p90": 2
+   },
+   "window_crosses_segment_edge": 131
+  },
+  "kept_identical": {
+   "cuts": 0,
+   "cuts_section_wall": 0,
+   "cuts_size": 0,
+   "pairs": 56,
+   "pairs_no_cut": 56,
+   "pairs_only_size_cuts": 0,
+   "pairs_only_wall_cuts": 0,
+   "pairs_with_a_wall_cut": 0,
+   "per_pair": {
+    "max": 0,
+    "mean": 0.0,
+    "min": 0,
+    "n": 56,
+    "p10": 0,
+    "p50": 0,
+    "p90": 0
+   },
+   "window_crosses_segment_edge": 0
+  },
+  "primary_only": {
+   "cuts": 4,
+   "cuts_section_wall": 2,
+   "cuts_size": 2,
+   "pairs": 4,
+   "pairs_no_cut": 0,
+   "pairs_only_size_cuts": 2,
+   "pairs_only_wall_cuts": 2,
+   "pairs_with_a_wall_cut": 2,
+   "per_pair": {
+    "max": 1,
+    "mean": 1.0,
+    "min": 1,
+    "n": 4,
+    "p10": 1,
+    "p50": 1,
+    "p90": 1
+   },
+   "window_crosses_segment_edge": 2
+  },
+  "recovered": {
+   "cuts": 73,
+   "cuts_section_wall": 55,
+   "cuts_size": 18,
+   "pairs": 53,
+   "pairs_no_cut": 0,
+   "pairs_only_size_cuts": 15,
+   "pairs_only_wall_cuts": 35,
+   "pairs_with_a_wall_cut": 38,
+   "per_pair": {
+    "max": 3,
+    "mean": 1.377,
+    "min": 1,
+    "n": 53,
+    "p10": 1,
+    "p50": 1,
+    "p90": 2
+   },
+   "window_crosses_segment_edge": 38
+  },
+  "split": {
+   "cuts": 22,
+   "cuts_section_wall": 13,
+   "cuts_size": 9,
+   "pairs": 18,
+   "pairs_no_cut": 0,
+   "pairs_only_size_cuts": 8,
+   "pairs_only_wall_cuts": 9,
+   "pairs_with_a_wall_cut": 10,
+   "per_pair": {
+    "max": 2,
+    "mean": 1.222,
+    "min": 1,
+    "n": 18,
+    "p10": 1,
+    "p50": 1,
+    "p90": 2
+   },
+   "window_crosses_segment_edge": 10
+  }
+ },
+ "calls": {
+  "llm": 0,
+  "retrieval": 0,
+  "store": 0
+ },
+ "checks": {
+  "adopted_documents_reproduced": 343,
+  "cover_windows_agree": 75,
+  "windows_reproduced": 351
+ },
+ "chunkings": {
+  "adopted": {
+   "adjacent_overlap_chars": {
+    "n": 0
+   },
+   "adjacent_pairs": 8807,
+   "adjacent_pairs_overlapping": 0,
+   "chunks": 9150,
+   "descriptor": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+   "document_tokens_total": 3636273,
+   "documents": 343,
+   "structure_counts": {
+    "cuts:short_pieces": 187,
+    "cuts:sibling_merges": 463
+   },
+   "tokens": {
+    "max": 640,
+    "mean": 397.746,
+    "min": 5,
+    "n": 9150,
+    "p10": 193,
+    "p50": 454,
+    "p90": 511
+   },
+   "tokens_total": 3639376,
+   "tokens_total_vs_adopted": 1.0
+  },
+  "ft512o64s": {
+   "adjacent_overlap_chars": {
+    "max": 423,
+    "mean": 222.05,
+    "min": 46,
+    "n": 5018,
+    "p10": 141,
+    "p50": 227,
+    "p90": 295
+   },
+   "adjacent_pairs": 10278,
+   "adjacent_pairs_overlapping": 5018,
+   "chunks": 10621,
+   "descriptor": "fixed_token/512/64/{\"structure_cuts\":\"sections/1\"}",
+   "documents": 343,
+   "structure_counts": {},
+   "tokens": {
+    "max": 514,
+    "mean": 372.926,
+    "min": 5,
+    "n": 10621,
+    "p10": 115,
+    "p50": 475,
+    "p90": 512
+   },
+   "tokens_total": 3960849,
+   "tokens_total_vs_adopted": 1.0883
+  },
+  "nosections_ov512": {
+   "adjacent_overlap_chars": {
+    "max": 512,
+    "mean": 405.131,
+    "min": 2,
+    "n": 9749,
+    "p10": 287,
+    "p50": 425,
+    "p90": 497
+   },
+   "adjacent_pairs": 10102,
+   "adjacent_pairs_overlapping": 9749,
+   "chunks": 10445,
+   "descriptor": "sentence/512/512/{\"pack\":\"318\",\"size_unit\":\"tokens\"}",
+   "documents": 343,
+   "structure_counts": {},
+   "tokens": {
+    "max": 512,
+    "mean": 462.332,
+    "min": 5,
+    "n": 10445,
+    "p10": 412,
+    "p50": 486,
+    "p90": 508
+   },
+   "tokens_total": 4829056,
+   "tokens_total_vs_adopted": 1.3269
+  },
+  "strict": {
+   "adjacent_overlap_chars": {
+    "n": 0
+   },
+   "adjacent_pairs": 10108,
+   "adjacent_pairs_overlapping": 0,
+   "chunks": 10451,
+   "descriptor": "sentence/512/0/{\"pack\":\"318\",\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+   "documents": 343,
+   "structure_counts": {},
+   "tokens": {
+    "max": 512,
+    "mean": 348.292,
+    "min": 5,
+    "n": 10451,
+    "p10": 100,
+    "p50": 419,
+    "p90": 503
+   },
+   "tokens_total": 3640000,
+   "tokens_total_vs_adopted": 1.0002
+  },
+  "strict_ov1024": {
+   "adjacent_overlap_chars": {
+    "max": 1024,
+    "mean": 878.251,
+    "min": 2,
+    "n": 12681,
+    "p10": 668,
+    "p50": 926,
+    "p90": 1009
+   },
+   "adjacent_pairs": 18179,
+   "adjacent_pairs_overlapping": 12681,
+   "chunks": 18522,
+   "descriptor": "sentence/512/1024/{\"pack\":\"318\",\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+   "documents": 343,
+   "structure_counts": {},
+   "tokens": {
+    "max": 512,
+    "mean": 416.076,
+    "min": 5,
+    "n": 18522,
+    "p10": 207,
+    "p50": 475,
+    "p90": 508
+   },
+   "tokens_total": 7706560,
+   "tokens_total_vs_adopted": 2.1175
+  },
+  "strict_ov256": {
+   "adjacent_overlap_chars": {
+    "max": 256,
+    "mean": 180.664,
+    "min": 2,
+    "n": 4317,
+    "p10": 111,
+    "p50": 186,
+    "p90": 244
+   },
+   "adjacent_pairs": 10572,
+   "adjacent_pairs_overlapping": 4317,
+   "chunks": 10915,
+   "descriptor": "sentence/512/256/{\"pack\":\"318\",\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+   "documents": 343,
+   "structure_counts": {},
+   "tokens": {
+    "max": 512,
+    "mean": 355.138,
+    "min": 5,
+    "n": 10915,
+    "p10": 113,
+    "p50": 427,
+    "p90": 503
+   },
+   "tokens_total": 3876332,
+   "tokens_total_vs_adopted": 1.0651
+  },
+  "strict_ov512": {
+   "adjacent_overlap_chars": {
+    "max": 512,
+    "mean": 405.217,
+    "min": 2,
+    "n": 5981,
+    "p10": 287,
+    "p50": 425,
+    "p90": 498
+   },
+   "adjacent_pairs": 11548,
+   "adjacent_pairs_overlapping": 5981,
+   "chunks": 11891,
+   "descriptor": "sentence/512/512/{\"pack\":\"318\",\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+   "documents": 343,
+   "structure_counts": {},
+   "tokens": {
+    "max": 512,
+    "mean": 369.671,
+    "min": 5,
+    "n": 11891,
+    "p10": 135,
+    "p50": 444,
+    "p90": 504
+   },
+   "tokens_total": 4395760,
+   "tokens_total_vs_adopted": 1.2078
+  },
+  "tol0.50": {
+   "adjacent_overlap_chars": {
+    "n": 0
+   },
+   "adjacent_pairs": 8442,
+   "adjacent_pairs_overlapping": 0,
+   "chunks": 8785,
+   "descriptor": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.5,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+   "documents": 343,
+   "structure_counts": {
+    "cuts:short_pieces": 148,
+    "cuts:sibling_merges": 493
+   },
+   "tokens": {
+    "max": 768,
+    "mean": 414.242,
+    "min": 5,
+    "n": 8785,
+    "p10": 201,
+    "p50": 461,
+    "p90": 544
+   },
+   "tokens_total": 3639112,
+   "tokens_total_vs_adopted": 0.9999
+  },
+  "tol1.00": {
+   "adjacent_overlap_chars": {
+    "n": 0
+   },
+   "adjacent_pairs": 7975,
+   "adjacent_pairs_overlapping": 0,
+   "chunks": 8318,
+   "descriptor": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":1.0,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+   "documents": 343,
+   "structure_counts": {
+    "cuts:short_pieces": 119,
+    "cuts:sibling_merges": 520
+   },
+   "tokens": {
+    "max": 1024,
+    "mean": 437.456,
+    "min": 5,
+    "n": 8318,
+    "p10": 200,
+    "p50": 467,
+    "p90": 626
+   },
+   "tokens_total": 3638758,
+   "tokens_total_vs_adopted": 0.9998
+  }
+ },
+ "cover_any_cap": 6,
+ "definitions": {
+  "adjacent_pairs": "every pair of adjacent adopted chunks overlapping the window",
+  "all_cuts_bridged_kN": "every adopted cut inside the window lies inside one chunk with >= N sentence units of the window on each side (clipped to the window)",
+  "best_cov": "largest share of the window's characters held by one chunk",
+  "contain": "one chunk holds the whole stage-A window",
+  "context_window_k": "the max-overlap adopted chunk with k neighbours each side in document order; a passage equal to that chunk (a one-chunk document) reuses its label and is not a new item; passage_tokens counts the new passages only",
+  "new_judge_items": "distinct (record, chunk) items among the <= cover_any_cap chunks overlapping the window with no label row in the rechunk label table",
+  "section_wall": "a cut at a doc_cut_segments edge; overlap under structure_cuts restarts there",
+  "tokens": "SFR-Embedding-Mistral tokenizer (HF), joined text"
+ },
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "exploratory": true,
+ "groups": {
+  "kept_changed": 220,
+  "kept_identical": 56,
+  "primary_only": 4,
+  "recovered": 53,
+  "split": 18
+ },
+ "inputs_sha256": {
+  "chunks_control": "e9f00602eca4c6676b7e5968f08d83a01fcbdf36ca910d577419f5cca8748035",
+  "chunks_retest": "6cb6c3825740db1cbfc10149fd5283e3fcbe7ab3e3e3465e528557d8556ac12f",
+  "label_table": "62e63538710a46c84963e6be9826b60f174f4d90b0750c00444b9d444e16158b",
+  "pairs_seed": "f76f96882009c11242ec79b38d2be621ffa25eab86c521537a566426237407b8",
+  "pairs_seed_cover": "4167eb700a694fe5458fca8d4ddf066038c303662ad550873c834e4aa7505adb"
+ },
+ "label_rows": 450,
+ "model_window": 4096,
+ "neighbour_passages": {
+  "adjacent_pairs": {
+   "kept_changed": {
+    "all_cuts_inside": 220,
+    "contain": 174,
+    "new_judge_items": 258,
+    "pairs": 220,
+    "passage_tokens": {
+     "max": 1209,
+     "mean": 801.698,
+     "min": 209,
+     "n": 258,
+     "p10": 500,
+     "p50": 830,
+     "p90": 1013
+    }
+   },
+   "kept_identical": {
+    "all_cuts_inside": 56,
+    "contain": 56,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "passage_tokens": {
+     "n": 0
+    }
+   },
+   "primary_only": {
+    "all_cuts_inside": 4,
+    "contain": 4,
+    "new_judge_items": 4,
+    "pairs": 4,
+    "passage_tokens": {
+     "max": 1150,
+     "mean": 877.5,
+     "min": 710,
+     "n": 4,
+     "p10": 710,
+     "p50": 903,
+     "p90": 1150
+    }
+   },
+   "recovered": {
+    "all_cuts_inside": 53,
+    "contain": 36,
+    "new_judge_items": 73,
+    "pairs": 53,
+    "passage_tokens": {
+     "max": 1128,
+     "mean": 735.288,
+     "min": 287,
+     "n": 73,
+     "p10": 403,
+     "p50": 730,
+     "p90": 995
+    }
+   },
+   "split": {
+    "all_cuts_inside": 18,
+    "contain": 14,
+    "new_judge_items": 22,
+    "pairs": 18,
+    "passage_tokens": {
+     "max": 1109,
+     "mean": 789.045,
+     "min": 357,
+     "n": 22,
+     "p10": 415,
+     "p50": 813,
+     "p90": 1036
+    }
+   }
+  },
+  "context_window_1": {
+   "kept_changed": {
+    "all_cuts_inside": 202,
+    "best_cov_ge_0.8": 212,
+    "contain": 202,
+    "crosses_section_wall": 167,
+    "new_judge_items": 219,
+    "pairs": 220,
+    "passage_is_max_overlap_chunk": 1,
+    "passage_tokens": {
+     "max": 1618,
+     "mean": 1164.123,
+     "min": 443,
+     "n": 219,
+     "p10": 819,
+     "p50": 1189,
+     "p90": 1477
+    }
+   },
+   "kept_identical": {
+    "all_cuts_inside": 56,
+    "best_cov_ge_0.8": 56,
+    "contain": 56,
+    "crosses_section_wall": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "passage_is_max_overlap_chunk": 56,
+    "passage_tokens": {
+     "n": 0
+    }
+   },
+   "primary_only": {
+    "all_cuts_inside": 4,
+    "best_cov_ge_0.8": 4,
+    "contain": 4,
+    "crosses_section_wall": 4,
+    "new_judge_items": 4,
+    "pairs": 4,
+    "passage_tokens": {
+     "max": 1769,
+     "mean": 1343.75,
+     "min": 1175,
+     "n": 4,
+     "p10": 1175,
+     "p50": 1245,
+     "p90": 1769
+    }
+   },
+   "recovered": {
+    "all_cuts_inside": 44,
+    "best_cov_ge_0.8": 49,
+    "contain": 44,
+    "crosses_section_wall": 43,
+    "new_judge_items": 53,
+    "pairs": 53,
+    "passage_tokens": {
+     "max": 1610,
+     "mean": 1174.547,
+     "min": 574,
+     "n": 53,
+     "p10": 796,
+     "p50": 1243,
+     "p90": 1480
+    }
+   },
+   "split": {
+    "all_cuts_inside": 16,
+    "best_cov_ge_0.8": 17,
+    "contain": 16,
+    "crosses_section_wall": 15,
+    "new_judge_items": 18,
+    "pairs": 18,
+    "passage_tokens": {
+     "max": 1618,
+     "mean": 1171.167,
+     "min": 357,
+     "n": 18,
+     "p10": 630,
+     "p50": 1191,
+     "p90": 1603
+    }
+   }
+  },
+  "context_window_2": {
+   "kept_changed": {
+    "all_cuts_inside": 220,
+    "best_cov_ge_0.8": 220,
+    "contain": 220,
+    "crosses_section_wall": 193,
+    "new_judge_items": 219,
+    "pairs": 220,
+    "passage_is_max_overlap_chunk": 1,
+    "passage_tokens": {
+     "max": 2571,
+     "mean": 1827.032,
+     "min": 602,
+     "n": 219,
+     "p10": 1229,
+     "p50": 1919,
+     "p90": 2379
+    }
+   },
+   "kept_identical": {
+    "all_cuts_inside": 56,
+    "best_cov_ge_0.8": 56,
+    "contain": 56,
+    "crosses_section_wall": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "passage_is_max_overlap_chunk": 56,
+    "passage_tokens": {
+     "n": 0
+    }
+   },
+   "primary_only": {
+    "all_cuts_inside": 4,
+    "best_cov_ge_0.8": 4,
+    "contain": 4,
+    "crosses_section_wall": 4,
+    "new_judge_items": 4,
+    "pairs": 4,
+    "passage_tokens": {
+     "max": 2033,
+     "mean": 1870.5,
+     "min": 1641,
+     "n": 4,
+     "p10": 1641,
+     "p50": 1996,
+     "p90": 2033
+    }
+   },
+   "recovered": {
+    "all_cuts_inside": 53,
+    "best_cov_ge_0.8": 53,
+    "contain": 53,
+    "crosses_section_wall": 50,
+    "new_judge_items": 53,
+    "pairs": 53,
+    "passage_tokens": {
+     "max": 2582,
+     "mean": 1905.34,
+     "min": 835,
+     "n": 53,
+     "p10": 1315,
+     "p50": 2003,
+     "p90": 2423
+    }
+   },
+   "split": {
+    "all_cuts_inside": 18,
+    "best_cov_ge_0.8": 18,
+    "contain": 18,
+    "crosses_section_wall": 17,
+    "new_judge_items": 18,
+    "pairs": 18,
+    "passage_tokens": {
+     "max": 2490,
+     "mean": 1937.778,
+     "min": 864,
+     "n": 18,
+     "p10": 1134,
+     "p50": 2087,
+     "p90": 2483
+    }
+   }
+  }
+ },
+ "offline": true,
+ "per_chunking": {
+  "adopted": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 11,
+    "all_cuts_bridged_k2": 11,
+    "all_cuts_bridged_k3": 11,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.736,
+     "min": 0.3263,
+     "n": 220,
+     "p10": 0.5188,
+     "p50": 0.7286,
+     "p90": 0.953
+    },
+    "best_cov_ge_0.8": 82,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.173,
+     "min": 1,
+     "n": 220,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 11,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 258,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 258,
+   "new_judge_items_split_recovered_kept_changed": 258,
+   "primary_only": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.7552,
+     "mean": 0.625,
+     "min": 0.5133,
+     "n": 4,
+     "p10": 0.5133,
+     "p50": 0.6407,
+     "p90": 0.7552
+    },
+    "best_cov_ge_0.8": 0,
+    "chunks_overlapping_window": {
+     "max": 2,
+     "mean": 2.0,
+     "min": 2,
+     "n": 4,
+     "p10": 2,
+     "p50": 2,
+     "p90": 2
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.8893,
+     "mean": 0.584,
+     "min": 0.3417,
+     "n": 53,
+     "p10": 0.4157,
+     "p50": 0.5734,
+     "p90": 0.7253
+    },
+    "best_cov_ge_0.8": 3,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.377,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "split": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.9228,
+     "mean": 0.683,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.4155,
+     "p50": 0.7385,
+     "p90": 0.8529
+    },
+    "best_cov_ge_0.8": 4,
+    "chunks_overlapping_window": {
+     "max": 3,
+     "mean": 2.222,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  },
+  "ft512o64s": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 67,
+    "all_cuts_bridged_k2": 35,
+    "all_cuts_bridged_k3": 28,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.745,
+     "min": 0.277,
+     "n": 220,
+     "p10": 0.5145,
+     "p50": 0.7573,
+     "p90": 0.9674
+    },
+    "best_cov_ge_0.8": 92,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.473,
+     "min": 2,
+     "n": 220,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 11,
+    "cuts_bridged_k1": 69,
+    "cuts_bridged_k2": 33,
+    "cuts_bridged_k3": 25,
+    "new_judge_items": 479,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 69,
+    "size_cuts_bridged_k2": 33,
+    "size_cuts_bridged_k3": 25,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 610,
+   "new_judge_items_split_recovered_kept_changed": 603,
+   "primary_only": {
+    "all_cuts_bridged_k1": 1,
+    "all_cuts_bridged_k2": 1,
+    "all_cuts_bridged_k3": 1,
+    "best_cov": {
+     "max": 0.7552,
+     "mean": 0.65,
+     "min": 0.5982,
+     "n": 4,
+     "p10": 0.5982,
+     "p50": 0.6407,
+     "p90": 0.7552
+    },
+    "best_cov_ge_0.8": 0,
+    "chunks_overlapping_window": {
+     "max": 2,
+     "mean": 2.0,
+     "min": 2,
+     "n": 4,
+     "p10": 2,
+     "p50": 2,
+     "p90": 2
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 1,
+    "cuts_bridged_k2": 1,
+    "cuts_bridged_k3": 1,
+    "new_judge_items": 7,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 1,
+    "size_cuts_bridged_k2": 1,
+    "size_cuts_bridged_k3": 1,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 11,
+    "all_cuts_bridged_k2": 6,
+    "all_cuts_bridged_k3": 5,
+    "best_cov": {
+     "max": 0.9239,
+     "mean": 0.596,
+     "min": 0.3559,
+     "n": 53,
+     "p10": 0.4163,
+     "p50": 0.5773,
+     "p90": 0.7887
+    },
+    "best_cov_ge_0.8": 4,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.585,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 2,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 13,
+    "cuts_bridged_k2": 6,
+    "cuts_bridged_k3": 5,
+    "new_judge_items": 90,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 13,
+    "size_cuts_bridged_k2": 6,
+    "size_cuts_bridged_k3": 5,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "split": {
+    "all_cuts_bridged_k1": 2,
+    "all_cuts_bridged_k2": 2,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.9937,
+     "mean": 0.741,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.5164,
+     "p50": 0.7817,
+     "p90": 0.8848
+    },
+    "best_cov_ge_0.8": 7,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.556,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 2,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 3,
+    "cuts_bridged_k2": 3,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 34,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 3,
+    "size_cuts_bridged_k2": 3,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  },
+  "nosections_ov512": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 219,
+    "all_cuts_bridged_k2": 193,
+    "all_cuts_bridged_k3": 152,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.811,
+     "min": 0.5017,
+     "n": 220,
+     "p10": 0.6602,
+     "p50": 0.8189,
+     "p90": 0.9632
+    },
+    "best_cov_ge_0.8": 122,
+    "chunks_overlapping_window": {
+     "max": 6,
+     "mean": 2.55,
+     "min": 1,
+     "n": 220,
+     "p10": 2,
+     "p50": 3,
+     "p90": 3
+    },
+    "contain": 1,
+    "cuts_bridged_k1": 257,
+    "cuts_bridged_k2": 230,
+    "cuts_bridged_k3": 186,
+    "new_judge_items": 541,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 98,
+    "size_cuts_bridged_k2": 84,
+    "size_cuts_bridged_k3": 74,
+    "wall_cuts_bridged_k1": 159,
+    "wall_cuts_bridged_k2": 146,
+    "wall_cuts_bridged_k3": 112
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 734,
+   "new_judge_items_split_recovered_kept_changed": 722,
+   "primary_only": {
+    "all_cuts_bridged_k1": 3,
+    "all_cuts_bridged_k2": 3,
+    "all_cuts_bridged_k3": 2,
+    "best_cov": {
+     "max": 0.9792,
+     "mean": 0.757,
+     "min": 0.5221,
+     "n": 4,
+     "p10": 0.5221,
+     "p50": 0.8296,
+     "p90": 0.9792
+    },
+    "best_cov_ge_0.8": 2,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 3.0,
+     "min": 2,
+     "n": 4,
+     "p10": 2,
+     "p50": 3,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 3,
+    "cuts_bridged_k2": 3,
+    "cuts_bridged_k3": 2,
+    "new_judge_items": 12,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 2,
+    "size_cuts_bridged_k2": 2,
+    "size_cuts_bridged_k3": 2,
+    "wall_cuts_bridged_k1": 1,
+    "wall_cuts_bridged_k2": 1,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 53,
+    "all_cuts_bridged_k2": 43,
+    "all_cuts_bridged_k3": 31,
+    "best_cov": {
+     "max": 0.9946,
+     "mean": 0.814,
+     "min": 0.5797,
+     "n": 53,
+     "p10": 0.6359,
+     "p50": 0.8335,
+     "p90": 0.9471
+    },
+    "best_cov_ge_0.8": 29,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.679,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 3,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 73,
+    "cuts_bridged_k2": 63,
+    "cuts_bridged_k3": 51,
+    "new_judge_items": 137,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 18,
+    "size_cuts_bridged_k2": 16,
+    "size_cuts_bridged_k3": 14,
+    "wall_cuts_bridged_k1": 55,
+    "wall_cuts_bridged_k2": 47,
+    "wall_cuts_bridged_k3": 37
+   },
+   "split": {
+    "all_cuts_bridged_k1": 18,
+    "all_cuts_bridged_k2": 17,
+    "all_cuts_bridged_k3": 13,
+    "best_cov": {
+     "max": 0.9036,
+     "mean": 0.756,
+     "min": 0.6487,
+     "n": 18,
+     "p10": 0.6531,
+     "p50": 0.7385,
+     "p90": 0.8963
+    },
+    "best_cov_ge_0.8": 7,
+    "chunks_overlapping_window": {
+     "max": 3,
+     "mean": 2.556,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 3,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 22,
+    "cuts_bridged_k2": 21,
+    "cuts_bridged_k3": 17,
+    "new_judge_items": 44,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 9,
+    "size_cuts_bridged_k2": 9,
+    "size_cuts_bridged_k3": 7,
+    "wall_cuts_bridged_k1": 13,
+    "wall_cuts_bridged_k2": 12,
+    "wall_cuts_bridged_k3": 10
+   }
+  },
+  "strict": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 11,
+    "all_cuts_bridged_k2": 11,
+    "all_cuts_bridged_k3": 11,
+    "best_cov": {
+     "max": 0.9965,
+     "mean": 0.715,
+     "min": 0.277,
+     "n": 220,
+     "p10": 0.504,
+     "p50": 0.7118,
+     "p90": 0.9295
+    },
+    "best_cov_ge_0.8": 78,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.391,
+     "min": 2,
+     "n": 220,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 357,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 397,
+   "new_judge_items_split_recovered_kept_changed": 393,
+   "primary_only": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.6407,
+     "mean": 0.566,
+     "min": 0.5133,
+     "n": 4,
+     "p10": 0.5133,
+     "p50": 0.5889,
+     "p90": 0.6407
+    },
+    "best_cov_ge_0.8": 0,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.5,
+     "min": 2,
+     "n": 4,
+     "p10": 2,
+     "p50": 2,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 4,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.8893,
+     "mean": 0.573,
+     "min": 0.3417,
+     "n": 53,
+     "p10": 0.3987,
+     "p50": 0.57,
+     "p90": 0.7253
+    },
+    "best_cov_ge_0.8": 3,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.491,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 2,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 25,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "split": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.8538,
+     "mean": 0.67,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.3888,
+     "p50": 0.7338,
+     "p90": 0.8529
+    },
+    "best_cov_ge_0.8": 3,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.444,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 11,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  },
+  "strict_ov1024": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 89,
+    "all_cuts_bridged_k2": 88,
+    "all_cuts_bridged_k3": 86,
+    "best_cov": {
+     "max": 0.9936,
+     "mean": 0.754,
+     "min": 0.277,
+     "n": 220,
+     "p10": 0.5149,
+     "p50": 0.7897,
+     "p90": 0.9321
+    },
+    "best_cov_ge_0.8": 106,
+    "chunks_overlapping_window": {
+     "max": 11,
+     "mean": 3.395,
+     "min": 2,
+     "n": 220,
+     "p10": 2,
+     "p50": 3,
+     "p90": 5
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 98,
+    "cuts_bridged_k2": 97,
+    "cuts_bridged_k3": 92,
+    "new_judge_items": 594,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 98,
+    "size_cuts_bridged_k2": 97,
+    "size_cuts_bridged_k3": 92,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 736,
+   "new_judge_items_split_recovered_kept_changed": 727,
+   "primary_only": {
+    "all_cuts_bridged_k1": 2,
+    "all_cuts_bridged_k2": 2,
+    "all_cuts_bridged_k3": 2,
+    "best_cov": {
+     "max": 0.8749,
+     "mean": 0.721,
+     "min": 0.5221,
+     "n": 4,
+     "p10": 0.5221,
+     "p50": 0.8467,
+     "p90": 0.8749
+    },
+    "best_cov_ge_0.8": 2,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 3.25,
+     "min": 3,
+     "n": 4,
+     "p10": 3,
+     "p50": 3,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 2,
+    "cuts_bridged_k2": 2,
+    "cuts_bridged_k3": 2,
+    "new_judge_items": 9,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 2,
+    "size_cuts_bridged_k2": 2,
+    "size_cuts_bridged_k3": 2,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 15,
+    "all_cuts_bridged_k2": 15,
+    "all_cuts_bridged_k3": 14,
+    "best_cov": {
+     "max": 0.9532,
+     "mean": 0.639,
+     "min": 0.3559,
+     "n": 53,
+     "p10": 0.4163,
+     "p50": 0.5917,
+     "p90": 0.8801
+    },
+    "best_cov_ge_0.8": 11,
+    "chunks_overlapping_window": {
+     "max": 6,
+     "mean": 3.377,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 3,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 18,
+    "cuts_bridged_k2": 18,
+    "cuts_bridged_k3": 17,
+    "new_judge_items": 103,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 18,
+    "size_cuts_bridged_k2": 18,
+    "size_cuts_bridged_k3": 17,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "split": {
+    "all_cuts_bridged_k1": 8,
+    "all_cuts_bridged_k2": 8,
+    "all_cuts_bridged_k3": 7,
+    "best_cov": {
+     "max": 0.9985,
+     "mean": 0.762,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.5845,
+     "p50": 0.7981,
+     "p90": 0.9324
+    },
+    "best_cov_ge_0.8": 7,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 3.111,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 3,
+     "p90": 5
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 9,
+    "cuts_bridged_k2": 9,
+    "cuts_bridged_k3": 8,
+    "new_judge_items": 30,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 9,
+    "size_cuts_bridged_k2": 9,
+    "size_cuts_bridged_k3": 8,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  },
+  "strict_ov256": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 82,
+    "all_cuts_bridged_k2": 53,
+    "all_cuts_bridged_k3": 32,
+    "best_cov": {
+     "max": 0.9925,
+     "mean": 0.717,
+     "min": 0.277,
+     "n": 220,
+     "p10": 0.5088,
+     "p50": 0.7127,
+     "p90": 0.9218
+    },
+    "best_cov_ge_0.8": 78,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.459,
+     "min": 2,
+     "n": 220,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 87,
+    "cuts_bridged_k2": 51,
+    "cuts_bridged_k3": 27,
+    "new_judge_items": 422,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 87,
+    "size_cuts_bridged_k2": 51,
+    "size_cuts_bridged_k3": 27,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 509,
+   "new_judge_items_split_recovered_kept_changed": 503,
+   "primary_only": {
+    "all_cuts_bridged_k1": 2,
+    "all_cuts_bridged_k2": 1,
+    "all_cuts_bridged_k3": 1,
+    "best_cov": {
+     "max": 0.6407,
+     "mean": 0.567,
+     "min": 0.515,
+     "n": 4,
+     "p10": 0.515,
+     "p50": 0.5889,
+     "p90": 0.6407
+    },
+    "best_cov_ge_0.8": 0,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.5,
+     "min": 2,
+     "n": 4,
+     "p10": 2,
+     "p50": 2,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 2,
+    "cuts_bridged_k2": 1,
+    "cuts_bridged_k3": 1,
+    "new_judge_items": 6,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 2,
+    "size_cuts_bridged_k2": 1,
+    "size_cuts_bridged_k3": 1,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 15,
+    "all_cuts_bridged_k2": 6,
+    "all_cuts_bridged_k3": 5,
+    "best_cov": {
+     "max": 0.8893,
+     "mean": 0.591,
+     "min": 0.3559,
+     "n": 53,
+     "p10": 0.4163,
+     "p50": 0.57,
+     "p90": 0.7901
+    },
+    "best_cov_ge_0.8": 4,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.528,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 2,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 18,
+    "cuts_bridged_k2": 7,
+    "cuts_bridged_k3": 5,
+    "new_judge_items": 60,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 18,
+    "size_cuts_bridged_k2": 7,
+    "size_cuts_bridged_k3": 5,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "split": {
+    "all_cuts_bridged_k1": 6,
+    "all_cuts_bridged_k2": 4,
+    "all_cuts_bridged_k3": 1,
+    "best_cov": {
+     "max": 0.8874,
+     "mean": 0.709,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.5083,
+     "p50": 0.7385,
+     "p90": 0.8538
+    },
+    "best_cov_ge_0.8": 4,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.5,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 7,
+    "cuts_bridged_k2": 5,
+    "cuts_bridged_k3": 1,
+    "new_judge_items": 21,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 7,
+    "size_cuts_bridged_k2": 5,
+    "size_cuts_bridged_k3": 1,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  },
+  "strict_ov512": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 89,
+    "all_cuts_bridged_k2": 80,
+    "all_cuts_bridged_k3": 62,
+    "best_cov": {
+     "max": 0.9925,
+     "mean": 0.736,
+     "min": 0.277,
+     "n": 220,
+     "p10": 0.5108,
+     "p50": 0.7338,
+     "p90": 0.934
+    },
+    "best_cov_ge_0.8": 90,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.6,
+     "min": 2,
+     "n": 220,
+     "p10": 2,
+     "p50": 3,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 97,
+    "cuts_bridged_k2": 86,
+    "cuts_bridged_k3": 62,
+    "new_judge_items": 456,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 97,
+    "size_cuts_bridged_k2": 86,
+    "size_cuts_bridged_k3": 62,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 556,
+   "new_judge_items_split_recovered_kept_changed": 550,
+   "primary_only": {
+    "all_cuts_bridged_k1": 2,
+    "all_cuts_bridged_k2": 2,
+    "all_cuts_bridged_k3": 2,
+    "best_cov": {
+     "max": 0.6987,
+     "mean": 0.631,
+     "min": 0.5221,
+     "n": 4,
+     "p10": 0.5221,
+     "p50": 0.6613,
+     "p90": 0.6987
+    },
+    "best_cov_ge_0.8": 0,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.5,
+     "min": 2,
+     "n": 4,
+     "p10": 2,
+     "p50": 2,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 2,
+    "cuts_bridged_k2": 2,
+    "cuts_bridged_k3": 2,
+    "new_judge_items": 6,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 2,
+    "size_cuts_bridged_k2": 2,
+    "size_cuts_bridged_k3": 2,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 15,
+    "all_cuts_bridged_k2": 14,
+    "all_cuts_bridged_k3": 8,
+    "best_cov": {
+     "max": 0.9668,
+     "mean": 0.613,
+     "min": 0.3559,
+     "n": 53,
+     "p10": 0.4163,
+     "p50": 0.5914,
+     "p90": 0.8247
+    },
+    "best_cov_ge_0.8": 6,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.698,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 3,
+     "p90": 4
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 18,
+    "cuts_bridged_k2": 17,
+    "cuts_bridged_k3": 11,
+    "new_judge_items": 68,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 18,
+    "size_cuts_bridged_k2": 17,
+    "size_cuts_bridged_k3": 11,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "split": {
+    "all_cuts_bridged_k1": 8,
+    "all_cuts_bridged_k2": 8,
+    "all_cuts_bridged_k3": 3,
+    "best_cov": {
+     "max": 0.9786,
+     "mean": 0.737,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.5845,
+     "p50": 0.7385,
+     "p90": 0.96
+    },
+    "best_cov_ge_0.8": 6,
+    "chunks_overlapping_window": {
+     "max": 5,
+     "mean": 2.722,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 3,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 9,
+    "cuts_bridged_k2": 9,
+    "cuts_bridged_k3": 4,
+    "new_judge_items": 26,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 9,
+    "size_cuts_bridged_k2": 9,
+    "size_cuts_bridged_k3": 4,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  },
+  "tol0.50": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 18,
+    "all_cuts_bridged_k2": 18,
+    "all_cuts_bridged_k3": 18,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.75,
+     "min": 0.3263,
+     "n": 220,
+     "p10": 0.5222,
+     "p50": 0.7492,
+     "p90": 0.9921
+    },
+    "best_cov_ge_0.8": 91,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.1,
+     "min": 1,
+     "n": 220,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 18,
+    "cuts_bridged_k1": 16,
+    "cuts_bridged_k2": 14,
+    "cuts_bridged_k3": 12,
+    "new_judge_items": 263,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 15,
+    "size_cuts_bridged_k2": 14,
+    "size_cuts_bridged_k3": 12,
+    "wall_cuts_bridged_k1": 1,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 276,
+   "new_judge_items_split_recovered_kept_changed": 274,
+   "primary_only": {
+    "all_cuts_bridged_k1": 1,
+    "all_cuts_bridged_k2": 1,
+    "all_cuts_bridged_k3": 1,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.746,
+     "min": 0.5889,
+     "n": 4,
+     "p10": 0.5889,
+     "p50": 0.7552,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 1,
+    "chunks_overlapping_window": {
+     "max": 2,
+     "mean": 1.75,
+     "min": 1,
+     "n": 4,
+     "p10": 1,
+     "p50": 2,
+     "p90": 2
+    },
+    "contain": 1,
+    "cuts_bridged_k1": 1,
+    "cuts_bridged_k2": 1,
+    "cuts_bridged_k3": 1,
+    "new_judge_items": 2,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 1,
+    "size_cuts_bridged_k2": 1,
+    "size_cuts_bridged_k3": 1,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.8893,
+     "mean": 0.596,
+     "min": 0.387,
+     "n": 53,
+     "p10": 0.4473,
+     "p50": 0.5773,
+     "p90": 0.7358
+    },
+    "best_cov_ge_0.8": 3,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.34,
+     "min": 2,
+     "n": 53,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 2,
+    "cuts_bridged_k2": 2,
+    "cuts_bridged_k3": 2,
+    "new_judge_items": 9,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 2,
+    "size_cuts_bridged_k2": 2,
+    "size_cuts_bridged_k3": 2,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "split": {
+    "all_cuts_bridged_k1": 0,
+    "all_cuts_bridged_k2": 0,
+    "all_cuts_bridged_k3": 0,
+    "best_cov": {
+     "max": 0.9228,
+     "mean": 0.692,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.5005,
+     "p50": 0.7385,
+     "p90": 0.8529
+    },
+    "best_cov_ge_0.8": 4,
+    "chunks_overlapping_window": {
+     "max": 3,
+     "mean": 2.167,
+     "min": 2,
+     "n": 18,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 0,
+    "cuts_bridged_k1": 1,
+    "cuts_bridged_k2": 1,
+    "cuts_bridged_k3": 1,
+    "new_judge_items": 2,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 1,
+    "size_cuts_bridged_k2": 1,
+    "size_cuts_bridged_k3": 1,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  },
+  "tol1.00": {
+   "kept_changed": {
+    "all_cuts_bridged_k1": 28,
+    "all_cuts_bridged_k2": 28,
+    "all_cuts_bridged_k3": 28,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.761,
+     "min": 0.3263,
+     "n": 220,
+     "p10": 0.5222,
+     "p50": 0.7773,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 97,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.041,
+     "min": 1,
+     "n": 220,
+     "p10": 1,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 28,
+    "cuts_bridged_k1": 29,
+    "cuts_bridged_k2": 27,
+    "cuts_bridged_k3": 25,
+    "new_judge_items": 266,
+    "pairs": 220,
+    "size_cuts_bridged_k1": 28,
+    "size_cuts_bridged_k2": 27,
+    "size_cuts_bridged_k3": 25,
+    "wall_cuts_bridged_k1": 1,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "kept_identical": {
+    "all_cuts_bridged_k1": 56,
+    "all_cuts_bridged_k2": 56,
+    "all_cuts_bridged_k3": 56,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 1.0,
+     "min": 1.0,
+     "n": 56,
+     "p10": 1.0,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 56,
+    "chunks_overlapping_window": {
+     "max": 1,
+     "mean": 1.0,
+     "min": 1,
+     "n": 56,
+     "p10": 1,
+     "p50": 1,
+     "p90": 1
+    },
+    "contain": 56,
+    "cuts_bridged_k1": 0,
+    "cuts_bridged_k2": 0,
+    "cuts_bridged_k3": 0,
+    "new_judge_items": 0,
+    "pairs": 56,
+    "size_cuts_bridged_k1": 0,
+    "size_cuts_bridged_k2": 0,
+    "size_cuts_bridged_k3": 0,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "new_judge_items_all_groups": 288,
+   "new_judge_items_split_recovered_kept_changed": 285,
+   "primary_only": {
+    "all_cuts_bridged_k1": 2,
+    "all_cuts_bridged_k2": 2,
+    "all_cuts_bridged_k3": 2,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.849,
+     "min": 0.6407,
+     "n": 4,
+     "p10": 0.6407,
+     "p50": 1.0,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 2,
+    "chunks_overlapping_window": {
+     "max": 2,
+     "mean": 1.5,
+     "min": 1,
+     "n": 4,
+     "p10": 1,
+     "p50": 2,
+     "p90": 2
+    },
+    "contain": 2,
+    "cuts_bridged_k1": 2,
+    "cuts_bridged_k2": 2,
+    "cuts_bridged_k3": 2,
+    "new_judge_items": 3,
+    "pairs": 4,
+    "size_cuts_bridged_k1": 2,
+    "size_cuts_bridged_k2": 2,
+    "size_cuts_bridged_k3": 2,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   },
+   "recovered": {
+    "all_cuts_bridged_k1": 2,
+    "all_cuts_bridged_k2": 2,
+    "all_cuts_bridged_k3": 2,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.613,
+     "min": 0.387,
+     "n": 53,
+     "p10": 0.4473,
+     "p50": 0.5773,
+     "p90": 0.8342
+    },
+    "best_cov_ge_0.8": 6,
+    "chunks_overlapping_window": {
+     "max": 4,
+     "mean": 2.283,
+     "min": 1,
+     "n": 53,
+     "p10": 2,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 2,
+    "cuts_bridged_k1": 5,
+    "cuts_bridged_k2": 5,
+    "cuts_bridged_k3": 5,
+    "new_judge_items": 14,
+    "pairs": 53,
+    "size_cuts_bridged_k1": 4,
+    "size_cuts_bridged_k2": 4,
+    "size_cuts_bridged_k3": 4,
+    "wall_cuts_bridged_k1": 1,
+    "wall_cuts_bridged_k2": 1,
+    "wall_cuts_bridged_k3": 1
+   },
+   "split": {
+    "all_cuts_bridged_k1": 3,
+    "all_cuts_bridged_k2": 3,
+    "all_cuts_bridged_k3": 3,
+    "best_cov": {
+     "max": 1.0,
+     "mean": 0.734,
+     "min": 0.3371,
+     "n": 18,
+     "p10": 0.5005,
+     "p50": 0.7749,
+     "p90": 1.0
+    },
+    "best_cov_ge_0.8": 7,
+    "chunks_overlapping_window": {
+     "max": 3,
+     "mean": 2.0,
+     "min": 1,
+     "n": 18,
+     "p10": 1,
+     "p50": 2,
+     "p90": 3
+    },
+    "contain": 3,
+    "cuts_bridged_k1": 4,
+    "cuts_bridged_k2": 4,
+    "cuts_bridged_k3": 4,
+    "new_judge_items": 5,
+    "pairs": 18,
+    "size_cuts_bridged_k1": 4,
+    "size_cuts_bridged_k2": 4,
+    "size_cuts_bridged_k3": 4,
+    "wall_cuts_bridged_k1": 0,
+    "wall_cuts_bridged_k2": 0,
+    "wall_cuts_bridged_k3": 0
+   }
+  }
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "57d2f15c327d2952444d4ad6e7cb8d988279fc81",
+  "describe": "v1.6.25-99-g57d2f15c",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-10T04:13:12Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 343,
+    "n_spans": 80362,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "run",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "1f5de213f6f54361d4aa1a0ad7862c30f779572227b296ceabe007516150c2b9",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   },
+   {
+    "kind": "chunks",
+    "n_docs": 343,
+    "n_spans": 9150,
+    "producer": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+    "sha256": "e5f0a105eef668590ab5a4c55657d0bb0c4282840e672d69a6adbd7f4f769a1c",
+    "texts_sha256": "ea49992825b0f642f513fcb5dbad5868c502afcb85c7cd6eb5fb3858e1017ea5"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+57d2f15c",
+  "warnings_n": 1
+ },
+ "schema": "split-answer-feasibility/1",
+ "tokenizer": "Salesforce/SFR-Embedding-Mistral",
+ "window_tokens": {
+  "kept_changed": {
+   "max": 512,
+   "mean": 507.677,
+   "min": 186,
+   "n": 220,
+   "p10": 512,
+   "p50": 512,
+   "p90": 512
+  },
+  "kept_identical": {
+   "max": 468,
+   "mean": 247.5,
+   "min": 31,
+   "n": 56,
+   "p10": 78,
+   "p50": 240,
+   "p90": 417
+  },
+  "primary_only": {
+   "max": 512,
+   "mean": 512.0,
+   "min": 512,
+   "n": 4,
+   "p10": 512,
+   "p50": 512,
+   "p90": 512
+  },
+  "recovered": {
+   "max": 512,
+   "mean": 511.981,
+   "min": 511,
+   "n": 53,
+   "p10": 512,
+   "p50": 512,
+   "p90": 512
+  },
+  "split": {
+   "max": 512,
+   "mean": 508.556,
+   "min": 450,
+   "n": 18,
+   "p10": 512,
+   "p50": 512,
+   "p90": 512
+  }
+ }
+}
