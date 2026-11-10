@@ -1,7 +1,10 @@
 {
- "blinding": "W side only; no S-side retrieval output was read",
+ "blinding": "W side, plus the S chunk exports (chunk texts, for S reachability) and the prior S registries' label files (integrity); no S retrieval output and no S outcome was read",
  "eligibility": {
+  "eligible": 1089,
   "eligible_papers": 408,
+  "gold_documents": 560,
+  "non_eligible": 2,
   "non_verbatim_raw": 26,
   "non_verbatim_whitespace_normalised": 2,
   "papers": 408,
@@ -20,12 +23,51 @@
    "2": 83,
    "3": 300
   },
+  "quotes_inside_one_w_window": 1089,
   "records": 1091,
+  "s_gold_documents_found": 560,
+  "s_reach_of_w_verbatim": {
+   "single": 1088,
+   "split": 1
+  },
+  "s_reach_rule": "quote_cover(quote, every S chunk of the gold document) >= 0.90; split = reached only by the union of two or more S chunks (the quote crosses an S chunk boundary)",
   "verbatim_raw": 1065,
   "verbatim_whitespace_normalised": 1089
  },
+ "orphans": {
+  "eligible_records": 746,
+  "note": "an S pair of an orphan record cannot be seeded (build-control needs a stage-A pair of the record as control_of) and counts as not answering and as unjudged (PREREG \u00a73)",
+  "papers": 383,
+  "primary_cell_units_of_eligible_orphan_records": 2984,
+  "records": 748,
+  "records_with_no_main_pair": 128,
+  "records_with_stage_b_pairs_only": 620,
+  "w_proxy_by_retriever": {
+   "bm25": {
+    "lists": 2992,
+    "lists_without_hit": 177,
+    "lists_without_hit_all_records": 976,
+    "unique_pairs_over_corpora": 1200,
+    "unique_pairs_over_corpora_all_records": 6850
+   },
+   "default": {
+    "lists": 2992,
+    "lists_without_hit": 0,
+    "lists_without_hit_all_records": 421,
+    "unique_pairs_over_corpora": 0,
+    "unique_pairs_over_corpora_all_records": 3149
+   },
+   "norerank": {
+    "lists": 2992,
+    "lists_without_hit": 0,
+    "lists_without_hit_all_records": 888,
+    "unique_pairs_over_corpora": 0,
+    "unique_pairs_over_corpora_all_records": 6609
+   }
+  }
+ },
  "provenance": {
-  "commit": "414ae12f9587bd0ef57d57d77f69e692e8f31a9c",
+  "commit": "8a172b6865057c48abd7083ae8565bc44729c69e",
   "dirty": false,
   "implementation": "cpython",
   "inputs_sha256": {
@@ -33,20 +75,58 @@
    "corpus_random1": "2defc4839017cb7ab70ee2470d97cd9ebf23847605a47975cfe7e2a48cc098a1",
    "corpus_random2": "f6b012e5f0f9e6be56de68c40f7ba5556a70d622bb26dc0e1bc255e090aa725c",
    "judge_final": "4e36010ccfacd389141508b6decf5d57a786902f19d26a3a29d1fed43515eecb",
+   "main_pairs": "04d39e3ce8299d397f37092dd4537c97d995f18bfb91a7c22c9a92aea987c378",
    "oa_chunks": "ff16e611a28c48022a41d9de162b7aeabaa0e0c9b95d7ad2516fe515dc37cf8d",
    "records": "09fc5ca434f50c5d0e527f2424dd31a2d59e019f59762c7f961dd7d7804ad24f",
    "runs_base": "6826ededf081ab9609723b24e346b2def66a38ef7d4dd8f78892f012372720ed",
    "runs_neighbour": "4ee00164514daa3e8901c33f08fd7195efc6ac00d9f32655fba56c7816fd7882",
    "runs_random1": "4e9b48a5d265a6d2a105a60e6fe4082434778861a72cc138eca8a5219dc40c6e",
-   "runs_random2": "ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87"
+   "runs_random2": "ef31c5aa7f86bda180567018d3a4f03fc27cdf2cba2593b0bbb7e4824850bc87",
+   "s_export_base": "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+   "s_export_neighbour": "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
+   "s_export_random1": "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
+   "s_export_random2": "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c",
+   "s_prior_final_control": "f0c6c7e6805c94a7be0c90c5dd69d96d4b03818273633c31bedd9b82e4065f99",
+   "s_prior_final_cover_any": "956fb547a5546e9d454a7c0d92cd7804f3dc11db55d654eb4e3e5fa3eb14fe4e",
+   "s_prior_final_stage1b": "af15725a25844225a9f0f5040637969afac094d4aa04252348478ac9b494987a"
   },
-  "python": "3.8.5",
+  "python": "3.12.13",
   "reach_quote_sha256": "8f9e7e5d63ad689ac6b6a683e6e83781d8d8b4d78f249f741444eaf5c7bc1e84",
-  "script_sha256": "11484433ad05e067e089f68f42d3a8529c992467cffbdc5b26470bbd7150e91d"
+  "script_sha256": "19b182867e9a370075cd57295cb3c15df0d57fe11b3855e2901e1884817d087d"
  },
  "registry": {
   "label_rows_with_record_and_chunk": 24559,
   "labelled_pairs": 24559
+ },
+ "registry_integrity": {
+  "W": {
+   "keys": 24559,
+   "problems": [],
+   "rows": 24559
+  },
+  "s_prior": {
+   "control": {
+    "keys": 351,
+    "problems": [],
+    "rows": 351
+   },
+   "cover_any": {
+    "keys": 174,
+    "problems": [],
+    "rows": 174
+   },
+   "stage1b": {
+    "keys": 671,
+    "problems": [],
+    "rows": 671
+   }
+  },
+  "s_prior_combined": {
+   "cross_registry_conflicts": 4,
+   "keys": 1121,
+   "rule": "answers if any registry says answers (declared, not gated)",
+   "within_registry_problems": []
+  }
  },
  "s_side_estimate": {
   "assumption": "S lists without a quote hit = W's, per retriever and corpus; 10 slots each; S unique pairs = S slots x W's unique-per-slot ratio; no reuse of W labels counted for S (the content-hash rule can only lower this)",
