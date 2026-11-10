@@ -1,0 +1,101 @@
+{
+ "build_control_note": "without --any-paper, alias_study_judge.build_control_pairs refuses a seed whose chunk's paper is not the stage-A pair's c_paper (seeds_other_paper counts those rows); run them through alias_study_judge.py build-control --any-paper, which takes c_paper and arm from the chunk's own paper",
+ "control_of_rule": "a lost pair of the same question whose top 10 held the chunk: first by pair id among those whose stage-A window is in the chunk's paper, else first by pair id",
+ "exploratory": true,
+ "export_duplicate_rows_same_content": 13,
+ "export_rows": 661,
+ "export_rows_reescaped": 216,
+ "inputs_sha256": {
+  "exports": [
+   "027653dba6e570567e0a846cb31ee2442a35620549c3bf23aa149059cb908a58",
+   "80410911040188a819227b1fff4064ba5326a56ccabafe501c193d96101e4687",
+   "ca34eadc3695b3a303b4b3b674269875887aa5954839ed71031c2c12428b5026",
+   "d9ee41225442b290af3c482bfd870a6c80d6591cadd51b3ef69a5a6e9ce2099c"
+  ],
+  "label_table": "62e63538710a46c84963e6be9826b60f174f4d90b0750c00444b9d444e16158b",
+  "runs": {
+   "base": {
+    "rows_sha256": "7abf068efc5d396b28970cdba818e8eeb1004624e935528841638cc6032c894d",
+    "summary_sha256": "4ebd768fc1c1b580bd817100bf24324f6dfff0aca377a345abe85403d413204d"
+   },
+   "neighbour": {
+    "rows_sha256": "f1331d345b267839c4220e3071c9df96a245384f0c1708661274df52a2e15a31",
+    "summary_sha256": "05b11e47d53e890a98fbe472504259c794ab43f6d65b387d413e1e06993742b3"
+   },
+   "random1": {
+    "rows_sha256": "6d79986836582f1828f8b33850240faffd1abc9b8612dcf947c7dfc20d666f9a",
+    "summary_sha256": "cc1456ceccd933643aefc5a26134faf334b7f924b74d41f9ed95aeaa0d8023e1"
+   },
+   "random2": {
+    "rows_sha256": "ea4654a49377a3d368f483ce732836b6ec62283487113ecd6a2a89f252ab2bfe",
+    "summary_sha256": "4983af32f36c935e904d582268ffbd749c7190cf1743334780897779c6dcbc23"
+   }
+  }
+ },
+ "lost_pairs": 75,
+ "lost_pairs_failed": 0,
+ "lost_pairs_read": 75,
+ "outputs_sha256": {
+  "export": "210ababc6c10bfea4663d514671adfdaf7cd2c880d64e04dd868c57726dcb552",
+  "seed": "f702bbf042d13777c974abbec5c3a7ae9300d927487edd46330a33cae527ed6e"
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "8afb4cab6d967c5a1d9373febcc781ca64a42576",
+  "describe": "v1.6.25-97-g8afb4cab",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-09T22:38:37Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.25+8afb4cab",
+  "warnings_n": 1
+ },
+ "questions": 69,
+ "retriever_condition": "base",
+ "rule": "unlabelled = no label row for (record, chunk) in the table; a top-10 chunk labelled unjudged is counted (top10_slots_by_label), not seeded",
+ "schema": "rechunk-stage1b-seed/1",
+ "seed_records": 69,
+ "seeds": 671,
+ "seeds_by_best_rank": {
+  "1": 64,
+  "2-3": 127,
+  "4-10": 480
+ },
+ "seeds_by_corpus_arm": {
+  "base": 214,
+  "neighbour": 206,
+  "random1": 139,
+  "random2": 112
+ },
+ "seeds_in_several_lost_pairs": 16,
+ "seeds_other_paper": 497,
+ "seeds_same_paper_as_window": 174,
+ "top10_lists": 75,
+ "top10_slots": 750,
+ "top10_slots_by_label": {
+  "answers": 43,
+  "no_label_row": 687,
+  "not": 20,
+  "unjudged": 0
+ },
+ "top_k": 10
+}
