@@ -538,6 +538,16 @@ func (s *selftest) execute(ctx context.Context) error {
 	// "Started" means "answers" (#741): every store the create started owns
 	// its port and answers its own probe.
 	s.checks = append(s.checks, s.storesAnswerCheck(ctx, s.primary, "stores answer after start"))
+	// A sandbox lives on the standard roots only: its qdrant keeps
+	// <data_dir>/qdrant, never a moved stores.qdrant.data_dir under a store
+	// data root (CTL_STORE_DATA_ROOTS is production's volume, and a selftest
+	// that wrote there would leave sandbox vectors beside real tenants').
+	if row, err := s.tenantRow(s.primary); err == nil {
+		s.checks = append(s.checks, sandboxQdrantDirCheck(row))
+	} else {
+		s.checks = append(s.checks, checkResult{Name: s.primary + ": qdrant on the standard layout",
+			Verdict: checkNA, Detail: err.Error()})
+	}
 
 	// ---- zombie drill (instance mode) -------------------------------------
 	//
@@ -1788,6 +1798,22 @@ func (s *selftest) quarantinedDirCheck(ctx context.Context, name string) checkRe
 	check.Verdict = checkFail
 	check.Detail = fmt.Sprintf("no %s.quarantined-* under %s: decommission renames the tree, it never deletes it",
 		name, s.roots.DataDir)
+	return check
+}
+
+// sandboxQdrantDirCheck fails when a sandbox row carries
+// stores.qdrant.data_dir: `tenant create` never sets it, so one there means
+// the run is not proving what it says (the standard layout) and is writing
+// somewhere a sweep does not clean.
+func sandboxQdrantDirCheck(t *registry.Tenant) checkResult {
+	check := checkResult{Name: t.Name + ": qdrant on the standard layout"}
+	if q := t.Stores.Qdrant.DataDir; q != "" {
+		check.Verdict = checkFail
+		check.Detail = fmt.Sprintf("the sandbox row carries stores.qdrant.data_dir %s; a sandbox keeps "+
+			"<data_dir>/qdrant and never uses a store data root", q)
+		return check
+	}
+	check.Verdict, check.Detail = checkPass, filepath.Join(t.DataDir, "qdrant")
 	return check
 }
 

@@ -215,3 +215,74 @@ func TestFleetGrantUsageExplainsWhyItIsLocal(t *testing.T) {
 		}
 	}
 }
+
+// --roots may name a store data root (CTL_STORE_DATA_ROOTS) or a dir under
+// one — the volume a qdrant dir was moved to — and nothing else outside the
+// rag root.
+func TestFleetGrantRootsAcceptAStoreDataRoot(t *testing.T) {
+	store := []string{"/qdrant"}
+	for _, ok := range []string{"/qdrant", "/qdrant/tenants/x", "/rag/data/tenants/dev"} {
+		if got, rc := grantRoots(ok, "/rag", store); rc != exitOK || len(got) != 1 || got[0] != ok {
+			t.Errorf("grantRoots(%q) = %v, %d; want [%s], 0", ok, got, rc, ok)
+		}
+	}
+	for _, bad := range []string{"/home/x", "/qdrantx", "/", "/qdrant/../etc/x", "/rag"} {
+		if got, rc := grantRoots(bad, "/rag", store); rc != exitUsage {
+			t.Errorf("grantRoots(%q) = %v, %d; want a usage error", bad, got, rc)
+		}
+	}
+	// No store root configured: /qdrant is outside the rag root like any other.
+	if got, rc := grantRoots("/qdrant/tenants/x", "/rag", nil); rc != exitUsage {
+		t.Errorf("grantRoots(/qdrant/tenants/x) with no store roots = %v, %d; want a usage error", got, rc)
+	}
+}
+
+// The command reads the store roots the daemon is configured with: the
+// environment, else <ctl config dir>/ctl.env.
+func TestFleetGrantReadsTheStoreDataRoots(t *testing.T) {
+	ragRoot := grantRoot(t)
+	name, uid := self(t)
+	store := t.TempDir()
+	target := filepath.Join(store, "tenants", "x")
+	if err := os.MkdirAll(target, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := acl.Set(target, acl.KindAccess, acl.FromMode(0o750)); err != nil {
+		t.Skipf("skipping: %s has no POSIX ACL support: %v", store, err)
+	}
+	cfgDir := filepath.Join(ragRoot, "config", "ctl")
+	t.Setenv("CTL_CONFIG_DIR", cfgDir)
+
+	// Not configured: refused as outside the rag root.
+	t.Setenv("CTL_STORE_DATA_ROOTS", "")
+	if rc, _, errs := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", target); rc != exitUsage {
+		t.Fatalf("grant under an unconfigured store root: rc %d, want %d: %s", rc, exitUsage, errs)
+	}
+	// Configured in ctl.env: granted.
+	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "ctl.env"), []byte("CTL_STORE_DATA_ROOTS="+store+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errs := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", target)
+	if rc != exitOK {
+		t.Fatalf("grant under a store root named in ctl.env: rc %d: %s %s", rc, out, errs)
+	}
+	got, err := acl.Get(target, acl.KindAccess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Find(acl.TagUser, uid); !ok {
+		t.Errorf("no named entry for %s on %s: %s", name, target, got.Line())
+	}
+	// A home directory stays refused whatever the store roots say.
+	if rc, _, _ := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", t.TempDir()); rc != exitUsage {
+		t.Errorf("grant of a dir outside the rag root and every store root: rc %d, want %d", rc, exitUsage)
+	}
+	// A malformed value is a usage error, as it refuses the daemon's start.
+	t.Setenv("CTL_STORE_DATA_ROOTS", store+":rw")
+	if rc, _, _ := capture(t, "fleet", "grant", "--user", name, "--rag-root", ragRoot, "--roots", target); rc != exitUsage {
+		t.Errorf("grant with a malformed CTL_STORE_DATA_ROOTS: rc %d, want %d", rc, exitUsage)
+	}
+}
