@@ -94,27 +94,62 @@ func UnderOrAt(path, root string) bool {
 // root's shape; none is listed twice or nested in another; and none equals,
 // contains or lies under an approved root (approved) or an API bind root
 // (bind, CTL_API_BIND_ROOTS' paths). See drivers.CheckStoreDataRoots for why.
+//
+// Overlap is judged on BOTH spellings of every path — as written and as it
+// resolves on disk (paths.ResolveExisting) — so `/qdrant -> /rag/data/tenants/x`,
+// or `/data/qdrant` with `/data -> /rag/data`, is refused although the
+// written paths are disjoint. A store root that is a symlink to a separate
+// volume (`/qdrant -> /mnt/vol`) is legal: neither spelling meets a ctl root.
 func Check(store, approved, bind []string) error {
-	overlap := func(a, b string) bool { return UnderOrAt(a, b) || UnderOrAt(b, a) }
-	for i, r := range store {
-		if err := checkRoot(r); err != nil {
-			return fmt.Errorf("store data root %q: %v", r, err)
-		}
-		for _, o := range store[:i] {
-			if overlap(r, o) {
-				return fmt.Errorf("store data roots %s and %s overlap (one is, or is under, the other)", o, r)
+	type named struct{ written, resolved string }
+	spell := func(p string) named { return named{p, paths.ResolveExisting(filepath.Clean(p))} }
+	overlap := func(a, b named) bool {
+		for _, x := range []string{a.written, a.resolved} {
+			for _, y := range []string{b.written, b.resolved} {
+				if UnderOrAt(x, y) || UnderOrAt(y, x) {
+					return true
+				}
 			}
 		}
+		return false
+	}
+	describe := func(n named) string {
+		if n.resolved != n.written {
+			return n.written + " (resolves to " + n.resolved + ")"
+		}
+		return n.written
+	}
+	var seen []named
+	for _, raw := range store {
+		if err := checkRoot(raw); err != nil {
+			return fmt.Errorf("store data root %q: %v", raw, err)
+		}
+		r := spell(raw)
+		for _, o := range seen {
+			if overlap(r, o) {
+				return fmt.Errorf("store data roots %s and %s overlap (one is, or is under, the other)",
+					describe(o), describe(r))
+			}
+		}
+		seen = append(seen, r)
 		for _, a := range approved {
-			if a != "" && overlap(r, filepath.Clean(a)) {
+			if a == "" {
+				continue
+			}
+			if an := spell(a); overlap(r, an) {
 				return fmt.Errorf("store data root %s overlaps the approved root %s; a store root is a "+
-					"directory of its own (a separate volume), never one of, inside or around the ctl's roots", r, a)
+					"directory of its own (a separate volume), never one of, inside or around the ctl's roots",
+					describe(r), describe(an))
 			}
 		}
 		for _, b := range bind {
-			if b != "" && overlap(r, filepath.Clean(b)) {
+			if b == "" {
+				continue
+			}
+			if bn := spell(b); overlap(r, bn) {
 				return fmt.Errorf("store data root %s overlaps the API bind root %s (CTL_API_BIND_ROOTS); "+
-					"the most specific root decides a bind's mode, so the two lists may not share a directory", r, b)
+					"the most specific root decides a bind's mode, so the two lists may not share a directory",
+					describe(r), describe(bn))
 			}
 		}
 	}

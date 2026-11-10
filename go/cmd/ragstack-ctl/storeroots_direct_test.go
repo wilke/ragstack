@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -57,5 +58,36 @@ func TestDirectEngineAppliesStoreDataRoots(t *testing.T) {
 	t.Setenv(api.EnvStoreDataRoots, "/rag/cache")
 	if got, err := build(); err == nil {
 		t.Errorf("--direct with a store root equal to a bind root built %v, want an error", got)
+	}
+}
+
+// Second review item 5: a --direct run by an account that cannot read
+// ctl.env refuses with that reason instead of running with no store roots.
+func TestDirectEngineRefusesAnUnreadableCtlEnv(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	cfgDir := filepath.Join(root, "config")
+	for _, d := range []string{state, cfgDir} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "ctl.env"), []byte("CTL_STORE_DATA_ROOTS=/qdrant\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(api.EnvStateDir, state)
+	t.Setenv(api.EnvConfigDir, cfgDir)
+	t.Setenv(api.EnvAPIBindRoots, "")
+	t.Setenv(api.EnvStoreDataRoots, "")
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	o := addOpFlags(fs, filepath.Join(root, "registry.json"), root, false)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buildDirectEngineAndDrivers(o); !errors.Is(err, api.ErrCtlEnvUnreadable) {
+		t.Errorf("--direct over an unreadable ctl.env = %v, want ErrCtlEnvUnreadable", err)
 	}
 }

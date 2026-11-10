@@ -9,10 +9,12 @@ package doctor
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -80,10 +82,19 @@ func (d *run) loadStoreRoots() {
 	if roots == nil {
 		v := strings.TrimSpace(os.Getenv(storeroots.Env))
 		if v == "" && d.roots.CtlConfigDir != "" {
-			if b, err := os.ReadFile(filepath.Join(d.roots.CtlConfigDir, "ctl.env")); err == nil {
+			path := filepath.Join(d.roots.CtlConfigDir, "ctl.env")
+			b, err := os.ReadFile(path)
+			switch {
+			case err == nil:
 				if f, _, err := envfile.ParseLenient(b); err == nil {
 					v, _ = f.Get(storeroots.Env)
 				}
+			case !errors.Is(err, os.ErrNotExist):
+				// EXISTS but unreadable by this account: the roots are
+				// unknown, which is not the same as "none" and is said so
+				// (store_data_roots_unreadable) rather than every moved row
+				// being reported outside roots nobody could see.
+				d.storeRootsUnreadable = fmt.Errorf("could not read %s (%v)", path, err)
 			}
 		}
 		parsed, err := storeroots.Parse(v)
@@ -297,22 +308,64 @@ func tenantEnvValue(t *registry.Tenant, key string) (string, bool) {
 //     standing invitation, and /qdrant was created 2775 svcbvbrc:cels.
 func (d *run) storeRootChecks() {
 	d.loadStoreRoots()
+	if d.storeRootsUnreadable != nil {
+		d.add(model.LevelWarn, StoreDataRootsUnreadable, "", d.storeRootsUnreadable.Error()+
+			": CTL_STORE_DATA_ROOTS is unknown to this run, so moved qdrant dirs are judged against no store "+
+			"root; run doctor as an account that can read ctl.env, or set CTL_STORE_DATA_ROOTS in the environment")
+	}
 	if d.storeRootsErr != nil {
 		d.add(model.LevelError, StoreDataRootsInvalid, "", d.storeRootsErr.Error()+
 			": the daemon and --direct refuse to start on this CTL_STORE_DATA_ROOTS")
 		return
 	}
-	for _, r := range d.storeRoots {
-		fi, err := os.Stat(r)
-		if err != nil {
-			continue
+	// writable warns when p is group/other-writable. A store root is
+	// followed (it may itself be a link to the volume); an intermediate
+	// directory is not — a link there is qdrant_data_dir_symlink's finding.
+	writable := func(p, what string, follow bool) {
+		stat := os.Lstat
+		if follow {
+			stat = os.Stat
+		}
+		fi, err := stat(p)
+		if err != nil || fi.Mode()&os.ModeSymlink != 0 {
+			return
 		}
 		if m := fi.Mode().Perm(); m&0o022 != 0 {
 			d.add(model.LevelWarn, StoreDataRootWritable, "", fmt.Sprintf(
-				"store data root %s is mode %04o: writable by its group or by everybody, any of whom could plant a "+
-					"symlink below it. Create the per-tenant dirs as the ctl account, then tighten the root "+
+				"%s %s is mode %04o: writable by its group or by everybody, any of whom could plant a "+
+					"symlink below it. Create the per-tenant dirs as the ctl account, then tighten it "+
 					"(chmod 2750 or 0755) and grant per tenant dir with `ragstack-ctl fleet grant`",
-				r, fileModeBits(fi.Mode())))
+				what, p, fileModeBits(fi.Mode())))
+		}
+	}
+	for _, r := range d.storeRoots {
+		writable(r, "store data root", true)
+	}
+	// …and every EXISTING directory between a store root and a row's moved
+	// dir (/qdrant/tenants): a cels-writable intermediate is the same
+	// invitation one level down. The moved dir itself is the tenant's and is
+	// under permissionChecks.
+	seen := map[string]bool{}
+	names := make([]string, 0, len(d.fleet.Tenants))
+	for n := range d.fleet.Tenants {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		t := d.fleet.Tenants[n]
+		if t == nil || t.Stores.Qdrant.DataDir == "" {
+			continue
+		}
+		q := t.Stores.Qdrant.DataDir
+		root := storeroots.Governing(q, d.storeRoots)
+		if root == "" {
+			continue
+		}
+		for p := filepath.Dir(q); p != root && strings.HasPrefix(p, root+"/"); p = filepath.Dir(p) {
+			if !seen[p] {
+				seen[p] = true
+				writable(p, "store directory", false)
+			}
 		}
 	}
 }

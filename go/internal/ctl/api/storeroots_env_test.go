@@ -262,3 +262,62 @@ func TestCtlEnvTemplateGuardsStoreDataRoots(t *testing.T) {
 		t.Errorf("ctl.env.j2 does not carry the guarded row:\n%s", guarded)
 	}
 }
+
+// Second review item 3, through the engine: a store root that is a symlink
+// resolving into an approved root refuses construction; one resolving to a
+// separate volume is admitted.
+func TestBuildEngineChecksTheResolvedStoreRoot(t *testing.T) {
+	dir := t.TempDir()
+	roots := paths.NewRoots(dir, paths.Overrides{})
+	if err := os.MkdirAll(filepath.Join(roots.DataDir, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	into := filepath.Join(t.TempDir(), "qdrant")
+	if err := os.Symlink(filepath.Join(roots.DataDir, "x"), into); err != nil {
+		t.Fatal(err)
+	}
+	vol := t.TempDir()
+	separate := filepath.Join(t.TempDir(), "qdrant")
+	if err := os.Symlink(vol, separate); err != nil {
+		t.Fatal(err)
+	}
+	build := func(store string) error {
+		cfg := EngineConfig{Roots: roots, RegistryPath: filepath.Join(dir, "registry.json"),
+			StorePath: filepath.Join(dir, "jobs.db"), Mode: model.WorkerDirect, Host: "test", Now: time.Now,
+			StoreDataRoots: []string{store}}
+		writeFleet(t, cfg.RegistryPath, FixtureFleet())
+		_, _, err := BuildEngineAndDrivers(cfg)
+		return err
+	}
+	if err := build(into); !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "resolves to") {
+		t.Errorf("a store root resolving into the tenants root = %v, want a refusal naming the resolved path", err)
+	}
+	if err := build(separate); err != nil {
+		t.Errorf("a store root resolving to a separate volume = %v, want admitted", err)
+	}
+}
+
+// Second review item 5: an unreadable ctl.env is ErrCtlEnvUnreadable, not
+// "none configured"; an absent one is none.
+func TestStoreDataRootsFromAnUnreadableCtlEnv(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	t.Setenv(EnvStoreDataRoots, "")
+	cfg := t.TempDir()
+	if got, err := StoreDataRootsFrom(cfg); err != nil || got != nil {
+		t.Fatalf("absent ctl.env = %v, %v; want none", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "ctl.env"), []byte("CTL_STORE_DATA_ROOTS=/qdrant\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	got, err := StoreDataRootsFrom(cfg)
+	if !errors.Is(err, ErrCtlEnvUnreadable) || got != nil || !strings.Contains(err.Error(), "could not read") {
+		t.Fatalf("unreadable ctl.env = %v, %v; want ErrCtlEnvUnreadable", got, err)
+	}
+	// The environment wins, so the file is never read.
+	t.Setenv(EnvStoreDataRoots, "/qdrant")
+	if got, err := StoreDataRootsFrom(cfg); err != nil || len(got) != 1 {
+		t.Errorf("environment set over an unreadable ctl.env = %v, %v; want [/qdrant]", got, err)
+	}
+}

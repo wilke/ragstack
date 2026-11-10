@@ -247,6 +247,9 @@ type run struct {
 	storeRoots       []string
 	storeRootsErr    error
 	storeRootsLoaded bool
+	// storeRootsUnreadable is set when ctl.env exists but this account
+	// cannot read it (store_data_roots_unreadable).
+	storeRootsUnreadable error
 }
 
 func (d *run) listeners() {

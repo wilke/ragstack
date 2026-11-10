@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -266,15 +267,49 @@ func ParseStoreDataRoots(v string) ([]string, error) {
 	return storeroots.Parse(v)
 }
 
+// ErrCtlEnvUnreadable is returned (wrapped) when <ctl config dir>/ctl.env
+// EXISTS but this account cannot read it. It is distinct from an absent file
+// (which means "nothing configured") because the two must not look the same:
+// a --direct run or a doctor by an account outside the file's group would
+// otherwise report "no store roots" over a host that has them, and refuse
+// every moved row for a reason that is not true.
+var ErrCtlEnvUnreadable = errors.New("ctl.env exists but cannot be read")
+
+// ctlEnvValueStrict is CtlEnvValue that tells an unreadable file apart from
+// an absent one: absent (or the key unset) is "", nil; unreadable is
+// ErrCtlEnvUnreadable naming the path. A file that does not parse is still
+// read leniently, as CtlEnvValue does.
+func ctlEnvValueStrict(dir, key string) (string, error) {
+	path := filepath.Join(dir, "ctl.env")
+	b, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("%w: could not read %s (%v), so %s is unknown; set it in the environment for this "+
+			"run, or run as an account that can read the file", ErrCtlEnvUnreadable, path, err, key)
+	}
+	f, _, perr := envfile.ParseLenient(b)
+	if perr != nil {
+		return "", nil
+	}
+	v, _ := f.Get(key)
+	return v, nil
+}
+
 // StoreDataRootsFrom is CTL_STORE_DATA_ROOTS as this process should see it:
 // the environment's value, else (unset or blank) the one in <configDir>/ctl.env
 // (only that key is read), else none — parsed. The daemon (ctl-daemon.sh exports ctl.env),
 // a --direct run (ctl-as-svc.sh does not) and `fleet grant` (run by the
-// owner, outside both) therefore resolve the same list.
+// owner, outside both) therefore resolve the same list. A ctl.env that exists
+// and cannot be read is an error wrapping ErrCtlEnvUnreadable, never "none".
 func StoreDataRootsFrom(configDir string) ([]string, error) {
 	v := os.Getenv(EnvStoreDataRoots)
 	if strings.TrimSpace(v) == "" {
-		v = CtlEnvValue(configDir, EnvStoreDataRoots)
+		var err error
+		if v, err = ctlEnvValueStrict(configDir, EnvStoreDataRoots); err != nil {
+			return nil, err
+		}
 	}
 	return ParseStoreDataRoots(v)
 }

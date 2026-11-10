@@ -505,8 +505,16 @@ const (
 	// daemon and --direct refuse their start with). Error.
 	StoreDataRootsInvalid = "store_data_roots_invalid"
 
-	// StoreDataRootWritable: a store data root is writable by its group or by
-	// other, so any member could plant a symlink below it. Warn — the drivers
+	// StoreDataRootsUnreadable: CTL_STORE_DATA_ROOTS is not in this
+	// process's environment and <ctl config dir>/ctl.env exists but this
+	// account cannot read it, so the store roots are UNKNOWN (not "none").
+	// Warn: every moved row is then judged against no store root, and this
+	// finding says why. An absent ctl.env raises nothing.
+	StoreDataRootsUnreadable = "store_data_roots_unreadable"
+
+	// StoreDataRootWritable: a store data root, or an existing directory
+	// between it and a row's moved qdrant dir (/qdrant/tenants), is writable
+	// by its group or by other, so any member could plant a symlink below it. Warn — the drivers
 	// and the pre-start check refuse to follow such a link — raised whether or
 	// not a row uses the root yet. Repair: create the tenant dirs as the ctl
 	// account, chmod the root 2750/0755 and grant per tenant dir.

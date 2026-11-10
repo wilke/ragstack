@@ -521,7 +521,18 @@ Ways out of a row that is outside every root:
 
 `CTL_STORE_DATA_ROOTS` itself is checked by `doctor` with the same code the
 daemon refuses its start with: `store_data_roots_invalid` (error) for a value
-that does not parse or overlaps an approved or bind root.
+that does not parse or overlaps an approved or bind root — compared both as
+written and as resolved on disk, so `/qdrant -> /rag/data/tenants/x` is
+refused while `/qdrant -> /mnt/vol` is fine. `ctl.env` on coconut is
+`svcbvbrc:cels 0640`; an account that cannot read it does not silently see
+"no store roots": a `--direct` run refuses with "could not read …/ctl.env",
+`doctor` raises `store_data_roots_unreadable` (warn), and `fleet grant` names
+the file when it refuses a store path. An absent `ctl.env` still means none.
+
+A moved tenant whose store volume vanished (`qdrant_data_dir_root_not_mounted`)
+or whose dir chain holds a symlink (`qdrant_data_dir_symlink`) is still
+stoppable: `stop` tolerates both, without `--force-with-doctor-diff`; they stay
+errors for every other op.
 
 **No symlink below a store root.** Nothing between a store root and a
 store's files may be a symlink: the files and instance drivers refuse a path
@@ -536,7 +547,8 @@ is on the root filesystem is still refused.
 Whoever can write a store root can plant such a link (`ln -s
 /rag/data/tenants/<victim> /qdrant/tenants`). `doctor` raises
 `store_data_root_writable` (warn) for a store root its group or everybody may
-write, whether or not a row uses it yet. Host fact (2026-11-10): `/qdrant` is
+write, whether or not a row uses it yet, and for any existing directory
+between a store root and a row's moved dir (e.g. `/qdrant/tenants`). Host fact (2026-11-10): `/qdrant` is
 `2775 svcbvbrc:cels` — writable by every one of the ~1869 cels members.
 **Before any move, tighten it.**
 

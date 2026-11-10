@@ -63,3 +63,26 @@ func TestMountOfResolvesASymlinkedPath(t *testing.T) {
 		t.Errorf("MountOf of a missing path = %s, want /", mp)
 	}
 }
+
+// Second review item 1: the REAL MountOf resolves too. An alias in a temp dir
+// pointing at /proc (a mount on every Linux host, and never the temp dir's)
+// answers exactly what /proc answers — the lexical answer would be the temp
+// dir's own mount.
+func TestRealMountOfResolvesASymlinkedPath(t *testing.T) {
+	r := &Real{ProcRoot: "/proc"}
+	want, wantFS, err := r.MountOf("/proc/sys")
+	if err != nil {
+		t.Skipf("no readable mountinfo: %v", err)
+	}
+	if want != "/proc" {
+		t.Skipf("/proc is not a mount point here (deepest mount of /proc/sys is %s)", want)
+	}
+	alias := filepath.Join(t.TempDir(), "proc-alias")
+	if err := os.Symlink("/proc", alias); err != nil {
+		t.Fatal(err)
+	}
+	got, gotFS, err := r.MountOf(filepath.Join(alias, "sys"))
+	if err != nil || got != want || gotFS != wantFS {
+		t.Errorf("MountOf(%s/sys) = %s, %s, %v; want %s, %s (what the resolved path answers)", alias, got, gotFS, err, want, wantFS)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/ragstack/ragstack/internal/ctl/acl"
+	"github.com/ragstack/ragstack/internal/ctl/api"
 )
 
 // grantRoot builds a /rag-shaped tree and skips the test when the filesystem
@@ -298,10 +299,12 @@ func TestFleetGrantSaysWhenCtlEnvIsUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CTL_STORE_DATA_ROOTS", "")
-	why := storeRootsUnknown(cfg)
-	if !strings.Contains(why, "could not read") || !strings.Contains(why, p) {
-		t.Fatalf("storeRootsUnknown = %q, want it to name the unreadable file", why)
+	_, err := api.StoreDataRootsFrom(cfg)
+	if !errors.Is(err, api.ErrCtlEnvUnreadable) || !strings.Contains(err.Error(), "could not read") ||
+		!strings.Contains(err.Error(), p) {
+		t.Fatalf("StoreDataRootsFrom(unreadable ctl.env) = %v, want ErrCtlEnvUnreadable naming the file", err)
 	}
+	why := err.Error()
 	name, _ := self(t)
 	t.Setenv("CTL_CONFIG_DIR", cfg)
 	rc, _, errs := capture(t, "fleet", "grant", "--user", name, "--rag-root", "/rag", "--roots", "/qdrant/tenants/x")
@@ -311,7 +314,12 @@ func TestFleetGrantSaysWhenCtlEnvIsUnreadable(t *testing.T) {
 	if _, code := grantRoots("/qdrant/tenants/x", "/rag", nil, why); code != exitUsage {
 		t.Errorf("grantRoots with unknown store roots = %d, want a usage error", code)
 	}
-	if empty := storeRootsUnknown(t.TempDir()); empty != "" {
-		t.Errorf("an absent ctl.env = %q, want \"\" (none configured)", empty)
+	if roots, err := api.StoreDataRootsFrom(t.TempDir()); err != nil || roots != nil {
+		t.Errorf("an absent ctl.env = %v, %v; want none and no error", roots, err)
+	}
+	// A grant under the rag root needs no store roots: an unreadable ctl.env
+	// does not stop it (only the refusal of a store path names the file).
+	if _, code := grantRoots("/rag/data/tenants/dev", "/rag", nil, why); code != exitOK {
+		t.Errorf("grantRoots under the rag root with unknown store roots = %d, want ok", code)
 	}
 }

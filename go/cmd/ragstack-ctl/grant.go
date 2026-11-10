@@ -14,6 +14,7 @@ package main
 // system.posix_acl_* xattrs itself — see internal/ctl/acl.
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -105,11 +106,19 @@ func cmdFleetGrant(args []string, ragRoot string, jsonOut bool) int {
 	// nothing else outside the rag root. A malformed value is a usage error,
 	// exactly as it refuses the daemon's start.
 	cfgDir := api.RootsFromEnv(*root).CtlConfigDir
+	// An UNREADABLE ctl.env is not a usage error: a grant under the rag root
+	// needs no store roots. It is carried into the refusal of a root that
+	// would have needed one, which then says why instead of "none are
+	// configured".
+	unknown := ""
 	storeRoots, err := api.StoreDataRootsFrom(cfgDir)
-	if err != nil {
+	switch {
+	case errors.Is(err, api.ErrCtlEnvUnreadable):
+		unknown, storeRoots = err.Error(), nil
+	case err != nil:
 		return usageErr("fleet grant: %v", err)
 	}
-	roots, rc := grantRoots(*rootsCSV, *root, storeRoots, storeRootsUnknown(cfgDir))
+	roots, rc := grantRoots(*rootsCSV, *root, storeRoots, unknown)
 	if rc != exitOK {
 		return rc
 	}
@@ -183,22 +192,6 @@ func grantRoots(csv, ragRoot string, storeRoots []string, unknown string) ([]str
 		return nil, usageErr("fleet grant: --roots is empty")
 	}
 	return out, exitOK
-}
-
-// storeRootsUnknown is why CTL_STORE_DATA_ROOTS could not be read, or "":
-// the environment does not carry it and <configDir>/ctl.env exists but cannot
-// be read by this account (it is svcbvbrc:ragops 0640; an owner who is not in
-// that group cannot see it).
-func storeRootsUnknown(configDir string) string {
-	if strings.TrimSpace(os.Getenv(api.EnvStoreDataRoots)) != "" {
-		return ""
-	}
-	path := filepath.Join(configDir, "ctl.env")
-	if _, err := os.ReadFile(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Sprintf("could not read %s (%v), so the configured store roots are unknown; set "+
-			"CTL_STORE_DATA_ROOTS in the environment for this run, or run the grant as an account that can read it", path, err)
-	}
-	return ""
 }
 
 // underStoreRoot reports whether p equals, or is strictly under, one of the

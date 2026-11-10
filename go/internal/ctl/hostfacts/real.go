@@ -529,30 +529,11 @@ func (r *Real) MountOf(path string) (string, string, error) {
 	return deepestMount(resolveExisting(path), m)
 }
 
-// resolveExisting is path with its deepest EXISTING ancestor resolved through
-// symlinks and the missing tail appended unchanged (a component that does not
-// exist cannot be a link). MountOf asks it first: mount points are real paths,
-// so `/qdrant/tenants/dev` with `/qdrant -> /mnt/vol` compared lexically would
-// answer `/` for a dir that sits on the mounted volume. A path that does not
-// resolve at all is returned as given.
-func resolveExisting(path string) string {
-	if !filepath.IsAbs(path) {
-		return path
-	}
-	rest := ""
-	dir := filepath.Clean(path)
-	for {
-		if real, err := filepath.EvalSymlinks(dir); err == nil {
-			return filepath.Join(real, rest)
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return path
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = parent
-	}
-}
+// resolveExisting is paths.ResolveExisting. MountOf asks it first: mount
+// points are real paths, so `/qdrant/tenants/dev` with `/qdrant -> /mnt/vol`
+// compared lexically would answer `/` for a dir that sits on the mounted
+// volume.
+func resolveExisting(path string) string { return paths.ResolveExisting(path) }
 
 // deepestMount picks, from mount point → fstype, the longest mount point that
 // is path or a parent of it. "/" (fstype from the table, or ext4) is the floor.

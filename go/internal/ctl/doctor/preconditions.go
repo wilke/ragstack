@@ -193,7 +193,9 @@ var preconditions = map[string][]string{
 //     elsewhere must still never reach these three.
 //
 // Nothing else may be listed here: tolerating a finding is a claim that the
-// op leaves the condition behind, not that the condition is acceptable.
+// op leaves the condition behind, not that the condition is acceptable — or,
+// for `stop` over a moved qdrant dir that is unmounted or symlinked, that the
+// op writes nothing there and is the way out.
 var tolerates = map[string][]string{
 	"env-normalize": {EnvNotSystemdParsable},
 	// `adopt --readopt --confirm-stores` is the ONLY way to clear
@@ -201,10 +203,16 @@ var tolerates = map[string][]string{
 	// on its own merits today; the row is here so that an op-scoped raise
 	// elsewhere can never reach the op that repairs it — the same lesson
 	// env-normalize taught.)
-	"adopt":        {StoresUnconfirmed},
-	"start":        {PortNotListening},
-	"restart":      {PortNotListening},
-	"stop":         {PortNotListening},
+	"adopt":   {StoresUnconfirmed},
+	"start":   {PortNotListening},
+	"restart": {PortNotListening},
+	// A moved qdrant tenant whose store volume vanished at reboot
+	// (qdrant_data_dir_root_not_mounted), or whose dir chain grew a symlink
+	// (qdrant_data_dir_symlink), must still be STOPPABLE without
+	// --force-with-doctor-diff: stopping leaves nothing written there, and
+	// it is the first step of every repair. Both stay errors for every other
+	// op.
+	"stop":         {PortNotListening, QdrantDataDirRootNotMounted, QdrantDataDirSymlink},
 	"decommission": {PortNotListening},
 	// A quarantined tenant is DOWN by construction: nothing of it listens.
 	"purge": {PortNotListening},
