@@ -111,6 +111,7 @@ def test_passage_w1_both_sides_is_production_text_literally() -> None:
                                                                                                  "d1-c2"]
     assert (p.start_char, p.end_char) == (0, r[2]["end_char"]) and (p.n_before, p.n_after) == (1, 1)
     assert p.store_calls == 1  # expand_context fetched both neighbours in one hop
+    assert p.budget_chars == 8000 * 3
 
 
 def test_passage_w2_puts_two_neighbours_under_one_marker() -> None:
@@ -124,6 +125,10 @@ def test_passage_w2_puts_two_neighbours_under_one_marker() -> None:
     q = sap.neighbour_passage(r, "d1-c1", 2)
     assert q is not None and q.edge == "none" and (q.n_before, q.n_after) == (1, 2)
     assert q.text == "(context before)\nA0.\n(passage)\nA1.\n(context after)\nA2.\nA3."
+    # production's budget scales by the farthest position the context reaches, not by the w asked for
+    assert p.budget_chars == q.budget_chars == 8000 * 5
+    three = sap.neighbour_passage(rows("B0.", "B1.", "B2."), "d1-c1", 2)
+    assert three is not None and three.budget_chars == 8000 * 3
 
 
 def test_passage_at_document_edges_drops_the_missing_side_with_its_marker() -> None:
@@ -177,6 +182,26 @@ def test_a_walk_that_misses_a_neighbour_is_refused_not_read_as_an_edge(monkeypat
     monkeypatch.setattr(retriever, "_LINK_KEYS", {-1: "previous_chunk", 1: "following_chunk"})
     with pytest.raises(SystemExit, match=r"returned 0 before / 0 after"):  # no context at all: not M alone
         sap.neighbour_passage(r, "d1-c4", 1)
+
+
+def test_items_add_refuses_one_item_id_with_two_export_rows() -> None:
+    """Fable F4: the same neighbour item id must carry the same export row every time it is added."""
+    import dataclasses
+
+    r = rows("Alpha one.", "Beta two.", "Gamma three.")
+    p = sap.neighbour_passage(r, "d1-c1", 1)
+    assert p is not None
+    it = sap.Items()
+    kw = {"group": "kept_changed", "item_set": "positive", "budget": 8000, "counter": sfx.WordCounter()}
+    it.add(p, r[1], control_of="c1", record_id="r1", **kw)
+    it.add(p, r[1], control_of="c2", record_id="r2", **kw)  # another record on the same M: one shared row
+    assert len(it.export) == 1 and len(it.seeds) == 2
+    with pytest.raises(SystemExit, match="one neighbour item id would carry two different export rows"):
+        it.add(dataclasses.replace(p, text=p.text + " changed"), r[1], control_of="c3", record_id="r3", **kw)
+    with pytest.raises(SystemExit, match="two different export rows"):
+        it.add(p, {**r[1], "metadata": {"source_path": "PMCother", "title": "T"}}, control_of="c4",
+               record_id="r4", **kw)
+    assert len(it.export) == 1 and len(it.seeds) == 2
 
 
 def test_trim_check_flags_a_budget_trim_and_ignores_an_ellipsis_in_the_text() -> None:
@@ -278,6 +303,7 @@ def test_items_end_to_end(world: sfx.World, tmp_path: Path) -> None:
         assert md["item_type"] == "neighbour" and md["context_window"] == w and md["max_overlap_chunk_id"] == mid
         assert md["content_sha256"] == asc.sha_text(r["content"]) and md["formatter"] == sap.FORMATTER
         assert md["max_context_chars"] == 8000 and md["edge"] in sap.EDGES
+        assert md["budget_chars"] == 8000 * (2 * max(md["neighbours_before"], md["neighbours_after"]) + 1)
         docs = world.cdocs.get(r["doc_id"]) or sfx.chunk_rows(r["doc_id"])
         p = sap.neighbour_passage(docs, mid, w)
         assert p is not None and r["content"] == p.text and md["neighbour_chunk_ids"] == p.neighbour_chunk_ids
@@ -327,6 +353,8 @@ def test_items_end_to_end(world: sfx.World, tmp_path: Path) -> None:
     assert pub["outputs_sha256"] == {"neighbour_export": asc.sha256_file(out / "neighbour-export.jsonl"),
                                      "neighbour_seed": asc.sha256_file(out / "neighbour-seed.jsonl")}
     assert pub["calls"] == {"store": 0, "retrieval": 0, "llm": 0, "gateway": 0}
+    assert pub["nominal_budget_chars"] == {"context_window_1": 24000, "context_window_2": 40000}
+    assert pub["budget_chars_per_item"] == {"24000": len(export) - 1, "40000": 1}  # a3's M ± 2 reaches 2
     assert "host" not in pub["provenance"]
     # passage tokens: one count per new item, on the passage as judged
     assert pub["passage_tokens"]["split"]["context_window_2"]["n"] == 1

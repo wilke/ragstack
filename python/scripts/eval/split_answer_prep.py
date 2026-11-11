@@ -36,11 +36,21 @@ the text.
 unchanged ``sha256(record|chunk)[:16]``. Two records sharing M share the export row; one record whose
 two windows map to one M has two seed rows that ``build-control`` merges into one pair.
 
-**Edge** (§3.2 (a)2): ``before`` when M is its document's first chunk (no context before),
-``after`` when it is the last, else ``none``. At ``w = 2`` a side cut short to one neighbour by
-the document edge is not an edge (its neighbour counts are in the export row's metadata). A
-one-chunk document has no context: the passage is M itself, M's label is reused and no item is
-built (counted as skipped).
+**Edge** (§3.2 (a)2, "the side a document edge removed"): read as a whole side removed. ``before``
+when M is its document's first chunk (index 0: no context before), ``after`` when it is the last,
+else ``none``; derived from M's index and checked against what production's walk returned
+(:func:`neighbour_passage` refuses a walk that does not reach every neighbour within w). At ``w = 2``
+a side that holds one neighbour instead of two, because M is its document's second or second-to-last
+chunk, is NOT an edge: such an item counts as ``none`` in ``edge_items`` and in the report's
+``without_edge`` group although its passage is one chunk shorter (review A7 / Fable F6; at most the 2
+w = 2 split items). Its real counts are in the export row's ``neighbours_before`` /
+``neighbours_after``. A one-chunk document has no context: the passage is M itself, M's label is
+reused and no item is built (counted as skipped).
+
+**Budget**: production scales ``max_context_chars`` by ``2 x window + 1``, the window being the
+farthest context position the source actually carries (``RagGenerator._format_context``). Each
+export row records that budget (``budget_chars``); ``neighbour-items.json`` gives the nominal budget
+per context window (``nominal_budget_chars``) and the per-item budgets counted.
 
 **The negative draw's prefix** (§3.2 (b)8, review nit c): the prefix counts candidates AFTER the walk's
 one-pair-per-(record, arm) and one-pair-per-window filter. The cells are walked in the fixed order
@@ -331,6 +341,8 @@ class Passage:
     trimmed: bool
     store_calls: int = 0
     chunk_ids: list[str] = field(default_factory=list)
+    #: production's budget for this source: max_context_chars x (2 x farthest position + 1)
+    budget_chars: int = 0
 
 
 def neighbour_passage(rows: Sequence[Mapping[str, Any]], m_chunk_id: str, w: int,
@@ -359,7 +371,8 @@ def neighbour_passage(rows: Sequence[Mapping[str, Any]], m_chunk_id: str, w: int
     found = asyncio.run(expand_context(store, [ScoredChunk(chunk=m, score=1.0)], w))  # type: ignore[arg-type]
     ctx = found.get(m.id)
     source = Source(doc_id=m.doc_id, chunk_id=m.id, content=m.content, score=1.0, metadata={}, context=ctx)
-    gen = RagGenerator(None, max_context_chars=max_context_chars() if budget_chars is None else budget_chars)  # type: ignore[arg-type]
+    base = max_context_chars() if budget_chars is None else budget_chars
+    gen = RagGenerator(None, max_context_chars=base)  # type: ignore[arg-type]
     block = gen.format_context([source])
     if not block.startswith(CITATION_PREFIX):
         raise SystemExit("REFUSED: the production formatter's block does not start with the citation prefix '[1] '")
@@ -389,7 +402,8 @@ def neighbour_passage(rows: Sequence[Mapping[str, Any]], m_chunk_id: str, w: int
     spans = [(by_id[i].start_char, by_id[i].end_char) for i in ids_in_passage]
     return Passage(text=text, w=w, m_chunk_id=m.id, neighbour_chunk_ids=[c.chunk_id for c in ctx], edge=edge,
                    start_char=min(s for s, _ in spans), end_char=max(e for _, e in spans), n_before=len(before),
-                   n_after=len(after), trimmed=trimmed, store_calls=store.calls, chunk_ids=ids_in_passage)
+                   n_after=len(after), trimmed=trimmed, store_calls=store.calls, chunk_ids=ids_in_passage,
+                   budget_chars=base * (2 * max(abs(c.position) for c in ctx) + 1))
 
 
 def export_row(p: Passage, m_row: Mapping[str, Any], budget_chars: int) -> dict[str, Any]:
@@ -402,7 +416,7 @@ def export_row(p: Passage, m_row: Mapping[str, Any], budget_chars: int) -> dict[
                          "neighbour_chunk_ids": list(p.neighbour_chunk_ids), "edge": p.edge,
                          "neighbours_before": p.n_before, "neighbours_after": p.n_after,
                          "content_sha256": asc.sha_text(p.text), "formatter": FORMATTER,
-                         "max_context_chars": budget_chars,
+                         "max_context_chars": budget_chars, "budget_chars": p.budget_chars,
                          "span_note": "start_char/end_char: the span from the first to the last chunk in the "
                                       "passage, for reference only; content is not that span's text"}}
 
@@ -706,10 +720,13 @@ def run_items(confirm_dir: Path, label_table: Path, main_config: Path, negative_
     rec: dict[str, Any] = {
         "schema": SCHEMA["items"], "exploratory": True, "offline": True, "calls": CALLS, "plan": PREREG,
         "item_type": "neighbour", "formatter": FORMATTER, "max_context_chars": budget,
-        "budget_chars": {f"context_window_{w}": budget * (2 * w + 1) for w in WINDOWS},
+        "nominal_budget_chars": {f"context_window_{w}": budget * (2 * w + 1) for w in WINDOWS},
+        "budget_chars_per_item": {str(k): v for k, v in sorted(Counter(
+            r["metadata"]["budget_chars"] for r in export_rows).items())},
         "id_scheme": f"{NBR_PREFIX}w<w>:<max-overlap chunk id>", "tokenizer": acc.TOKENIZER,
         "tokens_counted_on": "the passage as judged (markers included)",
-        "edge_rule": "before: M is its document's first chunk; after: the last; none: neighbours on both sides",
+        "edge_rule": "before: M is its document's first chunk; after: the last; none: neighbours on both sides "
+                     "(at w=2 a side holding one neighbour, M being the second or second-to-last chunk, is none)",
         **counts,
         "deviation": deviation,
         "nbr_prefix_checked": nbr_checked,
