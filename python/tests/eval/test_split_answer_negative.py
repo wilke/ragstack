@@ -58,8 +58,9 @@ def test_seed_committed_on_a_clean_tree_is_read(tmp_path: Path) -> None:
 
 def test_seed_not_committed_is_refused(tmp_path: Path) -> None:
     repo, f = seed_repo(tmp_path, commit=False)
-    assert "no file tracked at HEAD has the seed file's bytes (commit it first)" in sap.seed_file_problems(f, repo)
-    assert "the working tree is not clean" in sap.seed_file_problems(f, repo)  # the seed file is untracked
+    bad = sap.seed_file_problems(f, repo)
+    assert f"{sap.SEED_RELPATH} is not tracked (commit it first)" in bad
+    assert "the working tree is not clean" in bad  # the seed file is untracked
     with pytest.raises(SystemExit, match="not recorded before the draw"):
         sap.read_seed(f, repo)
 
@@ -70,9 +71,40 @@ def test_seed_changed_after_commit_or_a_dirty_tree_is_refused(tmp_path: Path) ->
     assert sap.seed_file_problems(f, repo) == ["the working tree is not clean"]
     (repo / "scratch.txt").unlink()
     f.write_text(json.dumps({"seed": "another"}) + "\n")
-    assert len(sap.seed_file_problems(f, repo)) == 2
+    assert sap.seed_file_problems(f, repo) == [
+        "the working tree is not clean", f"{sap.SEED_RELPATH} differs from HEAD (staged or unstaged; commit it first)"]
+    git(repo, "add", sap.SEED_RELPATH)  # staged, not committed: still not HEAD's
+    assert f"{sap.SEED_RELPATH} differs from HEAD (staged or unstaged; commit it first)" in \
+        sap.seed_file_problems(f, repo)
     with pytest.raises(SystemExit, match="REFUSED"):
         sap.read_seed(f, repo)
+
+
+def test_seed_ignored_by_git_is_not_tracked(tmp_path: Path) -> None:
+    """An ignored seed file leaves the tree clean; only ``ls-files --error-unmatch`` catches it."""
+    repo, f = seed_repo(tmp_path, commit=False)
+    (repo / ".gitignore").write_text(sap.SEED_RELPATH + "\n")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-q", "-m", "ignore")
+    assert sap.seed_file_problems(f, repo) == [f"{sap.SEED_RELPATH} is not tracked (commit it first)"]
+
+
+def test_seed_with_equal_bytes_at_another_path_is_refused(tmp_path: Path) -> None:
+    """Review A3: a committed copy elsewhere in the tree, or a copy outside it, is not the seed file."""
+    repo, f = seed_repo(tmp_path)
+    copy = repo / "docs" / "elsewhere" / "negative-draw-seed.json"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(f.read_bytes())
+    git(repo, "add", "docs/elsewhere/negative-draw-seed.json")
+    git(repo, "commit", "-q", "-m", "copy")
+    want = f"the seed file is not the repository's {sap.SEED_RELPATH}"
+    assert sap.seed_file_problems(copy, repo) == [want]
+    outside = tmp_path / "negative-draw-seed.json"
+    outside.write_bytes(f.read_bytes())
+    assert sap.seed_file_problems(outside, repo) == [want]
+    with pytest.raises(SystemExit, match="not recorded before the draw"):
+        sap.read_seed(outside, repo)
+    assert sap.seed_file_problems(f, repo) == []
 
 
 def test_empty_seed_and_missing_seed_file_are_refused(tmp_path: Path) -> None:
@@ -260,6 +292,8 @@ def test_draw_negative_end_to_end(words: sfx.WordCounter, tmp_path: Path, monkey
     assert asc.public_problems(pub, forbidden, [t for _p, t in sfx.DOCS.values()]) == []
     assert sap.path_problems(pub) == []
     assert pub["seed_file_sha256"] == asc.sha256_file(d.seed) and pub["seed_is_the_proposed_one"] is False
+    head = subprocess.run(["git", "-C", str(d.repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    assert pub["seed_commit"] == head.strip() and pub["seed_file"] == sap.SEED_RELPATH
     assert pub["passage_tokens"]["n"] == 3
     items = sap.run_items(d.world.p["confirm"], d.world.p["label_table"], d.world.p["main_config"], out,
                           tmp_path / "items", repo=d.repo)

@@ -61,6 +61,11 @@ with the confirmatory run's ``chunks-control.jsonl`` identical there.
   order across all cells) is excluded, by the logic of the positive-collision rule: it would get the
   same neighbour item id and ``build-control`` would merge the two into one pair (149 judged, not
   150). ``items`` refuses two negatives on one (record, item id).
+- (b)6 the seed file: the plan says "a file tracked at HEAD has exactly that file's bytes"; that
+  would pass a copy anywhere whose bytes equal any committed file. ``draw-negative`` requires the
+  ``--seed-file`` to be the repository's :data:`SEED_RELPATH` itself, tracked
+  (``git ls-files --error-unmatch``) and identical to HEAD with staged changes included (``git diff
+  --quiet HEAD``), on a clean tree; ``negative-draw.json`` records the HEAD commit (``seed_commit``).
 - (b)6 / (a): ``items`` takes only a negative directory ``draw-negative`` wrote after the committed
   seed: its ``negative-draw.json`` must name the sha256 of the seed file committed at HEAD, the pinned
   stage-A commit and the pinned draw inputs, per-paper quotas of :data:`NEGATIVE_QUOTAS` and a draw that
@@ -723,24 +728,40 @@ def head_seed_sha256(repo: Path | None = None) -> str | None:
     return hashlib.sha256(r.stdout).hexdigest() if r.returncode == 0 else None
 
 
-def seed_file_problems(seed_file: Path, repo: Path | None = None) -> list[str]:
-    """§3.2 (b)6: the tree is clean (untracked files included) and a file tracked at HEAD has
-    exactly the seed file's bytes. Checked before anything else is read."""
-    import alias_study_judge as aj
+def head_commit(repo: Path | None = None) -> str | None:
+    try:
+        r = _git(repo, "rev-parse", "HEAD")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.decode().strip() if r.returncode == 0 else None
 
-    repo = Path(repo or aj.REPO)
-    bad = []
+
+def seed_file_problems(seed_file: Path, repo: Path | None = None) -> list[str]:
+    """§3.2 (b)6, as clarified (module docstring): the seed file is the repository's
+    :data:`SEED_RELPATH` itself (not a copy with equal bytes elsewhere), it is tracked
+    (``git ls-files --error-unmatch``) and identical to HEAD, staged changes included (``git diff
+    --quiet HEAD``), and the tree is clean (untracked files included). Checked before anything else
+    is read."""
+    repo = _repo(repo)
     if not Path(seed_file).is_file():
         return ["the seed file does not exist"]
+    bad = []
+    if Path(seed_file).resolve() != (repo / SEED_RELPATH).resolve():
+        bad.append(f"the seed file is not the repository's {SEED_RELPATH}")
     try:
-        st = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True,
-                            check=True, timeout=60).stdout
+        st = _git(repo, "status", "--porcelain")
+        tracked = _git(repo, "ls-files", "--error-unmatch", "--", SEED_RELPATH)
+        same = _git(repo, "diff", "--quiet", "HEAD", "--", SEED_RELPATH)
     except (OSError, subprocess.SubprocessError):
-        return ["git status failed"]
-    if st.strip():
+        return [*bad, "git failed"]
+    if st.returncode != 0:
+        return [*bad, "git status failed"]
+    if st.stdout.strip():
         bad.append("the working tree is not clean")
-    if not aj.public_tracked_at_head(Path(seed_file), repo):
-        bad.append("no file tracked at HEAD has the seed file's bytes (commit it first)")
+    if tracked.returncode != 0:
+        bad.append(f"{SEED_RELPATH} is not tracked (commit it first)")
+    elif same.returncode != 0:
+        bad.append(f"{SEED_RELPATH} differs from HEAD (staged or unstaged; commit it first)")
     return bad
 
 
@@ -973,7 +994,8 @@ def run_draw_negative(main_config: Path, seed_file: Path, confirm_dir: Path, con
     docs = sorted(texts_by_doc)
     rec: dict[str, Any] = {
         "schema": SCHEMA["negative"], "exploratory": True, "offline": True, "calls": CALLS, "plan": PREREG,
-        "stratum": NEGATIVE_STRATUM, "seed_file_sha256": sha(seed_file),
+        "stratum": NEGATIVE_STRATUM, "seed_file": SEED_RELPATH, "seed_file_sha256": sha(seed_file),
+        "seed_commit": head_commit(repo),
         "seed_is_the_proposed_one": seed == NEGATIVE_SEED_PROPOSED,
         "draw_rule": "§3.2 (b): stage-A agreed not pairs minus the confirmatory and control samples (pair id and "
                      "window); quotas same 100 / other 50, arms by drift_allocation over the cell records; cells "
@@ -1263,7 +1285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     d = sub.add_parser("draw-negative", help="§3.2 (b): the 150 stage-A not pairs of the negative control")
     d.add_argument("--main-config", type=Path, required=True, help="the alias main run's judge config")
     d.add_argument("--seed-file", type=Path, required=True,
-                   help="artifacts/negative-draw-seed.json, committed at HEAD on a clean tree before the draw")
+                   help=f"the repository's {SEED_RELPATH}, committed at HEAD on a clean tree before the draw")
     d.add_argument("--confirm-dir", type=Path, required=True, help="the private confirmatory directory")
     d.add_argument("--confirm-sample", type=Path, required=True, help="the confirmatory sample.jsonl (351 pairs)")
     d.add_argument("--control-sample", type=Path, required=True, help="the exploratory control sample.jsonl (150)")
