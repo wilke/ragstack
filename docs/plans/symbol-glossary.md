@@ -561,7 +561,7 @@ Reranked recall@10 (records found, of 155):
   - Coder-Next 455, which retrieves second best.
 - **Thinking on is unusable at this budget.** Qwen3.8 with thinking on at max_tokens 8,192 spent the whole budget on reasoning in 63 of 77 calls. It was stopped and never scored.
 - **The Argo route reports `finish_reason: stop` when an answer hits max_tokens,** so the script's cut-off counter is blind there.
-- **Status: exploratory.** It is one eval set, dominated by one paper, and the harness is not committed yet. The served extractor is unchanged.
+- **Status: exploratory.** It is one eval set, dominated by one paper, and the harness as run is held only in the private experiments repository (`python/scripts/eval/section_aware_trial.py` on main is a later revision). The served extractor is unchanged. *Note, 2026-11-11:* the glossbench round later recommended Qwen3.6 as the default glossary model on its own evidence ([`results/glossbench-2026-10/LABBOOK.md`](results/glossbench-2026-10/LABBOOK.md)); this trial's extractor contrast remains exploratory.
 
 ## Follow-ups
 

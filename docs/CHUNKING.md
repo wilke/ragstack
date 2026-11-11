@@ -856,6 +856,8 @@ records are unchanged.
 
 ### Offline trial on openchia (2026-10-22) — EXPLORATORY, nothing passed
 
+*Note, 2026-11-11:* this trial predates the section-aware chunker. Section cuts (`structure_cuts` `sections/1`, #828 PR 7) have since been built, were evaluated on 22,593 PMC articles in the [OA chunking eval](plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md) (+2.5 to +7.9 hit@5 points wherever vectors are used), and are part of the adopted default. The trial below is left as written: one private set, one dominant paper.
+
 A pre-registered offline trial chunked the JATS full text of openchia's 232 PMC papers several ways. It scored them on the private `openchia-261021` set (155 records, quote-text gold), on the served retrieval path in process.
 
 **Arms:**
@@ -866,6 +868,8 @@ A pre-registered offline trial chunked the JATS full text of openchia's 232 PMC 
 - **JS:** semantic over the whole JATS prose;
 - **SS:** semantic inside each section;
 - **S0m:** S0 with small sibling sections merged.
+
+The parent trial's heading-field arms (section path as a BM25 field, prepended to the reranker passage, or to the embedded text) are summarised below, not tabulated.
 
 The pass rule, fixed in advance, had three parts:
 
@@ -924,7 +928,7 @@ That gives 16 arms, each scored with the Scout and the Qwen3.6 glossaries.
 | T256o0 | 31,968 | 60 | **78** | 63 | **87** |
 | T256o32 | 35,727 | 56 | 71 | 62 | 81 |
 | T512o0 | 17,285 | 62 | 63 | 73 | 73 |
-| T512o64 (= live spec) | 19,130 | 65 | 65 | 72 | 74 |
+| T512o64 (= openchia's live spec at the time, fixed_token 512/64) | 19,130 | 65 | 65 | 72 | 74 |
 | T1024o0 | 10,609 | 61 | 45 | 69 | 57 |
 
 **Overlap**
@@ -950,7 +954,7 @@ That gives 16 arms, each scored with the Scout and the Qwen3.6 glossaries.
 
 **Status:**
 
-- **Exploratory:** one eval set, one dominant paper, harness not committed.
-- **Overlap is not worth its vectors at 512 on this set.** This agrees with the study's document-level null. The study's N2 confirmation still never ran.
+- **Exploratory, not citable:** one eval set, one dominant paper. The eval set, result files and the harness as run are in the private experiments repository (`section-aware-2026-10/`); `python/scripts/eval/section_aware_trial.py` on main is a later revision of that harness.
+- **Overlap was not worth its vectors at 512 on this set.** That agreed with the study's document-level null. *Note, 2026-11-11:* the study's N2 passage-level confirmation was dropped, not run ([`plans/chunking-study-plan.md`](plans/chunking-study-plan.md) § SG2). The OA chunking eval later found, on 2,035 questions, that a 64-token overlap at 512 helps by about 2 hit@5 points in the served setting, through the same split-quote mechanism this sweep saw only at 128 tokens; the adopted default drops overlap and cuts at sentences instead ([POSTHOC-HYPOTHESES-2026-11-06.md](plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md)).
 - **256-token chunks, delivered at a matched budget, are a candidate** for a multi-paper eval set. They are not a finding.
-- **Nothing here changes the default.**
+- **Nothing in this trial changed the default.** *Note, 2026-11-11:* the default has since been changed on other evidence. The OA chunking eval ([`plans/results/oa-chunking-eval-2026-10/`](plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md), #972) selected `ft512o64s` under its frozen rule; the adopted production default is sentence/512 tokens, size tolerance 0.25, section cuts, min_piece 128 ([`plans/results/reach-rechunk-2026-11/REPORT.md`](plans/results/reach-rechunk-2026-11/REPORT.md) §1; deployment is tracked in #815 and #811). Neither decision used this set.
