@@ -465,6 +465,23 @@ def test_gold_map_extra_final_refusals(tmp_path: Path) -> None:
     assert not list(tmp_path.glob("*/private/labels.jsonl"))
 
 
+def test_gold_map_extra_final_refuses_a_neighbour_item(tmp_path: Path) -> None:
+    """split-answer PLAN §3.2 (a)6: a neighbour item (``nbr-w<w>:<M>``) is not a chunk; its label
+    never enters the label table, even beside good rows and with --allow-relabel."""
+    r2 = rid("P02")
+    good = fin(r2, cid("new"), 1)
+    for w in (1, 2):
+        nbr = rfx.write_jsonl(tmp_path / f"n{w}.jsonl", [good, fin(r2, f"nbr-w{w}:{cid('m')}", 1)])
+        with pytest.raises(SystemExit, match="neighbour item"):
+            gold(tmp_path / f"n{w}", [nbr], allow_relabel=True)
+        with pytest.raises(SystemExit, match="neighbour item"):
+            rp.extra_labels([[good, fin(r2, f"nbr-w{w}:{cid('m')}", 0)]])
+    assert not list(tmp_path.glob("*/private/labels.jsonl"))
+    # the prefix is the guard, not a substring: a chunk id merely containing it passes
+    lab, _ = rp.extra_labels([[fin(r2, "chunk-nbr-x-0000", 1)]])
+    assert lab == {(r2, "chunk-nbr-x-0000"): "answers"}
+
+
 def test_gold_map_cli_extra_final(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     w = rfx.GoldWorld(tmp_path / "in")
     r2 = w.pairs[1].record

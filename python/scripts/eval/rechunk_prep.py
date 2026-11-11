@@ -143,6 +143,9 @@ LABELS = ("answers", "not", "unjudged")
 REGISTRIES = ("control", "cover")
 #: the registry name ``gold-map --extra-final`` gives the stage-1b judge runs' labels
 EXTRA_REGISTRY = "stage1b"
+#: the id prefix of a split-answer neighbour item (``split_answer_prep.py``): such an item is a
+#: passage of several chunks, never a chunk, so its label is never a chunk label here
+NEIGHBOUR_ID_PREFIX = "nbr-"
 
 
 # ------------------------------------------------------------------ small I/O helpers
@@ -534,7 +537,8 @@ def extra_labels(finals: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[dict[tu
     ``pair_id`` that is not ``sha256(record|chunk)[:16]`` is refused. A file that contributes no
     label row is refused (a wrong or empty file never passes silently). One (record, chunk) seen in
     several rows (or files) takes :func:`combine` over them, and a disagreement between judged
-    labels is counted."""
+    labels is counted. A row whose ``chunk_id`` starts with :data:`NEIGHBOUR_ID_PREFIX` (a
+    split-answer neighbour item, not a chunk) is refused."""
     import alias_study_judge as aj
 
     per: dict[tuple[str, str], dict[str, str]] = defaultdict(dict)
@@ -550,6 +554,10 @@ def extra_labels(finals: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[dict[tu
             if not rid or not cid:
                 kind = "a pair| row" if k.startswith("pair|") else "a row that is not a batch| row"
                 raise SystemExit(f"--extra-final #{fi + 1}: {kind} without record_id/chunk_id (row {j + 1})")
+            if str(cid).startswith(NEIGHBOUR_ID_PREFIX):
+                raise SystemExit(f"--extra-final #{fi + 1}: row {j + 1} is a neighbour item (chunk id "
+                                 f"'{NEIGHBOUR_ID_PREFIX}…'), not a chunk; neighbour labels live only in their own "
+                                 "registry and are never chunk labels (split-answer PLAN §3.2 (a)6)")
             if r.get("pair_id") is not None and r["pair_id"] != aj.pair_id(rid, cid):
                 raise SystemExit(f"--extra-final #{fi + 1}: a row's pair_id is not sha256(record|chunk)[:16]")
             w = label_word(r)
