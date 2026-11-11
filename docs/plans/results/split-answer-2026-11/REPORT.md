@@ -76,6 +76,14 @@ some of those may be the judge's leniency toward longer passages rather than a r
 Decision (owner, 2026-11-11): stop at step 1. Step 2 (overlap with the strict sentence chunker, ceiling 8 split
 pairs) does not run. Production `context_window` keeps its default; callers can already set it per request.
 
+**Not a test of the OA chunking eval's hypotheses.** This study is not part of the OA chunking eval
+([`../oa-chunking-eval-2026-10/`](../oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md)) and tests none of
+its post-hoc hypotheses A–D. The plan took hypothesis B (overlap's gain sits on quotes that a chunk boundary
+splits) as its prior (PLAN §1). Step 2, the overlap arm, was the closest test of B on this question set; it did not
+run, so this report is no evidence for or against B. Step 1 tested a different remedy, neighbours at judge time.
+The OA eval's quotes never cross a section boundary, by construction, so it says nothing about wall-crossing
+answers either.
+
 **Limits.** Exploratory and small: 18 split pairs give a wide interval. The negative control was not split into
 same-paper and other-paper pairs; same-paper flips might be neighbours carrying a genuine answer, so 23 % may
 overstate the leniency. Even 8 of 18 is an upper bound for production: in a multi-source answer prompt each source gets a share of the
