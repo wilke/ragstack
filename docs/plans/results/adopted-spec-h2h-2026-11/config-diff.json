@@ -5,7 +5,7 @@
   "a": {
    "addendum_c_config_sha256": "6d5fd43dcf21c5639db081fbbf378b2f64f46e342a651ca8a42b6e88c2353d09",
    "decision": {
-    "sha256": "4123f3f8700ba2e4a82c4f4b8e77661b2e5e16ca451eec09d6d37952b8400099",
+    "sha256": "7524d9b3f6d75ee79ca3dc0e707bf3489f0a8da2fd8528f79053167c02225294",
     "diff": {
      "/arms": {
       "addendum_c": [
@@ -112,7 +112,7 @@
     }
    },
    "reporting": {
-    "sha256": "558a8992a12a1caf6814b76f616ecf0afe31196ac7523a1c7fbb166541d03824",
+    "sha256": "b497c4bfa90320b7fa185c66023dfd67dfc1cee59a0d9906280a1ab9027c0978",
     "diff": {
      "/arms": {
       "addendum_c": [
@@ -236,7 +236,7 @@
   "d": {
    "addendum_c_config_sha256": "cb66eb6ffa1efdd054d4dc6b4b272b47d43f04cd4942f442a3736f0e7282f4cc",
    "decision": {
-    "sha256": "99cf7aea83a358e0a99babc64a89564090098a680e539ef18d7377e4ac6f0956",
+    "sha256": "0eebd341969cd45ce0f3ea0f79df41132bedf33fc140a40586e4c916206426a1",
     "diff": {
      "/arms": {
       "addendum_c": [
@@ -343,7 +343,7 @@
     }
    },
    "reporting": {
-    "sha256": "24ef4bd509dd4e075516f882cad1d505ad69f126ced42c01ea8d104e44f14ac9",
+    "sha256": "1c772c5f5541bab20a64c688d558fbc236b556ed51f810a1c828c7039bf5c66a",
     "diff": {
      "/arms": {
       "addendum_c": [
@@ -467,7 +467,7 @@
   "b": {
    "addendum_c_config_sha256": "3f8d9cb06aaa4d4d073ea74d24156451e1d92d36822f7c256ac005e147f8b59e",
    "decision": {
-    "sha256": "394d7322016db6ee75ada24a933d9fab08f74fa23cf87e7c3ea01148aa6533e4",
+    "sha256": "e994308b0d269b1edfff4c3234572541ec9df3934ed271fb8d6e932d33481945",
     "diff": {
      "/arms": {
       "addendum_c": [
@@ -574,7 +574,7 @@
     }
    },
    "reporting": {
-    "sha256": "1bc3ca06bb9a2122cb18c40016d38d2dd40700aa10911be5e30384c2817be39e",
+    "sha256": "3b9ae61eb8cdba7b75ea2df9f0df2cfdc64e5e060eab0fdc83fce99d5b35fc4c",
     "diff": {
      "/arms": {
       "addendum_c": [
@@ -698,7 +698,7 @@
   "c": {
    "addendum_c_config_sha256": "5cd0454152942d5fee7d89d36c244e786dcd56abc82052449a8ee381d41afaf3",
    "decision": {
-    "sha256": "b06ca10b09c5f6622fc388fc57d43f571e0dc66449b7cd9d80d83913f915f51b",
+    "sha256": "4b40f6e55a359f06febb36397b178149dfbd026f1ee3275933abe0368f690104",
     "diff": {
      "/arms": {
       "addendum_c": [
@@ -805,7 +805,7 @@
     }
    },
    "reporting": {
-    "sha256": "13b5c4083a5277b9f20be55c8b033806b6eafde4dc2fae99db969e0b2c5ee528",
+    "sha256": "2a730622b908c59d9426be89db495d746b675f0f3286125a7793ff0e3d84dfcf",
     "diff": {
      "/arms": {
       "addendum_c": [
