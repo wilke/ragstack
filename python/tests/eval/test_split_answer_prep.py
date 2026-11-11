@@ -257,17 +257,29 @@ def test_items_end_to_end(world: sfx.World, tmp_path: Path) -> None:
     assert s_by[("alias-O-b1-g0", sap.nbr_id(m("b1"), 1), aj.pair_id("alias-O-b1-g0", b1))]["group"] == "kept_changed"
     assert all(s["item_set"] == ("negative" if s["group"] == "negative" else "positive") for s in seeds)
     assert {s["context_window"] for s in seeds if s["group"] != "split"} == {1}
-    # the export reads as a chunk export; build-control accepts every seed row (same paper, stage A)
+    # the export reads as a chunk export; build-control accepts every seed row (same paper, stage A).
+    # The stage-A pair's c_paper is its window's paper (review A5): the positive's stage-A window row,
+    # the negative's window document, never the neighbour export's own paper
     chunks = asc.read_chunk_exports([out / "neighbour-export.jsonl"])
-    main_pairs = []
+    window_paper = {aj.pair_id(x.rid, world.windows[x.tag]["chunk_id"]): world.windows[x.tag]["metadata"]["source_path"]
+                    for x in world.positive}
+    window_paper.update({r["pair_id"]: sfx.DOCS[r["doc_id"]][0]
+                         for r in asc.read_jsonl(tmp_path / "negative" / "sample-negative.jsonl")})
+    main_pairs = {}
     for s in seeds:
-        paper = chunks[s["chunk_id"]]["paper"]
-        main_pairs.append({"pair_id": s["control_of"], "record_id": s["record_id"], "stage": "A", "c_paper": paper,
-                           "q_paper": paper, "arm": "base", "question": "q?", "term": "t", "record_kind": "G"})
-    reg, counts = aj.build_control_pairs(seeds, list({p["pair_id"]: p for p in main_pairs}.values()), chunks,
-                                         set(chunks))
-    assert counts["pairs"] == rec["items_total"] and len(reg) == 13
+        paper = window_paper[s["control_of"]]
+        main_pairs[s["control_of"]] = {"pair_id": s["control_of"], "record_id": s["record_id"], "stage": "A",
+                                       "c_paper": paper, "q_paper": paper, "arm": "base", "question": "q?",
+                                       "term": "t", "record_kind": "G"}
+    reg, counts = aj.build_control_pairs(seeds, list(main_pairs.values()), chunks, set(chunks))
+    assert counts["pairs"] == rec["items_total"] and len(reg) == 13 and counts["same_paper"] == 13
     assert all(r["content_sha256"] == asc.sha_text(chunks[r["chunk_id"]]["content"]) for r in reg)
+    # the check can fail: an export row naming another paper is refused by build-control
+    bad = dict(chunks)
+    some = seeds[0]["chunk_id"]
+    bad[some] = {**chunks[some], "paper": "PMC-other"}
+    with pytest.raises(SystemExit, match="paper is not the stage-A passage's"):
+        aj.build_control_pairs(seeds, list(main_pairs.values()), bad, set(bad))
     # the public file: counts only (no id, no text, no path) and the same as the private summary
     pub = json.loads((tmp_path / "public" / "neighbour-items.json").read_text())
     assert pub == json.loads((out / "neighbour-items.json").read_text())
