@@ -63,6 +63,7 @@ import json
 import math
 import re
 import statistics
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -647,6 +648,280 @@ def _drift_size(n: int) -> int:
     return aj.drift_size(n, 0.05)
 
 
+# ------------------------------------------------------------------ draw-negative (§3.2 (b))
+
+def seed_file_problems(seed_file: Path, repo: Path | None = None) -> list[str]:
+    """§3.2 (b)6: the tree is clean (untracked files included) and a file tracked at HEAD has
+    exactly the seed file's bytes. Checked before anything else is read."""
+    import alias_study_judge as aj
+
+    repo = Path(repo or aj.REPO)
+    bad = []
+    if not Path(seed_file).is_file():
+        return ["the seed file does not exist"]
+    try:
+        st = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True,
+                            check=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ["git status failed"]
+    if st.strip():
+        bad.append("the working tree is not clean")
+    if not aj.public_tracked_at_head(Path(seed_file), repo):
+        bad.append("no file tracked at HEAD has the seed file's bytes (commit it first)")
+    return bad
+
+
+def read_seed(seed_file: Path, repo: Path | None = None) -> str:
+    bad = seed_file_problems(seed_file, repo)
+    if bad:
+        raise SystemExit(f"REFUSED: the negative draw's seed is not recorded before the draw ({'; '.join(bad)}); "
+                         "nothing read, nothing written")
+    try:
+        seed = json.loads(Path(seed_file).read_text(encoding="utf-8")).get("seed")
+    except (ValueError, AttributeError) as e:
+        raise SystemExit("REFUSED: the seed file is not a JSON object with a 'seed' string") from e
+    if not isinstance(seed, str) or not seed.strip():
+        raise SystemExit("REFUSED: the seed file holds no non-empty 'seed' string")
+    return seed
+
+
+def cells() -> list[tuple[str, str]]:
+    return [(p, a) for p in PAPERS for a in asc.ARM_GROUPS]
+
+
+def cell_key(paper: str, arm: str) -> str:
+    return f"{paper}:{arm}"
+
+
+def negative_walk(final: Sequence[Mapping[str, Any]], registry: Mapping[str, Mapping[str, Any]], *,
+                  exclude_pairs: Iterable[str], exclude_windows: Iterable[str], seed: str,
+                  quotas_by_paper: Mapping[str, int] | None = None, factor: int = PREFIX_FACTOR
+                  ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, Any]]:
+    """§3.2 (b)2-5 and the prefix of (b)8 (module docstring, review nit c). Returns the candidates
+    (final row fields + ``paper``, in cell order then walk order), the quotas per cell and the
+    counts (no id).
+
+    Pool: stage-A final rows, ``source == "agree"``, label *not* (``label_of == 0``, not unjudged),
+    minus ``exclude_pairs`` (by pair id) and minus the pairs whose window is in ``exclude_windows``.
+    Quotas: per paper ``drift_allocation(quota, distinct records per arm cell)``. Walk: the cells
+    in the order paper x arm; per cell the pool in the order ``sha256(<seed>|<paper>|<arm>|<pair
+    id>)``, ties by pair id; a pair becomes a candidate when its (record, arm) and its window are
+    held by no earlier candidate (of any cell), until ``factor x quota`` candidates."""
+    import alias_study_judge as aj
+
+    quotas_by_paper = dict(NEGATIVE_QUOTAS if quotas_by_paper is None else quotas_by_paper)
+    exclude_pairs, exclude_windows = set(exclude_pairs), set(exclude_windows)
+    stage_a = [f for f in final if f.get("stage") == "A"]
+    for f in stage_a:
+        if f.get("arm") not in asc.ARM_GROUPS:
+            raise SystemExit(f"a stage-A final row carries arm {f.get('arm')!r}")
+    agreed = [f for f in stage_a if f.get("source") == "agree"]
+    nots = [f for f in agreed if acc.label_of(f) == 0 and not acc.is_unjudged(f)]
+    ids = [f["pair_id"] for f in nots]
+    if len(set(ids)) != len(ids):
+        raise SystemExit("REFUSED: a pair id appears twice among stage A's final rows")
+    papered = []
+    for f in nots:
+        r = registry.get(f["pair_id"])
+        if r is None or r.get("record_id") != f["record_id"] or r.get("chunk_id") != f["chunk_id"]:
+            raise SystemExit("REFUSED: a stage-A final row has no matching stage-A registry row")
+        if r.get("arm") != f["arm"]:
+            raise SystemExit("REFUSED: a stage-A final row's arm is not its registry row's")
+        papered.append({**f, "paper": "same" if r["c_paper"] == r["q_paper"] else "other"})
+    in_sample = [f for f in papered if f["pair_id"] in exclude_pairs]
+    eligible = [f for f in papered if f["pair_id"] not in exclude_pairs]
+    shared = [f for f in eligible if f["chunk_id"] in exclude_windows]
+    pool = [f for f in eligible if f["chunk_id"] not in exclude_windows]
+
+    def by_cell(rows: Iterable[Mapping[str, Any]]) -> dict[str, int]:
+        c = Counter(cell_key(f["paper"], f["arm"]) for f in rows)
+        return {cell_key(p, a): c[cell_key(p, a)] for p, a in cells()}
+
+    order = {(p, a): sorted((f for f in pool if (f["paper"], f["arm"]) == (p, a)),
+                            key=lambda f, p=p, a=a: (asc.seeded_key(seed, p, a, f["pair_id"]), f["pair_id"]))
+             for p, a in cells()}
+    records = {(p, a): len({f["record_id"] for f in order[(p, a)]}) for p, a in cells()}
+    quotas: dict[str, int] = {}
+    for p in PAPERS:
+        alloc = aj.drift_allocation(int(quotas_by_paper.get(p, 0)), {a: records[(p, a)] for a in asc.ARM_GROUPS})
+        quotas.update({cell_key(p, a): alloc[a] for a in asc.ARM_GROUPS})
+    rec_arm: set[tuple[str, str]] = set()
+    wins: set[str] = set()
+    cands: list[dict[str, Any]] = []
+    skips: dict[str, Counter[str]] = {cell_key(p, a): Counter() for p, a in cells()}
+    walked: dict[str, int] = {}
+    n_cand: dict[str, int] = {}
+    for p, a in cells():
+        k = cell_key(p, a)
+        target, got, pos = factor * quotas[k], 0, 0
+        lst = order[(p, a)]
+        while got < target and pos < len(lst):
+            f = lst[pos]
+            pos += 1
+            if (f["record_id"], f["arm"]) in rec_arm:
+                skips[k]["record_arm_taken"] += 1
+                continue
+            if f["chunk_id"] in wins:
+                skips[k]["window_taken"] += 1
+                continue
+            rec_arm.add((f["record_id"], f["arm"]))
+            wins.add(f["chunk_id"])
+            cands.append({**f, "cell": k})
+            got += 1
+        walked[k], n_cand[k] = pos, got
+    counts = {"stage_a_pairs": len(stage_a), "agreed": len(agreed), "agreed_not": by_cell(papered),
+              "in_sample_excluded": by_cell(in_sample), "shared_window_excluded": by_cell(shared),
+              "pool": by_cell(pool), "pool_records": {cell_key(p, a): records[(p, a)] for p, a in cells()},
+              "quotas": quotas, "prefix_factor": factor,
+              "prefix_targets": {k: factor * v for k, v in quotas.items()}, "candidates": n_cand,
+              "walked": walked, "walk_skips": {k: dict(v) for k, v in skips.items()},
+              "prefix_reached": {k: n_cand[k] == factor * quotas[k] for k in quotas}}
+    return cands, quotas, counts
+
+
+def negative_eligibility(cands: Sequence[Mapping[str, Any]], seeds: Mapping[str, Mapping[str, Any]],
+                         ndocs: Mapping[str, Sequence[Mapping[str, Any]]], positive_rm: set[tuple[str, str]], *,
+                         budget: int) -> list[tuple[str | None, Passage | None]]:
+    """§3.2 (b)8, per candidate in walk order: the first reason of :data:`NEGATIVE_EXCLUSIONS` that
+    applies, or ``None`` with its M ± 1 passage. Geometric only: no label is read."""
+    out: list[tuple[str | None, Passage | None]] = []
+    for f in cands:
+        s = seeds.get(f["pair_id"])
+        rows = ndocs.get(s["doc_id"]) if s else None
+        if s is None or not rows or all(r["chunk_id"] != s["chunk_id"] for r in rows):
+            out.append(("unresolved", None))
+            continue
+        q = neighbour_passage(rows, s["chunk_id"], 1, budget)
+        if q is None:
+            out.append(("one_chunk_document", None))
+        elif q.edge != "none":
+            out.append(("edge", None))
+        elif q.trimmed:
+            out.append(("trim", None))
+        elif (f["record_id"], s["chunk_id"]) in positive_rm:
+            out.append(("collision_positive", None))
+        else:
+            out.append((None, q))
+    return out
+
+
+def shared_doc_problems(ndocs: Mapping[str, Sequence[Mapping[str, Any]]],
+                        cdocs: Mapping[str, Sequence[Mapping[str, Any]]]) -> int:
+    """§3.2 (b)7's gate: the documents both chunk runs hold must have identical chunk ids and spans."""
+    def geo(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, int, int]]:
+        return [(r["chunk_id"], r["start_char"], r["end_char"]) for r in rows]
+    return sum(geo(ndocs[d]) != geo(cdocs[d]) for d in set(ndocs) & set(cdocs))
+
+
+def load_judge_cfg(path: Path) -> dict[str, Any]:
+    """The main run's judge config, validated by the judge (``alias_study_judge.load_config``)."""
+    return acc.judge_cfg(path)
+
+
+def run_draw_negative(main_config: Path, seed_file: Path, confirm_dir: Path, confirm_sample: Path,
+                      control_sample: Path, texts: Sequence[Path], out_dir: Path, public_out: Path | None = None,
+                      repo: Path | None = None) -> dict[str, Any]:
+    import alias_study_spot as asp
+
+    seed = read_seed(seed_file, repo)  # §3.2 (b)6: before anything else is read
+    env = acc.require_env()
+    rp.refuse_in_repo(out_dir, "--out-dir")
+    paths = {"confirm_sample": Path(confirm_sample), "control_sample": Path(control_sample),
+             "pairs_seed": confirm_dir / "run" / "pairs-seed.jsonl",
+             "chunks_control": confirm_dir / "run" / "chunks-control.jsonl"}
+    shas = {k: check_pinned(k, p) for k, p in paths.items()}
+    cfg = load_judge_cfg(main_config)
+    sa = asp.committed_stage_a(cfg)
+    if sa["commit_sha256"] != STAGE_A_COMMIT_SHA256:
+        raise SystemExit("REFUSED: the committed stage-A commit is not the one the confirmatory test pinned "
+                         "(CONFIRM_STAGE_A_COMMIT_SHA256)")
+    registry = {p["pair_id"]: p for p in sa["pairs"]}
+    excl = [*read(paths["confirm_sample"]), *read(paths["control_sample"])]
+    cands, quotas, counts = negative_walk(sa["final"], registry, exclude_pairs={r["pair_id"] for r in excl},
+                                          exclude_windows={r["chunk_id"] for r in excl}, seed=seed)
+    # §3.2 (b)7: the candidates through chunk and map, unchanged, into a private directory
+    cdir = out_dir / "chunks"
+    sample_rows = [{"pair_id": f["pair_id"], "record_id": f["record_id"], "chunk_id": f["chunk_id"],
+                    "stratum": NEGATIVE_STRATUM, "arm": f["arm"], "in_spot_sheet": False} for f in cands]
+    acc.write_private(cdir / "sample.jsonl", acc.jsonl_bytes(sample_rows), "the negative candidate sample")
+    acc.run_chunk(cfg["chunk_exports"], texts, cdir / "sample.jsonl", cdir)
+    acc.run_map(cfg["chunk_exports"], cdir / "sample.jsonl", cdir)
+    ndocs = acc.control_docs(cdir / "chunks-control.jsonl")
+    cdocs = acc.control_docs(paths["chunks_control"])
+    if shared_doc_problems(ndocs, cdocs):
+        raise SystemExit("REFUSED: a document the confirmatory run also chunked got other chunk ids or spans "
+                         "(§3.2 (b)7 gate); sample-negative.jsonl not written")
+    refuse_nbr_ids((r["chunk_id"] for rs in ndocs.values() for r in rs), "the negative draw's chunks-control.jsonl")
+    seeds = {s["control_of"]: s for s in read(cdir / "pairs-seed.jsonl")}
+    positive_rm = {(s["record_id"], s["chunk_id"]) for s in read(paths["pairs_seed"])}
+    budget = max_context_chars()
+    verdicts = negative_eligibility(cands, seeds, ndocs, positive_rm, budget=budget)
+    reasons: dict[str, Counter[str]] = {cell_key(p, a): Counter() for p, a in cells()}
+    drawn: list[tuple[Mapping[str, Any], Passage]] = []
+    per_cell: Counter[str] = Counter()
+    for f, (why, q) in zip(cands, verdicts, strict=True):
+        if why is not None:
+            reasons[f["cell"]][why] += 1
+        elif per_cell[f["cell"]] < quotas[f["cell"]]:
+            per_cell[f["cell"]] += 1
+            assert q is not None
+            drawn.append((f, q))
+        else:
+            reasons[f["cell"]]["eligible_beyond_quota"] += 1
+    short = {k: (per_cell[k], q) for k, q in quotas.items() if per_cell[k] < q}
+    if short:
+        raise SystemExit(f"REFUSED: {len(short)} cell(s) ran short of eligible candidates within the 3 x quota "
+                         f"prefix ({', '.join(f'{k} {g}/{q}' for k, (g, q) in sorted(short.items()))}); not extended "
+                         "(a larger prefix is a recorded deviation); sample-negative.jsonl not written")
+    counter = token_counter()
+    out_rows, toks = [], []
+    for f, q in drawn:
+        s = seeds[f["pair_id"]]
+        out_rows.append({"pair_id": f["pair_id"], "record_id": f["record_id"], "stage_a_chunk_id": f["chunk_id"],
+                         "max_overlap_chunk_id": s["chunk_id"], "doc_id": s["doc_id"], "paper": f["paper"],
+                         "arm": f["arm"]})
+        toks.append(counter.count(q.text))
+    if len({(r["record_id"], r["arm"]) for r in out_rows}) != len(out_rows) or \
+            len({r["stage_a_chunk_id"] for r in out_rows}) != len(out_rows):
+        raise SystemExit("REFUSED: the draw broke its own rule (two pairs of one (record, arm) or one window)")
+    nsha = acc.write_private(out_dir / "sample-negative.jsonl", acc.jsonl_bytes(out_rows), "the negative sample")
+    texts_by_doc = doc_texts({d: ndocs[d] for d in sorted({r["doc_id"] for r in out_rows})}, "the draw's chunks")
+    docs = sorted(texts_by_doc)
+    rec: dict[str, Any] = {
+        "schema": SCHEMA["negative"], "exploratory": True, "offline": True, "calls": CALLS, "plan": PREREG,
+        "stratum": NEGATIVE_STRATUM, "seed_file_sha256": sha(seed_file),
+        "seed_is_the_proposed_one": seed == NEGATIVE_SEED_PROPOSED,
+        "draw_rule": "§3.2 (b): stage-A agreed not pairs minus the confirmatory and control samples (pair id and "
+                     "window); quotas same 100 / other 50, arms by drift_allocation over the cell records; cells "
+                     "walked paper x arm in the seeded order, one pair per (record, arm) and per window across all "
+                     "cells; the prefix counts 3 x quota candidates after that filter; the first quota eligible "
+                     "candidates per cell are drawn; a short cell is refused",
+        "eligibility": "M resolves; M has a neighbour on both sides; the M ± 1 passage is untrimmed; (record, M) is "
+                       "no positive item's",
+        **counts,
+        "exclusions": {k: {r: v[r] for r in (*NEGATIVE_EXCLUSIONS, "eligible_beyond_quota")}
+                       for k, v in reasons.items()},
+        "drawn": {k: per_cell[k] for k in quotas}, "n_drawn": len(out_rows),
+        "passage_tokens": stats(toks), "tokenizer": acc.TOKENIZER, "max_context_chars": budget,
+        "shared_documents_checked": len(set(ndocs) & set(cdocs)),
+        "stage_a_commit_sha256": sa["commit_sha256"],
+        "inputs_sha256": {**shas, "main_config": sha(main_config)},
+        "outputs_sha256": {"sample_negative": nsha, "chunks_control": sha(cdir / "chunks-control.jsonl"),
+                           "candidate_sample": sha(cdir / "sample.jsonl"),
+                           "pairs_seed": sha(cdir / "pairs-seed.jsonl")},
+        "environment": env,
+        "provenance": acc.public_provenance(acc.provenance(
+            [texts_by_doc[d] for d in docs], None, [[(r["start_char"], r["end_char"]) for r in ndocs[d]]
+                                                    for d in docs])),
+    }
+    forbidden = ({f["pair_id"] for f in sa["final"]} | {f["record_id"] for f in sa["final"]}
+                 | {f["chunk_id"] for f in sa["final"]} | {r["pair_id"] for r in excl} | {r["chunk_id"] for r in excl}
+                 | {str(p.get("c_paper")) for p in sa["pairs"]} | {str(p.get("q_paper")) for p in sa["pairs"]}
+                 | set(ndocs) | {r["chunk_id"] for rs in ndocs.values() for r in rs})
+    publish(rec, out_dir / "negative-draw.json", public_out, "negative-draw.json", forbidden, texts_by_doc.values())
+    return rec
+
+
 # ------------------------------------------------------------------ CLI
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -661,11 +936,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     a.add_argument("--negative-dir", type=Path, required=True, help="the draw-negative --out-dir")
     a.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
     a.add_argument("--public-out", type=Path, help="also write the counts here (artifacts/neighbour-items.json)")
+    d = sub.add_parser("draw-negative", help="§3.2 (b): the 150 stage-A not pairs of the negative control")
+    d.add_argument("--main-config", type=Path, required=True, help="the alias main run's judge config")
+    d.add_argument("--seed-file", type=Path, required=True,
+                   help="artifacts/negative-draw-seed.json, committed at HEAD on a clean tree before the draw")
+    d.add_argument("--confirm-dir", type=Path, required=True, help="the private confirmatory directory")
+    d.add_argument("--confirm-sample", type=Path, required=True, help="the confirmatory sample.jsonl (351 pairs)")
+    d.add_argument("--control-sample", type=Path, required=True, help="the exploratory control sample.jsonl (150)")
+    d.add_argument("--texts", type=Path, required=True, action="append", help="record texts, as for chunk")
+    d.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
+    d.add_argument("--public-out", type=Path, help="also write the counts here (artifacts/negative-draw.json)")
     args = ap.parse_args(argv)
     if args.cmd == "items":
         rec = run_items(args.confirm_dir, args.label_table, args.main_config, args.negative_dir, args.out_dir,
                         args.public_out)
         print(json.dumps({k: rec[k] for k in ("items", "items_total", "trims_found", "plan_counts")}, indent=1))
+    elif args.cmd == "draw-negative":
+        rec = run_draw_negative(args.main_config, args.seed_file, args.confirm_dir, args.confirm_sample,
+                                args.control_sample, args.texts, args.out_dir, args.public_out)
+        print(json.dumps({k: rec[k] for k in ("quotas", "drawn", "n_drawn", "exclusions")}, indent=1))
     return 0
 
 
