@@ -1,0 +1,150 @@
+{
+ "schema": "adopted-spec-h2h-power/1",
+ "method": "normal approximation, paired binary; SE = 100*sqrt((pi - d^2)/n)",
+ "n": 2035,
+ "margin": 2.0,
+ "z": 1.959964,
+ "discordance_inputs": {
+  "sent512s vs ft512o64s (proxy for S \u2212 ft512o64s, H1\u2013H2)": {
+   "a": 0.047,
+   "d": 0.081,
+   "b": 0.103,
+   "c": 0.048
+  },
+  "ft512o64s vs ft512o64 (gate G1)": {
+   "a": 0.103,
+   "d": 0.172,
+   "b": 0.224,
+   "c": 0.106
+  },
+  "sent512s vs ft512o64 (C2)": {
+   "a": 0.109,
+   "d": 0.174,
+   "b": 0.223,
+   "c": 0.112
+  },
+  "sent512s vs sent512sh (text-only perturbation; reference for S-regex \u2212 S)": {
+   "a": 0.02,
+   "d": 0.044,
+   "b": 0.076,
+   "c": 0.0
+  }
+ },
+ "half_width_95": {
+  "0.001": 0.14,
+  "0.005": 0.31,
+  "0.02": 0.61,
+  "0.05": 0.97,
+  "0.10": 1.37,
+  "0.15": 1.68,
+  "0.20": 1.94
+ },
+ "power": [
+  {
+   "test": "H1 NI at 2.0",
+   "pi": 0.05,
+   "powers": {
+    "-2.0": 0.025,
+    "-1.5": 0.171,
+    "-1.0": 0.524,
+    "-0.5": 0.857,
+    "+0.0": 0.981,
+    "+0.5": 0.999
+   }
+  },
+  {
+   "test": "H1 NI at 2.0",
+   "pi": 0.1,
+   "powers": {
+    "-2.0": 0.025,
+    "-1.5": 0.106,
+    "-1.0": 0.297,
+    "-0.5": 0.571,
+    "+0.0": 0.814,
+    "+0.5": 0.946
+   }
+  },
+  {
+   "test": "H2 superiority",
+   "pi": 0.05,
+   "powers": {
+    "+0.0": 0.025,
+    "+1.0": 0.524,
+    "+1.5": 0.858,
+    "+2.0": 0.982,
+    "+2.5": 0.999,
+    "+3.0": 1.0,
+    "+3.5": 1.0
+   }
+  },
+  {
+   "test": "G1 (ft512o64s \u2212 ft512o64 > 0)",
+   "pi": 0.1,
+   "powers": {
+    "+0.0": 0.025,
+    "+1.0": 0.297,
+    "+1.5": 0.572,
+    "+2.0": 0.816,
+    "+2.5": 0.947,
+    "+3.0": 0.99,
+    "+3.5": 0.999
+   }
+  },
+  {
+   "test": "H3 NI at 2.0",
+   "pi": 0.02,
+   "powers": {
+    "-2.0": 0.025,
+    "-1.5": 0.361,
+    "-1.0": 0.892,
+    "-0.5": 0.998,
+    "+0.0": 1.0,
+    "+0.5": 1.0
+   }
+  },
+  {
+   "test": "H3 NI at 2.0 (if the dry run's identical chunks generalise)",
+   "pi": 0.005,
+   "powers": {
+    "-2.0": null,
+    "-1.5": null,
+    "-1.0": null,
+    "-0.5": 1.0,
+    "+0.0": 1.0,
+    "+0.5": 1.0
+   }
+  },
+  {
+   "test": "H3 NI at 2.0 (if the dry run's identical chunks generalise)",
+   "pi": 0.001,
+   "powers": {
+    "-2.0": null,
+    "-1.5": null,
+    "-1.0": null,
+    "-0.5": null,
+    "+0.0": 1.0,
+    "+0.5": null
+   }
+  }
+ ],
+ "minimal_detectable_superiority": {
+  "0.05": {
+   "0.80": 1.39,
+   "0.90": 1.61
+  },
+  "0.10": {
+   "0.80": 1.96,
+   "0.90": 2.27
+  },
+  "0.15": {
+   "0.80": 2.41,
+   "0.90": 2.78
+  },
+  "0.20": {
+   "0.80": 2.78,
+   "0.90": 3.21
+  }
+ },
+ "infeasible_cells": "null where |d|/100 > pi: two arms cannot differ by more than their discordance",
+ "note_h3": "with pi below 0.02 the true difference cannot exceed 100*pi points (0.5 at pi = 0.005), so H3 cannot fail its 2.0-point margin at all: H3 can fail only if roughly 2% or more of the questions (about 41) change hit status between S and S-regex; below that the chunk-id overlap carries the finding"
+}

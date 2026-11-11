@@ -1,0 +1,236 @@
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+# ==== adopted-spec-h2h-2026-11 S-regex arm: NO-NLTK VARIANT ====
+# A copy of apptainer/ragstack-tools.def at tag v1.6.24 with exactly three edits:
+#  1. the `chunking` extra is removed from the pip install line (no nltk -> regex sentence segmenter);
+#  2. build-time assertions that `import nltk` fails and segmenter_version() == 'regex-abbrev-v1';
+#  3. one extra label, org.ragstack.variant.
+# For one study arm only (PREREG.md beside this file). Never release it, never copy or link it into the
+# shared release store, never name it in a tenant's registered workflows.
+# ================================================================
+
+# RAGStack tools image (#135, renamed by ADR-0010 / #655: "worker" named the
+# thing that runs it; "tools" names what it is — the ragstack package plus the
+# CWL CommandLineTool entry points under /opt/ragstack/scripts).
+#
+# The image the offline/throughput CWL steps (ingest_shard / embed_shard /
+# load_embeddings / pdf_extract / …) run in on a GoWe worker or under
+# `cwltool --singularity`. It replaces the fragile `InitialWorkDirRequirement`
+# staging of `../python` + PYTHONPATH hack with a real, pinned, reproducible
+# runtime. No CWL inside: workflows are registered from each tenant's checkout.
+#
+# IDENTITY (ADR-0010 decisions 1-2). A repo version and an image build are different
+# things. The build script derives the version — the only place `git describe`
+# runs — and passes it in, so the image carries its own identity:
+#
+#   --build-arg VERSION=v1.6.4+a2be96f   # vX on a release tag, vX+<shortsha> past one
+#   --build-arg COMMIT=<full sha>        # the commit whose python/ this is
+#   --build-arg BUILD=1                  # N-th build of this version (b2 = base rebuild)
+#   --build-arg BUILD_DATE=2026-10-05T03:00:00Z
+#   --build-arg SRC=<tmp>/python         # python/ staged FROM THE COMMIT (git archive HEAD)
+#
+# templated into %labels (org.ragstack.version / commit / build / build-date,
+# readable by `apptainer inspect --labels`) and written to /opt/ragstack/RELEASE
+# and into the installed package as ragstack/_release.py, so inside the image
+# `ragstack.__version__` resolves without git (the build asserts it does). The
+# file name — ragstack-tools-<version>-b<N>.sif — is a human handle only: a
+# renamed or copied file proves nothing, the labels and the digest do. There
+# are deliberately NO %arguments defaults: a build without the five values
+# fails ("build var VERSION is not defined") instead of minting an unlabelled
+# image. SRC is what makes `org.ragstack.commit` true by construction: the
+# script stages python/ with `git archive HEAD`, so gitignored content of the
+# working tree (.mypy_cache, __pycache__, a python/.env) never ships.
+#
+# BUILD with the script, never by hand:
+#   apptainer/build-tools-image.sh [--out DIR] [--dry-run] [--sandbox]
+# It refuses a dirty tree, picks the next free b<N> for the version in the
+# output dir, runs `apptainer build --fakeroot --build-arg …` (or, with
+# --sandbox, the rootless two-step: `build --sandbox` then `build <sif> <sandbox>`,
+# for hosts where --fakeroot is unavailable), verifies the labels against its
+# inputs, computes the sha256 and writes <name>.receipt.json beside the image.
+# `python/scripts/stamp_tool_image.py <receipt>` then writes the name into every
+# dockerPull AND every dockerImageId of cwl/*.cwl (release only) — the digest is
+# never written into the CWL; it stays in the receipt beside the image and in
+# the image's labels. See apptainer/README.md.
+#
+# CPU-ONLY BY DESIGN. Every step calls the embedding fleet over HTTP (OpenAI
+# `/v1/embeddings`); none of them run a model locally, so torch/CUDA are
+# deliberately NOT installed. Deps are the ragstack package + its
+# [vector,pdf,text,tokenization,graph,postgres,chunking,markdown] extras:
+#   - qdrant-client  (vector store upserts)
+#   - pymupdf        (PDF text extraction — the `pdf` extra / PdfLoader)
+#   - elasticsearch  (BM25 text index)
+#   - transformers   (HF tokenizer for fixed_token chunk sizing — NO torch)
+#   - neo4j          (bolt driver — load_graph.py, and load_embeddings.py's
+#                      graph replay path, write triples via it (#404);
+#                      extract_graph.py does not need it. The `<6` cap
+#                      lives in python/pyproject.toml only, not repeated here)
+#   - asyncpg        (the `postgres` extra). NOT for bulk data — for READING the
+#                      collection registry. ingest_shard.py resolves its target
+#                      through ragstack.ops.ingest_target, which reads the
+#                      registry named by COLLECTION_STORE_BACKEND in the
+#                      worker's env; a tenant on a postgres registry needs this
+#                      driver or the resolve raises and the step exits 2. The
+#                      sqlite backend hid this because it uses stdlib sqlite3
+#                      (2026-09-15: every hackathon ingest failed on it; #563).
+#   - nltk           (the `chunking` extra: the Punkt sentence segmenter behind
+#                      the sentence / semantic / semantic_pooled chunkers. No
+#                      data download — PunktParameters is built in code.
+#                      Without it sentence_spans() falls back to the regex
+#                      splitter, a different segmentation from the one the
+#                      study, goldens and dev ran; every image before
+#                      v1.6.15 shipped without it (#815))
+#   - markdown-it-py + mdit-py-plugins
+#                    (the `markdown` extra: the markdown/1 structure adapter
+#                      and the markdown-plain/1 text render (#828). Imported
+#                      only when structure metadata or a collection marker
+#                      asks for them; then a missing extra is a REFUSAL —
+#                      503 / exit 2 at configuration — never a fallback
+#                      (#815). The `<5` / `<0.7` bounds live in
+#                      python/pyproject.toml only, not repeated here)
+#   - httpx/pydantic/cryptography come in via the base ragstack dependency set.
+# `transformers` does not pull torch (torch is an optional backend); sentencepiece
+# + protobuf are added so slow-path tokenizers still load without torch present.
+#
+# MODELS ARE NOT BAKED IN. The tokenizer is read at runtime from a bind-mounted
+# HF_HOME (defaults to /rag/cache below). Bind it in when you run:
+#   apptainer exec -B /rag/cache:/rag/cache ragstack-tools-<version>-b<N>.sif ...
+# cwltool passes the host env through, so exporting HF_HOME on the host is enough.
+#
+# Smoke test:
+#   apptainer exec <sif> python -c "import ragstack, fitz, qdrant_client; print(ragstack.__version__)"
+#   apptainer exec <sif> cat /opt/ragstack/RELEASE
+# For load_graph.py specifically (and load_embeddings.py's graph replay),
+# `--help` alone is not a runnable check (it never constructs
+# Neo4jGraphStore, so a missing driver won't show up) — see the mandatory
+# `import neo4j` check in cwl/README.md.
+
+%files
+    {{ SRC }} /opt/ragstack/python
+
+%post
+    set -eu
+    export PIP_NO_CACHE_DIR=1
+    export PIP_DISABLE_PIP_VERSION_CHECK=1
+
+    # Identity first, before the install, so the generated module is part of
+    # what pip copies into site-packages. Same four values, three places.
+    mkdir -p /opt/ragstack
+    cat > /opt/ragstack/RELEASE <<'EOF'
+version={{ VERSION }}
+commit={{ COMMIT }}
+build={{ BUILD }}
+build_date={{ BUILD_DATE }}
+EOF
+    cat > /opt/ragstack/python/ragstack/_release.py <<'EOF'
+# Generated by the tools-image build (apptainer/ragstack-tools.def) — never committed.
+# Read by ragstack.version.package_version when there is no git checkout.
+VERSION = "{{ VERSION }}"
+COMMIT = "{{ COMMIT }}"
+BUILD = "{{ BUILD }}"
+BUILD_DATE = "{{ BUILD_DATE }}"
+EOF
+    # The wheel's metadata must agree with __version__'s public part:
+    # pyproject.toml tracks the SERVER release tag S, which may differ from
+    # the tools tag T this image is built at. Write VERSION's public part
+    # (v1.6.5+abc → 1.6.5) into the staged copy before pip reads it.
+    PUBLIC="{{ VERSION }}"; PUBLIC="${PUBLIC#v}"; PUBLIC="${PUBLIC%%+*}"
+    sed -i -E "s/^version = \"[^\"]*\"/version = \"$PUBLIC\"/" /opt/ragstack/python/pyproject.toml
+    grep -q "^version = \"$PUBLIC\"" /opt/ragstack/python/pyproject.toml
+
+    python -m pip install --upgrade pip
+
+    # Install the ragstack package + the CPU-only extras the CWL steps need.
+    # Version constraints come from python/pyproject.toml (the source of truth) —
+    # the extras pin qdrant-client>=1.9, pymupdf>=1.24, transformers>=4.40,
+    # elasticsearch[async]>=8.13,<9 and neo4j>=5.20,<6. torch is intentionally
+    # absent.
+    #
+    # That `<9` on the Elasticsearch client is what makes the CWL load step work:
+    # a 9.x client sends a `compatible-with=9` header that an ES 8 server (the
+    # deployed cluster, and the prod ragstack env at 8.19.x) rejects with a 400
+    # media_type_header_exception. The bound is declared in pyproject.toml and is
+    # deliberately NOT repeated here — a second copy would silently disagree with
+    # the API env the day the clusters move to ES 9.
+    #
+    # The `graph` extra (neo4j driver) is required for load_graph.py (and
+    # load_embeddings.py's graph replay) to construct Neo4jGraphStore (#404)
+    # — without it they pass `--help` and then fail with ModuleNotFoundError
+    # the moment they actually run; extract_graph.py doesn't need the driver
+    # itself but gets the extra installed too since it's cheap and shares an
+    # image with the scripts that do. Its `<6` cap also lives in pyproject.toml
+    # only, same reasoning as ES.
+    #
+    # The `postgres` extra (asyncpg) is required to READ the collection registry,
+    # not to move bulk data. ingest_shard.py resolves its target through
+    # ragstack.ops.ingest_target before it embeds anything, and that reads the
+    # registry named by COLLECTION_STORE_BACKEND in the worker's env. On a tenant
+    # whose registry is postgres, PostgresCollectionStore raises without asyncpg,
+    # _specs_or_raise turns it into a refusal, and the step exits 2 — after the
+    # extract step has already succeeded, so the job dies half-done. sqlite hid
+    # this from the day the registry read landed (#263) because
+    # SqliteCollectionStore uses stdlib sqlite3 — the gap only shows the first
+    # time a tenant on a postgres registry ingests (#563).
+    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres,markdown]"
+
+    # Tokenizer robustness without torch: some HF slow tokenizers need these.
+    python -m pip install sentencepiece protobuf
+
+    # The CWL steps invoke scripts by an in-image path. Mirror python/scripts/ to
+    # the documented /opt/ragstack/scripts location so the baseCommand is stable.
+    cp -r /opt/ragstack/python/scripts /opt/ragstack/scripts
+    chmod -R a+rX /opt/ragstack/scripts
+    chmod a+r /opt/ragstack/RELEASE
+
+    # Fail the build loudly if the core imports don't resolve. `import neo4j`
+    # alone is not a substitute for the post-build check documented in
+    # cwl/README.md (constructing Neo4jGraphStore also needs a reachable bolt
+    # URL), but it does catch the driver being missing from the image (#404).
+    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers, neo4j, asyncpg; print('build import ok')"
+
+    # adopted-spec-h2h S-regex arm: this build must run the regex sentence segmenter.
+    if python -c "import nltk" 2>/dev/null; then
+        echo "S-regex build: 'import nltk' succeeded - refusing; this build must run the regex segmenter" >&2; exit 1
+    fi
+    (cd / && python -c "from ragstack.ingestion.chunkers import segmenter_version as s; v=s(); assert v=='regex-abbrev-v1', v; print('segmenter', v)")
+
+    # The installed package must report the version it was built as — through
+    # the generated _release.py, since there is no git and no checkout here.
+    # A mismatch means the resolution order in ragstack/version.py broke.
+    cd / && python - <<'EOF'
+from importlib.metadata import version
+import ragstack
+from ragstack.version import pep440
+expected = pep440("{{ VERSION }}")
+assert ragstack.__version__ == expected, (ragstack.__version__, expected)
+assert version("ragstack") == expected.split("+")[0], (version("ragstack"), expected)
+print("ragstack.__version__ ==", ragstack.__version__, "| wheel metadata", version("ragstack"))
+EOF
+
+%environment
+    # Models (the HF tokenizer) are read from a bind-mounted HF_HOME at runtime,
+    # never baked into the image. Override by exporting HF_HOME on the host.
+    export HF_HOME=/rag/cache
+    # Keep the tokenizer offline/quiet and deterministic on a worker.
+    export HF_HUB_DISABLE_TELEMETRY=1
+    export PYTHONUNBUFFERED=1
+
+%labels
+    org.ragstack.role worker
+    org.ragstack.gpu false
+    org.ragstack.issue 135
+    org.ragstack.version {{ VERSION }}
+    org.ragstack.commit {{ COMMIT }}
+    org.ragstack.build {{ BUILD }}
+    org.ragstack.build-date {{ BUILD_DATE }}
+    org.ragstack.variant no-nltk (adopted-spec-h2h-2026-11 S-regex arm)
+
+%help
+    RAGStack CPU-only tools image for the offline CWL plane. Runs the
+    ingest_shard, embed_shard, load_embeddings, and pdf_extract scripts against
+    the embedding fleet / Qdrant / Elasticsearch over HTTP. Bind a host HF_HOME
+    (default /rag/cache) for the tokenizer. Identity: `apptainer inspect
+    --labels` (org.ragstack.version / commit / build / build-date) and
+    /opt/ragstack/RELEASE. See apptainer/README.md, the ragstack-tools.def
+    header and cwl/README.md for the DockerRequirement wiring.
