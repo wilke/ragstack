@@ -67,6 +67,10 @@ same chunk ids, spans and texts.
   ``--seed-file`` to be the repository's :data:`SEED_RELPATH` itself, tracked
   (``git ls-files --error-unmatch``) and identical to HEAD with staged changes included (``git diff
   --quiet HEAD``), on a clean tree; ``negative-draw.json`` records the HEAD commit (``seed_commit``).
+- §5 (b) / (a)7 the plan's counts: the plan lists the item counts as the public output; ``items``
+  also refuses when they differ from :data:`PLAN_ITEMS` / :data:`PLAN_TOTAL` (446), before anything is
+  written. ``--allow-plan-mismatch`` proceeds and writes the differences into ``neighbour-items.json``
+  as ``deviation`` (a recorded deviation, not a silent count).
 - (b)6 / (a): ``items`` takes only a negative directory ``draw-negative`` wrote after the committed
   seed: its ``negative-draw.json`` must name the sha256 of the seed file committed at HEAD, the pinned
   stage-A commit and the pinned draw inputs, per-paper quotas of :data:`NEGATIVE_QUOTAS` and a draw that
@@ -121,7 +125,7 @@ SPEC_BEFORE, SPEC_PASSAGE, SPEC_AFTER, SPEC_ELLIPSIS = "(context before)\n", "(p
 EDGES = ("none", "before", "after")
 
 #: §5 (b): the items the plan counts (``feasibility.json`` and the OPEN-2 draw); a different count is
-#: reported (``plan_counts``), not refused: the count is what the inputs give
+#: refused unless ``--allow-plan-mismatch`` records it as a deviation (module docstring, clarifications)
 PLAN_ITEMS: dict[str, dict[str, int]] = {
     "split": {"context_window_1": 18, "context_window_2": 2}, "recovered": {"context_window_1": 53},
     "primary_only": {"context_window_1": 4}, "kept_changed": {"context_window_1": 219},
@@ -659,7 +663,8 @@ def read_negative_dir(negative_dir: Path, repo: Path | None = None
 
 
 def run_items(confirm_dir: Path, label_table: Path, main_config: Path, negative_dir: Path, out_dir: Path,
-              public_out: Path | None = None, repo: Path | None = None) -> dict[str, Any]:
+              public_out: Path | None = None, repo: Path | None = None, *,
+              allow_plan_mismatch: bool = False) -> dict[str, Any]:
     env = acc.require_env()
     rp.refuse_in_repo(out_dir, "--out-dir")
     pairs, cdocs, texts, shas = confirm_pairs(confirm_dir, label_table)
@@ -684,9 +689,18 @@ def run_items(confirm_dir: Path, label_table: Path, main_config: Path, negative_
     export_rows = sorted(it.export.values(), key=lambda r: r["chunk_id"])
     if any(not parse_nbr_id(r["chunk_id"]) for r in export_rows):
         raise SystemExit("REFUSED: an export row's id is not a neighbour item id")
+    counts = item_counts(it)
+    # Fable F5: the plan's counts (§5 (b)) are the run's premise; another count is refused unless the
+    # operator allows it, and then it is written into the summary as a deviation
+    diff = counts["plan_counts"]["differences"]
+    if diff and not allow_plan_mismatch:
+        raise SystemExit(f"REFUSED: the items are not the plan's counts ({'; '.join(diff)}); nothing written. "
+                         "--allow-plan-mismatch proceeds and records the mismatch as a deviation")
+    deviation = ({"plan_count_mismatch": list(diff), "allowed_by": "--allow-plan-mismatch",
+                  "note": "the items differ from PLAN §5 (b)'s counts; a recorded deviation, to be stated in the "
+                          "write-up"} if diff else None)
     esha = acc.write_private(out_dir / "neighbour-export.jsonl", acc.jsonl_bytes(export_rows), "the neighbour export")
     ssha = acc.write_private(out_dir / "neighbour-seed.jsonl", acc.jsonl_bytes(it.seeds), "the neighbour seed")
-    counts = item_counts(it)
     all_texts = {**texts, **ntexts}
     docs = sorted(all_texts)
     rec: dict[str, Any] = {
@@ -697,6 +711,7 @@ def run_items(confirm_dir: Path, label_table: Path, main_config: Path, negative_
         "tokens_counted_on": "the passage as judged (markers included)",
         "edge_rule": "before: M is its document's first chunk; after: the last; none: neighbours on both sides",
         **counts,
+        "deviation": deviation,
         "nbr_prefix_checked": nbr_checked,
         "registry": {"drift_size": _drift_size(counts["items_total"]),
                      "opus_cap": math.floor(0.07 * counts["items_total"])},
@@ -1313,6 +1328,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     a.add_argument("--negative-dir", type=Path, required=True, help="the draw-negative --out-dir")
     a.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
     a.add_argument("--public-out", type=Path, help="also write the counts here (artifacts/neighbour-items.json)")
+    a.add_argument("--allow-plan-mismatch", action="store_true",
+                   help="proceed when the items differ from PLAN §5 (b)'s counts, recording the mismatch as a "
+                        "deviation in neighbour-items.json (refused by default)")
     d = sub.add_parser("draw-negative", help="§3.2 (b): the 150 stage-A not pairs of the negative control")
     d.add_argument("--main-config", type=Path, required=True, help="the alias main run's judge config")
     d.add_argument("--seed-file", type=Path, required=True,
@@ -1345,8 +1363,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "items":
         rec = run_items(args.confirm_dir, args.label_table, args.main_config, args.negative_dir, args.out_dir,
-                        args.public_out)
-        print(json.dumps({k: rec[k] for k in ("items", "items_total", "trims_found", "plan_counts")}, indent=1))
+                        args.public_out, allow_plan_mismatch=args.allow_plan_mismatch)
+        print(json.dumps({k: rec[k] for k in ("items", "items_total", "trims_found", "plan_counts", "deviation")},
+                         indent=1))
     elif args.cmd == "draw-negative":
         rec = run_draw_negative(args.main_config, args.seed_file, args.confirm_dir, args.confirm_sample,
                                 args.control_sample, args.texts, args.out_dir, args.public_out)

@@ -223,16 +223,26 @@ def neg_picks() -> list[tuple[str, str, int]]:
     return [("alias-O-n1-g0", "dC", 1), ("alias-O-n2-g0", "dB", 1), ("alias-O-n3-g0", "dC", 1)]
 
 
+#: what the fixture world gives (test_items_end_to_end), as PLAN_ITEMS / PLAN_TOTAL
+FIXTURE_ITEMS = {"split": {"context_window_1": 4, "context_window_2": 1}, "recovered": {"context_window_1": 1},
+                 "primary_only": {"context_window_1": 1}, "kept_changed": {"context_window_1": 3},
+                 "negative": {"context_window_1": 3}}
+FIXTURE_TOTAL = 13
+
+
 def run_items(world: sfx.World, tmp: Path, picks: list[tuple[str, str, int]] | None = None,
-              public: bool = True) -> dict[str, Any]:
+              public: bool = True, allow: bool = False) -> dict[str, Any]:
     picks = neg_picks() if picks is None else picks
     world.mp.setattr(sap, "NEGATIVE_QUOTAS", {"same": len(picks), "other": 0})  # type: ignore[attr-defined]
     nd = sfx.negative_dir(tmp, sap.SCHEMA["negative"], picks)
     return sap.run_items(world.p["confirm"], world.p["label_table"], world.p["main_config"], nd, tmp / "items",
-                         tmp / "public" / "neighbour-items.json" if public else None, repo=tmp / "repo")
+                         tmp / "public" / "neighbour-items.json" if public else None, repo=tmp / "repo",
+                         allow_plan_mismatch=allow)
 
 
 def test_items_end_to_end(world: sfx.World, tmp_path: Path) -> None:
+    world.mp.setattr(sap, "PLAN_ITEMS", FIXTURE_ITEMS)  # type: ignore[attr-defined]
+    world.mp.setattr(sap, "PLAN_TOTAL", FIXTURE_TOTAL)  # type: ignore[attr-defined]
     rec = run_items(world, tmp_path)
     out = tmp_path / "items"
     export = {r["chunk_id"]: r for r in asc.read_jsonl(out / "neighbour-export.jsonl")}
@@ -259,7 +269,7 @@ def test_items_end_to_end(world: sfx.World, tmp_path: Path) -> None:
     assert rec["edge_items"]["split"] == {"context_window_1:after": 2, "context_window_1:none": 2,
                                           "context_window_2:after": 1}
     assert rec["edge_items"]["negative"] == {"context_window_1:none": 3}
-    assert rec["trims_found"] == 0 and rec["plan_counts"]["matches"] is False
+    assert rec["trims_found"] == 0 and rec["plan_counts"]["matches"] is True and rec["deviation"] is None
     assert rec["items_per_set"] == {"negative": 3, "positive": 10}
     # every export row: §3.2 (a)2's shape, its content production's passage of M's document
     for cid, r in export.items():
@@ -324,6 +334,25 @@ def test_items_end_to_end(world: sfx.World, tmp_path: Path) -> None:
     # deterministic: a second run writes the same bytes (write-once accepts them)
     rec2 = run_items(world, tmp_path)
     assert rec2["outputs_sha256"] == rec["outputs_sha256"]
+
+
+def test_items_refuses_a_count_other_than_the_plans_unless_allowed(world: sfx.World, tmp_path: Path) -> None:
+    """Fable F5: the plan's 446 are the premise; the fixture's 13 items are refused by default, and
+    --allow-plan-mismatch writes the mismatch into the summary as a deviation."""
+    with pytest.raises(SystemExit, match=r"not the plan's counts \(split.context_window_1: 4 != 18;.*total: 13 != 446"):
+        run_items(world, tmp_path)
+    assert not (tmp_path / "items").exists() and not (tmp_path / "public").exists()
+    rec = run_items(world, tmp_path, allow=True)
+    assert rec["plan_counts"]["matches"] is False
+    dev = rec["deviation"]
+    assert dev["allowed_by"] == "--allow-plan-mismatch" and dev["plan_count_mismatch"] == rec["plan_counts"]["differences"]
+    assert "total: 13 != 446" in dev["plan_count_mismatch"]
+    assert json.loads((tmp_path / "public" / "neighbour-items.json").read_text())["deviation"] == dev
+    # one count off the plan is enough
+    world.mp.setattr(sap, "PLAN_ITEMS", {**FIXTURE_ITEMS, "recovered": {"context_window_1": 2}})  # type: ignore[attr-defined]
+    world.mp.setattr(sap, "PLAN_TOTAL", FIXTURE_TOTAL)  # type: ignore[attr-defined]
+    with pytest.raises(SystemExit, match=r"recovered.context_window_1: 1 != 2\)"):
+        run_items(world, tmp_path / "again")
 
 
 def test_items_refuses_unpinned_inputs(world: sfx.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

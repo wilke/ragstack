@@ -38,7 +38,7 @@ def items_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     nd = sfx.negative_dir(tmp_path, sap.SCHEMA["negative"], [("alias-O-n1-g0", "dC", 1), ("alias-O-n2-g0", "dB", 1),
                                                              ("alias-O-n3-g0", "dC", 1)])
     sap.run_items(w.p["confirm"], w.p["label_table"], w.p["main_config"], nd, tmp_path / "items",
-                  repo=tmp_path / "repo")
+                  repo=tmp_path / "repo", allow_plan_mismatch=True)
     return tmp_path / "items"
 
 

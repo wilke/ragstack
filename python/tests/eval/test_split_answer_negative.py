@@ -315,7 +315,7 @@ def test_draw_negative_end_to_end(words: sfx.WordCounter, tmp_path: Path, monkey
     assert pub["seed_commit"] == head.strip() and pub["seed_file"] == sap.SEED_RELPATH
     assert pub["passage_tokens"]["n"] == 3
     items = sap.run_items(d.world.p["confirm"], d.world.p["label_table"], d.world.p["main_config"], out,
-                          tmp_path / "items", repo=d.repo)
+                          tmp_path / "items", repo=d.repo, allow_plan_mismatch=True)
     assert items["items"]["negative"] == {"context_window_1": 3} and items["items_per_set"]["negative"] == 3
 
 
