@@ -107,6 +107,14 @@ def test_seed_with_equal_bytes_at_another_path_is_refused(tmp_path: Path) -> Non
     assert sap.seed_file_problems(f, repo) == []
 
 
+def test_seed_hidden_from_git_by_assume_unchanged_is_refused(tmp_path: Path) -> None:
+    repo, f = seed_repo(tmp_path)
+    subprocess.run(["git", "-C", str(repo), "update-index", "--assume-unchanged", sap.SEED_RELPATH], check=True)
+    f.write_text(f.read_text().replace("1", "2", 1) if "1" in f.read_text() else f.read_text() + " ")
+    assert sap.seed_file_problems(f, repo) == [
+        f"{sap.SEED_RELPATH} bytes differ from HEAD's (assume-unchanged / skip-worktree?)"]
+
+
 def test_empty_seed_and_missing_seed_file_are_refused(tmp_path: Path) -> None:
     repo, f = seed_repo(tmp_path, seed=" ")
     with pytest.raises(SystemExit, match="no non-empty 'seed'"):

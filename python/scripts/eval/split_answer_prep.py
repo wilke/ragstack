@@ -812,6 +812,15 @@ def seed_file_problems(seed_file: Path, repo: Path | None = None) -> list[str]:
         bad.append(f"{SEED_RELPATH} is not tracked (commit it first)")
     elif same.returncode != 0:
         bad.append(f"{SEED_RELPATH} differs from HEAD (staged or unstaged; commit it first)")
+    else:
+        # the bytes read are HEAD's bytes (#999 review: a symlinked seed, or one marked
+        # assume-unchanged / skip-worktree, passes ls-files and diff while its content changes)
+        import hashlib
+
+        if Path(seed_file).is_symlink() or (repo / SEED_RELPATH).is_symlink():
+            bad.append(f"{SEED_RELPATH} is a symlink (commit the file itself)")
+        elif hashlib.sha256(Path(seed_file).read_bytes()).hexdigest() != head_seed_sha256(repo):
+            bad.append(f"{SEED_RELPATH} bytes differ from HEAD's (assume-unchanged / skip-worktree?)")
     return bad
 
 
