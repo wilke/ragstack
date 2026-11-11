@@ -1,15 +1,41 @@
-# Alias study: a second judge validation on retrieval-like pairs (plan, frozen before data)
+# Alias study: a second judge validation on retrieval-like pairs (draft plan, not approved, not run)
 
-Status: **frozen**. This file is committed before any record is drafted, any pair is built or any
-label is requested. Every output records the sha of the commit that added this file. A later change
-is an amendment. It is dated and appended at the end, and it never edits the text above it.
+Status: **DRAFT, written 2026-11-04; not approved, not frozen, not run** (as of 2026-11-11). No record
+has been drafted, no pair built, no label requested, `calib/validation-2/` does not exist and
+`alias-judge/3` is not written. The eleven open questions of §9 are unanswered. If the owner takes the
+plan up, the answers are recorded as a dated amendment below, and only the commit that records them
+freezes the plan; every output would then record that commit's sha. Until then the text below is kept
+as drafted on 2026-11-04, except where a dated note says otherwise.
+
+**What changed since 2026-11-04 (status note, 2026-11-11).** The main run completed on 2026-11-05
+([RESULTS.md](../results/alias-study-2026-11/RESULTS.md)) with the judge of prereg §6.3 unchanged. Its
+owner spot check (prereg §13.5, 100 pairs) agreed with the final label on 81 of 100: 0.872 re-weighted
+and 0.82 on the *answers* stratum, below the 0.90 rule, so every result carries *judge validity below
+threshold (§13.5)*. The owner's post-hoc tags put all 19 disagreements on the partial-versus-full line
+(12 partial, 7 full; 13 of the 19 judge-*answers* / owner-*not*). The Opus drift reference ended at 0.948
+(386 / 407) in stage A and 0.960 (1,122 / 1,169) cumulative against the 0.97 line, report-only under R29;
+the arm gap never fired. The same frozen judge was then reused, unchanged, by the confirmatory boundary
+test ([alias-boundary-confirm-2026-11](../results/alias-boundary-confirm-2026-11/RESULTS.md): Opus on
+18 pairs per arm, 16 / 18 and 15 / 18), rechunk stages 1 and 1b
+([rechunk-found10-2026-11](../results/rechunk-found10-2026-11/README.md)), the reach comparison
+([reach-rechunk-2026-11](../results/reach-rechunk-2026-11/RESULTS.md): re-judged drift sample of 555
+pairs, agreement 0.9712 overall and 0.9327 on *answers* labels) and split-answer step 1
+([split-answer-2026-11](../results/split-answer-2026-11/RESULTS.md): 22 Opus pairs, drift not
+evaluable; 35 of 150 stage-A *not* pairs became *answers* when neighbours were added). None of these
+ran a second validation or changed the judge. The spot-check result, not the pilot's 12-pair owner read
+of §1, is now the motivating evidence; §1 is kept as written. The control plan's design note
+([CONTROL-PLAN.md §9](../results/alias-study-2026-11/control/CONTROL-PLAN.md)) proposes graded
+*full / partial / none* labels and set-level sufficiency for the next pre-registration; K3's binary
+"a partial answer is *not*" sharpening (§2) is one option beside that, not the owner's stated
+direction. Open question 4 (schedule) is answered by events: the main run's judging has ended.
 
 Background: [JUDGE-VALIDATION-PLAN.md](JUDGE-VALIDATION-PLAN.md) (the first validation, frozen at
 `e2713e1`), [JUDGE-CALIBRATION.md](JUDGE-CALIBRATION.md) (rounds 1–3, validation, tiebreaker, review
-follow-ups), [TIEBREAKER-PLAN.md](TIEBREAKER-PLAN.md), and the pre-registration §6.1–6.6 and §13.5.
+follow-ups), [TIEBREAKER-PLAN.md](TIEBREAKER-PLAN.md), and [the pre-registration](../results/alias-study-2026-11/prereg/PREREG-alias-study.md) §6.1–6.6, §13.5 and §14 (O8, O12).
 
-**This set is not a gate on the main run.** The owner decided that the main study proceeds with the
-current judge unchanged. This set is for a later comparison and refinement round. §8 states what its
+**This set is not a gate on the main run.** The owner decided (2026-11-04) that the main study proceeds
+with the current judge unchanged; it did, and completed on 2026-11-05. This set is for a later comparison
+and refinement round. §8 states what its
 result can and cannot change.
 
 ## 1. Why a second validation
@@ -22,16 +48,18 @@ tiebreaker decides.
 
 | finding | value |
 |---|---|
-| final label vs the Opus drift reference | 157 / 166 (**0.946**), below the 0.97 alarm |
+| final label vs the Opus drift reference | 157 / 166 (**0.946**), below the 0.97 line (an alarm when the pilot ran; a reported reference line since R29, owner 2026-11-04) |
 | per arm (base / neighbour / random) | 0.944 / 0.946 / 0.946 |
 | the same rule on the first validation's constructed pairs | 0.99 |
 | disagreements that are final *answers*, Opus *not* | 7 of 9; in 6 of the 7, C and E agreed (no escalation) |
-| kind of passage in all 9 disagreements | partial answer: the passage names the method or topic but does not state the asked-for information (for example, "one-way ANOVA was used" for a question asking what kind of comparison ANOVA is for) |
+| kind of passage in all 9 disagreements | partial answer: the passage names the method, test or topic the question is about but does not state the asked-for information (its purpose, value, result, definition or condition) |
 | disagreements about alias resolution | 0 of 9 |
 | escalation (tiebreak) rate | 6.0 % overall, 8.1 % on the stage-A legs; the validation had 2.5 % |
 | Argon re-judging the 37 drift pairs whose final label is *answers* | rejects 5 of the 7 Opus-*not*; keeps 27 of the 30 Opus-*answers* |
 | owner, blind, on 12 of these hard pairs | agrees with Opus 8 / 12, with the final label 5 / 12, with Argon 4 / 10 (the 10 Argon labelled) |
 | owner on the 7 false yeses | confirms 5 of 7 as *not* |
+
+Rows quoting the 37 Argon re-judged pairs and the per-pair owner counts are private counts (`judge-summary.json`, the owner's blind sheet); the public record carries the 8 / 12, 5 / 12 and 4 / 10 figures and the three Argon-rejected pairs (prereg §5.6).
 
 ### The weakness of the first validation set
 
@@ -49,12 +77,12 @@ corpora and oversamples near-misses.
 | **K0** | current rule: C + E, Argon tiebreak (prereg §6.3, unchanged settings) | `alias-judge/2` | C and E agree → that label; else Argon |
 | **K3** | the same rule with a new prompt | `alias-judge/3` for C, E and Argon | as K0 |
 | **KA** | Argon alone | `alias-judge/2` | Argon's label |
-| **KS** | `GPT-5.6 Sol` alone | `alias-judge/2` | Sol's label |
+| **KS** | `GPT-6.1 Sol` alone (prereg §14 O8, owner 2026-11-04: the candidate for this round; its allow-list entry and served id are confirmed before any call, as TIEBREAKER-PLAN.md §1 did for `GPT-5.6 Sol`, which scored 0.990 on the first validation set) | `alias-judge/2` | Sol's label |
 | **KY** | "yes needs a third yes" | `alias-judge/2` | *answers* only when C, E **and** Argon all say yes; otherwise *not* |
 | **KO** | Opus, single call | `alias-judge/1` | repetition 1 of the reference (§4); scored on the owner subset only |
 
 Settings are the prereg's: thinking on for C and E, `max_tokens` 8192 (local) and 4096 (Argon, Sol),
-served-model check, `fallback_model: ""`. E takes n = 3 and the rule uses sample 0. KY reuses KA's labels;
+served-model check, `fallback_model: ""`. E is requested with n = 3, as the first validation did; the rule reads sample 0, an n = 1 draw, which is the prereg's setting, and samples 1–2 are reported for information only. KY reuses KA's labels;
 a missing label in KY counts as *not*, and the count is printed.
 
 **`alias-judge/3`** is `alias-judge/2` with sharper *not* criteria and worked partial-answer examples.
@@ -150,8 +178,8 @@ Two components, both drawn with seed `261103|alias|validation-2|pairs`:
 |---|---|---|
 | near-miss | **360** | about 300 |
 | partial | 150 | about 125 |
-| clear answer | 100 | about 85 |
-| clear non-answer | 100 | about 85 |
+| clear answer | 100 | about 83 |
+| clear non-answer | 100 | about 83 |
 
 The expected column assumes the first validation's loss: 83 no-reference and 17 split of 587 (17 %). A
 stratum whose frame holds fewer pairs is taken whole and the power it reaches is reported. It is not
@@ -241,7 +269,7 @@ target and the 4-point paired target, not the 3-point one. A committed script co
 before drafting (`artifacts/validation2_power.json`). If the frame is smaller, the reached power is printed.
 
 **Gateway cost (estimate; approval needed, open question 5).** Per-call token figures are the measured ones:
-Opus about 1.3 k prompt tokens, Argon and Sol about 0.9 k. `alias-judge/3` adds the length of its examples
+Opus about 1.3 k prompt tokens, Argon about 0.9 k, Sol about 0.9 k as measured for GPT-5.6 Sol (GPT-6.1 Sol not yet measured). `alias-judge/3` adds the length of its examples
 to every K3 Argon call. Drafting is scaled from the first validation (203 calls, 172 k in, 425 k out for 83
 records). Gemini 2.5 Pro reasons heavily, so drafting output dominates its cost.
 
@@ -288,12 +316,12 @@ motivate a **re-judging sensitivity** of this study's committed pairs, declared 
 the main analysis is committed and printed beside the pre-registered results, never in their place; and
 give a measured near-miss false-yes rate for the limitations (prereg §13.3).
 
-**Cannot:** change the main run's judge, prompt, rule, tiebreaker, drift alarm or any final label; gate,
-pause or delay the main run; or be read as a pass or fail of the current judge (there is no pass
-criterion; §5.2 is a comparison).
+**Cannot:** change the main run's judge, prompt, rule, tiebreaker, drift reference lines, arm-gap pause or
+any final label (the main run is complete, so there is nothing to gate, pause or delay); or be read as a
+pass or fail of the current judge (there is no pass criterion; §5.2 is a comparison).
 
-This run reads no main-run label or result and writes no collection. It does share the gateway budget and
-the local endpoints with the main run (open question 4).
+This run reads no main-run label or result and writes no collection. It would share the gateway budget
+and the local endpoints with whatever study is running at the time (open question 4).
 
 ## 9. Open questions for the owner
 
@@ -302,8 +330,8 @@ the local endpoints with the main run (open question 4).
 2. **Reference answer.** Does every accepted record carry one for `ans_cov`? If not, what stands in (the
    verifier's evidence quote, or the gold chunk)?
 3. **Strata.** Are the median and 85th-percentile cuts acceptable, or is a Gemini 2.5 Pro stratifier preferred?
-4. **Schedule.** Should this run wait until the main run's judging ends, so the two never share the
-   4-in-flight cap, the budget or the local endpoints?
+4. **Schedule.** The main run's judging ended 2026-11-05. Is any other study running whose 4-in-flight
+   cap, budget or local endpoints this run must not share?
 5. **Budget.** Is about 5,000 gateway calls (5.6 M prompt, 0.8 M completion tokens) approved? Drop Sol to
    save about 850?
 6. **`alias-judge/3`.** Does the owner write it, or approve a draft? Are synthetic examples acceptable?
@@ -311,7 +339,8 @@ the local endpoints with the main run (open question 4).
 8. **"Better".** Are Holm over four, the 2-point false-no tolerance and the owner condition right (§5.2)?
 9. **Opus.** Add a fourth Opus call per pair (about 850 calls) to score a single call on the full set? Keep
    the reference on `alias-judge/1`, or also run `/2` on a subset?
-10. **Owner labels.** Is *unsure* allowed? Is a second rater available (prereg §14 O12)?
+10. **Owner labels.** Is *unsure* allowed? Is a second rater available for this round? (Prereg §14 O12,
+    owner 2026-11-04: a single rater for the main study; further raters planned for a second wave.)
 11. **F size.** Are 25 full-list records and the 600-pair cap right, given that pairs per record are
     unknown until retrieval?
 
