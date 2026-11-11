@@ -1,6 +1,8 @@
 <!-- experiment: Split answers under the adopted chunking: overlap, neighbours, or other cuts? | 2026-11-09 | EXPLORATORY, DRAFT; owner decisions 2026-11-10 and 2026-11-11 -->
 # Split answers: can overlap, judge-time neighbours or another cut keep an answer in one passage?
 
+**Outcome (2026-11-11): step 1 ran and the owner stopped the plan; step 2 does not run. Results: [RESULTS.md](RESULTS.md), [REPORT.md](REPORT.md). The text below is the plan as it stood before step 1 and is not revised.**
+
 **Status: DRAFT, 2026-11-09; the owner's answers of 2026-11-10 are folded in (§9.1: OPEN-1, OPEN-3 and OPEN-6
 decided; OPEN-4 superseded) and of 2026-11-11 (OPEN-2 and OPEN-5 decided). Exploratory. No judge call, store,
 retrieval or LLM call has been made. No owner question is open (§9.2). Nothing here is pre-registered. Step 1 needs

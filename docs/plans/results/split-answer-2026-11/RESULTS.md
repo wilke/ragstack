@@ -10,12 +10,14 @@ version is [REPORT.md](REPORT.md); the gateway deviation is [DEVIATIONS.md](DEVI
 
 446 neighbour items in one registry, as PLAN §5 (b) and [`artifacts/neighbour-items.json`](artifacts/neighbour-items.json)
 fix them. Each item is a stage-A pair whose passage is the max-overlap chunk M with its neighbours, in the production
-context-window format (PLAN §3.1): M ± 1 for every item, except M ± 2 for the 2 split windows that M ± 1 does not
+context-window format (PLAN §3.1): M ± 1 for every pair, plus an M ± 2 item for the 2 split windows that M ± 1 does not
 contain. The frozen judge (Qwen C n = 5 and E, Argon tiebreak, Opus 5 % drift reference) labelled every item;
 `final_rows` 446, `items_without_final_row` 0, unjudged 0. Because nothing is unjudged, the two rate policies of the
 report (`unjudged_as_not`, `unjudged_dropped`) give identical numbers, and one column is shown.
 
 ## Rates (share of items the judge labelled *answers*; 95 % Wilson interval)
+
+Interval bounds are the artifact's, rounded outward at 4 decimals (lower floored, upper ceiled), then shown to 1 decimal.
 
 | group | what it is | items | *answers* | rate | 95 % CI |
 |---|---|---|---|---|---|
@@ -50,7 +52,7 @@ this is stated, not measured (`judge-summary.json` is private).
 
 PLAN §7: "If split pairs recover at a rate the controls do not show (low kept_changed loss and low false recovery
 on the OPEN-2 *not* pairs), report and stop." The kept_changed loss is low (4 of 219). The false recovery is not
-low: 35 of 150 (23.3 %). The split recovery (8 of 18, 44.4 %) lies above it, but the two intervals meet (24.6 % lower
+low: 35 of 150 (23.3 %). The split recovery (8 of 18, 44.4 %) lies above it, but the two intervals overlap (24.6 % lower
 bound against 30.7 % upper bound). The result is neither the clear success nor the clear failure the rule names.
 
 ## Owner decision (2026-11-11)

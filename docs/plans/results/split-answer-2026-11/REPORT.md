@@ -24,18 +24,18 @@ false *answers* on pairs the judge had said do not answer).
 - **Split pairs:** with one neighbour on each side, the judge says *answers* for **8 of the 18** (44 %). The 2
   windows needing two neighbours each side: 0 of 2.
 - **Negative control:** for pairs the judge had said do **not** answer, adding neighbours turns **35 of 150**
-  (23 %) into *answers*. Longer passages make the judge more willing to say *answers*.
-- **Kept pairs:** 215 of 219 (98 %) stay *answers*. Neighbours do not cost answers.
+  (23 %) into *answers*. Either longer passages make the judge more willing to say *answers*, or a neighbour carries a genuine answer; the control was not split to tell these apart (§5).
+- **Kept pairs:** 215 of 219 (98 %) stay *answers*. Neighbours cost few answers (4 of 219 flipped).
 - **Verdict:** neither clear success nor clear failure. Recovery on split pairs (44 %, interval 25–66 %) sits above
-  the false-*answers* floor (23 %, interval 17–31 %), but the intervals meet, so much of the recovery could be the
+  the false-*answers* floor (23 %, interval 17–31 %), but the intervals overlap (25 % against 31 %), so much of the recovery could be the
   same leniency. The owner stopped the plan here: no step 2, and no change to production.
 
 ## 3. How it was tested
 
 - **Items.** 446 pairs from the confirmatory test's stage A, each re-judged with a new passage: the old pair's best
   overlapping S chunk M, with its neighbours before and after, in exactly the text format production's
-  `context_window` builds (PLAN §3.1). Groups: the 75 lost pairs (split 18, recovered 53, primary_only 4), all 219
-  kept_changed control pairs, M ± 2 for 2 split windows, and a seeded draw of 150 stage-A *not* pairs as the
+  `context_window` builds (PLAN §3.1). Groups: the 75 lost pairs (split 18, recovered 53, primary_only 4), 219 of the 220
+  kept_changed control pairs (one is a one-chunk document with no neighbours), M ± 2 for 2 split windows, and a seeded draw of 150 stage-A *not* pairs as the
   negative control. Details in [TEST-DATA.md](TEST-DATA.md).
 - **Judge.** The frozen alias-study judge, unchanged but for the passage slot: two local Qwen judges (one sampled
   five times), a Gemini 4 Argon tiebreak where they disagree (28 items), and a Claude Opus 5.5 reference on a 5 %
@@ -68,9 +68,9 @@ context, not an answer cut in two.
 
 ## 5. Conclusion
 
-Judge-time neighbours do not cost answers (98 % of kept pairs stay *answers*), but they also do not cleanly recover
+Judge-time neighbours cost few answers (98 % of kept pairs stay *answers*; 4 of 219 flipped), but they also do not cleanly recover
 split ones. The split-pair rate, 44 % (8 of 18 pairs), is less than twice the 23 % at which neighbours turn
-non-answers into *answers*, and the two intervals touch. At most about 8 of the 18 split answers are recovered, and
+non-answers into *answers*, and the two intervals overlap. At most about 8 of the 18 split answers are recovered, and
 some of those may be the judge's leniency toward longer passages rather than a real recovery.
 
 Decision (owner, 2026-11-11): stop at step 1. Step 2 (overlap with the strict sentence chunker, ceiling 8 split
@@ -78,4 +78,5 @@ pairs) does not run. Production `context_window` keeps its default; callers can 
 
 **Limits.** Exploratory and small: 18 split pairs give a wide interval. The negative control was not split into
 same-paper and other-paper pairs; same-paper flips might be neighbours carrying a genuine answer, so 23 % may
-overstate the leniency. One judge protocol and one corpus.
+overstate the leniency. Even 8 of 18 is an upper bound for production: in a multi-source answer prompt each source gets a share of the
+budget and its context is trimmed before the passage (PLAN §3.1). One judge protocol and one corpus.

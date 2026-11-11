@@ -11,7 +11,7 @@ by that gateway's operator session and reported to the operator, and from the op
 - **What changed.** PLAN §6 requires a size notice to the gateway coordinator and its acknowledgement before any
   Argon or Opus call, and names the owner's explicit go, recorded as a deviation, as the only substitute. Step 1's
   gateway calls (the Argon tiebreak and the Opus drift reference) ran on the **second gateway**, and the owner's go
-  in chat stood in for the acknowledgement. The judge configuration was the main study's but for `out_dir` and the
+  in chat stood in for the acknowledgement. The judge configuration was the confirmatory and cover-any batches' but for `out_dir` and the
   control chunk export; models, prompts, caps and hard-stop rules were unchanged. The Qwen judges ran locally and
   used no gateway.
 - **Why.** The gateway coordinator was unreachable, as for the reach comparison (its D-1). The second gateway's
@@ -19,8 +19,9 @@ by that gateway's operator session and reported to the operator, and from the op
   with no access control. The owner chose "Go: second gateway, record a deviation".
 - **When.** Qwen ran 02:24:41–02:44:43Z. The preflight size notices were written at 02:44:51Z and 02:45:00Z, after
   Qwen and before any gateway call. The gateway calls ran 02:46:01–02:47:11Z (runner start and end lines), one batch.
-- **What had been seen.** The preflight notices (call counts and token estimates per model). No label file,
-  `final.jsonl`, `judge-summary.json` or report; the report was run after the batch was finalized.
+- **What had been seen.** The preflight notices (call counts and token estimates per model; the Argon count, 28,
+  is the number of Qwen C/E disagreements). No final label (`final.jsonl`), `judge-summary.json` or report; the Qwen
+  per-judge label files existed but were not read. The report was run after the batch was finalized.
 - **The calls** (token counts are the provider's, as the audit logs them; reasoning is a subset of out):
 
   | model | audit ids | calls | preflight estimate in | tokens in | out | of which reasoning |

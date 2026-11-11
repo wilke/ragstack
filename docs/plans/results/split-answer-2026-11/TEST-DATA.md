@@ -5,7 +5,7 @@ text, hosts or paths.
 
 1. **Source pairs.** The confirmatory boundary test's stage-A pairs and its cover-any addendum
    ([`../alias-boundary-confirm-2026-11/`](../alias-boundary-confirm-2026-11/README.md)) give the lost 75 (split 18,
-   recovered 53, primary_only 4) and the 219 kept_changed pairs, each with its max-overlap S chunk M (PLAN §3).
+   recovered 53, primary_only 4) and 219 of the 220 kept_changed pairs (one is a one-chunk document with no neighbours), each with its max-overlap S chunk M (PLAN §3).
 2. **Negative-control draw** (`split_answer_prep.py draw-negative`, PLAN §3.2 (b)). The seed
    [`artifacts/negative-draw-seed.json`](artifacts/negative-draw-seed.json) was committed before the draw, and the
    command refuses to run unless the seed file's bytes equal the committed ones. It draws 150 stage-A *not* pairs,
