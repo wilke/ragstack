@@ -319,6 +319,27 @@ def test_items_refuses_an_edge_negative_and_a_tampered_draw(world: sfx.World, tm
                       repo=tmp_path / "t" / "repo")
 
 
+def test_items_refuses_a_shared_document_with_another_text_in_the_negative_run(world: sfx.World,
+                                                                              tmp_path: Path) -> None:
+    """Review A4: dB is in both chunk runs; one letter of a dB chunk changes in the draw's run (ids
+    and spans equal), and the summary names the changed file."""
+    world.mp.setattr(sap, "NEGATIVE_QUOTAS", {"same": 3, "other": 0})  # type: ignore[attr-defined]
+    nd = sfx.negative_dir(tmp_path, sap.SCHEMA["negative"], neg_picks())
+    cp = nd / "chunks" / "chunks-control.jsonl"
+    rows = asc.read_jsonl(cp)
+    k = next(i for i, r in enumerate(rows) if r["doc_id"] == "dB" and r["start_char"] > 0)
+    c = rows[k]["content"]
+    j = c.index("w")
+    rows[k] = {**rows[k], "content": c[:j] + "v" + c[j + 1:]}
+    sfx.write_jsonl(cp, rows)
+    summ = json.loads((nd / "negative-draw.json").read_text())
+    sfx.rewrite_summary(nd, outputs_sha256={**summ["outputs_sha256"], "chunks_control": asc.sha256_file(cp)})
+    with pytest.raises(SystemExit, match=r"other chunk ids, spans or texts in the negative draw"):
+        sap.run_items(world.p["confirm"], world.p["label_table"], world.p["main_config"], nd, tmp_path / "items",
+                      repo=tmp_path / "repo")
+    assert not (tmp_path / "items").exists()
+
+
 NEG_PICKS_N = 3
 
 

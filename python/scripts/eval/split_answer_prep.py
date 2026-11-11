@@ -52,8 +52,9 @@ candidates are chunked; the first ``quota`` eligible ones in walk order are draw
 fewer is refused, never extended.
 
 **Neighbours of the negatives** (review nit a) come from the draw's own chunk run
-(``<negative dir>/chunks/chunks-control.jsonl``); the draw's gate makes every document it shares
-with the confirmatory run's ``chunks-control.jsonl`` identical there.
+(``<negative dir>/chunks/chunks-control.jsonl``); the draw's gate (checked again by ``items``) makes
+every document it shares with the confirmatory run's ``chunks-control.jsonl`` identical there: the
+same chunk ids, spans and texts.
 
 **Clarifications of §3.2** (the #999 review; each tightens the plan's literal wording, none loosens it):
 
@@ -650,6 +651,9 @@ def run_items(confirm_dir: Path, label_table: Path, main_config: Path, negative_
     pairs, cdocs, texts, shas = confirm_pairs(confirm_dir, label_table)
     negatives, ndocs, nshas = read_negative_dir(negative_dir, repo)
     ntexts = doc_texts(ndocs, "the negative draw's chunks-control.jsonl")
+    if shared_doc_problems(ndocs, cdocs):  # review A4: the draw's gate, checked again on what items reads
+        raise SystemExit("REFUSED: a document both chunk runs hold has other chunk ids, spans or texts in the "
+                         "negative draw's chunks-control.jsonl (§3.2 (b)7 gate); nothing written")
     # review nit e: no chunk the judge can look up may already carry a neighbour id
     main_raw = raw_config(main_config)
     exports = asc.read_chunk_exports([str(p) for p in (main_raw.get("chunk_exports") or {}).values()])
@@ -910,10 +914,12 @@ def negative_eligibility(cands: Sequence[Mapping[str, Any]], seeds: Mapping[str,
 
 def shared_doc_problems(ndocs: Mapping[str, Sequence[Mapping[str, Any]]],
                         cdocs: Mapping[str, Sequence[Mapping[str, Any]]]) -> int:
-    """§3.2 (b)7's gate: the documents both chunk runs hold must have identical chunk ids and spans."""
-    def geo(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, int, int]]:
-        return [(r["chunk_id"], r["start_char"], r["end_char"]) for r in rows]
-    return sum(geo(ndocs[d]) != geo(cdocs[d]) for d in set(ndocs) & set(cdocs))
+    """§3.2 (b)7's gate: the documents both chunk runs hold must have identical chunks: ids, spans
+    and texts (review A4: a chunk id is ``uuid5(doc:start:end)``, so a text of equal length changed
+    under ``--texts`` keeps every id and span; the content is compared too)."""
+    def chunks(rows: Sequence[Mapping[str, Any]]) -> list[tuple[str, int, int, str]]:
+        return [(r["chunk_id"], r["start_char"], r["end_char"], r["content"]) for r in rows]
+    return sum(chunks(ndocs[d]) != chunks(cdocs[d]) for d in set(ndocs) & set(cdocs))
 
 
 def load_judge_cfg(path: Path) -> dict[str, Any]:
@@ -952,8 +958,8 @@ def run_draw_negative(main_config: Path, seed_file: Path, confirm_dir: Path, con
     ndocs = acc.control_docs(cdir / "chunks-control.jsonl")
     cdocs = acc.control_docs(paths["chunks_control"])
     if shared_doc_problems(ndocs, cdocs):
-        raise SystemExit("REFUSED: a document the confirmatory run also chunked got other chunk ids or spans "
-                         "(§3.2 (b)7 gate); sample-negative.jsonl not written")
+        raise SystemExit("REFUSED: a document the confirmatory run also chunked got other chunk ids, spans or "
+                         "texts (§3.2 (b)7 gate); sample-negative.jsonl not written")
     refuse_nbr_ids((r["chunk_id"] for rs in ndocs.values() for r in rs), "the negative draw's chunks-control.jsonl")
     seeds = {s["control_of"]: s for s in read(cdir / "pairs-seed.jsonl")}
     positive_rm = {(s["record_id"], s["chunk_id"]) for s in read(paths["pairs_seed"])}

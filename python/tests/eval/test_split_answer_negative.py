@@ -351,10 +351,39 @@ def test_draw_negative_refuses_another_stage_a_commit_or_an_unpinned_sample(
     assert not (tmp_path / "neg").exists()
 
 
+def test_draw_negative_refuses_a_shared_document_with_another_text_of_equal_length(
+        words: sfx.WordCounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review A4 (and Fable F3, a run where the gate fires): dB, which both runs chunk, gets a text
+    with one letter changed under --texts; ids and spans stay, the content does not."""
+    d = Draw(tmp_path, monkeypatch)
+    texts = tmp_path / "texts-changed"
+    texts.mkdir()
+    for f in d.world.p["texts"].iterdir():
+        (texts / f.name).write_bytes(f.read_bytes())
+    paper, text = sfx.DOCS["dB"]
+    i = text.index("w", 9500)  # in B2, inside no candidate window of dB
+    changed = text[:i] + "v" + text[i + 1:]
+    assert len(changed) == len(text) and len(changed.split()) == len(text.split())
+    sfx.write_jsonl(texts / f"{paper}.jsonl", [{"path": paper, "text": changed}])
+    with pytest.raises(SystemExit, match=r"other chunk ids, spans or texts \(§3.2 \(b\)7 gate\)"):
+        sap.run_draw_negative(d.world.p["main_config"], d.seed, d.world.p["confirm"], d.world.sample, d.control,
+                              [texts], tmp_path / "neg", tmp_path / "public" / "negative-draw.json", repo=d.repo)
+    # the gate fired on the content alone: the draw's chunk run kept dB's ids and spans
+    ndocs = sap.acc.control_docs(tmp_path / "neg" / "chunks" / "chunks-control.jsonl")
+    geo = [(r["chunk_id"], r["start_char"], r["end_char"]) for r in ndocs["dB"]]
+    assert geo == [(r["chunk_id"], r["start_char"], r["end_char"]) for r in d.world.cdocs["dB"]]
+    assert not (tmp_path / "neg" / "sample-negative.jsonl").exists()
+    assert not (tmp_path / "neg" / "negative-draw.json").exists() and not (tmp_path / "public").exists()
+
+
 def test_shared_document_gate() -> None:
-    a = {"d": [{"chunk_id": "c0", "start_char": 0, "end_char": 5}, {"chunk_id": "c1", "start_char": 5,
-                                                                   "end_char": 9}]}
+    a = {"d": [{"chunk_id": "c0", "start_char": 0, "end_char": 5, "content": "abcde"},
+               {"chunk_id": "c1", "start_char": 5, "end_char": 9, "content": "fghi"}]}
     assert sap.shared_doc_problems(a, a) == 0 and sap.shared_doc_problems(a, {"e": []}) == 0
-    b = {"d": [{"chunk_id": "c0", "start_char": 0, "end_char": 6}, {"chunk_id": "c1", "start_char": 6,
-                                                                   "end_char": 9}]}
+    b = {"d": [{"chunk_id": "c0", "start_char": 0, "end_char": 6, "content": "abcdef"},
+               {"chunk_id": "c1", "start_char": 6, "end_char": 9, "content": "ghi"}]}
     assert sap.shared_doc_problems(a, b) == 1
+    # equal ids and spans, another text: refused too (review A4)
+    t = {"d": [{**r, "content": "x" * (r["end_char"] - r["start_char"])} for r in a["d"]]}
+    a2 = {"d": [{**r, "content": "y" * (r["end_char"] - r["start_char"])} for r in a["d"]]}
+    assert sap.shared_doc_problems(t, t) == 0 and sap.shared_doc_problems(t, a2) == 1
