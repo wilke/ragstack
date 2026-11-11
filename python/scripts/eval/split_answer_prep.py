@@ -366,9 +366,23 @@ def neighbour_passage(rows: Sequence[Mapping[str, Any]], m_chunk_id: str, w: int
     parts = [*(c.content for c in ctx), m.content]
     trimmed = (text != literal_passage(m.content, [c.content for c in before], [c.content for c in after])
                or text.count(SPEC_ELLIPSIS) != sum(p.count(SPEC_ELLIPSIS) for p in parts))
+    # Fable F1: the walk must have reached every neighbour the document holds within w. A store that
+    # misses a neighbour or a change to production's link keys shortens the context silently
+    # (expand_context omits what it cannot fetch); that is refused, never read as a document edge.
+    i = chunks.index(m)
+    want_before = [c.id for c in chunks[max(0, i - w):i]]
+    want_after = [c.id for c in chunks[i + 1:i + 1 + w]]
+    if not ctx or len(before) != min(i, w) or len(after) != min(len(chunks) - 1 - i, w) \
+            or [c.chunk_id for c in before] != want_before or [c.chunk_id for c in after] != want_after:
+        raise SystemExit(f"REFUSED: production's context walk returned {len(before)} before / {len(after)} after for "
+                         f"an M with {min(i, w)} / {min(len(chunks) - 1 - i, w)} neighbours within w={w}; the "
+                         "neighbours are not the document's (a link key or store mismatch, not a document edge)")
+    edge = "before" if i == 0 else "after" if i == len(chunks) - 1 else "none"
+    walk_edge = "before" if not before else "after" if not after else "none"
+    if edge != walk_edge:  # implied by the counts above; kept as the stated invariant
+        raise SystemExit("REFUSED: the edge from M's position is not the edge the walk shows")
     ids_in_passage = [c.chunk_id for c in before] + [m.id] + [c.chunk_id for c in after]
     spans = [(by_id[i].start_char, by_id[i].end_char) for i in ids_in_passage]
-    edge = "before" if not before else "after" if not after else "none"
     return Passage(text=text, w=w, m_chunk_id=m.id, neighbour_chunk_ids=[c.chunk_id for c in ctx], edge=edge,
                    start_char=min(s for s, _ in spans), end_char=max(e for _, e in spans), n_before=len(before),
                    n_after=len(after), trimmed=trimmed, store_calls=store.calls, chunk_ids=ids_in_passage)

@@ -153,6 +153,32 @@ def test_neighbour_passage_refuses_an_m_outside_the_document() -> None:
         sap.neighbour_passage(rows("a.", "b."), "d1-c0", 3)
 
 
+def test_a_walk_that_misses_a_neighbour_is_refused_not_read_as_an_edge(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fable F1: production's walk omits what it cannot reach; the passage builder refuses that."""
+    from ragstack.retrieval import retriever
+
+    r = rows("A0.", "A1.", "A2.", "A3.", "A4.")
+    # a store that does not return one neighbour (A0, the far one before M = A2 at w = 2)
+    class Missing(sap._RowsStore):
+        async def get_chunks(self, ids: Any, filters: Any = None) -> list[Any]:
+            return [c for c in await super().get_chunks(ids, filters) if c.id != "d1-c0"]
+
+    monkeypatch.setattr(sap, "_RowsStore", Missing)
+    with pytest.raises(SystemExit, match=r"returned 1 before / 2 after for an M with 2 / 2 neighbours within w=2"):
+        sap.neighbour_passage(r, "d1-c2", 2)
+    with pytest.raises(SystemExit, match=r"returned 0 before / 1 after for an M with 1 / 1"):
+        sap.neighbour_passage(r, "d1-c1", 1)
+    assert sap.neighbour_passage(r, "d1-c3", 1) is not None  # A0 is not needed here
+    monkeypatch.undo()
+    # production's link keys change: the linker writes keys the walk no longer reads
+    monkeypatch.setattr(retriever, "_LINK_KEYS", {-1: "previous_chunk", 1: "next_chunk_id"})
+    with pytest.raises(SystemExit, match=r"returned 0 before / 1 after for an M with 1 / 1"):
+        sap.neighbour_passage(r, "d1-c2", 1)
+    monkeypatch.setattr(retriever, "_LINK_KEYS", {-1: "previous_chunk", 1: "following_chunk"})
+    with pytest.raises(SystemExit, match=r"returned 0 before / 0 after"):  # no context at all: not M alone
+        sap.neighbour_passage(r, "d1-c4", 1)
+
+
 def test_trim_check_flags_a_budget_trim_and_ignores_an_ellipsis_in_the_text() -> None:
     long = "x" * 300
     r = rows(long, "Mid.", long)
