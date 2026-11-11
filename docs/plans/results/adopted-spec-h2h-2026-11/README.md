@@ -105,16 +105,21 @@ re-embed sample drawn (seed 20261111) from the 859,280 distinct chunk ids of the
    body of §7 step 2; the operator records the listing and the tenant-wide count.
 2. Two direct `gowe submit`s of the study text (S: the committed file; S-regex: the b2-renamed copy), the
    sentinel shard first — `h2h_report.py dryrun --arm … --receipt … --stderr-file … --logs-json …
-   --qdrant-count … --es-count … --collection-entry … --expect-build 1|2 --expect-sentinel-chunks 168` — then
+   --qdrant-count … --es-count … --collection-entry … --expect-build 1|2 --expect-commit
+   5d65bead84e65e5fb96f46c3a0d95cd73fa6cad7 --expect-sentinel-chunks 168` — then
    the 16 main shards. Every ingest task leaves a receipt and a stderr file in its stage-out directory.
 3. `retrieve` with the five-arm reporting config per setting (48,740 calls); copy the three decision arms'
    ledgers into the decision `out_dir`; `score` both configs; `decide` the decision config, per setting.
 4. The operator fills a private manifest (paths of the receipts, stderr files, store counts, shard files,
    cosines; see the `report` module doc) and runs
    `h2h_report.py report --manifest … --frozen-inputs frozen-inputs.json --prereg PREREG.md
-   --prereg-sha256 <frozen sha> --out artifacts/h2h-report.json`. Its output is the decision; the §4.5
-   sentence and the H3 sentence go verbatim into `RESULTS.md`; `REPORT.md` follows in the owner's five-part
-   order.
+   --prereg-sha256 <frozen sha> --out <a path outside the checkout>/h2h-report.json`, then copies the file to
+   `artifacts/h2h-report.json` and commits it. The report embeds and gates on the checkout's own
+   `experiment_provenance` (clean tree, no untracked files), so `--out` must not point into the tree: a rerun
+   would see the earlier output as untracked and return GATE-NOT-EVALUABLE by design (the script warns). The
+   manifest names all four settings and both configs per setting (their sha256 are checked against
+   `frozen-inputs.json`). Its output is the decision; the §4.5 sentence and the H3 sentence go verbatim into
+   `RESULTS.md`; `REPORT.md` follows in the owner's five-part order.
 
 Until the script has written its output no one reads an S or S-regex per-question file or score (PREREG §6,
 *Operator exposure*).

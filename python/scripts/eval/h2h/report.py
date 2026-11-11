@@ -10,8 +10,9 @@ only: :func:`assert_public` refuses a question, quote, record id, host or path).
 
 The manifest (private, never committed) names files by path::
 
-    {"settings": {"a": {"decision_dir": ..., "reporting_dir": ..., "config": <the decision config.json>},
-                  "d": ..., "b": ..., "c": ...},
+    {"settings": {"a": {"decision_dir": ..., "reporting_dir": ..., "config": <the decision config.json>,
+                        "reporting_config": <the reporting config.json>},
+                  "d": ..., "b": ..., "c": ...},                  # all four settings required
      "arms": {"S": {"receipts": {"main-00": path, ..., "sentinel": path},
                     "stderr": {"main-00": path, ..., "sentinel": path},
                     "sentinel_logs_json": path, "qdrant_count": int, "es_count": int},
@@ -314,9 +315,15 @@ def arm_gates(name: str, spec: dict[str, Any] | None, frozen: dict[str, Any]) ->
     return bad, info
 
 
-def manifest_gates(man: dict[str, Any], frozen: dict[str, Any], provenance: dict[str, Any] | None) -> tuple[dict[str, list[str]], dict[str, Any]]:
-    """Every gate that reads something other than the score outputs, grouped by what it voids."""
+ALL_ARMS = DECISION_ARMS + OPTIONAL_ARMS
+
+
+def manifest_gates(man: dict[str, Any], frozen: dict[str, Any], provenance: dict[str, Any] | None) -> tuple[dict[str, list[str]], dict[str, Any], dict[str, list[str]]]:
+    """Every gate that reads something other than the score outputs, grouped by what it voids
+    (``decision`` / ``H3`` / ``C1``) and, for the per-setting contrasts of §6, by the arm it
+    names (a run-level gate — shards, re-embed, model ids, provenance — names every arm)."""
     voids: dict[str, list[str]] = defaultdict(list)
+    by_arm: dict[str, list[str]] = defaultdict(list)
     info: dict[str, Any] = {}
     arms = man.get("arms") or {}
     per_arm: dict[str, dict[str, Any]] = {}
@@ -324,6 +331,7 @@ def manifest_gates(man: dict[str, Any], frozen: dict[str, Any], provenance: dict
         bad, ai = arm_gates(name, arms.get(name), frozen)
         per_arm[name] = ai
         voids[VOIDS[name]] += bad
+        by_arm[name] += bad
     if not per_arm[R.S].get("absent") and not per_arm[R.SREGEX].get("absent"):
         voids["H3"] += G.check_same_commit(per_arm[R.S]["census"], per_arm[R.SREGEX]["census"])
         info["chunk_id_overlap"] = G.chunk_id_overlap(per_arm[R.S]["_chunk_ids"], per_arm[R.SREGEX]["_chunk_ids"])
@@ -333,7 +341,9 @@ def manifest_gates(man: dict[str, Any], frozen: dict[str, Any], provenance: dict
     live = man.get("reused_census_live") or {}
     frozen_census = frozen.get("reused_census") or {}
     for name in (R.BASE, R.INC, R.SENT):
-        voids[VOIDS[name]] += G.check_reused_census(name, frozen_census.get(name), live.get(name))
+        cb_ = G.check_reused_census(name, frozen_census.get(name), live.get(name))
+        voids[VOIDS[name]] += cb_
+        by_arm[name] += cb_
     info["reused_census"] = {"frozen": {a: frozen_census.get(a) for a in (R.BASE, R.INC, R.SENT)}, "live": live}
     files = man.get("shard_files") or {}
     actual = {label: G.sha256_file(p) for label, p in files.items()}
@@ -355,7 +365,39 @@ def manifest_gates(man: dict[str, Any], frozen: dict[str, Any], provenance: dict
     for arm, paths in (man.get("drift") or {}).items():
         drift[arm] = G.top5_drift(read_jsonl(paths["old"]), read_jsonl(paths["new"]))
     info["top5_drift"] = drift or None
-    return dict(voids), info
+    run_level = [g for g in voids["decision"] if g not in by_arm[R.S] and g not in by_arm[R.INC] and g not in by_arm[R.BASE]]
+    for a in ALL_ARMS:
+        by_arm[a] += run_level
+    return dict(voids), info, dict(by_arm)
+
+
+def config_pin_gates(setting: str, spec: dict[str, Any], frozen: dict[str, Any]) -> list[str]:
+    """§9.1: the decision and reporting configs the run used are the pinned ones (sha256)."""
+    pins = (frozen.get("configs") or {}).get(setting) or {}
+    bad = []
+    for kind, key in (("decision", "config"), ("reporting", "reporting_config")):
+        path = spec.get(key)
+        if not path:
+            bad.append(f"[config_pin] ({setting}) no {kind} config in the manifest (absent)")
+            continue
+        want = pins.get(kind)
+        if not want:
+            bad.append(f"[config_pin] ({setting}) no pinned sha256 for the {kind} config (absent)")
+            continue
+        got = G.sha256_file(path)
+        if got != want:
+            bad.append(f"[config_pin] ({setting}) {kind} config sha256 {got[:12]} != pinned {want[:12]}")
+    return bad
+
+
+def out_inside_repo(out: str | Path, repo: str | Path) -> bool:
+    """True when ``--out`` lies under the harness checkout: a rerun would then see the previous
+    output as untracked (or the tree as dirty) and the provenance gate would fail by design."""
+    try:
+        Path(out).resolve().relative_to(Path(repo).resolve())
+        return True
+    except ValueError:
+        return False
 
 
 # ------------------------------------------------------------------- per setting
@@ -372,7 +414,8 @@ def _tag(setting: str, msgs: list[str]) -> list[str]:
 
 def analyse_setting(setting: str, dec: dict[str, Any], rep: dict[str, Any], frozen: dict[str, Any],
                     config_api: dict[str, Any] | None, void_from_files: dict[str, list[str]],
-                    frozen_order: str, overlap_share: float | None) -> dict[str, Any]:
+                    frozen_order: str, overlap_share: float | None,
+                    arm_voids_files: dict[str, list[str]] | None = None) -> dict[str, Any]:
     is_a = setting == "a"
     score, rows = dec["score"], dec["rows"]
     iters, seed = int(score["bootstrap"]["iters"]), int(score["bootstrap"]["seed"])
@@ -389,23 +432,43 @@ def analyse_setting(setting: str, dec: dict[str, Any], rep: dict[str, Any], froz
     voids: dict[str, list[str]] = defaultdict(list)
     for k, v in void_from_files.items():
         voids[k] += v
+    by_arm: dict[str, list[str]] = defaultdict(list)
+    for a, v in (arm_voids_files or {}).items():
+        by_arm[a] += v
+
+    def decision_level(msgs: list[str]) -> None:  # a gate on the decision names its three arms
+        voids["decision"] += msgs
+        for a in DECISION_ARMS:
+            by_arm[a] += msgs
+
     for a in rep["arms_missing"]:
-        voids[VOIDS[a]].append(f"[arm_missing] ({setting}) {a}: not in the five-arm score output")
+        msg = f"[arm_missing] ({setting}) {a}: not in the five-arm score output"
+        voids[VOIDS[a]].append(msg)
+        by_arm[a].append(msg)
     n_all = int((frozen.get("sets") or {}).get("all_rows") or 0)
     if not n_all:
-        voids["decision"].append(f"[rows] ({setting}) frozen-inputs has no sets.all_rows (absent)")
-    voids["decision"] += _tag(setting, G.check_sets([r["question_id"] for r in rs], [r["question_id"] for r in rs_sens],
-                                                   frozen.get("sets") or {}))
-    rb, rinfo = G.check_retrieval(score, DECISION_ARMS, n_all)
-    for arm, msg in rb:
-        voids[VOIDS.get(arm or R.S, "decision")] += _tag(setting, [msg])
-    rb5, rinfo5 = G.check_retrieval(rep["score"], rep["arms"], n_all)
-    for arm, msg in rb5:
-        voids[VOIDS.get(arm or R.S, "decision")] += _tag(f"{setting}, five-arm", [msg])
+        decision_level([f"[rows] ({setting}) frozen-inputs has no sets.all_rows (absent)"])
+    decision_level(_tag(setting, G.check_sets([r["question_id"] for r in rs], [r["question_id"] for r in rs_sens],
+                                              frozen.get("sets") or {})))
+    for tag, sc, arms_ in ((setting, score, DECISION_ARMS), (f"{setting}, five-arm", rep["score"], rep["arms"])):
+        rb, rinfo_ = G.check_retrieval(sc, arms_, n_all)
+        for arm, msg in rb:
+            tagged = _tag(tag, [msg])
+            if arm is None:  # a run-level failure of this setting: every arm of this setting
+                voids["decision"] += tagged
+                for a in arms_:
+                    by_arm[a] += tagged
+            else:
+                voids[VOIDS[arm]] += tagged
+                by_arm[arm] += tagged
+        if arms_ is DECISION_ARMS:
+            rinfo = rinfo_
+        else:
+            rinfo5 = rinfo_
     out["server_versions"] = {"three_arm": rinfo["server_versions"], "five_arm": rinfo5["server_versions"]}
     out["missing_by_arm"] = {"three_arm": rinfo["missing_by_arm"], "five_arm": rinfo5["missing_by_arm"]}
-    voids["decision"] += _tag(setting, G.check_request_fields(config_api, (frozen.get("frozen_request") or {}).get(setting)))
-    voids["decision"] += _tag(setting, G.check_decision_integrity(dec["decision"], frozen_order, len(rs)))
+    decision_level(_tag(setting, G.check_request_fields(config_api, (frozen.get("frozen_request") or {}).get(setting))))
+    decision_level(_tag(setting, G.check_decision_integrity(dec["decision"], frozen_order, len(rs))))
     # the three contrasts on the three-arm decision rows (unrounded for the rule; rounded for the record)
     vec = vectors(rs, DECISION_ARMS)
     D = paired_diff(vec[R.S], vec[R.INC], iters, seed)
@@ -415,14 +478,14 @@ def analyse_setting(setting: str, dec: dict[str, Any], rep: dict[str, Any], froz
     if is_a:
         out["G1"] = R.g1_holds(D1)
         if not out["G1"]:
-            voids["decision"].append(f"[G1] ({setting}) lower(ft512o64s − ft512o64) = {R._f(D1['lo'], 2, True)} ≤ 0")
+            decision_level([f"[G1] ({setting}) lower(ft512o64s − ft512o64) = {R._f(D1['lo'], 2, True)} ≤ 0"])
     strata = strata_test(rs, R.S, R.INC, iters, seed)
     ctx = {a: ctx_mean(rs, a) for a in DECISION_ARMS}
     ctx_ratio = (ctx[R.S] / ctx[R.BASE]) if ctx[R.S] is not None and ctx[R.BASE] else None
     hit = {a: float(vec[a].mean() * 100) for a in DECISION_ARMS}
     pi = discordance(vec[R.S], vec[R.INC])
     cb, cinfo = cross_check(dec["decision"], vec, D1, iters, seed)
-    voids["decision"] += _tag(setting, cb)
+    decision_level(_tag(setting, cb))
     out.update(hit5={a: round(h, 4) for a, h in hit.items()}, D=_public_iv(D), E=_public_iv(E), D1=_public_iv(D1),
                discordance_S_vs_ft512o64s=round(pi, 6) if pi is not None else None,
                ctx5={a: (round(c, 2) if c is not None else None) for a, c in ctx.items()},
@@ -460,9 +523,11 @@ def analyse_setting(setting: str, dec: dict[str, Any], rep: dict[str, Any], froz
         out["D3"] = None
         if is_a:
             out["H3"] = R.h3(gates=voids["H3"], D3=None, strata_failed=[], k_strata=0, overlap_share=overlap_share)
-    voided_contrasts = {c: voids[VOIDS[a]] for c, pair in CONTRAST_ARMS.items() for a in pair
-                        if a in (R.SREGEX, R.SENT) and voids.get(VOIDS[a])}
+    # §6: a gate on an arm voids every contrast of this setting that uses the arm
+    voided_contrasts = {c: sorted(set(by_arm[x] + by_arm[y])) for c, (x, y) in CONTRAST_ARMS.items()
+                        if by_arm.get(x) or by_arm.get(y)}
     out["contrasts"] = contrasts(vec5, setting, iters, seed, voided_contrasts)
+    out["arm_gates"] = {a: sorted(set(v)) for a, v in by_arm.items() if v}
     desc: dict[str, Any] = {"hit5": {a: round(float(vec5[a].mean() * 100), 4) for a in arms5},
                             "ctx5": {a: (round(ctx_mean(rs5, a), 2) if rs5 else None) for a in arms5},
                             "discordance5": {f"{x}|{y}": round(discordance(vec5[x], vec5[y]) or 0.0, 6)
@@ -507,13 +572,16 @@ def build_report(man: dict[str, Any], frozen: dict[str, Any], prereg: dict[str, 
         raise ReportError(f"frozen-inputs cost_order {frozen_order!r} is not A or B: refusing")
     if man.get("frozen_order") not in (None, frozen_order):
         raise ReportError(f"manifest frozen_order {man.get('frozen_order')!r} disagrees with the pinned {frozen_order!r}")
-    file_voids, file_info = manifest_gates(man, frozen, provenance)
+    file_voids, file_info, arm_voids = manifest_gates(man, frozen, provenance)
     settings = man.get("settings") or {}
     loaded: dict[str, tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]] = {}
+    pin_voids: dict[str, list[str]] = {}
     for s in SETTINGS:
         spec = settings.get(s)
-        if not spec:
+        if not spec:  # §6: one git_sha across ALL FOUR settings cannot be shown over fewer
+            file_voids.setdefault("decision", []).append(f"[settings_missing] ({s}) setting not in the manifest")
             continue
+        pin_voids[s] = config_pin_gates(s, spec, frozen)
         api = read_json(spec["config"]).get("api") if spec.get("config") else None
         loaded[s] = (load_setting(spec["decision_dir"], DECISION_ARMS, (), True),
                      load_setting(spec["reporting_dir"], DECISION_ARMS, OPTIONAL_ARMS, False), api)
@@ -526,8 +594,11 @@ def build_report(man: dict[str, Any], frozen: dict[str, Any], prereg: dict[str, 
     per: dict[str, Any] = {}
     for s, (d, r, api) in loaded.items():
         voids = {k: list(v) for k, v in file_voids.items()}
-        voids.setdefault("decision", []).extend(vb)
-        per[s] = analyse_setting(s, d, r, frozen, api, voids, frozen_order, overlap)
+        voids.setdefault("decision", []).extend(vb + pin_voids[s])
+        by_arm = {a: list(v) for a, v in arm_voids.items()}
+        for a in DECISION_ARMS + OPTIONAL_ARMS:  # run-level: every arm
+            by_arm.setdefault(a, []).extend(vb + pin_voids[s] + [g for g in file_voids.get("decision", []) if g.startswith("[settings_missing]")])
+        per[s] = analyse_setting(s, d, r, frozen, api, voids, frozen_order, overlap, by_arm)
     a = per["a"]
     sentences = [a["sequence"]["sentence"], a["H3"]["sentence"]]
     disagreements = [s for s, p in per.items() if s != "a" and p["sequence"]["decision"] != a["sequence"]["decision"]]
@@ -551,7 +622,11 @@ def main(argv: list[str] | None = None) -> int:
     prereg = check_prereg(args.prereg, args.prereg_sha256)
     man = read_json(args.manifest)
     frozen = read_json(args.frozen_inputs)
-    rep = build_report(man, frozen, prereg, harness_provenance(args.repo))
+    repo = args.repo or _EVAL.parents[2]
+    if out_inside_repo(args.out, repo):
+        log(f"h2h_report: WARNING: --out {args.out} is inside the harness checkout; a rerun with it uncommitted will "
+            "fail the provenance gate (write outside the tree and copy in, README)")
+    rep = build_report(man, frozen, prereg, harness_provenance(repo))
     assert_public(rep)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(rep, indent=1, sort_keys=True) + "\n", encoding="utf-8")

@@ -344,7 +344,12 @@ def test_count_set_version_and_misc_gates(tmp_path):
     assert bad and label is None
     assert gates.check_one_version({"a/3": {}})[0] == ["[version] no server version recorded on any row"]
     for bad_label in ("unknown", "error:timeout", "1.6.25", "1.6.25+zz"):
-        assert gates.check_one_version({"a/3": {"S": [bad_label]}})[0] == [f"[version] server version label {bad_label!r} is not version+git_sha"]
+        assert gates.check_one_version({"a/3": {"S": [bad_label]}})[0] == ["[version] server version label malformed (not version+git_sha)"]
+    assert gates.check_one_version({"a/3": {"S": ["error:host-a:9"]}, "d/3": {"S": ["1.6.25+67e53fd"]}})[0] == \
+        ["[version] 2 server versions across the run: 1.6.25+67e53fd, malformed"]
+    assert gates.sanitize_versions({"S": ["1.6.25+67e53fd", "error:x"], "T": None}) == {"S": ["1.6.25+67e53fd", "malformed"], "T": []}
+    bad, info = gates.check_retrieval({"missing_by_arm": {}, "n_questions": 1, "refusals": [], "server_versions": {"S": ["error:box:9"]}}, ("S",), 1)
+    assert bad == [("S", "[version] S: server version label malformed (not version+git_sha)")] and info["server_versions"] == {"S": ["malformed"]}
     sc = {"missing_by_arm": {"S": 0, "ft512o64s": 2}, "n_questions": 2437, "refusals": ["S-regex: unlocated_share=0.02 > 0.01", "records_without_text=3 (…)"],
           "request_mismatch_by_arm": {"ft512o64": 1}, "request_unverified_by_arm": {"S": 4},
           "server_versions": {"S": ["1.6.25+67e53fd"], "ft512o64s": ["1.6.25+67e53fd", "1.6.26+abcdef0"], "ft512o64": ["1.6.25+67e53fd"]}}
@@ -413,10 +418,15 @@ def test_decision_integrity_gate():
            "margins": {"M_ni": 3.0, "M_mid": 2.0}, "margins_match_noise": False, "inputs": {"set": "clean", "n": 2335},
            "ladder": {"order": ["S", "ft512o64"]}}
     out = gates.check_decision_integrity(bad, "B", 2035)
-    assert [g.split("]")[0] for g in out] == ["[decision_json"] * 8
+    assert [g.split("]")[0] for g in out] == ["[decision_json"] * 9
     assert out[0].startswith("[decision_json] decide ran with --force-unchecked") and "margins.M_ni = 3.0, frozen 2.0" in out[3]
     assert gates.check_decision_integrity({}, "B", 2035)[:2] == ["[decision_json] tie_break None, expected 'paired_ladder'",
                                                                  "[decision_json] stratum_correction None, expected 'bonferroni'"]
+    assert gates.check_decision_integrity({}, "B", 2035)[-1] == "[decision_json] ladder order absent (decide did not run the paired ladder)"
+    no_s = {**good, "ladder": {"order": ["ft512o64", "ft512o64s"]}, "arms": {"S": {"pass": False}}}
+    assert gates.check_decision_integrity(no_s, "B", 2035) == []
+    no_s["arms"]["S"]["pass"] = True
+    assert gates.check_decision_integrity(no_s, "B", 2035) == ["[decision_json] S is not in the ladder order yet is not recorded as failing its class test"]
 
 
 # ------------------------------------------------------------------- the public-file guard
@@ -537,7 +547,8 @@ def build_fixture(tmp_path: Path, shifts: dict[str, float], *, n: int = 1400, se
                   break_decision: bool = False, bad_sregex: bool = False, drop_reembed: bool = False,
                   drop_sregex: bool = False, drop_sent512s_rows: bool = False, s_penalty=None,
                   ladder_alpha: float = 0.05, break_ladder: bool = False, wrong_request: bool = False,
-                  refuse_sregex: bool = False, logs_disagree: bool = False, drop_logs: bool = False) -> tuple[Path, Path]:
+                  refuse_sregex: bool = False, logs_disagree: bool = False, drop_logs: bool = False,
+                  refuse_base_in_d: bool = False, malformed_version: bool = False) -> tuple[Path, Path]:
     rows = make_rows(n, seed, shifts, s_penalty=s_penalty)
     rep_arms = [a for a in REP_ARMS if not (drop_sregex and a == "S-regex") and not (drop_sent512s_rows and a == "sent512s")]
     for s in ("a", "d", "b", "c"):
@@ -547,6 +558,7 @@ def build_fixture(tmp_path: Path, shifts: dict[str, float], *, n: int = 1400, se
         if wrong_request and s == "a":
             cfg["api"]["request_extra"]["rerank"] = False
         (tmp_path / f"config-{s}.json").write_text(json.dumps(cfg))
+        (tmp_path / f"rconfig-{s}.json").write_text(json.dumps({**cfg, "arms": "five"}))
     if break_decision or break_ladder:
         p = tmp_path / "dec-a" / "decision.json"
         d = json.loads(p.read_text())
@@ -559,6 +571,16 @@ def build_fixture(tmp_path: Path, shifts: dict[str, float], *, n: int = 1400, se
         p = tmp_path / "rep-a" / "score.json"
         sc = json.loads(p.read_text())
         sc["refusals"] = ["S-regex: unlocated_share=0.02 > 0.01 (unlocated 3, offsets_unverified 0)"]
+        p.write_text(json.dumps(sc))
+    if refuse_base_in_d:  # a failed row on ft512o64 in (d), five-arm: voids C2 and C4 of (d) only
+        p = tmp_path / "rep-d" / "score.json"
+        sc = json.loads(p.read_text())
+        sc["missing_by_arm"]["ft512o64"] = 3
+        p.write_text(json.dumps(sc))
+    if malformed_version:
+        p = tmp_path / "rep-b" / "score.json"
+        sc = json.loads(p.read_text())
+        sc["server_versions"]["sent512s"] = ["error:connect to qdrant:4242 refused"]
         p.write_text(json.dumps(sc))
     rs, rs_s = set_rows(rows, "clean_excl_noise"), set_rows(rows, "clean")
     arms_man = {}
@@ -601,11 +623,14 @@ def build_fixture(tmp_path: Path, shifts: dict[str, float], *, n: int = 1400, se
                                 "sent512s": {"qdrant": 850312, "es": 850312}},
               "model_ids": {"embedding_model": "SFR-Embedding-Mistral", "reranker_model": "bge-reranker"},
               "reembed": {"n": 200, "cosine_threshold": 0.999, "ids_sha256": gates.ids_sha256(c["chunk_id"] for c in cosines)},
-              "frozen_request": REQUEST}
+              "frozen_request": REQUEST,
+              "configs": {s: {"decision": gates.sha256_file(str(tmp_path / f"config-{s}.json")),
+                              "reporting": gates.sha256_file(str(tmp_path / f"rconfig-{s}.json"))} for s in "adbc"}}
     fz = tmp_path / "frozen-inputs.json"
     fz.write_text(json.dumps(frozen))
     man = {"settings": {s: {"decision_dir": str(tmp_path / f"dec-{s}"), "reporting_dir": str(tmp_path / f"rep-{s}"),
-                            "config": str(tmp_path / f"config-{s}.json")} for s in "adbc"},
+                            "config": str(tmp_path / f"config-{s}.json"), "reporting_config": str(tmp_path / f"rconfig-{s}.json")}
+                        for s in "adbc"},
            "arms": arms_man,
            "reused_census_live": {k: dict(v) for k, v in frozen["reused_census"].items()},
            "shard_files": shards,
@@ -918,3 +943,49 @@ def test_study_workflow_texts_pinned():
     assert "    out: [receipt, stderr_log]" in added and "  ingest_stderr:" in added and "    outputSource: ingest_shard/stderr_log" in added
     assert all(("stderr" in ln) or ("File[]" in ln) or ("one per shard" in ln) for ln in added), added
     assert len(added) == 8
+
+
+def test_recheck_items(tmp_path):
+    """N1 all four settings required; N3 config pins; N4 malformed version labels; N7 per-arm
+    voids in the secondary settings; N2 the --out helper."""
+    # N1: a setting missing from the manifest is a decision gate
+    mp, fz = build_fixture(tmp_path / "n1", TIE)
+    man = json.loads(mp.read_text())
+    del man["settings"]["d"]
+    rep = report.build_report(man, json.loads(fz.read_text()), {}, CLEAN_PROV)
+    assert rep["row"] == 8 and "[settings_missing] (d) setting not in the manifest" in rep["settings"]["a"]["gates"]["decision"]
+    assert "settings_missing" in rep["settings"]["b"]["gate_counts"]["decision"]
+    # N3: a config that is not the pinned one, or a missing pin, is a decision gate
+    mp, fz = build_fixture(tmp_path / "n3", TIE)
+    f = json.loads(fz.read_text())
+    f["configs"]["a"]["decision"] = "0" * 64
+    del f["configs"]["d"]["reporting"]
+    rep = report.build_report(json.loads(mp.read_text()), f, {}, CLEAN_PROV)
+    g = rep["settings"]["a"]["gates"]["decision"]
+    assert rep["row"] == 8 and any(x.startswith("[config_pin] (a) decision config sha256") for x in g)
+    assert "[config_pin] (d) no pinned sha256 for the reporting config (absent)" in rep["settings"]["d"]["gates"]["decision"]
+    man = json.loads(mp.read_text())
+    del man["settings"]["b"]["reporting_config"]
+    rep = report.build_report(man, json.loads(fz.read_text()), {}, CLEAN_PROV)
+    assert "[config_pin] (b) no reporting config in the manifest (absent)" in rep["settings"]["b"]["gates"]["decision"]
+    # N4: a malformed label (error text with a host) never reaches the report and gates the run
+    mp, fz = build_fixture(tmp_path / "n4", TIE, malformed_version=True)
+    rep = build(mp, fz)
+    report.assert_public(rep)
+    assert rep["row"] == 8 and rep["server_version"] is None
+    assert rep["settings"]["b"]["server_versions"]["five_arm"]["sent512s"] == ["malformed"]
+    assert any("2 server versions across the run" in x for x in rep["settings"]["a"]["gates"]["decision"])
+    # N7: a failed row on ft512o64 in (d) voids C2 and C4 of (d), leaves C1/C3 in its family and (a) untouched
+    mp, fz = build_fixture(tmp_path / "n7", TIE, refuse_base_in_d=True)
+    rep = build(mp, fz)
+    d = rep["settings"]["d"]["contrasts"]
+    assert rep["row"] == 3 and rep["settings"]["a"]["gates"] == {}
+    assert d["C2"]["voided_by"] and d["C4"]["voided_by"] and d["C2"]["in_family"] is False and "p_holm" not in d["C4"]
+    assert d["C1"]["in_family"] and d["C3"]["in_family"] and set(rep["settings"]["d"]["arm_gates"]) == {"ft512o64"}
+    # a run-level gate (re-embed absent) voids every contrast in every setting
+    mp, fz = build_fixture(tmp_path / "n7b", TIE, drop_reembed=True)
+    rep = build(mp, fz)
+    for s in "adbc":
+        assert all(c.get("voided_by") for c in rep["settings"][s]["contrasts"].values()), s
+    # N2
+    assert report.out_inside_repo(REPO / "docs" / "x.json", REPO) and not report.out_inside_repo(tmp_path / "x.json", REPO)

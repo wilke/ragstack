@@ -310,20 +310,28 @@ def check_retrieval(score: dict[str, Any], arms: Iterable[str], n_questions: int
         elif len(vs) != 1:
             bad.append((a, f"[version] {a}: {len(vs)} server versions in its rows"))
         elif not VERSION_LABEL.match(str(vs[0])):
-            bad.append((a, f"[version] {a}: server version label {vs[0]!r} is not version+git_sha"))
-    return bad, {"server_versions": versions, "missing_by_arm": missing}
+            bad.append((a, f"[version] {a}: server version label malformed (not version+git_sha)"))
+    return bad, {"server_versions": sanitize_versions(versions), "missing_by_arm": missing}
+
+
+def sanitize_versions(versions: dict[str, list[str]] | None) -> dict[str, list[str]]:
+    """Per arm, the labels with every non-``version+git_sha`` one replaced by ``"malformed"``
+    (``score`` records ``error:<why>`` for a failed version read; the text could carry a host
+    and never reaches a public file)."""
+    return {a: [v if VERSION_LABEL.match(str(v)) else "malformed" for v in (vs or [])]
+            for a, vs in (versions or {}).items()}
 
 
 def check_one_version(versions_by_setting: dict[str, dict[str, list[str]]]) -> tuple[list[str], str | None]:
     """One well-formed ``version+git_sha`` label across every arm of every setting."""
-    labels = {v for per in versions_by_setting.values() for vs in per.values() for v in vs}
+    labels = {v for per in versions_by_setting.values() for vs in sanitize_versions(per).values() for v in vs}
     if not labels:
         return ["[version] no server version recorded on any row"], None
     if len(labels) != 1:
         return [f"[version] {len(labels)} server versions across the run: " + ", ".join(sorted(labels))], None
     label = next(iter(labels))
-    if not VERSION_LABEL.match(str(label)):
-        return [f"[version] server version label {label!r} is not version+git_sha"], None
+    if label == "malformed":
+        return ["[version] server version label malformed (not version+git_sha)"], None
     return [], label
 
 
@@ -374,9 +382,16 @@ def check_decision_integrity(dec: dict[str, Any], cost_order: str, n_decision: i
         bad.append(f"[decision_json] decided on set {inputs.get('set')!r}, expected 'clean_excl_noise'")
     if inputs.get("n") != n_decision:
         bad.append(f"[decision_json] decided on n = {inputs.get('n')}, the three-arm decision set has {n_decision}")
-    order = (dec.get("ladder") or {}).get("order") or []
-    if order and order[0] != "ft512o64":
+    order = (dec.get("ladder") or {}).get("order")
+    if not order:
+        bad.append("[decision_json] ladder order absent (decide did not run the paired ladder)")
+        return bad
+    if order[0] != "ft512o64":
         bad.append(f"[decision_json] ladder order starts with {order[0]!r}, not the baseline")
+    arms = dec.get("arms") or {}
+    for name in ("S", "ft512o64s"):  # the order holds the baseline + the PASSING challengers, nothing else
+        if name not in order and (arms.get(name) or {}).get("pass") is not False:
+            bad.append(f"[decision_json] {name} is not in the ladder order yet is not recorded as failing its class test")
     if "S" in order and "ft512o64s" in order:
         s_first = order.index("S") < order.index("ft512o64s")
         if (cost_order == "B") != s_first:
