@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
 import json
 import math
 import re
@@ -922,6 +923,165 @@ def run_draw_negative(main_config: Path, seed_file: Path, confirm_dir: Path, con
     return rec
 
 
+# ------------------------------------------------------------------ wall-read / wall-counts (§3.2 (c))
+
+def segment_edges(doc_id: str, text: str) -> set[int]:
+    """The adopted chunking's segment edges (``split_feasibility.py``: ``{g.start for g in
+    doc_segments(cd.doc)} - {0}`` on the control chunker's document)."""
+    cd = acc.chunk_document(doc_id, text, acc.control_chunker())
+    return {g.start for g in acc.doc_segments(cd.doc)} - {0}
+
+
+def mark_walls(text: str, ws: int, we: int, edges: Iterable[int]) -> str:
+    """The window ``text[ws:we]`` with :data:`WALL_MARK` inserted at every edge strictly inside it."""
+    inside = sorted(x for x in edges if ws < x < we)
+    parts, pos = [], ws
+    for x in inside:
+        parts += [text[pos:x], WALL_MARK]
+        pos = x
+    parts.append(text[pos:we])
+    return "".join(parts)
+
+
+def wall_windows(pairs: Sequence[ConfirmPair], texts: Mapping[str, str]) -> list[tuple[ConfirmPair, list[int]]]:
+    """§3.2 (c)1: the split windows a segment edge crosses (``window_crosses_segment_edge``)."""
+    edges: dict[str, set[int]] = {}
+    out = []
+    for p in pairs:
+        if p.group != "split":
+            continue
+        if p.doc_id not in edges:
+            edges[p.doc_id] = segment_edges(p.doc_id, texts[p.doc_id])
+        inside = sorted(x for x in edges[p.doc_id] if p.ws < x < p.we)
+        if inside:
+            out.append((p, inside))
+    return out
+
+
+def neighbour_registry_problems(neighbour_config: Path, main_raw: Mapping[str, Any]) -> list[str]:
+    """§3.2 (c)2: the read happens before any neighbour label exists. The config must be the
+    neighbour control config (``control_config_problems``) and its ``out_dir`` must hold no
+    ``pairs.jsonl`` and no ``final.jsonl``."""
+    import alias_study_judge as aj
+
+    raw = raw_config(neighbour_config)
+    bad = aj.control_config_problems(raw, main_raw)
+    out = Path(str(raw.get("out_dir")))
+    bad += [f"the neighbour registry's out_dir already holds {n}" for n in ("pairs.jsonl", "final.jsonl")
+            if (out / n).exists()]
+    return bad
+
+
+def run_wall_read(confirm_dir: Path, label_table: Path, main_config: Path, neighbour_config: Path,
+                  out_dir: Path) -> dict[str, Any]:
+    import alias_study_spot as asp
+
+    acc.require_env()
+    rp.refuse_in_repo(out_dir, "--out-dir")
+    bad = neighbour_registry_problems(neighbour_config, raw_config(main_config))
+    if bad:
+        raise SystemExit(f"REFUSED: {'; '.join(bad)}; the wall read must precede any neighbour label")
+    pairs, _cdocs, texts, shas = confirm_pairs(confirm_dir, label_table)
+    found = wall_windows(pairs, texts)
+    if len(found) != WALL_N:
+        raise SystemExit(f"REFUSED: {len(found)} split windows cross a segment edge; PLAN §3.2 (c)1 expects exactly "
+                         f"{WALL_N}; nothing written")
+    cfg = load_judge_cfg(main_config)
+    sa = asp.committed_stage_a(cfg)
+    if sa["commit_sha256"] != STAGE_A_COMMIT_SHA256:
+        raise SystemExit("REFUSED: the committed stage-A commit is not the one the confirmatory test pinned")
+    reg = {p["pair_id"]: p for p in sa["pairs"]}
+    order = sorted(found, key=lambda x: (asc.seeded_key(WALL_ORDER_SEED, x[0].control_of), x[0].control_of))
+    items, key_items = [], []
+    for i, (p, inside) in enumerate(order, 1):
+        r = reg.get(p.control_of)
+        if r is None or r.get("record_id") != p.record_id or r.get("chunk_id") != p.window_id:
+            raise SystemExit("REFUSED: a wall window's pair is not in the committed stage-A registry")
+        items.append({"item": i, "question": r["question"], "term": r["term"],
+                      "window": mark_walls(texts[p.doc_id], p.ws, p.we, inside)})
+        key_items.append({"item": i, "control_of": p.control_of, "record_id": p.record_id,
+                          "window_id": p.window_id, "doc_id": p.doc_id, "start_char": p.ws, "end_char": p.we,
+                          "edges_inside": len(inside)})
+    sheet = {"schema": SCHEMA["wall_sheet"], "plan": PREREG, "wall_mark": WALL_MARK,
+             "instructions": "For each item: does the answer to the question need text on BOTH sides of a "
+                             f"{WALL_MARK} (needs_both), is it on one side only (one_side), or can you not tell "
+                             "(unclear)? Write one answer per item in the answer file; this sets no label.",
+             "answers_allowed": list(WALL_ANSWERS), "items": items}
+    sheet_sha = acc.write_private(out_dir / "wall-sheet.json", (json.dumps(sheet, indent=1, ensure_ascii=False)
+                                                                + "\n").encode("utf-8"), "the wall-read sheet")
+    key = {"schema": SCHEMA["wall_key"], "sheet_sha256": sheet_sha, "items": key_items}
+    key_sha = acc.write_private(out_dir / "wall-key.json", (json.dumps(key, indent=1) + "\n").encode("utf-8"),
+                                "the wall-read key")
+    answers = {"schema": SCHEMA["wall_answers"], "sheet_sha256": sheet_sha, "key_sha256": key_sha,
+               "reader_role": None, "date": None, "roles_allowed": list(WALL_ROLES),
+               "answers_allowed": list(WALL_ANSWERS), "answers": {str(i): None for i in range(1, WALL_N + 1)}}
+    ans_sha = acc.write_private(out_dir / "wall-answers.json", (json.dumps(answers, indent=1) + "\n").encode("utf-8"),
+                                "the empty wall-read answer file")
+    return {"items": len(items), "edges_inside": sum(k["edges_inside"] for k in key_items),
+            "sheet_sha256": sheet_sha, "key_sha256": key_sha, "answers_sha256": ans_sha,
+            "inputs_sha256": shas}
+
+
+def _json_file(path: Path, schema: str, what: str) -> dict[str, Any]:
+    try:
+        obj = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"REFUSED: {what} is not readable JSON") from e
+    if not isinstance(obj, dict) or obj.get("schema") != schema:
+        raise SystemExit(f"REFUSED: {what} is not a {schema} file")
+    return obj
+
+
+def wall_answer_problems(sheet: Mapping[str, Any], key: Mapping[str, Any], answers: Mapping[str, Any],
+                         shas: Mapping[str, str]) -> list[str]:
+    bad = []
+    if key.get("sheet_sha256") != shas["sheet"]:
+        bad.append("the key is not the sheet's")
+    if answers.get("sheet_sha256") != shas["sheet"] or answers.get("key_sha256") != shas["key"]:
+        bad.append("the answer file is not the sheet's and the key's")
+    n = len(sheet.get("items") or [])
+    if n != WALL_N or len(key.get("items") or []) != n:
+        bad.append(f"the sheet and the key must hold {WALL_N} items")
+    a = answers.get("answers")
+    want = {str(i) for i in range(1, WALL_N + 1)}
+    if not isinstance(a, dict) or set(a) != want:
+        bad.append(f"the answers must be keyed 1..{WALL_N}")
+    elif any(v not in WALL_ANSWERS for v in a.values()):
+        bad.append(f"every answer must be one of {list(WALL_ANSWERS)} (unanswered items remain)")
+    if answers.get("reader_role") not in WALL_ROLES:
+        bad.append(f"reader_role must be one of {list(WALL_ROLES)}")
+    try:
+        dt.date.fromisoformat(str(answers.get("date")))
+    except ValueError:
+        bad.append("date must be an ISO date (YYYY-MM-DD)")
+    return bad
+
+
+def run_wall_counts(sheet_p: Path, key_p: Path, answers_p: Path, out_dir: Path,
+                    public_out: Path | None = None) -> dict[str, Any]:
+    for p, what in ((sheet_p, "--sheet"), (key_p, "--key"), (answers_p, "--answers"), (out_dir, "--out-dir")):
+        rp.refuse_in_repo(Path(p), what)
+    sheet = _json_file(sheet_p, SCHEMA["wall_sheet"], "--sheet")
+    key = _json_file(key_p, SCHEMA["wall_key"], "--key")
+    answers = _json_file(answers_p, SCHEMA["wall_answers"], "--answers")
+    shas = {"sheet": sha(sheet_p), "key": sha(key_p), "answers": sha(answers_p)}
+    bad = wall_answer_problems(sheet, key, answers, shas)
+    if bad:
+        raise SystemExit(f"REFUSED: {'; '.join(bad)}; nothing written")
+    c = Counter(answers["answers"].values())
+    rec = {"schema": SCHEMA["wall_counts"], "exploratory": True, "offline": True, "calls": CALLS, "plan": PREREG,
+           "operator_read": "a private read of the split windows a section edge crosses; no judge or gateway call; "
+                            "sets no label",
+           "n": WALL_N, "counts": {k: c[k] for k in WALL_ANSWERS}, "reader_role": answers["reader_role"],
+           "date": str(answers["date"]), "sha256": {"sheet": shas["sheet"], "key": shas["key"],
+                                                    "answers": shas["answers"]},
+           "provenance": acc.public_provenance(acc.provenance())}
+    forbidden = {str(k.get(f)) for k in key["items"] for f in ("control_of", "record_id", "window_id", "doc_id")}
+    texts = [str(it.get(f)) for it in sheet["items"] for f in ("question", "term", "window")]
+    publish(rec, out_dir / "wall-read-counts.json", public_out, "wall-read-counts.json", forbidden, texts)
+    return rec
+
+
 # ------------------------------------------------------------------ CLI
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -946,6 +1106,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     d.add_argument("--texts", type=Path, required=True, action="append", help="record texts, as for chunk")
     d.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
     d.add_argument("--public-out", type=Path, help="also write the counts here (artifacts/negative-draw.json)")
+    w = sub.add_parser("wall-read", help="§3.2 (c): the private reading sheet of the split windows a wall crosses")
+    w.add_argument("--confirm-dir", type=Path, required=True, help="the private confirmatory directory")
+    w.add_argument("--label-table", type=Path, required=True, help="the rechunk label table")
+    w.add_argument("--main-config", type=Path, required=True, help="the alias main run's judge config")
+    w.add_argument("--neighbour-config", type=Path, required=True,
+                   help="the neighbour control config; its out_dir must hold no pairs.jsonl / final.jsonl yet")
+    w.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
+    c = sub.add_parser("wall-counts", help="§3.2 (c)4: the counts-only result of the wall read")
+    c.add_argument("--sheet", type=Path, required=True, help="wall-sheet.json from wall-read")
+    c.add_argument("--key", type=Path, required=True, help="wall-key.json from wall-read")
+    c.add_argument("--answers", type=Path, required=True, help="wall-answers.json, filled in by the reader")
+    c.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
+    c.add_argument("--public-out", type=Path, help="also write the counts here (artifacts/wall-read-counts.json)")
     args = ap.parse_args(argv)
     if args.cmd == "items":
         rec = run_items(args.confirm_dir, args.label_table, args.main_config, args.negative_dir, args.out_dir,
@@ -955,6 +1128,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         rec = run_draw_negative(args.main_config, args.seed_file, args.confirm_dir, args.confirm_sample,
                                 args.control_sample, args.texts, args.out_dir, args.public_out)
         print(json.dumps({k: rec[k] for k in ("quotas", "drawn", "n_drawn", "exclusions")}, indent=1))
+    elif args.cmd == "wall-read":
+        res = run_wall_read(args.confirm_dir, args.label_table, args.main_config, args.neighbour_config, args.out_dir)
+        print(json.dumps({k: res[k] for k in ("items", "edges_inside")}, indent=1))
+    elif args.cmd == "wall-counts":
+        rec = run_wall_counts(args.sheet, args.key, args.answers, args.out_dir, args.public_out)
+        print(json.dumps({k: rec[k] for k in ("n", "counts", "reader_role", "date")}, indent=1))
     return 0
 
 
