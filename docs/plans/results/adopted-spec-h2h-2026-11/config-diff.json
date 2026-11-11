@@ -1,0 +1,930 @@
+{
+ "schema": "h2h-config-diff/1",
+ "note": "keys that differ from the Addendum C config of the same setting; everything else is copied unchanged",
+ "settings": {
+  "a": {
+   "addendum_c_config_sha256": "6d5fd43dcf21c5639db081fbbf378b2f64f46e342a651ca8a42b6e88c2353d09",
+   "decision": {
+    "sha256": "4123f3f8700ba2e4a82c4f4b8e77661b2e5e16ca451eec09d6d37952b8400099",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-dec-a"
+     }
+    }
+   },
+   "reporting": {
+    "sha256": "558a8992a12a1caf6814b76f616ecf0afe31196ac7523a1c7fbb166541d03824",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "S-regex",
+        "collection_id": "oa-eval-sregex",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 5
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-rep-a"
+     }
+    }
+   }
+  },
+  "d": {
+   "addendum_c_config_sha256": "cb66eb6ffa1efdd054d4dc6b4b272b47d43f04cd4942f442a3736f0e7282f4cc",
+   "decision": {
+    "sha256": "99cf7aea83a358e0a99babc64a89564090098a680e539ef18d7377e4ac6f0956",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-dec-d"
+     }
+    }
+   },
+   "reporting": {
+    "sha256": "24ef4bd509dd4e075516f882cad1d505ad69f126ced42c01ea8d104e44f14ac9",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "S-regex",
+        "collection_id": "oa-eval-sregex",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 5
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-rep-d"
+     }
+    }
+   }
+  },
+  "b": {
+   "addendum_c_config_sha256": "3f8d9cb06aaa4d4d073ea74d24156451e1d92d36822f7c256ac005e147f8b59e",
+   "decision": {
+    "sha256": "394d7322016db6ee75ada24a933d9fab08f74fa23cf87e7c3ea01148aa6533e4",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-dec-b"
+     }
+    }
+   },
+   "reporting": {
+    "sha256": "1bc3ca06bb9a2122cb18c40016d38d2dd40700aa10911be5e30384c2817be39e",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "S-regex",
+        "collection_id": "oa-eval-sregex",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 5
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-rep-b"
+     }
+    }
+   }
+  },
+  "c": {
+   "addendum_c_config_sha256": "5cd0454152942d5fee7d89d36c244e786dcd56abc82052449a8ee381d41afaf3",
+   "decision": {
+    "sha256": "b06ca10b09c5f6622fc388fc57d43f571e0dc66449b7cd9d80d83913f915f51b",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-dec-c"
+     }
+    }
+   },
+   "reporting": {
+    "sha256": "13b5c4083a5277b9f20be55c8b033806b6eafde4dc2fae99db969e0b2c5ee528",
+    "diff": {
+     "/arms": {
+      "addendum_c": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o0",
+        "collection_id": "oa-eval-ft512o0",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 1
+       },
+       {
+        "name": "sent512",
+        "collection_id": "oa-eval-sent512",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "ft1024o0",
+        "collection_id": "oa-eval-ft1024o0",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sempool512",
+        "collection_id": "oa-eval-sempool512",
+        "cost_class": "mid",
+        "baseline": false,
+        "cost_rank": 5
+       },
+       {
+        "name": "sem512",
+        "collection_id": "oa-eval-sem512",
+        "cost_class": "expensive",
+        "baseline": false,
+        "workflow_feasible": true,
+        "cost_rank": 6
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 7
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 8
+       },
+       {
+        "name": "sent512sh",
+        "collection_id": "oa-eval-sent512sh",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 9
+       },
+       {
+        "name": "sent512rc",
+        "collection_id": "oa-eval-sent512rc",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 10
+       }
+      ],
+      "h2h": [
+       {
+        "name": "ft512o64",
+        "collection_id": "oa-eval-ft512o64",
+        "cost_class": "cheap",
+        "baseline": true,
+        "cost_rank": 1
+       },
+       {
+        "name": "S",
+        "collection_id": "oa-eval-s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 2
+       },
+       {
+        "name": "ft512o64s",
+        "collection_id": "oa-eval-ft512o64s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 3
+       },
+       {
+        "name": "S-regex",
+        "collection_id": "oa-eval-sregex",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 4
+       },
+       {
+        "name": "sent512s",
+        "collection_id": "oa-eval-sent512s",
+        "cost_class": "cheap",
+        "baseline": false,
+        "cost_rank": 5
+       }
+      ]
+     },
+     "/out_dir": {
+      "addendum_c": "<addendum-c out_dir>",
+      "h2h": "out-h2h-rep-c"
+     }
+    }
+   }
+  }
+ }
+}

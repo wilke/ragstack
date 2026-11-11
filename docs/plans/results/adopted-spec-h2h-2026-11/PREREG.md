@@ -1,9 +1,12 @@
-# Pre-registration: the adopted chunking spec head-to-head with the OA eval's pick and the server default — DRAFT v4, 2026-11-11
+# Pre-registration: the adopted chunking spec head-to-head with the OA eval's pick and the server default — DRAFT v5, 2026-11-11
 
 STATUS: **DRAFT, not frozen; freeze = owner says freeze.** Nothing in §7 runs before the freeze of §9. The
 owner answered the §10 questions on 2026-11-11 (recorded there). This is a record-tier file: once frozen it is never edited; changes go to
 `DEVIATIONS.md` (§9.3). v2–v4 address the three 2026-11-11 independent reviews (11 + 9 + 4 findings, all
-applied).
+applied). v5 records the sentinel dry run of 2026-11-11 (§2), makes the worker-stderr gate enforceable on
+the main shards (§2, §6: a study copy of the workflow text stages every ingest task's full stderr out as
+a file), corrects the create body (§7) and names the committed tooling (§9.4); the open freeze items are
+listed in `README.md`.
 
 Private material (questions, quotes, passages, per-question rows, configs with hosts and paths) stays in the
 private experiments repository, `oa-chunking-eval-2026-10/`. This file carries aggregates, file names and
@@ -82,17 +85,71 @@ shard files, pinned by sha256 at the freeze (§9.1), through `ingest-bulk.cwl`.
 (`tool_image.names_marker_capable_image`; `docs/CHUNKING.md` § *Release order*). An unstamped image is not
 "skipped", it is refused. So both new arms are built from stamped images of **one commit** (the tools tag the
 owner names, ≥ v1.6.24, which carries `structure_cuts` and the `sentence` tolerance):
-- **S:** the release image of that tag.
-- **S-regex:** a second stamped build of the same tag with its own build number, built from
-  `ragstack-tools.def` with `chunking` removed from the extras line, and a build-time assertion that
-  `python -c "import nltk"` **fails** (the build aborts otherwise). There is **no non-image fallback**: outside
-  an image `tool_provenance` writes `image_commit` as null, which fails the gates below, and
-  `ingest_shard.py` alone is not the full ingest. If the no-`nltk` image cannot be built and dispatched, the
-  S-regex arm is dropped before the freeze and H3 is recorded as *not run*. **A pre-freeze dry run** of both
-  sentinel-shard submissions must succeed: S receipts read `punkt-abbrev-v1` with zero fallback warnings in
-  the captured worker stderr, S-regex receipts read `regex-abbrev-v1` with at least one — which also proves
-  that GoWe keeps worker stderr, so the stderr gate of §6 is enforceable. The outcome is written into
-  `README.md` at the freeze. Gate: every S and S-regex receipt carries the same `image_commit`.
+- **S:** the release image of that tag: `ragstack-tools-v1.6.24-b1.sif` (build 1, sha256 `ecf81440…`,
+  commit `5d65bead…`; the image dev's registered workflows name).
+- **S-regex:** a second stamped build of the same tag with its own build number:
+  `ragstack-tools-v1.6.24-b2.sif` (build 2, sha256 `413f6ec3…`, same commit), built on 2026-11-11 from
+  `ragstack-tools-nonltk.def` beside this file (`ragstack-tools.def` at v1.6.24 with `chunking` removed from
+  the extras line, a build-time assertion that `python -c "import nltk"` **fails** and that
+  `segmenter_version()` is `regex-abbrev-v1`, and one extra label `org.ragstack.variant no-nltk`); placed in
+  the dev worker group's image directory by management, never in the release store. There is **no non-image
+  fallback**: outside an image `tool_provenance` writes `image_commit` as null, which fails the gates below,
+  and `ingest_shard.py` alone is not the full ingest. If the b2 image cannot be dispatched in the real run,
+  the S-regex arm is dropped and H3 is recorded as *not run*. Gate: every S and S-regex receipt carries the
+  same `image_commit`; S receipts carry `image_build` `1`, S-regex receipts `2`.
+
+**Workflow text.** Both new arms are submitted directly (`gowe submit`, as the Addendum C arms were) on
+**one study copy** of `cwl/ingest-bulk.cwl`, `ingest-bulk-h2h.cwl` beside this file: the v1.6.25 text (dev's
+registered text, sha256 `0f2bc341…`) with one functional addition — the `ingest_shard` tool declares
+`stderr: <shard>.ingest-stderr.txt` and surfaces it as a `File` output, gathered into a workflow output
+`ingest_stderr`. GoWe tees a task's stderr into that file **in full** and into the 256 KB tail it keeps in its
+database for the logs endpoint (GoWe v0.26.1, confirmed by the GoWe session; `maxLogCapture` in the worker
+source). The tail alone could lose the once-per-process warning on a 16,000-document shard (it is written
+early), so the §6 stderr gate on the 16 main shards reads the staged-out file of every ingest task; the
+sentinel shard is additionally read through the logs endpoint (the dry run's proof) and the two counts must
+agree. The S text is the committed file (its six image-name lines name the b1 image); the S-regex text is the
+same file with each of those six lines rewritten to the b2 name — the **only** difference between the two
+arms' texts. Both sha256 are pinned in `frozen-inputs.json` (§9.1). Consequence, stated plainly: **S does not
+run dev's registered workflow id**; the registered text and the study text differ in the stderr lines only,
+and the create gate (400) and `names_marker_capable_image` on the submitted text still apply (the dispatch
+gate, 422, is the API's and a direct submit does not pass through it). The study text has been checked by
+GoWe's parser semantics in source (the `stderr` expression is evaluated per shard; a `type: stderr` output
+collects it) but **has not yet run on GoWe**: a sentinel-shard submission of the study text for both arms,
+on scratch collections as in the dry run, is a pre-freeze item (`README.md`); it must reproduce the dry run's
+receipts (168 chunks, identical ids) and stage out a stderr file holding 0 / ≥ 1 warning lines.
+
+**Dry run (2026-11-11).** Done on `dev` (server v1.6.25, `67e53fd`), on two scratch collections created with
+the exact spec of §7 step 2 (registry `spec_hash` `29236085` on both), with the sentinel shard ingested into
+each through dev's own v1.6.25 text (S, the registered workflow id) and the same text stamped with the b2
+receipt (S-regex; image names only, sha256 `5f7a3a42…`). Evidence that the gates work, both ways:
+
+- receipts: 40 documents, 0 failed, **168 chunks** on each arm; `provenance.image_commit` equal
+  (`5d65bead…`), `image_version v1.6.24`, `image_build` `1` vs `2`, `segmenter_version` `punkt-abbrev-v1` vs
+  `regex-abbrev-v1`; `chunking` = `{v 1, method sentence, chunk_size 512, size_tolerance 0.25, min_piece 128,
+  ceiling 640, structure_cuts sections/1, window_budget 4080}` on both (the full §6 key list, plus
+  `window_budget`, which is reported and not gated);
+- worker stderr through the GoWe logs endpoint: **0 vs 1** lines containing `NLTK Punkt is unavailable`
+  (1,501 vs 1,851 bytes, far under the 256 KB tail); the warning reaches stderr through Python's last-resort
+  handler as the code reading predicted; the task's `exit_code` 0;
+- stores: Qdrant = Elasticsearch = receipt `n_chunks` = distinct `chunk_ids` = 168 on both;
+- `GET /v1/collections`: identical `chunk_params` on the two entries (`size_unit tokens`, `size_tolerance
+  0.25`, `min_piece 128`, `structure_cuts sections/1`), method `sentence`, size 512, overlap 0, embedding
+  `Salesforce/SFR-Embedding-Mistral` 4096-d `openai` resolved from dev's config default (§7 step 2);
+- cleanup: a plain `DELETE` is refused (409) when no other registry entry claims the store; both were purged
+  with `?purge=true` (registry, vectors, text index, manifest), the listing is clean and both physical stores
+  answer 404.
+
+**Observation, not a prediction:** on these 40 documents (5 articles, 4 tables, 31 figures) the S and S-regex
+chunk ids — `uuid5(doc_id:start:end)` — were **identical, 168 of 168**: with the 640-token ceiling, the
+`min_piece` merge and the section cuts, the two segmenters produced the same chunk boundaries on every
+sentinel document. What that implies for H3, honestly: if it holds across the 241,930 records, S-regex and S
+are the same collection up to embedding noise, the discordance of S-regex − S is near zero rather than the
+0.02 reference row of §5, the interval collapses around 0, and "non-inferior at 2.0 points" is then
+trivially true and uninformative; the descriptive chunk-id overlap of §4.3 carries the finding
+("the segmenter does not move a boundary under this spec on this corpus"), and `power.py` prints the rows at
+π = 0.005 and 0.001 so the collapse is visible. If it does not hold corpus-wide (long articles have sentence
+forms the 40 documents do not), H3 is the designed test. The dry run cannot tell which; the real run's
+overlap figure will. Forty documents, most of them tables and figures, are not a sample of the corpus.
 
 **How the segmenter is selected, per call.** `chunkers.sentence_spans` calls `_punkt_sentence_spans`, which
 imports `nltk` inside a `try` and returns `None` on `ImportError`, `LookupError` **or any other exception**,
@@ -128,8 +185,10 @@ owner Q5 may move the threshold).
 - **Questions:** the OA eval's frozen decision set, n = 2,035 (`clean_excl_noise`: 2,437 selected, minus
   ambiguous-gold and within-record repeats, minus the 300-question noise subset; Addendum B item 3). The
   sensitivity set (n = 2,335, noise subset included) is scored beside it and is not the decision.
-- **Strata:** journal family (8) and length band (3), **separately**, k = 11 for the guard; the smallest
-  tested stratum has 165 questions (Addendum B item 4). Journal × length cells are reported, not tested.
+- **Strata:** journal family (8) and length band (3), **separately**, k = 11 for the guard; on the decision
+  set the smallest stratum has 132 questions (`multidisciplinary`; private, `settings/a-hybrid-rerank/score.json`;
+  the plan's 165 was the planned figure), so every stratum clears the n ≥ 30 floor and k = 11. Journal ×
+  length cells are reported, not tested.
 - **Known weakness, declared.** The set has been used twice (main run, Addendum C) and every reused arm's
   per-question result has been seen. The passages were cut inside one section, so **no gold quote crosses a
   section boundary**, and the quotes are short, sentence-shaped single spans (median 119 characters, p90 214).
@@ -233,8 +292,9 @@ other one.
   receipts `punkt-abbrev-v1` and clean worker stderr); the re-ingest must not run on a worker without
   `nltk`. This is a condition on the decision *S*, not a change of decision.
 - Descriptive beside it: S-regex − ft512o64s; the share of S chunk ids (uuid5 of `doc_id:start:end`) also
-  present in S-regex, from the two collections' exports (no retrieval needed), which says how many
-  boundaries the segmenters actually move on this corpus; the count of fallback warnings in each arm's
+  present in S-regex, from the two arms' shard receipts (`chunk_ids`; the exports give the same set; no
+  retrieval needed), which says how many boundaries the segmenters actually move on this corpus — on the
+  40 sentinel documents of the dry run it was 100 % (§2); the count of fallback warnings in each arm's
   worker stderr.
 
 ### 4.4 Secondary contrasts (reported, Holm across the four, not decisions)
@@ -302,7 +362,10 @@ Power at n = 2,035, setting (a):
 Reading: at the ~5 % discordance a sentence-section arm shows against ft512o64s, S passes NI with power 0.98
 if truly equal and 0.52 if truly 1 point worse; the minimal superiority detectable with power 0.80 is 1.4
 points (1.6 at 0.90). G1 is expected to pass (Addendum C: +3.49). Normal-approximation planning numbers; the
-run's intervals come from the bootstrap; the script is committed as `power.py` at the freeze (§9.1).
+run's intervals come from the bootstrap; the script is committed as `power.py` beside this file with its
+`power.json` (§9.1). The H3 row assumes π = 0.02; the dry run's identical chunk ids (§2) say π may be far
+lower, and `power.py` also prints π = 0.005 and 0.001: there the half-width is 0.31 and 0.14 points and NI
+at 2.0 is passed at any plausible true difference — a collapse of the interval, not power.
 
 ## 6. Gates, validity checks, deviations
 
@@ -312,25 +375,33 @@ on S-regex voids H3 (which then reads *S only where Punkt is asserted*, §4.3); 
 
 - **G1 (drift).** lower(ft512o64s − ft512o64) > 0 in setting (a), decision set.
 - **Collections (receipts = store counts).** Per new arm: every shard receipt complete, 0 failed documents,
-  241,930 documents in the main shards. The sentinel shard is upserted first and the sentinel note says the
-  main ingest re-upserts its articles with the same ids, so **before the freeze** the number of sentinel
-  `doc_id`s also present in the main shards, and the sentinel chunk count of the others, are counted from
-  the pinned shard files and recorded in `frozen-inputs.json`. Expected store count = Σ main-shard
-  `n_chunks` + the sentinel `n_chunks` of the documents not in the main shards; where receipts carry
-  `chunk_ids`, the count of **distinct** ids replaces the sum (tenant-level GoWe jobs report
-  `chunk_ids=[]`, STATUS.md). Qdrant = Elasticsearch = that number, exactly. Reused arms: the live census
-  equals the census recorded at the freeze.
+  241,930 documents in the main shards. The sentinel shard is upserted first; counted from the pinned shard
+  files (`frozen-inputs.json`): **0** sentinel `doc_id`s (`uuid5(NAMESPACE_URL, path)`) are also in the
+  main shards, all 40 are sentinel-only, so the expected store count = Σ main-shard `n_chunks` + the
+  sentinel `n_chunks`, which the dry run fixed at **168** for both arms and the real run's sentinel ingest
+  must reproduce exactly (same image, same spec, deterministic ids). Where receipts carry `chunk_ids` (they
+  do on a direct submit: per shard and per document), the count of **distinct** ids replaces the sum
+  (tenant-level GoWe jobs report `chunk_ids=[]`, STATUS.md). Qdrant = Elasticsearch = that number, exactly.
+  Reused arms: the live census equals the census recorded at the freeze.
 - **Spec, on the receipt's `chunking` object** (written by `ingest_shard.applied_chunking` from
   `sentence_tolerance_provenance` plus the applied markers). Every S and S-regex receipt has **all** of:
   `method "sentence"`, `v 1` (`SENTENCE_TOLERANCE_PROVENANCE_VERSION`; the v2 counter belongs to the
   semantic chunkers), `chunk_size 512`, `size_tolerance 0.25`, `min_piece 128`, `ceiling 640`,
   `structure_cuts "sections/1"`. A receipt without the object, or with any key missing, fails the gate
-  (an older worker writes none and chunks strictly without error). `GET /v1/collections` shows the same
-  `chunk_params` for both.
+  (an older worker writes none and chunks strictly without error). `window_budget` (4080 on the dry run) is
+  recorded on the receipt and reported, not gated. `GET /v1/collections` shows the same `chunk_params` for
+  both (`size_unit tokens`, `size_tolerance 0.25`, `min_piece 128`, `structure_cuts sections/1`).
 - **Segmenter actually used, per arm.** Every S receipt `provenance.segmenter_version` = `punkt-abbrev-v1`
   and every S worker's captured stderr holds zero "NLTK Punkt is unavailable" lines; every S-regex receipt
   = `regex-abbrev-v1` and every S-regex worker's stderr holds at least one; no receipt without the key.
-  Every S and S-regex receipt carries the same `image_commit`; S-regex receipts name the no-`nltk` build.
+  **Source of the stderr:** for every shard, sentinel included, the staged-out `<shard>.ingest-stderr.txt`
+  of the ingest task (the full stream; a missing file fails the gate for that arm); for the sentinel shard
+  also the GoWe logs endpoint's tail, whose line count must equal the file's. A logs-endpoint capture at or
+  over 256 KB is not evidence either way and is never used alone. Every S and S-regex receipt carries the
+  same `image_commit`; S receipts carry `image_build 1`, S-regex receipts `image_build 2` (the no-`nltk`
+  build). `tool_image`, `tool_image_digest` and `workflow_id` are null on a direct submit (as on every
+  Addendum C receipt) and are not gated; the images are tied to the receipts by `image_commit` +
+  `image_build` and to `frozen-inputs.json` by their digests.
 - **Same input.** The shard files' sha256 equal the §9.1 pins.
 - **Retrieval.** Per setting: 2,437 questions × 5 arms, no missing or duplicate rows; one
   `server_version.git_sha` across **all four settings**; request fields (`rerank`, `use_graph`,
@@ -367,12 +438,23 @@ per-question file or score; progress is followed by the harness's row counts. An
 ## 7. Procedure and cost
 
 1. **Freeze** (§9); the owner names the server version on `dev`, the tools tag and the cost order; the
-   two sentinel dry runs of §2 have succeeded (receipts and stderr both ways) and the sentinel overlap
-   count of §6 is pinned.
-2. **Build** two collections on `dev` with a dev admin service account: `oa-eval-s` (S) and `oa-eval-sregex`
-   (S-regex), chunk spec at create (admin-only), tenant `public` as the other arms. Ingest the pinned shard
-   files through `ingest-bulk.cwl`: the sentinel shard first (receipts read, segmenter and spec gates checked
-   on it), then the 16 main shards. Capacity: `dev` allows `MAX_COLLECTIONS=150` tenant-wide and 100 per
+   two sentinel dry runs of §2 have succeeded (2026-11-11, receipts and stderr both ways), the study
+   workflow text has reproduced them on the sentinel shard with its stderr file staged out (§2, open at
+   v5), and the sentinel overlap count (0) and chunk count (168) of §6 are pinned.
+2. **Build** two collections on `dev`, created by management as admin on the owner's typed go (as the dry
+   run was): `oa-eval-s` (S) and `oa-eval-sregex` (S-regex), tenant `public` as the other arms, with the
+   chunk spec at create and **no `embedding` key** — dev's config default resolves
+   `Salesforce/SFR-Embedding-Mistral`, 4096-d, `openai` api (the model registry is empty), exactly as the
+   registry entries of the dry run show. The create body is
+   `{"id", "label", "chunk": {"method": "sentence", "size": 512, "overlap": 0, "params": {"size_unit":
+   "tokens", "size_tolerance": 0.25, "min_piece": 128, "structure_cuts": "sections/1"}}}`; the entry's
+   `chunk_params` must equal the dry run's and its `spec_hash` `29236085`. Ingest the pinned shard files by
+   direct `gowe submit` of the study text (§2: `ingest-bulk-h2h.cwl` for S, the b2-renamed copy for
+   S-regex), with the same inputs file keys as the Addendum C arms (shards, physical collection and
+   `collection_id`, tenant, method/size/overlap, embedding endpoints and model, store URLs, glossary
+   `rules`, `max_chunks` 0; no `registry`, no `structure_metadata`): the sentinel shard first, checked with
+   `h2h_report.py dryrun` (receipt, summary, staged stderr file, logs endpoint, store counts, registry
+   entry; it must give 168 chunks with the dry run's chunk ids), then the 16 main shards. Capacity: `dev` allows `MAX_COLLECTIONS=150` tenant-wide and 100 per
    owner, admins exempt (STATUS.md); the private inventories list 10 `oa-eval-*` collections (private,
    `oa-eval-collections.json` and `sections-2026-11/ingest/oa-eval-collections-sections.json`), so two
    more need no archiving. The operator still lists collections before creating and records the count in
@@ -409,17 +491,20 @@ Owner time: the freeze decisions, the acknowledgement of the decision sentence.
 ## 9. Freeze, provenance, release
 
 ### 9.1 The freeze set (one `main` commit named by the owner)
-- this `PREREG.md`; `power.py` (the §5 script; standard library, seeded, no data) and its `power.json`,
-  generated from a clean tree;
+- this `PREREG.md`; `power.py` (the §5 script; standard library, deterministic, no data) and its
+  `power.json`, generated from a clean tree;
 - the harness `python/scripts/eval/oa_chunk_eval/` as on `main` at that commit (frozen at d2a8b9b for the OA
   eval and extended only by Addendum C's config keys; any change since is listed in `README.md`);
 - the §9.4 script and its tests;
+- the study workflow text `ingest-bulk-h2h.cwl` and the S-regex `.def`, both beside this file;
 - by sha256 in the tag message and in a public `frozen-inputs.json`: the 16 shard files + sentinel shard,
-  the decision and reporting configs per setting (derived from the Addendum C configs, each with its own
-  `out_dir`; a key-by-key diff is listed in `README.md`), the frozen `noise.json` per setting (copied into
-  both `out_dir`s), the decision-set and sensitivity-set
-  question-id lists, the Addendum C census per reused arm, the 200-chunk re-embed sample's ids and texts
-  (private file, public sha256), the two tools images' digests and the S-regex `.def`.
+  the two workflow texts (the committed S text and its b2-renamed S-regex copy), the decision and reporting
+  configs per setting (derived from the Addendum C configs by `h2h_report.py configs`, each with its own
+  `out_dir`; the key-by-key diff is the public `config-diff.json`), the frozen `noise.json` per setting
+  (copied into both `out_dir`s), the decision-set and sensitivity-set question-id lists, the Addendum C
+  census per reused arm (a read-only live count at the freeze), the 200-chunk re-embed sample's ids
+  (private file, public sha256; drawn by `h2h_report.py reembed select` from the ft512o64s receipts, seed
+  20261111), the embedding and reranker model ids, the two tools images' digests and the `.def`.
 
 ### 9.2 Procedure (the reach study's) and 9.3 deviations
 The owner says freeze in writing, naming the commit, the cost order, the server version and the tools tag;
@@ -430,15 +515,26 @@ records the freeze in this directory's `README.md`; `PREREG.md` is never touched
 dated, with what had been seen.
 
 ### 9.4 Code needed (small), and what is released
-A public script `h2h_report.py`, on `addendum_c.py`'s pattern: from the four settings' `per_question.jsonl`
-and the decision config's `decision.json` it computes G1, H1, H2 (ctx@5 and stratum rules), H3, C1–C4,
-strata, the sensitivity set, the drift and chunk-id-overlap figures, the file-checkable gates (receipt
-`chunking` object, `segmenter_version`, `image_commit`, worker stderr lines, `git_sha` per row, set sizes,
-re-embed cosines), the cross-check and both cost orders' decisions; prints the §4.5 sentences; refuses to
-write a public file holding a question, quote, record id, host or path. Unit tests on synthetic rows; no
-harness change. Public here: this file, `README.md`, `power.py`, `power.json`, `frozen-inputs.json`,
-`artifacts/h2h-report.json`, `RESULTS.md`, `REPORT.md`, `DEVIATIONS.md` if any. Private: configs,
-per-question files, retrieval rows, receipts, worker logs, exports, `PREREG.sha256`.
+A public script `python/scripts/eval/h2h_report.py` (package `python/scripts/eval/h2h/`), on
+`addendum_c.py`'s pattern: `report` reads the four settings' three-arm and five-arm `per_question.jsonl`
++ `score.json` and the decision config's `decision.json`, plus a private manifest naming the receipts,
+staged stderr files, store counts, shard files and re-embed cosines, and computes G1, H1, H2 (ctx@5 and
+stratum rules), H3, C1–C4 (Holm per setting), strata, the sensitivity set, the drift and chunk-id-overlap
+figures, the file-checkable gates (receipt `chunking` object, `segmenter_version`, `image_commit` and
+`image_build`, worker stderr lines, `git_sha` per row, set sizes and id-list hashes, shard hashes, store
+counts, re-embed cosines and model ids), the cross-check and both cost orders' decisions; prints the §4.5
+sentences; takes `--prereg --prereg-sha256` and refuses on a mismatch; refuses to write a public file
+holding a question, quote, record id, host or path. Companions: `dryrun` (the sentinel checks of §2 and §7
+step 2), `reembed select|fetch|verify` (the 200-chunk sample; `fetch` is the one live step, run by the
+operator), `configs` (the two configs per setting from the Addendum C configs). Tests
+(`python/tests/eval/test_h2h_report.py`): every §4.5 row under both orders on synthetic numbers, the
+order-swap mutation, H3, every gate, the cross-check pass and fail, the GATE-NOT-EVALUABLE paths, the
+public-file guard, the end-to-end report on synthetic rows, the seeded sample, the config derivation and
+the §5 numbers; no harness change. Public here: this file, `README.md`, `power.py`, `power.json`,
+`frozen-inputs.json`, `config-diff.json`, `ingest-bulk-h2h.cwl`, `ragstack-tools-nonltk.def`,
+`artifacts/h2h-report.json`, `RESULTS.md`, `REPORT.md`, `DEVIATIONS.md` if any. Private: configs, the
+manifest, per-question files, retrieval rows, receipts, worker stderr, the dry-run records, exports, the
+re-embed ids and cosines, `PREREG.sha256`.
 
 ## 10. Owner decisions (answered 2026-11-11, before the freeze)
 

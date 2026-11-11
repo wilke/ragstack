@@ -1,0 +1,263 @@
+{
+ "schema": "adopted-spec-h2h-frozen-inputs/1",
+ "status": "DRAFT: pins computed 2026-11-11 from files and the sentinel dry run; every null below is filled at the freeze, then this file is pinned by sha256 in the tag message (PREREG §9.1)",
+ "cost_order": "B",
+ "versions": {
+  "server": {
+   "tag": "v1.6.25",
+   "commit": "67e53fd4d5dd552eb3d22fa4c8554bff1748d738",
+   "source": "dev GET /v1/version at the dry run (1.6.25); re-read at the freeze"
+  },
+  "tools_tag": {
+   "tag": "v1.6.24",
+   "commit": "5d65bead84e65e5fb96f46c3a0d95cd73fa6cad7"
+  },
+  "gowe": "v0.26.1 (server; worker log tail 256 KB per stream)"
+ },
+ "images": {
+  "S": {
+   "name": "ragstack-tools-v1.6.24-b1.sif",
+   "sha256": "ecf81440e64f9be88834e5b6911555f718ad71084f983ad41d962e962170cbf8",
+   "version": "v1.6.24",
+   "commit": "5d65bead84e65e5fb96f46c3a0d95cd73fa6cad7",
+   "build": "1",
+   "segmenter_version": "punkt-abbrev-v1",
+   "note": "the release build of the tools tag, the image dev's registered workflows name"
+  },
+  "S-regex": {
+   "name": "ragstack-tools-v1.6.24-b2.sif",
+   "sha256": "413f6ec32e383d3204ac93de000eb9f5ea6e605b829a9d04e2738762953c9cd1",
+   "version": "v1.6.24",
+   "commit": "5d65bead84e65e5fb96f46c3a0d95cd73fa6cad7",
+   "build": "2",
+   "segmenter_version": "regex-abbrev-v1",
+   "variant_label": "org.ragstack.variant no-nltk (adopted-spec-h2h-2026-11 S-regex arm)",
+   "def": {
+    "file": "ragstack-tools-nonltk.def",
+    "sha256": "8bfa31bb02d90c4b90302e727b9038ce9e77f783e63efe989f9a498c65d47df2"
+   },
+   "note": "built 2026-11-11 from the v1.6.24 tree with the def beside this file; placed in the dev worker group's image dir by management; never in the release store"
+  }
+ },
+ "workflow_texts": {
+  "S": {
+   "file": "ingest-bulk-h2h.cwl",
+   "sha256": "b3df95911dc19bfb2491c2569fd43b4a1f9660b2afe053fe61b869b5134f0ecc",
+   "image": "ragstack-tools-v1.6.24-b1.sif"
+  },
+  "S-regex": {
+   "file": "ingest-bulk-h2h.cwl with each of its six image-name lines rewritten from the b1 name to ragstack-tools-v1.6.24-b2.sif (a plain string replacement; README)",
+   "sha256": "65b7a927afb95f15457f5341facb98c054720dcce1fd3e3c4d0117b66207e7f9",
+   "image": "ragstack-tools-v1.6.24-b2.sif"
+  },
+  "base": {
+   "text": "cwl/ingest-bulk.cwl at v1.6.25 (dev's registered text; the study copy adds only the stderr File output)",
+   "sha256": "0f2bc341a8e977b4af421be5c7401e241254a79beeb780940ccd5893a2c18658"
+  },
+  "dry_run_2026_11_11": {
+   "S": {
+    "text": "cwl/ingest-bulk.cwl at v1.6.25, submitted directly",
+    "sha256": "0f2bc341a8e977b4af421be5c7401e241254a79beeb780940ccd5893a2c18658"
+   },
+   "S-regex": {
+    "text": "the v1.6.25 cwl/ stamped with the b2 receipt (image names only)",
+    "sha256": "5f7a3a4269eb8d35ca790d0cc6da8c138b2abd49b5578b0ae51c41d9023c2d52"
+   },
+   "note": "the dry run proved the gates on dev's text; the study text (stderr as a File output) is submitted on the sentinel shard once more before the freeze (README)"
+  }
+ },
+ "shards": {
+  "main-00": "aa61ef293e96c1602d28c1c38770d1ef1880d64d2094b519572211afa8bea8cd",
+  "main-01": "53ee5b6104e8784946d555161cbc0e4b99e151a25424bf45250a522677811c3b",
+  "main-02": "81ba7ab9b4ef1c7cd7620763ab9a0a73eabe61e10f3fb194ecb8366185bd7fce",
+  "main-03": "932967df1da0b28fba4758466f7e5ac19aac51a00b3258e5c7973ac75bb39b38",
+  "main-04": "42dc0e52a6e48fb190e97e7f1b20dbef89903c2faa6442353f15ee598cfd0500",
+  "main-05": "302ef8743ad2aa61e33c76784392d3480a9042c201acd20b209996e267b05617",
+  "main-06": "1e88865152545443f4a9060c242246d3695ccd8aebbc376249208f623ae02d89",
+  "main-07": "e2de3f96647665aed62b04015892fbbf7f4f0b74a012b03a3091f8c3e64c463c",
+  "main-08": "385ab23d29808063cf8c5cf0ff6f92b9d92e6b84d5c1e718f10ef66f7bd1ec41",
+  "main-09": "9c4b6a1d94ad37007ebd37173e03ab4c6db65c25fbba4b24a94fd49d185abb2c",
+  "main-10": "bfc29cbf31321da42f4006b2718a8d6f48c37a7607a8c15c6e5407281eaa61b6",
+  "main-11": "69ae53f9a435ac6617b6a1049306f19376817c8cf937e321d76aa6e3af19381b",
+  "main-12": "739cbafa493c68d2e18d1ae1911dc77a43825b2dcee191cc23fa6a00f4ecf425",
+  "main-13": "11a30d14a6458bf72e80f18d2b6a2a06b8a89d5af9eeaceb8341c11c942d723e",
+  "main-14": "b22c14485b18d95bac1ab0895a7e6be10904e284a4a0e18e10171bcc66559884",
+  "main-15": "b3b3ccc377576667bef2680f4180129cf12290201704f3d0195b9aa6d17537d5",
+  "sentinel": "70f1fe71a771a4e52987fabee834af5a4e0904302bb70e51727a5bafff78fb86"
+ },
+ "shard_records": {
+  "main-00": 16461,
+  "main-01": 17445,
+  "main-02": 16443,
+  "main-03": 17207,
+  "main-04": 13831,
+  "main-05": 12292,
+  "main-06": 13293,
+  "main-07": 13325,
+  "main-08": 14044,
+  "main-09": 14882,
+  "main-10": 15222,
+  "main-11": 15091,
+  "main-12": 14015,
+  "main-13": 14995,
+  "main-14": 16539,
+  "main-15": 16845,
+  "sentinel": 40
+ },
+ "n_main_records": 241930,
+ "sentinel": {
+  "n_docs": 40,
+  "composition": "5 articles + 4 tables + 31 figures",
+  "doc_ids_also_in_main_shards": 0,
+  "doc_ids_only_in_sentinel": 40,
+  "doc_id_rule": "uuid5(NAMESPACE_URL, record.path)",
+  "n_chunks": 168,
+  "n_chunks_source": "sentinel dry run 2026-11-11: 168 on S and on S-regex (receipt n_chunks = distinct chunk_ids = Qdrant = Elasticsearch)",
+  "chunk_ids_identical_across_arms": true,
+  "store_count_rule": "expected store count per new arm = distinct chunk ids across the 16 main-shard receipts + the sentinel receipt (overlap 0, so = sum of n_chunks)"
+ },
+ "sets": {
+  "decision": {
+   "n": 2035,
+   "sha256": "971bae6f48164bbc0797b2d110b2baa99d1fd3715ce8945540a7e8b230ac8674",
+   "canonical_form": "sorted question ids, one per line, LF-terminated, UTF-8"
+  },
+  "sensitivity": {
+   "n": 2335,
+   "sha256": "d2b0f550cd6251b8ea807e603b834ca2965a5ab2b6004762bb06f774de6af943",
+   "canonical_form": "sorted question ids, one per line, LF-terminated, UTF-8"
+  },
+  "all_rows": 2437,
+  "source": "Addendum C setting (a) per_question rows: decision = ambiguous_gold false and noise_subset false; sensitivity = ambiguous_gold false"
+ },
+ "noise_json": {
+  "a": "1fd3e8e381dcd953c07c162294227a29792fc5f85ca8cda95a6b0e8f47f5153d",
+  "d": "67c7cca65a1b65deefbb5a6a53dee0e817155a4bb212e3c5310f49287c342fda",
+  "b": "6ea62cd574f779fee6a0431cca4cb0e5e2c3b8fba095b45113704e7611742abe",
+  "c": "f62c250c6c0ad9af60432dbdf4f3a0e178a05c868e2b590107611bbc04a94204"
+ },
+ "configs": {
+  "a": {
+   "decision": "4123f3f8700ba2e4a82c4f4b8e77661b2e5e16ca451eec09d6d37952b8400099",
+   "reporting": "558a8992a12a1caf6814b76f616ecf0afe31196ac7523a1c7fbb166541d03824",
+   "addendum_c_config_sha256": "6d5fd43dcf21c5639db081fbbf378b2f64f46e342a651ca8a42b6e88c2353d09"
+  },
+  "d": {
+   "decision": "99cf7aea83a358e0a99babc64a89564090098a680e539ef18d7377e4ac6f0956",
+   "reporting": "24ef4bd509dd4e075516f882cad1d505ad69f126ced42c01ea8d104e44f14ac9",
+   "addendum_c_config_sha256": "cb66eb6ffa1efdd054d4dc6b4b272b47d43f04cd4942f442a3736f0e7282f4cc"
+  },
+  "b": {
+   "decision": "394d7322016db6ee75ada24a933d9fab08f74fa23cf87e7c3ea01148aa6533e4",
+   "reporting": "1bc3ca06bb9a2122cb18c40016d38d2dd40700aa10911be5e30384c2817be39e",
+   "addendum_c_config_sha256": "3f8d9cb06aaa4d4d073ea74d24156451e1d92d36822f7c256ac005e147f8b59e"
+  },
+  "c": {
+   "decision": "b06ca10b09c5f6622fc388fc57d43f571e0dc66449b7cd9d80d83913f915f51b",
+   "reporting": "13b5c4083a5277b9f20be55c8b033806b6eafde4dc2fae99db969e0b2c5ee528",
+   "addendum_c_config_sha256": "5cd0454152942d5fee7d89d36c244e786dcd56abc82052449a8ee381d41afaf3"
+  }
+ },
+ "config_diff": {
+  "file": "config-diff.json",
+  "sha256": "a8b9d60fe94d326c5200f9f18a498b16309133ae7b6e9a6a68e7ff224045cb29"
+ },
+ "frozen_request": {
+  "a": {
+   "rerank": true,
+   "use_graph": false,
+   "retrieval_mode": "hybrid",
+   "top_k": 10
+  },
+  "d": {
+   "rerank": false,
+   "use_graph": false,
+   "retrieval_mode": "hybrid",
+   "top_k": 10
+  },
+  "b": {
+   "rerank": false,
+   "use_graph": false,
+   "retrieval_mode": "vector",
+   "top_k": 10
+  },
+  "c": {
+   "rerank": false,
+   "use_graph": false,
+   "retrieval_mode": "bm25",
+   "top_k": 10
+  }
+ },
+ "passages_segmenter": "punkt-abbrev-v1",
+ "passages_summary_sha256": "8d90bf82bc0d1a6aa454277e2b47e8843d522be760cfa58d16d5afe20cd973e4",
+ "chunk_spec": {
+  "create_body_chunk": {
+   "method": "sentence",
+   "size": 512,
+   "overlap": 0,
+   "params": {
+    "size_unit": "tokens",
+    "size_tolerance": 0.25,
+    "min_piece": 128,
+    "structure_cuts": "sections/1"
+   }
+  },
+  "create_body_has_embedding_key": false,
+  "registry_entry": {
+   "model": "Salesforce/SFR-Embedding-Mistral",
+   "dim": 4096,
+   "embedding_api": "openai",
+   "spec_hash": "29236085",
+   "chunk_params": {
+    "size_unit": "tokens",
+    "size_tolerance": 0.25,
+    "min_piece": 128,
+    "structure_cuts": "sections/1"
+   }
+  },
+  "receipt_chunking": {
+   "v": 1,
+   "method": "sentence",
+   "chunk_size": 512,
+   "size_tolerance": 0.25,
+   "min_piece": 128,
+   "ceiling": 640,
+   "structure_cuts": "sections/1",
+   "window_budget": 4080
+  },
+  "note": "window_budget is recorded on the receipt and reported, not gated"
+ },
+ "reused_census": {
+  "ft512o64": null,
+  "ft512o64s": null,
+  "sent512s": null,
+  "note": "filled at the freeze from a read-only live count (qdrant, es); Addendum C's figures were 705,047 / 859,087 / 850,119 before the sentinel reading is settled"
+ },
+ "model_ids": {
+  "embedding_model": null,
+  "reranker_model": null,
+  "embedding_serving_build": null,
+  "reranker_image": null,
+  "note": "filled at the freeze from the endpoints (read-only)"
+ },
+ "reembed": {
+  "arm": "ft512o64s",
+  "n": 200,
+  "seed": 20261111,
+  "cosine_threshold": 0.999,
+  "ids_sha256": null,
+  "rule": "h2h_report.py reembed select: sorted distinct chunk_ids of the arm's 17 shard receipts, random.Random(seed).sample(ids, 200)"
+ },
+ "harness": {
+  "location": "python/scripts/eval/oa_chunk_eval/",
+  "note": "as on main at the freeze commit; changes since d2a8b9b listed in README.md"
+ },
+ "tooling": {
+  "h2h_report": "python/scripts/eval/h2h_report.py (+ python/scripts/eval/h2h/)",
+  "tests": "python/tests/eval/test_h2h_report.py",
+  "power": {
+   "file": "power.py",
+   "json_sha256": "e41c6c8727536eeebe90218f1707cf82edba6b5b788dd17f28323581babd7812"
+  }
+ }
+}
