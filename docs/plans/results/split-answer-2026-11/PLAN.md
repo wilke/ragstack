@@ -2,8 +2,8 @@
 # Split answers: can overlap, judge-time neighbours or another cut keep an answer in one passage?
 
 **Status: DRAFT, 2026-11-09; the owner's answers of 2026-11-10 are folded in (§9.1: OPEN-1, OPEN-3 and OPEN-6
-decided; OPEN-4 superseded). Exploratory. No judge call, store, retrieval or LLM call has been made.
-OPEN-2 and OPEN-5 are still open (§9.2). Nothing here is pre-registered. The feasibility counts in §4 come from
+decided; OPEN-4 superseded) and of 2026-11-11 (OPEN-2 and OPEN-5 decided). Exploratory. No judge call, store,
+retrieval or LLM call has been made. No owner question is open (§9.2). Nothing here is pre-registered. The feasibility counts in §4 come from
 [`artifacts/feasibility.json`](artifacts/feasibility.json), produced by
 [`split_feasibility.py`](split_feasibility.py) at commit `57d2f15c` on a clean tree (`citable: true`).**
 
@@ -228,8 +228,8 @@ are counted for new passages only, as plain chunk text. The §3.1 markers add a 
 Neighbour passages contain the split windows across walls. They are also 1.5× (adjacent pairs) to 3.8× (M ± 2)
 longer than the ~512-token passages the judge labelled at stage A. That length difference is the main confound of
 option (b). The owner accepted it as an exploratory protocol extension (§3.1). The full kept_changed control (§5)
-measures the length-driven loss of *answers*. Length-driven creation of *answers* needs the negative control
-(OPEN-2, open).
+measures the length-driven loss of *answers*. Length-driven creation of *answers* is measured by the negative
+control (OPEN-2, decided 2026-11-11: 150 stage-A *not* pairs, §9.1).
 
 ### 4.5 Judge items each option would need (not in the label table)
 
@@ -253,7 +253,7 @@ kept_changed M ± 1 items, not a sample. That supersedes OPEN-4.
 
 ### (b) Judge-time neighbours: recommended first, and the only arm planned now
 
-- **Measures:** whether the frozen judge labels M ± 1 *answers* for the split pairs (16 of 18 windows fit inside), and M ± 2 for the remaining 2. Also the same rate on recovered and primary_only. Then, as controls, whether longer passages *lose* answers (the 219 kept_changed items should stay *answers*) and, if OPEN-2 is granted, whether they *create* answers (stage-A *not* pairs should stay *not*).
+- **Measures:** whether the frozen judge labels M ± 1 *answers* for the split pairs (16 of 18 windows fit inside), and M ± 2 for the remaining 2. Also the same rate on recovered and primary_only. Then, as controls, whether longer passages *lose* answers (the 219 kept_changed items should stay *answers*) and, as the OPEN-2 negative control, whether they *create* answers (stage-A *not* pairs should stay *not*).
 - **Why first:** it is the production `context_window` path (§2, §3.1). It needs no new collection and no re-chunking, it is the only option that crosses walls without reversing the section-cut decision, and it is the cheapest per pair.
 - **Passage:** the production context-window format, exactly as in §3.1, in the frozen judge prompt.
 - **Items (OPEN-6, decided):**
@@ -298,7 +298,8 @@ kept_changed M ± 1 items, not a sample. That supersedes OPEN-4.
 | per item | 1 | 2 base (C, one request with n=5; E) + Argon on escalations (7–9 %) + Opus drift (5 %) = 2.12–2.14, **≈ 2.15** |
 | owner-decided core (75 + 219) | 294 | ≈ 632 |
 | plus M ± 2 for 2 split windows | 2 | ≈ 4 |
-| **total** | **296** | **≈ 636** (floor 592 = 2 × 296 base requests if nothing escalates and no Opus) |
+| negative control (OPEN-2: 150 stage-A *not* pairs as M ± 1) | 150 | ≈ 323 |
+| **total** | **446** | **≈ 959** (floor 892 = 2 × 446 base requests if nothing escalates and no Opus) |
 
 This matches the owner's "about 600".
 
@@ -316,7 +317,7 @@ This matches the owner's "about 600".
    labels. It makes no LLM call and sets no label.
 1. **(b) M ± 1** on the lost 75 plus the 219 kept_changed control items, and M ± 2 on the 2 uncontained split
    windows, in the §3.1 format, after the §6 notice.
-   - If split pairs recover at a rate the controls do not show (low kept_changed loss and, if OPEN-2 is granted, low false recovery on *not* pairs), report and stop. Without OPEN-2, false creation is unmeasured, and the report says so.
+   - If split pairs recover at a rate the controls do not show (low kept_changed loss and low false recovery on the OPEN-2 *not* pairs), report and stop.
    - Option (b) needs no chunking change: production `context_window=1` already delivers the format. Whether it delivers the full context in a multi-source prompt is the §3.1 caveat (OPEN-5).
 2. **Only if (b) fails:** run **(a) strict + 512 vs strict**, cover-any, on the lost 75. Its ceiling is the 8 size-cut-only split pairs.
 3. Re-chunk arms that pass (a) go to a retrieval stage with new bench collections, under their own plan.
@@ -339,8 +340,12 @@ No threshold is pre-registered. This is exploratory, and any rate it produces is
 | **OPEN-3:** may the wall-crossing split windows be read, and is the section-cut decision open? | **No, keep section cuts.** The no-section-cut option is dropped as an arm; its feasibility row stays as context only. The wall-crossing windows may be read privately, counts only. | §4.2, §4.3, §4.5 rows marked context only; §5 (c3) dropped; §7 step 0. |
 | **OPEN-6:** gateway budget and notice. | **Full controls, about 600 judge requests:** neighbours M ± 1 on the 75 lost pairs plus all 219 kept-label control items. | §5 (b) items; §6 cost (≈ 2.15 per item, 296 items, ≈ 636 requests), OpenChia/gateway size notice, PR #991 preflight. |
 | **OPEN-4:** size of the kept_changed control sample. | **Superseded by OPEN-6:** all 219 items, no sample. | §4.5, §5 (b). |
+| **OPEN-2** (2026-11-11): a negative control, and how large? | **Yes, 150 stage-A *not* pairs**, judged as M ± 1 in the §3.1 format. About two-thirds same-paper *not* pairs (where neighbours could plausibly add an answer), one-third other-paper. Stratified by corpus arm; only pairs whose M has a neighbour on both sides (not at a document edge); drawn with a fixed seed recorded before the draw. Sized so a false-*answers* rate near 10 % is estimated to about ±5 points (100 would give about ±6, 300 about ±3.5). | §4.4, §5 (b) controls; §6 cost (+150 items, ≈ +323 requests; total ≈ 959, gateway share about 60–70). |
+| **OPEN-5** (2026-11-11): if (b) succeeds, does `context_window=1` go into the production answer path, and who owns it? | **Decided after the result, not now.** If neighbours recover the split answers without inflating the negative control, the change is a default in the answer path, made by a normal code PR with two reviews (a behaviour change) and deployed to the tenants by the management session, which owns deployed state. If the result is weak, nothing changes; callers can already set `context_window` per request. The prompt-budget cost (≈ 2–3× answer context, `llm.py:261`) and the passage-first trimming caveat (§3.1) go into that PR's case. | §7 decision rule, §8. |
 
 ### 9.2 Still open
+
+None. The two questions below were answered on 2026-11-11 (§9.1); their original wording is kept for the record.
 
 - **OPEN-2:** A negative control needs stage-A pairs the judge said do *not* answer, judged as M ± 1 in the §3.1 format. They are not in the confirmatory files. Should they be sampled from the stage-A records, and how many? Each 60 such items would add ≈ 130 requests to §6's total.
 - **OPEN-5:** If (b) succeeds, is the conclusion "turn on `context_window=1` in the production answer path", and who owns that change? It triples the answer-prompt budget (`llm.py:261`). Under a multi-source budget the context is trimmed passage-first (§3.1), so (b)'s rate is an upper bound for a top-10 prompt.
