@@ -1,16 +1,16 @@
 # Evidence dispersion and question type: are questions with evidence across sections usually composite?
 
-**Date:** 2026-11-11 · **Record:** `docs/papers/bib-inbox/11-evidence-dispersion-question-type.md`
+**Date:** 2026-11-11 · **Record:** `docs/papers/bib-inbox/15-evidence-dispersion-question-type.md`
 **Assumption tested:** questions whose answer evidence spans more than one document section are usually composite, multi-hop or complex rather than simple factoid questions.
 
 Status key, as in `bibliography.md`: **verified** means title, authors, venue and year were confirmed. **read** means the full text was retrieved. **PDF-checked** means the specific claim was found in the PDF text.
 
 ## Method
 
-1. **Three areas surveyed at the same time.** Each was covered by one Argo Opus agent writing its own file:
-   - multi-hop and compositional QA (`survey-multihop.md`);
-   - long-document and scientific/biomedical QA (`survey-sciqa.md`);
-   - RAG, chunking and multi-evidence benchmarks (`survey-ragchunk.md`).
+1. **Three areas surveyed at the same time.** Each was covered by one Argo Opus agent (uncommitted working reports, summarised here):
+   - multi-hop and compositional QA;
+   - long-document and scientific/biomedical QA;
+   - RAG, chunking and multi-evidence benchmarks.
 2. **Metadata** was checked through the arXiv API, OpenAlex, the ACL Anthology and PMLR.
 3. **Full texts** were read through ar5iv or arXiv HTML using WebFetch, which summarises pages. None of the agents could read PDFs. The summariser garbled at least two tables (LongDocURL Table 3 and MMLongBench-Doc Table 3), and both had to be re-extracted.
 4. **PDF verification, done separately.** The 11 claims that the verdict rests on were checked against the PDFs (pymupdf text). All 11 were confirmed, with precision notes. Those notes are authoritative where they differ from a survey file, and they are applied throughout this record.
@@ -42,13 +42,13 @@ PDF-checked claims are marked **[PDF]**. Everything else comes from the survey r
 
 **Composite questions with local evidence**
 - **Min et al. 2019 [PDF]:** 27% of 100 bridge questions need multi-hop reasoning (Table 2, p3); for comparison questions the figure is 45% (Table 3, p4). A single-paragraph BERT reaches 67.08 F1 (distractor dev).
-- **WikiHop [PDF, p7]:** among samples judged follows/likely, 44.1% needed a single document. This is *not* 44.1% of all answerable samples, as `survey-multihop.md` stated.
+- **WikiHop [PDF, p7]:** among samples judged follows/likely, 44.1% needed a single document. This is *not* 44.1% of all answerable samples, as the multi-hop survey stated. The authors add that many "single" cases only hint at the answer, which annotators completed with background knowledge.
 - **FinQA [PDF, p5]:** 62.43% of questions are table-only, and 40.90% of programs have more than one step. So at least 26.75% of all questions are multi-step yet single-source *(derived)*.
 - **TAT-QA [PDF]:** 4,747 of 6,964 arithmetic answers (68.2%) are table-only *(derived)*.
 
 **Evidence count tracks the number of facts, not reasoning depth**
 - **Buchmann 2024 [PDF]:** evidence segments per instance (Table 1, p4) are QASPER 1.7, NQ 1, Evidence Inference 1.1 and ContractNLI 1.5. WiCE's 3.7 is at sentence level and cannot be compared. The authors say WiCE and QASPER instances "often contain multiple facts (e.g. an enumeration or multiple subclaims)" (p9). That is their interpretation, not a coded measurement.
-- **LURCH [PDF]:** "Only 11% of instances have all evidence in a single contiguous block" (p6). Scope and dispersion have r = 0.55 (0.45 after centring), which is the strongest pairwise association reported (appendix, p19). The dispersion–depth value appears only in Fig. 9. The sample is filtered towards hard tasks, so 11% is not a natural rate.
+- **LURCH [PDF]:** "Only 11% of instances have all evidence in a single contiguous block" (p6). Scope and dispersion have r = 0.55 (0.45 after centring), which is the strongest pairwise association reported (appendix, p19). Dispersion–depth is r = 0.10 (0.02 within-task centred; Fig. 9, p20), so dispersion tracks scope, not depth. The benchmark prioritises tasks involving multi-hop reasoning, comparison, aggregation or evidence integration over single-fact retrieval (p4), so 11% is not a natural rate.
 
 **Constructed cross-section questions**
 - **GraLC-RAG [PDF]:** its 2,033 cross-section questions are synthetic and built from 5 templates over 2,359 PMC articles in IMRaD structure. Content-similarity retrievers "always retrieve from a single section" yet score the best MRR. That is consistent with these questions being answerable locally, although the authors read it the other way.
@@ -112,7 +112,7 @@ Each line gives the claim as the survey reported it. **None of these claims has 
    - Nothing past the abstract was read. The PDFs came back as binary through WebFetch.
    - Searches that failed to find it: arXiv `ti:QASA AND ti:scientific` and `all:"QASA" AND all:"question answering"`; OpenAlex `title.search:QASA` and `search=QASA advanced question answering scientific articles`.
    - The GitHub README (lgresearch/QASA) has no statistics.
-2. **LURCH dispersion–depth r:** it appears only in Fig. 9. All that is known is that it is below 0.55.
+2. *(Resolved: LURCH dispersion–depth r = 0.10, 0.02 centred, Fig. 9 p20.)*
 3. **SQuAD's share of "multiple sentence reasoning"** (recalled as about 13.6%): the ar5iv conversion and the ACL PDF both failed.
 4. **MASH-QA statistics** and **MultiSpanQA** (NAACL 2022): only the abstract or the OpenAlex record was available.
 5. **FinanceBench single- versus multi-statement counts:** not found. The n = 5,786 versus 5,897 mismatch is unresolved.
@@ -125,7 +125,7 @@ Each line gives the claim as the survey reported it. **None of these claims has 
    - per-type supporting-fact averages for 2WikiMultiHopQA;
    - per-model MMLongBench-Doc scores other than GPT-4o;
    - read through the summariser and never raw-checked: the LaRA, Bhat, FRAMES, NovelQA, MultiHop-RAG and FinQA Table 3 figures.
-9. **PeerQA:** the wording "not necessarily complementary" and the label "Appendix E" were not found in the PDF. Do not quote them.
+9. **PeerQA:** the phrase "not necessarily complementary" is at p19, Appendix E (hyphenated across a line, which defeated the first search); the paraphrase in `bibliography.md` stands.
 
 ## Searched and did not find
 

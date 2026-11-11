@@ -207,15 +207,15 @@ Table 2 (p4) crosses answer type with evidence source over 16,552 questions:
 
 *Spans* here means several answer spans, not several evidence locations.
 
-**Weight: strong as measured data; transfer to our setting is indirect.** "Spread" here means one table and its neighbouring paragraphs on a single report page, not sections of a long document.
+**Weight: strong as measured data; transfer to our setting is indirect.** "Spread" here means a table and at least two paragraphs that describe, analyse or complement it (p2), not sections of a long document.
 
 ### `min-2019-compositional` — Compositional Questions Do Not Necessitate Multi-hop Reasoning
 Sewon Min, Eric Wallace, Sameer Singh, Matt Gardner, Hannaneh Hajishirzi, Luke Zettlemoyer. ACL 2019,
 pp. 4249–4257. ACL Anthology P19-1416 · arXiv 1906.02900 · **verified, read (full PDF)**
 
-A single-paragraph BERT model reaches 67.08 F1 on the HotpotQA distractor dev set. In manual analysis:
-- of 100 sampled bridge questions, 27% actually require multi-hop reasoning (Table 2, p3);
-- of the comparison questions analysed, 45% do (Table 3, p4).
+A single-paragraph BERT model reaches 67.08 F1 on the HotpotQA distractor dev set.
+- In manual analysis of 100 sampled bridge questions, 27% actually require multi-hop reasoning (p3; Table 2, p4).
+- By rule-based automatic categorisation of comparison questions, 45% do (Table 3, p4).
 
 **What it establishes for us:** it tests the *opposite* direction and finds that composite questions often do not need evidence from several places. It bears on our direction only by showing that the two properties come apart. Composite form and spread evidence cannot be treated as one variable, so neither can stand in for the other in a study design.
 
@@ -238,9 +238,9 @@ arXiv 2610.22067, 15 October 2026 (no venue). · **verified, read (full PDF)**
 
 Introduces the LURCH benchmark: 6,550 instances drawn from existing datasets. It defines evidence **scope**, evidence **dispersion** and **reasoning depth** as separate properties and measures all three on the same items.
 
-**What it establishes for us:** it is the only paper that measures dispersion and reasoning complexity separately on the same items, and it treats them as distinct axes. "Only 11% of instances have all evidence in a single contiguous block" (p6). The appendix (p19) reports scope–dispersion r = 0.55 overall (0.45 after centring), the strongest pairwise association. So dispersion goes most with *how much* evidence a question needs, which is the aggregation side of the assumption, not the depth side. These are descriptive relations between properties, not causal ones. We cite no dispersion–depth coefficient.
+**What it establishes for us:** it is the only paper that measures dispersion and reasoning complexity separately on the same items, and it treats them as distinct axes. "Only 11% of instances have all evidence in a single contiguous block" (p6). The appendix (p19) reports scope–dispersion r = 0.55 overall (0.45 after centring), the strongest pairwise association. So dispersion goes most with *how much* evidence a question needs, which is the aggregation side of the assumption, not the depth side. These are descriptive relations between properties, not causal ones. Dispersion–depth is r = 0.10 (0.02 within-task centred; Fig. 9, p20), which supports the aggregation reading over the depth reading.
 
-**Weight: moderate.** It is recent and not peer-reviewed. The 11% is not a natural rate, because the instances were selected for long-context difficulty. It is the source to cite for the established vocabulary.
+**Weight: moderate.** It is recent and not peer-reviewed. The 11% is not a natural rate: the benchmark prioritises tasks involving multi-hop reasoning, comparison, aggregation or evidence integration over single-fact retrieval (p4), which inflates dispersion directly. It is the source to cite for the established vocabulary.
 
 ### `buchmann-2024-attribute` — Attribute or Abstain: Large Language Models as Long Document Assistants
 Jan Buchmann, Xiao Liu, Iryna Gurevych. EMNLP 2024 (per arXiv comment). arXiv 2407.07799 ·
@@ -270,9 +270,9 @@ The paper does not cross-tabulate steps against source (absent).
 ### `ma-2024-mmlongbench` — MMLongBench-Doc: Benchmarking Long-context Document Understanding with Visualizations
 Yubo Ma, Yuhang Zang, Liangyu Chen, Meiqi Chen, Yizhu Jiao, Xinze Li, Xinyuan Lu, Ziyu Liu, Yan Ma,
 Xiaoyi Dong, Pan Zhang, Liangming Pan, Yu-Gang Jiang, Jiaqi Wang, Yixin Cao, Aixin Sun. NeurIPS 2024
-Datasets and Benchmarks (per arXiv comment). arXiv 2407.01523 · **verified, read (full PDF)**
+Datasets and Benchmarks (PDF p1 footer). arXiv 2407.01523 · **verified, read (full PDF)**
 
-365 of the 1,082 questions (33.7%) are cross-page. Annotators were told to prioritise cross-page questions. In Table 3 (p7), GPT-4o scores 54.5 on single-page questions and 41.5 on cross-page ones.
+365 of the 1,082 questions (33.7%) are cross-page. For newly added questions the authors put more focus on cross-page and unanswerable questions, to balance the distribution (p5). In Table 3 (p7), GPT-4o scores 54.5 on single-page questions and 41.5 on cross-page ones.
 
 **What it establishes for us:** for that model, cross-page questions are harder. The cross-page share was engineered, so it says nothing about a natural rate, and the paper does not cross question type with single- versus cross-page (absent).
 
@@ -282,11 +282,11 @@ Datasets and Benchmarks (per arXiv comment). arXiv 2407.01523 · **verified, rea
 Johannes Welbl, Pontus Stenetorp, Sebastian Riedel. TACL 6 (2018), pp. 287–302. arXiv 1710.06481 ·
 **verified, read (full PDF)**
 
-The questions are built by following knowledge-base paths across documents, so they are composite by construction. In human validation (p7), among samples judged *follows* or *likely*, 55.9% were marked as needing multiple documents and 44.1% as needing a single document. The authors call the single-document share "larger than initially expected".
+The questions are built by following knowledge-base paths across documents, so they are composite by construction. In human validation (p7), among samples judged *follows* or *likely*, 55.9% were marked as needing multiple documents and 44.1% as needing a single document. The authors call the single-document share "larger than initially expected", and add that many such cases give a clear hint within one document that annotators completed with background knowledge.
 
 **What it establishes for us:** a second result in the opposite direction. Questions that are composite by construction need only one source almost half the time. The denominator is the samples judged *follows* or *likely*, **not** all answerable samples.
 
-**Weight: moderate.** The units are separate documents, not sections of one document.
+**Weight: moderate.** The units are separate documents, not sections of one document, and the 44.1% includes cases solved by annotator background knowledge.
 
 ### `mortezaagha-2026-gralc` — Graph-Aware Late Chunking for Retrieval-Augmented Generation in Biomedical Literature
 Pouria Mortezaagha, Arya Rahgozar. arXiv 2603.22633, 23 March 2026. · **verified, read (full PDF)**
