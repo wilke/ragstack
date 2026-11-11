@@ -1,0 +1,256 @@
+{
+ "budget_chars_per_item": {
+  "24000": 444,
+  "40000": 2
+ },
+ "calls": {
+  "gateway": 0,
+  "llm": 0,
+  "retrieval": 0,
+  "store": 0
+ },
+ "deviation": null,
+ "edge_items": {
+  "kept_changed": {
+   "context_window_1:after": 4,
+   "context_window_1:before": 32,
+   "context_window_1:none": 183
+  },
+  "negative": {
+   "context_window_1:none": 150
+  },
+  "primary_only": {
+   "context_window_1:none": 4
+  },
+  "recovered": {
+   "context_window_1:before": 3,
+   "context_window_1:none": 50
+  },
+  "split": {
+   "context_window_1:after": 1,
+   "context_window_1:none": 17,
+   "context_window_2:after": 1,
+   "context_window_2:none": 1
+  }
+ },
+ "edge_rule": "before: M is its document's first chunk; after: the last; none: neighbours on both sides (at w=2 a side holding one neighbour, M being the second or second-to-last chunk, is none)",
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "exploratory": true,
+ "export_rows": 446,
+ "export_rows_shared_by_several_records": 0,
+ "formatter": "RagGenerator.format_context, with '[1] ' stripped",
+ "id_scheme": "nbr-w<w>:<max-overlap chunk id>",
+ "inputs_sha256": {
+  "chunks_control": "e9f00602eca4c6676b7e5968f08d83a01fcbdf36ca910d577419f5cca8748035",
+  "chunks_retest": "6cb6c3825740db1cbfc10149fd5283e3fcbe7ab3e3e3465e528557d8556ac12f",
+  "label_table": "62e63538710a46c84963e6be9826b60f174f4d90b0750c00444b9d444e16158b",
+  "main_config": "3e8768ce71b39501901884d5246757d0150a580469f537ad05ebb0aa8f6908c6",
+  "negative_chunks": "c25f79467d9c1efbe8924198cc98f1f43ed028b93d301742a1e8abea8b710345",
+  "negative_draw": "1bb875dbfb35231267135fd4a5c32e509058485e1bbb7387109c9f0c10c011f9",
+  "negative_sample": "af90d10c7ed0919aa13472b07f8193f4ccc02c9a5a7bf943ae4a8c4b2543ffd6",
+  "pairs_seed": "f76f96882009c11242ec79b38d2be621ffa25eab86c521537a566426237407b8"
+ },
+ "item_type": "neighbour",
+ "items": {
+  "kept_changed": {
+   "context_window_1": 219
+  },
+  "negative": {
+   "context_window_1": 150
+  },
+  "primary_only": {
+   "context_window_1": 4
+  },
+  "recovered": {
+   "context_window_1": 53
+  },
+  "split": {
+   "context_window_1": 18,
+   "context_window_2": 2
+  }
+ },
+ "items_in_several_groups": 0,
+ "items_per_set": {
+  "negative": 150,
+  "positive": 296
+ },
+ "items_total": 446,
+ "max_context_chars": 8000,
+ "nbr_prefix_checked": {
+  "confirm_chunks_control": 9150,
+  "main_config_exports": 281521,
+  "negative_chunks_control": 7200
+ },
+ "nominal_budget_chars": {
+  "context_window_1": 24000,
+  "context_window_2": 40000
+ },
+ "offline": true,
+ "one_chunk_documents_skipped": {
+  "kept_changed": 1,
+  "kept_identical": 56,
+  "primary_only": 0,
+  "recovered": 0,
+  "split": 0
+ },
+ "outputs_sha256": {
+  "neighbour_export": "0925596f1c05caab41c0682da8f9fdc69a9467e0ad04093ef8186cb32e0095d8",
+  "neighbour_seed": "33570ef433382a58a63a860f93f755c6f0cde7e09567b1e966b6369dcab1c344"
+ },
+ "pairs": {
+  "kept_changed": 220,
+  "kept_identical": 56,
+  "negative": 150,
+  "primary_only": 4,
+  "recovered": 53,
+  "split": 18
+ },
+ "passage_tokens": {
+  "kept_changed": {
+   "context_window_1": {
+    "max": 1636,
+    "mean": 1180.813,
+    "min": 454,
+    "n": 219,
+    "p10": 833,
+    "p50": 1207,
+    "p90": 1495
+   }
+  },
+  "negative": {
+   "context_window_1": {
+    "max": 1612,
+    "mean": 1220.82,
+    "min": 557,
+    "n": 150,
+    "p10": 841,
+    "p50": 1261,
+    "p90": 1510
+   }
+  },
+  "primary_only": {
+   "context_window_1": {
+    "max": 1786,
+    "mean": 1361.5,
+    "min": 1193,
+    "n": 4,
+    "p10": 1193,
+    "p50": 1263,
+    "p90": 1786
+   }
+  },
+  "recovered": {
+   "context_window_1": {
+    "max": 1627,
+    "mean": 1191.981,
+    "min": 591,
+    "n": 53,
+    "p10": 814,
+    "p50": 1262,
+    "p90": 1500
+   }
+  },
+  "split": {
+   "context_window_1": {
+    "max": 1635,
+    "mean": 1188.278,
+    "min": 368,
+    "n": 18,
+    "p10": 647,
+    "p50": 1209,
+    "p90": 1620
+   },
+   "context_window_2": {
+    "max": 1153,
+    "mean": 1015.0,
+    "min": 877,
+    "n": 2,
+    "p10": 877,
+    "p50": 1153,
+    "p90": 1153
+   }
+  }
+ },
+ "plan": "split-answer-2026-11",
+ "plan_counts": {
+  "differences": [],
+  "expected": {
+   "kept_changed": {
+    "context_window_1": 219
+   },
+   "negative": {
+    "context_window_1": 150
+   },
+   "primary_only": {
+    "context_window_1": 4
+   },
+   "recovered": {
+    "context_window_1": 53
+   },
+   "split": {
+    "context_window_1": 18,
+    "context_window_2": 2
+   }
+  },
+  "expected_total": 446,
+  "matches": true
+ },
+ "provenance": {
+  "citable": false,
+  "commit": "badc6bafe654b90d1111b5bf0b9cc597e801a99b",
+  "describe": "v1.6.26-28-gbadc6baf",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-11T02:14:24Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 593,
+    "n_spans": 130142,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "run",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "178590ce972f7cf39c06b0e81ed40f84f235e1391958d2a63354f5f6d31d6e03",
+    "texts_sha256": "37f2a2ce47a63e1a566af5f6aa6bedce717fd3a4f967bab8dd53a2a55046a9ae"
+   },
+   {
+    "kind": "chunks",
+    "n_docs": 593,
+    "n_spans": 14689,
+    "producer": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+    "sha256": "7fef052d238722e4df6c347ca3c70ffd3f9f9addabdc4f1f6f98f839085dbfea",
+    "texts_sha256": "37f2a2ce47a63e1a566af5f6aa6bedce717fd3a4f967bab8dd53a2a55046a9ae"
+   }
+  ],
+  "source": "git",
+  "untracked": 1,
+  "version": "v1.6.26+badc6baf",
+  "warnings_n": 2
+ },
+ "records_with_several_items": 134,
+ "registry": {
+  "drift_size": 22,
+  "opus_cap": 31
+ },
+ "schema": "split-answer-items/1",
+ "seed_rows": 446,
+ "seed_rows_merged_on_a_shared_item": 0,
+ "split_windows_contained": {
+  "context_window_1": 16,
+  "context_window_2": 2
+ },
+ "tokenizer": "Salesforce/SFR-Embedding-Mistral",
+ "tokens_counted_on": "the passage as judged (markers included)",
+ "trims_found": 0
+}
