@@ -193,6 +193,25 @@ def test_walk_pool_quotas_and_the_prefix_counted_after_the_filter() -> None:
     assert len({(f["record_id"], f["arm"]) for f in other}) == len(other) == len({f["chunk_id"] for f in other})
 
 
+def test_walk_stops_at_the_prefix_when_the_pool_is_larger() -> None:
+    """Fable F2: a cell whose filtered pool exceeds 3 x quota stops at 3 x quota candidates; the
+    (3 x quota + 1)-th pair of the seeded order is not a candidate."""
+    final, reg = [], {}
+    for i in range(10):  # distinct records and windows: the filter passes every pair
+        f = final_row(f"r{i}", f"w{i}", "base")
+        final.append(f)
+        reg[f["pair_id"]] = reg_row(f, "P1", False)
+    cands, quotas, c = sap.negative_walk(final, reg, exclude_pairs=(), exclude_windows=(), seed=SEED,
+                                         quotas_by_paper={"same": 0, "other": 1})
+    k = "other:base"
+    assert quotas[k] == 1 and c["pool"][k] == 10
+    assert c["candidates"][k] == 3 * quotas[k] == len(cands) and c["prefix_reached"][k]
+    assert c["walked"][k] == 3 < c["pool"][k] and c["walk_skips"][k] == {}
+    order = sorted(final, key=lambda f: (asc.seeded_key(SEED, "other", "base", f["pair_id"]), f["pair_id"]))
+    assert [f["pair_id"] for f in cands] == [f["pair_id"] for f in order[:3]]
+    assert order[3]["pair_id"] not in {f["pair_id"] for f in cands}
+
+
 def test_walk_refuses_a_final_row_without_its_registry_row_or_with_another_arm() -> None:
     f = final_row("r", "w", "base")
     with pytest.raises(SystemExit, match="no matching stage-A registry row"):
