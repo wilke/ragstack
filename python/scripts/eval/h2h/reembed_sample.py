@@ -33,8 +33,10 @@ from pathlib import Path
 from typing import Any
 
 _EVAL = Path(__file__).resolve().parents[1]
-if str(_EVAL) not in sys.path:
-    sys.path.insert(0, str(_EVAL))
+_PYTHON = _EVAL.parents[1]  # python/, so `fetch` can import ragstack without PYTHONPATH
+for _p in (_EVAL, _PYTHON):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 from h2h import gates as G  # noqa: E402
 
