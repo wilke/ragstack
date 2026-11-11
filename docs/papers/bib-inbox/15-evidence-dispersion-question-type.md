@@ -41,7 +41,7 @@ PDF-checked claims are marked **[PDF]**. Everything else comes from the survey r
 - **QuALITY [PDF, p4]:** 73.9% of EASY and 81.3% of HARD questions need "at least a long paragraph or two".
 
 **Composite questions with local evidence**
-- **Min et al. 2019 [PDF]:** 27% of 100 bridge questions need multi-hop reasoning (Table 2, p3); for comparison questions the figure is 45% (Table 3, p4). A single-paragraph BERT reaches 67.08 F1 (distractor dev).
+- **Min et al. 2019 [PDF]:** 27% of 100 bridge questions need multi-hop reasoning (p3; Table 2, p4); for comparison questions the figure is 45% (Table 3, p4). A single-paragraph BERT reaches 67.08 F1 (distractor dev).
 - **WikiHop [PDF, p7]:** among samples judged follows/likely, 44.1% needed a single document. This is *not* 44.1% of all answerable samples, as the multi-hop survey stated. The authors add that many "single" cases only hint at the answer, which annotators completed with background knowledge.
 - **FinQA [PDF, p5]:** 62.43% of questions are table-only, and 40.90% of programs have more than one step. So at least 26.75% of all questions are multi-step yet single-source *(derived)*.
 - **TAT-QA [PDF]:** 4,747 of 6,964 arithmetic answers (68.2%) are table-only *(derived)*.
