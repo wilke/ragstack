@@ -79,4 +79,4 @@ pairs) does not run. Production `context_window` keeps its default; callers can 
 **Limits.** Exploratory and small: 18 split pairs give a wide interval. The negative control was not split into
 same-paper and other-paper pairs; same-paper flips might be neighbours carrying a genuine answer, so 23 % may
 overstate the leniency. Even 8 of 18 is an upper bound for production: in a multi-source answer prompt each source gets a share of the
-budget and its context is trimmed before the passage (PLAN §3.1). One judge protocol and one corpus.
+budget and its context is trimmed first and the passage last (PLAN §3.1). One judge protocol and one corpus.
