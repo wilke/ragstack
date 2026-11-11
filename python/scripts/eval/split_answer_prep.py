@@ -54,6 +54,13 @@ fewer is refused, never extended.
 **Neighbours of the negatives** (review nit a) come from the draw's own chunk run
 (``<negative dir>/chunks/chunks-control.jsonl``); the draw's gate makes every document it shares
 with the confirmatory run's ``chunks-control.jsonl`` identical there.
+
+**Clarifications of §3.2** (the #999 review; each tightens the plan's literal wording, none loosens it):
+
+- (b)8 ``collision_negative``: a candidate whose (record, M) is an earlier eligible candidate's (walk
+  order across all cells) is excluded, by the logic of the positive-collision rule: it would get the
+  same neighbour item id and ``build-control`` would merge the two into one pair (149 judged, not
+  150). ``items`` refuses two negatives on one (record, item id).
 """
 from __future__ import annotations
 
@@ -129,7 +136,7 @@ PAPERS = ("same", "other")
 NEGATIVE_QUOTAS = {"same": 100, "other": 50}
 PREFIX_FACTOR = 3
 NEGATIVE_STRATUM = "not"
-NEGATIVE_EXCLUSIONS = ("unresolved", "one_chunk_document", "edge", "trim", "collision_positive")
+NEGATIVE_EXCLUSIONS = ("unresolved", "one_chunk_document", "edge", "trim", "collision_positive", "collision_negative")
 
 #: §3.2 (c)
 WALL_MARK = "⟦SECTION WALL⟧"
@@ -507,6 +514,10 @@ def build_items(pairs: Sequence[ConfirmPair], cdocs: Mapping[str, Sequence[Mappi
             it.add(q, m_row, control_of=p.control_of, record_id=p.record_id, group=p.group, item_set="positive",
                    budget=budget, counter=counter)
     positive_rm = {(p.record_id, p.m_chunk_id) for p in pairs}
+    # review A1: two negatives on one (record, M) would be one neighbour item, one registry pair
+    if len({(n["record_id"], nbr_id(n["max_overlap_chunk_id"], 1)) for n in negatives}) != len(negatives):
+        raise SystemExit("REFUSED: two drawn negatives share one (record, neighbour item id); build-control would merge "
+                         "them into one pair (the draw's collision_negative rule)")
     for n in negatives:
         if (n["record_id"], n["max_overlap_chunk_id"]) in positive_rm:
             raise SystemExit("REFUSED: a negative item's (record, M) is a positive item's; the sets must be disjoint")
@@ -784,8 +795,14 @@ def negative_eligibility(cands: Sequence[Mapping[str, Any]], seeds: Mapping[str,
                          ndocs: Mapping[str, Sequence[Mapping[str, Any]]], positive_rm: set[tuple[str, str]], *,
                          budget: int) -> list[tuple[str | None, Passage | None]]:
     """§3.2 (b)8, per candidate in walk order: the first reason of :data:`NEGATIVE_EXCLUSIONS` that
-    applies, or ``None`` with its M ± 1 passage. Geometric only: no label is read."""
+    applies, or ``None`` with its M ± 1 passage. Geometric only: no label is read.
+
+    ``collision_negative`` (review A1, a clarification of §3.2 (b)8): a candidate whose (record, M)
+    is an earlier eligible candidate's (walk order across all cells, whether or not that one is
+    later drawn) would get that one's neighbour item id and merge with it into one registry pair;
+    it is excluded, as ``collision_positive`` keeps the negatives apart from the positives."""
     out: list[tuple[str | None, Passage | None]] = []
+    claimed: set[tuple[str, str]] = set()
     for f in cands:
         s = seeds.get(f["pair_id"])
         rows = ndocs.get(s["doc_id"]) if s else None
@@ -801,7 +818,10 @@ def negative_eligibility(cands: Sequence[Mapping[str, Any]], seeds: Mapping[str,
             out.append(("trim", None))
         elif (f["record_id"], s["chunk_id"]) in positive_rm:
             out.append(("collision_positive", None))
+        elif (f["record_id"], s["chunk_id"]) in claimed:
+            out.append(("collision_negative", None))
         else:
+            claimed.add((f["record_id"], s["chunk_id"]))
             out.append((None, q))
     return out
 
@@ -883,8 +903,10 @@ def run_draw_negative(main_config: Path, seed_file: Path, confirm_dir: Path, con
                          "arm": f["arm"]})
         toks.append(counter.count(q.text))
     if len({(r["record_id"], r["arm"]) for r in out_rows}) != len(out_rows) or \
-            len({r["stage_a_chunk_id"] for r in out_rows}) != len(out_rows):
-        raise SystemExit("REFUSED: the draw broke its own rule (two pairs of one (record, arm) or one window)")
+            len({r["stage_a_chunk_id"] for r in out_rows}) != len(out_rows) or \
+            len({(r["record_id"], r["max_overlap_chunk_id"]) for r in out_rows}) != len(out_rows):
+        raise SystemExit("REFUSED: the draw broke its own rule (two pairs of one (record, arm), one window or one "
+                         "(record, M))")
     nsha = acc.write_private(out_dir / "sample-negative.jsonl", acc.jsonl_bytes(out_rows), "the negative sample")
     texts_by_doc = doc_texts({d: ndocs[d] for d in sorted({r["doc_id"] for r in out_rows})}, "the draw's chunks")
     docs = sorted(texts_by_doc)
@@ -898,7 +920,7 @@ def run_draw_negative(main_config: Path, seed_file: Path, confirm_dir: Path, con
                      "cells; the prefix counts 3 x quota candidates after that filter; the first quota eligible "
                      "candidates per cell are drawn; a short cell is refused",
         "eligibility": "M resolves; M has a neighbour on both sides; the M ± 1 passage is untrimmed; (record, M) is "
-                       "no positive item's",
+                       "no positive item's and no earlier eligible candidate's (walk order, all cells)",
         **counts,
         "exclusions": {k: {r: v[r] for r in (*NEGATIVE_EXCLUSIONS, "eligible_beyond_quota")}
                        for k, v in reasons.items()},

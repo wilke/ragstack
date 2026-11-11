@@ -299,6 +299,13 @@ def test_items_refuses_a_positive_negative_collision(world: sfx.World, tmp_path:
     assert not (tmp_path / "items" / "neighbour-export.jsonl").exists()
 
 
+def test_items_refuses_two_negatives_on_one_record_and_m(world: sfx.World, tmp_path: Path) -> None:
+    # review A1: two drawn pairs (two windows) of one record on one M are one neighbour item
+    with pytest.raises(SystemExit, match=r"share one \(record, neighbour item id\)"):
+        run_items(world, tmp_path, [("alias-O-n1-g0", "dC", 1), ("alias-O-n1-g0", "dC", 1)])
+    assert not (tmp_path / "items" / "neighbour-export.jsonl").exists()
+
+
 def test_items_refuses_an_edge_negative_and_a_tampered_draw(world: sfx.World, tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="both sides"):
         run_items(world, tmp_path, [("alias-O-n1-g0", "dC", 0)])

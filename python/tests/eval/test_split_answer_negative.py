@@ -205,16 +205,18 @@ def neg_window(tag: str, doc: str, s: int, e: int) -> dict[str, Any]:
 
 
 class Draw:
-    def __init__(self, tmp: Path, monkeypatch: pytest.MonkeyPatch, quotas: dict[str, int] | None = None) -> None:
-        wins = {t: neg_window(t, d, s, e) for t, _r, d, s, e, *_x in NOTS}
+    def __init__(self, tmp: Path, monkeypatch: pytest.MonkeyPatch, quotas: dict[str, int] | None = None,
+                 nots: list[tuple[Any, ...]] | None = None) -> None:
+        self.nots = NOTS if nots is None else nots
+        wins = {t: neg_window(t, d, s, e) for t, _r, d, s, e, *_x in self.nots}
         wins["nx2"] = wins["nx1"]
         self.world = sfx.World(tmp / "w", extra_windows=[w for t, w in wins.items() if t != "nx2"])
         self.final, self.reg = [], {}
-        for t, r, d, _s, _e, arm, same, _o in NOTS:
+        for t, r, d, _s, _e, arm, same, _o in self.nots:
             f = final_row(r, wins[t]["chunk_id"], arm)
             self.final.append(f)
             self.reg[f["pair_id"]] = reg_row(f, sfx.DOCS.get(d, ("PMC9", ""))[0], same)
-        self.pid = {t: aj.pair_id(r, wins[t]["chunk_id"]) for t, r, *_x in NOTS}
+        self.pid = {t: aj.pair_id(r, wins[t]["chunk_id"]) for t, r, *_x in self.nots}
         nx1 = next(f for f in self.final if f["pair_id"] == self.pid["nx1"])
         self.control = sfx.write_jsonl(tmp / "control" / "sample.jsonl", [
             {"pair_id": nx1["pair_id"], "record_id": nx1["record_id"], "chunk_id": nx1["chunk_id"],
@@ -245,7 +247,7 @@ def test_draw_negative_end_to_end(words: sfx.WordCounter, tmp_path: Path, monkey
     assert rec["drawn"] == rec["quotas"] and rec["n_drawn"] == 3
     ex = rec["exclusions"]
     assert ex["same:base"] == {"unresolved": 0, "one_chunk_document": 1, "edge": 1, "trim": 0,
-                               "collision_positive": 0, "eligible_beyond_quota": 0}
+                               "collision_positive": 0, "collision_negative": 0, "eligible_beyond_quota": 0}
     assert ex["same:neighbour"]["unresolved"] == 1 and ex["same:neighbour"]["collision_positive"] == 1
     assert rec["walk_skips"]["other:base"] == {"record_arm_taken": 1}
     assert rec["in_sample_excluded"]["same:base"] == 1 and rec["shared_window_excluded"]["same:base"] == 1
@@ -272,6 +274,37 @@ def test_draw_negative_end_to_end(words: sfx.WordCounter, tmp_path: Path, monkey
     items = sap.run_items(d.world.p["confirm"], d.world.p["label_table"], d.world.p["main_config"], out,
                           tmp_path / "items")
     assert items["items"]["negative"] == {"context_window_1": 3} and items["items_per_set"]["negative"] == 3
+
+
+def test_draw_negative_excludes_a_second_candidate_on_one_record_and_m(
+        words: sfx.WordCounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review A1: nc1 is nb1's record in another arm (so the walk's (record, arm) filter passes it)
+    with another window on the same M = B1; it would merge with nb1 into one registry pair."""
+    nots = [*NOTS, ("nc1", "alias-N-1-g0", "dB", 3300, 3700, "neighbour", False, "collision_negative"),
+            ("nc2", "alias-N-10-g0", "dC", 5000, 5500, "neighbour", False, "drawn")]
+    d = Draw(tmp_path, monkeypatch, quotas={"same": 2, "other": 2}, nots=nots)
+    rec = d.run()
+    drawn = asc.read_jsonl(tmp_path / "neg" / "sample-negative.jsonl")
+    assert {r["pair_id"] for r in drawn} == {d.pid[t] for t, *_x, o in nots if o == "drawn"}
+    assert rec["candidates"]["other:neighbour"] == 2 and rec["drawn"]["other:neighbour"] == 1
+    assert rec["exclusions"]["other:neighbour"]["collision_negative"] == 1
+    assert sum(v["collision_negative"] for v in rec["exclusions"].values()) == 1
+    assert len({(r["record_id"], r["max_overlap_chunk_id"]) for r in drawn}) == len(drawn) == 4
+
+
+def test_negative_eligibility_collision_is_claimed_by_eligible_candidates_only() -> None:
+    rows = sfx.chunk_rows("dB")
+    ndocs = {"dB": rows}
+    seeds = {"p0": {"doc_id": "dB", "chunk_id": rows[0]["chunk_id"]},   # edge: claims nothing
+             "p1": {"doc_id": "dB", "chunk_id": rows[0]["chunk_id"]},   # edge again, not a collision
+             "p2": {"doc_id": "dB", "chunk_id": rows[1]["chunk_id"]},   # eligible: claims (r, B1)
+             "p3": {"doc_id": "dB", "chunk_id": rows[1]["chunk_id"]},   # (r, B1) again
+             "p4": {"doc_id": "dB", "chunk_id": rows[1]["chunk_id"]}}   # another record: eligible
+    cands = [{"pair_id": "p0", "record_id": "r"}, {"pair_id": "p1", "record_id": "r"},
+             {"pair_id": "p2", "record_id": "r"}, {"pair_id": "p3", "record_id": "r"},
+             {"pair_id": "p4", "record_id": "s"}]
+    got = [why for why, _q in sap.negative_eligibility(cands, seeds, ndocs, set(), budget=8000)]
+    assert got == ["edge", "edge", None, "collision_negative", None]
 
 
 def test_draw_negative_refuses_a_short_cell(words: sfx.WordCounter, tmp_path: Path,
