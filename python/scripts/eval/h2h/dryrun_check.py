@@ -4,7 +4,7 @@ real run's first shard), per arm, from files — no live call.
     h2h_report.py dryrun --arm S --receipt <receipt.json> [--summary <summary.json>]
         [--stderr-file <staged file>] [--logs-json <GoWe logs endpoint capture>]
         [--qdrant-count N --es-count N] [--collection-entry <GET /v1/collections item>]
-        [--expect-build 1] [--expect-sentinel-chunks 168] [--compare-receipt <other arm's receipt>]
+        [--expect-build 1 --expect-commit <sha>] [--expect-sentinel-chunks 168] [--compare-receipt <other arm's receipt>]
 
 Exit 0 when every check passes, 1 otherwise; prints one line per check. The per-arm
 expectations are those of ``gates`` (segmenter, build, the full ``chunking`` object,
@@ -33,10 +33,11 @@ def _load(p: str | None) -> Any:
 def run_checks(arm: str, receipt: dict[str, Any], *, summary: dict[str, Any] | None = None,
                stderr_text: str | None = None, logs: dict[str, Any] | None = None,
                qdrant: int | None = None, es: int | None = None, entry: dict[str, Any] | None = None,
-               expect_build: str | None = None, expect_sentinel_chunks: int | None = None,
+               expect_build: str | None = None, expect_commit: str | None = None,
+               expect_sentinel_chunks: int | None = None,
                other: dict[str, Any] | None = None) -> tuple[list[str], dict[str, Any]]:
     bad: list[str] = []
-    bad += G.check_receipt(receipt, arm, "sentinel", expect_build=expect_build)
+    bad += G.check_receipt(receipt, arm, "sentinel", expect_build=expect_build, expect_commit=expect_commit)
     if receipt.get("n_docs") != G.N_SENTINEL_DOCS:
         bad.append(f"{arm}: n_docs {receipt.get('n_docs')} != {G.N_SENTINEL_DOCS}")
     if expect_sentinel_chunks is not None and receipt.get("n_chunks") != expect_sentinel_chunks:
@@ -96,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--es-count", type=int)
     ap.add_argument("--collection-entry")
     ap.add_argument("--expect-build")
+    ap.add_argument("--expect-commit")
     ap.add_argument("--expect-sentinel-chunks", type=int)
     ap.add_argument("--compare-receipt")
     args = ap.parse_args(argv)
@@ -103,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     bad, info = run_checks(args.arm, _load(args.receipt), summary=_load(args.summary), stderr_text=text,
                            logs=_load(args.logs_json), qdrant=args.qdrant_count, es=args.es_count,
                            entry=_load(args.collection_entry), expect_build=args.expect_build,
+                           expect_commit=args.expect_commit,
                            expect_sentinel_chunks=args.expect_sentinel_chunks, other=_load(args.compare_receipt))
     print(json.dumps({"arm": args.arm, "ok": not bad, "failures": bad, "info": info}, indent=1, default=str))
     return 0 if not bad else 1

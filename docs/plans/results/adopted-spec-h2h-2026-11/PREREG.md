@@ -43,9 +43,10 @@ harness needs and as the drift gate below; it is not a candidate the sequence ca
   collections and questions as Addendum C, so this recomputes a known result (+3.49 [+2.11, +4.86]); a
   failure signals server or embedding drift and makes the run GATE-NOT-EVALUABLE, not evidence against
   ft512o64s.
-- **H1 (non-inferiority):** S − ft512o64s > −2.0 points, the frozen margin M_ni (Addendum B).
+- **H1 (non-inferiority):** lower bound of S − ft512o64s ≥ −2.0 points, the frozen margin M_ni (Addendum B; the
+  rule is §4.1's, ≥).
 - **H2 (superiority):** S − ft512o64s > 0, tested only if H1 holds.
-- **H3 (segmenter):** S-regex − S > −2.0 points.
+- **H3 (segmenter):** lower bound of S-regex − S ≥ −2.0 points (§4.3, ≥).
 
 The decision maps to {deploy S, deploy ft512o64s}; GATE-NOT-EVALUABLE leaves the server default (ft512o64)
 as it is until a re-run, which is not a decision for ft512o64. H3 does not choose; it decides whether S may be
@@ -78,7 +79,7 @@ decision step. Every arm holds the 5 sentinel articles, as every OA eval arm doe
 
 **Input text.** The Addendum C extract (241,930 records with the `structure` key; with that key removed,
 byte-identical to the main-run input; private, `sections-2026-11/RESULTS.md`). The new arms ingest the same
-shard files, pinned by sha256 at the freeze (§9.1), through `ingest-bulk.cwl`.
+shard files, pinned by sha256 at the freeze (§9.1), through the study text `ingest-bulk-h2h.cwl` (below).
 
 **Images.** A collection with `structure_cuts` is refused — at create (400), at dispatch (422) and by
 `gowe_batch_ingest.py` — unless the workflow text names a **stamped** tools image at v1.6.23 or later
@@ -95,7 +96,8 @@ owner names, ≥ v1.6.24, which carries `structure_cuts` and the `sentence` tole
   the dev worker group's image directory by management, never in the release store. There is **no non-image
   fallback**: outside an image `tool_provenance` writes `image_commit` as null, which fails the gates below,
   and `ingest_shard.py` alone is not the full ingest. If the b2 image cannot be dispatched in the real run,
-  the S-regex arm is dropped and H3 is recorded as *not run*. Gate: every S and S-regex receipt carries the
+  the S-regex arm is dropped and H3 is **GATE-NOT-EVALUABLE** (§4.3: S deployable only where Punkt is
+  asserted; the script prints *not run* as the gate). Gate: every S and S-regex receipt carries the
   same `image_commit`; S receipts carry `image_build` `1`, S-regex receipts `2`.
 
 **Workflow text.** Both new arms are submitted directly (`gowe submit`, as the Addendum C arms were) on
@@ -110,9 +112,12 @@ sentinel shard is additionally read through the logs endpoint (the dry run's pro
 agree. The S text is the committed file (its six image-name lines name the b1 image); the S-regex text is the
 same file with each of those six lines rewritten to the b2 name — the **only** difference between the two
 arms' texts. Both sha256 are pinned in `frozen-inputs.json` (§9.1). Consequence, stated plainly: **S does not
-run dev's registered workflow id**; the registered text and the study text differ in the stderr lines only,
-and the create gate (400) and `names_marker_capable_image` on the submitted text still apply (the dispatch
-gate, 422, is the API's and a direct submit does not pass through it). The study text has been checked by
+run dev's registered workflow id**; the registered text and the study text differ in comments and the stderr
+capture only (`test_study_workflow_texts_pinned` checks that, comments stripped, the study text is the
+v1.6.25 base plus exactly those edits). **No server-side gate inspects the submitted study text**: the create
+gate (400) checks the deployment's registered workflow, the dispatch gate (422) and `gowe_batch_ingest.py`
+are not on a direct `gowe submit`'s path; the image is enforced only by the §6 receipt gates (`image_commit`,
+`image_build`, the full `chunking` object) and by the pinned text sha256. The study text has been checked by
 GoWe's parser semantics in source (the `stderr` expression is evaluated per shard; a `type: stderr` output
 collects it) and **has run on GoWe — study-text sentinel pass, 2026-11-11, after the dry run:** both study
 texts (sha256 as pinned; the S-regex text made by renaming the six b1 lines to b2) were submitted on the
@@ -121,7 +126,10 @@ unset → SFR 4096). Both completed: 40 documents, 0 failed, 168 chunks, chunk i
 identical to the dry run's on both arms; the staged `oa-eval-part-00.ingest-stderr.txt` exists in each ingest
 task's stage-out; file and logs endpoint agree — S 1,501 bytes / 0 warning lines in both, S-regex 1,765
 bytes / 1 line in both; Qdrant = Elasticsearch = 168 on both; the scratch collections purged, listing clean,
-stores 404. The §7 step 1 precondition on the study text is met.
+stores 404. The §7 step 1 precondition on the study text is met. (The S-regex stderr was 1,851 bytes on the
+dry run and 1,765 here; the texts differ and the stream carries object addresses and timing, so byte counts
+are recorded and **not compared** — the gate is the warning-line count, 0 / ≥ 1, and the file-vs-endpoint
+agreement.)
 
 **Dry run (2026-11-11).** Done on `dev` (server v1.6.25, `67e53fd`), on two scratch collections created with
 the exact spec of §7 step 2 (registry `spec_hash` `29236085` on both), with the sentinel shard ingested into
@@ -186,7 +194,9 @@ the reranker model id and image. Recorded 2026-11-11 (read-only; `frozen-inputs.
 is inferred from the deployment, not read from dev's config; serving build and reranker image are **not
 exposed by the endpoints** and are recorded as such, so the gate on them is the model ids only. The reused
 arms' census, read the same day (registry = Qdrant = Elasticsearch, sentinel documents included): ft512o64
-705,204; ft512o64s 859,280 (= 859,087 main + 193 sentinel, from its 17 shard receipts); sent512s 850,312.
+705,204; ft512o64s 859,280 (= 859,087 main + 193 sentinel, from its 17 shard receipts); sent512s 850,312
+(= 850,119 main + 193, the sentinel figure of Addendum C's receipt summary; private, `ingest/receipts-summary.txt`;
+not re-derived from its own 17 receipts).
 Gate: a pinned sample of 200 ft512o64s chunk texts — drawn 2026-11-11 by `h2h_report.py reembed select`
 (seed 20261111) from the sorted distinct `chunk_ids` of that arm's 17 shard receipts, i.e. the whole stored
 collection of 859,280 chunks, sentinel included (193, expected 0.04 in the sample; every one has a stored
@@ -282,6 +292,9 @@ A tie at H2 goes to the cheaper arm, and the two written rules rank S and ft512o
 - **Order A — Addendum C's convention.** Each section arm sits just after its parent: ft512o64 (2) <
   ft512o64s (2.5) < sent512s (3.5) (private, `sections-2026-11/ADDENDUM-C.md`), and Addendum B's
   owner-confirmed ranks already put sentence 512 above 512/64. S is sent512s plus a merge pass, so **S ranks after ft512o64s**; a tie deploys **ft512o64s**.
+  (The Addendum C harness config's integer `cost_rank`s, visible in `config-diff.json`, list sent512s 7 before
+  ft512o64s 8 by config order; those ranks were not the Addendum C ladder, which is the 2.5 < 3.5 of its text.
+  Order A follows the text.)
   Integer ranks for the decision config: ft512o64 1, ft512o64s 2, S 3.
 - **Order B — Addendum B's within-class rule.** Within a class, rank by stored chunks / ingest compute. By
   stored chunks sent512s was cheaper than ft512o64s (850,119 vs 859,087; private,
@@ -343,8 +356,10 @@ appended in the angle brackets; the stratum row only when the pooled bound passe
 holds and H2 holds → row 1 (both orders). H1 holds and H2 fails → Order A: row 2; Order B: row 4 if
 loE > 0, else row 3. No other path exists.
 
-H3's sentence is appended: "Segmenter: S-regex − S = D3 [lo3, hi3]; S may be deployed on any worker / only
-where Punkt is asserted (reason: margin / stratum / not evaluable: <gate>)."
+H3's sentence is appended: "Segmenter: S-regex − S = D3 [lo3, hi3]; S may be deployed on any worker (on this
+corpus; chunk-id overlap X %) / only where Punkt is asserted (reason: margin / stratum / not evaluable: <each
+gate with its count>; chunk-id overlap X %)." Row 8's "<each gate with its count>" is the gate code and its
+count (`segmenter ×17`); the full failure list is in `artifacts/h2h-report.json`.
 
 ## 5. Power (planning figures; no new data)
 
@@ -378,8 +393,10 @@ if truly equal and 0.52 if truly 1 point worse; the minimal superiority detectab
 points (1.6 at 0.90). G1 is expected to pass (Addendum C: +3.49). Normal-approximation planning numbers; the
 run's intervals come from the bootstrap; the script is committed as `power.py` beside this file with its
 `power.json` (§9.1). The H3 row assumes π = 0.02; the dry run's identical chunk ids (§2) say π may be far
-lower, and `power.py` also prints π = 0.005 and 0.001: there the half-width is 0.31 and 0.14 points and NI
-at 2.0 is passed at any plausible true difference — a collapse of the interval, not power.
+lower, and `power.py` also prints π = 0.005 and 0.001 (cells with |d|/100 > π are marked infeasible: two arms
+cannot differ by more than their discordance). At π = 0.005 the true difference cannot exceed 0.5 points, so
+H3 cannot fail; H3 can fail its 2.0-point margin only if roughly 2 % or more of the decision-set questions
+(about 41) change hit status between S and S-regex.
 
 ## 6. Gates, validity checks, deviations
 
@@ -411,7 +428,11 @@ on S-regex voids H3 (which then reads *S only where Punkt is asserted*, §4.3); 
   **Source of the stderr:** for every shard, sentinel included, the staged-out `<shard>.ingest-stderr.txt`
   of the ingest task (the full stream; a missing file fails the gate for that arm); for the sentinel shard
   also the GoWe logs endpoint's tail, whose line count must equal the file's. A logs-endpoint capture at or
-  over 256 KB is not evidence either way and is never used alone. Every S and S-regex receipt carries the
+  over 256 KB is not evidence either way and is never used alone. A retried ingest task leaves the stderr
+  and receipt of its **final** attempt; the gate reads that attempt, the attempt count per task (GoWe's task
+  record) is logged in `RESULTS.md`, and chunks an earlier fallback attempt might have left behind are
+  caught by the distinct-id = Qdrant = Elasticsearch gate (a retried attempt writes the same ids, a
+  different segmentation would not). Every S and S-regex receipt carries the
   same `image_commit`; S receipts carry `image_build 1`, S-regex receipts `image_build 2` (the no-`nltk`
   build). `tool_image`, `tool_image_digest` and `workflow_id` are null on a direct submit (as on every
   Addendum C receipt) and are not gated; the images are tied to the receipts by `image_commit` +
@@ -435,9 +456,14 @@ on S-regex voids H3 (which then reads *S only where Punkt is asserted*, §4.3); 
 - **Cross-check.** `decision.json` `arms.ft512o64s.{point, lo, hi}` equals D1, and every step present in
   `ladder.steps` equals the script's recomputation of that pair (4 decimals); a missing step is reported,
   not a gate; the harness's choice is reported, not compared.
-- **Provenance.** Harness run from the tagged commit in a clean tree (`experiment_provenance()` in
-  `score.json` / `decision.json`: `dirty: false`, `untracked: 0`, `citable: true`); server `/v1/version`,
-  tools images and endpoint versions per arm in `README.md`.
+- **Provenance.** Harness run from the tagged commit in a clean tree. The harness (`oa_chunk_eval`) writes
+  no `experiment_provenance()` into `score.json` / `decision.json`; the §9.4 script records
+  `experiment_provenance()` of the checkout it runs from (`dirty: false`, `untracked: 0`, a commit) in
+  `artifacts/h2h-report.json` and gates on it, and the operator runs `score`, `decide` and the report from
+  that one checkout at the freeze commit (the `--prereg-sha256` refusal ties the run to the frozen text).
+  `decision.json` must also be the frozen rule's own output: nothing `forced_unchecked`, `paired_ladder`,
+  `bonferroni`, margins 2.0, the decision set, a ladder order following the frozen cost order (gate).
+  Server `/v1/version`, tools images and endpoint versions per arm in `README.md`.
 
 **Deviations (§9.3).** After the freeze any change is a dated entry in `DEVIATIONS.md`: what, why, when, what
 had been seen, which result it touches. What counts, at least: the margin, the sequence, the cost order and
@@ -501,6 +527,14 @@ Owner time: the freeze decisions, the acknowledgement of the decision sentence.
 - **Versions.** One server version for all arms (gate), but not the record's; the reused arms were embedded
   weeks earlier (re-embed gate, §2); their absolute hit@5 may differ from the record by score-tie noise.
 - **Segmenter identity is per process, not per document** (§2); the stderr gate covers the rest.
+- **Ingest path differs between new and reused arms.** S and S-regex run the study text on tools v1.6.24
+  (b1 / b2); the reused arms ran Addendum C's registered `ingest-bulk.cwl` on tools v1.6.24-b1 (ft512o64s,
+  sent512s) and the main run's text on an earlier image (ft512o64). Capturing stderr does not touch chunking
+  (the sentinel chunk ids reproduced across both texts); the tools-version difference to ft512o64 is not
+  otherwise controlled.
+- **H3's "any worker" is a statement about this corpus.** A pass, trivial or not, shows the regex segmenter
+  did not move retrieval on these 241,930 records under this spec; the sentence quotes the chunk-id overlap
+  and says *on this corpus*.
 - **ctx@5 is chars/4** unless the owner takes Q6; **S-regex models a hypothetical worker**, not an image that
   exists today; **the cost order is a convention** (§4.2), so both orders' decisions are printed.
 

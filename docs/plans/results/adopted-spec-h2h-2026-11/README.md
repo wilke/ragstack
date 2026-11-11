@@ -18,7 +18,7 @@ states what the other order would have decided.
 | file | tier | what |
 |---|---|---|
 | [PREREG.md](PREREG.md) | record, once frozen | hypotheses, arms, images, gates, the decision rule under both cost orders, the §4.5 sentences, power, procedure, freeze, owner decisions |
-| [frozen-inputs.json](frozen-inputs.json) | record, once frozen | every §9.1 pin that is a hash or a count: shard files, question-id lists, `noise.json`, configs, the two workflow texts, the two images, the `.def`, the sentinel counts; `null` where the freeze fills a value |
+| [frozen-inputs.json](frozen-inputs.json) | record, once frozen | every §9.1 pin that is a hash or a count: shard files, question-id lists, `noise.json`, configs, the two workflow texts, the two images, the `.def`, the sentinel counts, the reused-arm census, the model ids, the re-embed sample hash (nothing null) |
 | [ingest-bulk-h2h.cwl](ingest-bulk-h2h.cwl) | record, once frozen | the study workflow text: `cwl/ingest-bulk.cwl` at v1.6.25 plus a per-shard stderr `File` output; the S text as committed, the S-regex text = the six image-name lines renamed (both sha256 in `frozen-inputs.json`) |
 | [ragstack-tools-nonltk.def](ragstack-tools-nonltk.def) | record, once frozen | the recipe of the S-regex image (`ragstack-tools-v1.6.24-b2.sif`): the v1.6.24 tools def without the `chunking` extra, with build-time assertions and a variant label |
 | [config-diff.json](config-diff.json) | record, once frozen | the key-by-key diff of the decision (3-arm) and reporting (5-arm) harness configs against the Addendum C configs, per setting; written by `h2h_report.py configs` |
@@ -42,6 +42,8 @@ states what the other order would have decided.
   and stages the full stream out as `<shard>.ingest-stderr.txt` (GoWe tees into the file and the tail).
   Consequence: **S does not run dev's registered workflow id**; both arms are direct submits of the study
   text, as the Addendum C arms were direct submits of dev's text.
+  No server-side gate inspects the submitted text; the image is enforced by the receipt gates and the pinned
+  sha256. Comments aside, the study text is the v1.6.25 base plus exactly the stderr edits (a test checks it).
 - **Input.** The 16 main shards (241,930 records) and the sentinel shard (40 records: 5 articles, 4 tables,
   31 figures), sha256 per file. Sentinel doc ids also in the main shards: **0**. Sentinel chunks under the S
   spec: **168** on both arms (dry run), with **identical chunk ids** across the two segmenters.

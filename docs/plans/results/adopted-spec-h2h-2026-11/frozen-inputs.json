@@ -269,7 +269,7 @@
    "registry": 850312
   },
   "read": "2026-11-11, read-only; registry = qdrant = es for each arm",
-  "note": "these counts include the 40 sentinel documents: ft512o64s 859,280 = 859,087 (16 main shards) + 193 (sentinel), confirmed from its 17 shard receipts; Addendum C's RESULTS quoted the main-shard figures (705,047 / 859,087 / 850,119)"
+  "note": "these counts include the 40 sentinel documents: ft512o64s 859,280 = 859,087 (16 main shards) + 193 (sentinel), confirmed from its 17 shard receipts; sent512s 850,312 = 850,119 + 193 with the sentinel figure taken from Addendum C's receipt summary (private), not re-derived from its own receipts; Addendum C's RESULTS quoted the main-shard figures (705,047 / 859,087 / 850,119)"
  },
  "model_ids": {
   "embedding_model": "Salesforce/SFR-Embedding-Mistral",
@@ -299,7 +299,7 @@
   "tests": "python/tests/eval/test_h2h_report.py",
   "power": {
    "file": "power.py",
-   "json_sha256": "e41c6c8727536eeebe90218f1707cf82edba6b5b788dd17f28323581babd7812"
+   "json_sha256": "10cd5d4ab0a764479d4df938f2be6bcadea4903989a5946306e88e4edcba65b5"
   }
  }
 }

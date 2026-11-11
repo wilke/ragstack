@@ -65,13 +65,21 @@ def derive(src: dict[str, Any], setting: str, kind: str, out_root: str, src_sha:
     if not src["score"].get("exclude_noise_subset"):
         raise ValueError(f"({setting}) Addendum C config does not exclude the noise subset")
     arms = copy.deepcopy(ARMS_DECISION if kind == "decision" else ARMS_REPORTING)
+    src_by_name = {a.get("name"): a for a in src["arms"]}
     for a in arms:
         if a["name"] == "S":
             a["collection_id"] = collection_s
-        if a["name"] == "S-regex":
+        elif a["name"] == "S-regex":
             a["collection_id"] = collection_sregex
+        else:  # a reused arm: its collection id is Addendum C's, never typed here
+            s = src_by_name.get(a["name"])
+            if not s or not s.get("collection_id"):
+                raise ValueError(f"({setting}) Addendum C config has no arm {a['name']!r} with a collection_id")
+            a["collection_id"] = s["collection_id"]
+            if a["name"] == "ft512o64" and not s.get("baseline"):
+                raise ValueError(f"({setting}) Addendum C config does not have ft512o64 as its baseline")
     cfg["arms"] = arms
-    cfg["decide"] = dict(DECIDE)
+    cfg["decide"] = {**src["decide"], **DECIDE}
     tag = "dec" if kind == "decision" else "rep"
     cfg["out_dir"] = str(Path(out_root) / f"out-h2h-{tag}-{setting}")
     cfg["_comment"] = (f"adopted-spec-h2h-2026-11 {kind} config, setting ({setting}): "

@@ -106,9 +106,9 @@
    "test": "H3 NI at 2.0 (if the dry run's identical chunks generalise)",
    "pi": 0.005,
    "powers": {
-    "-2.0": 0.025,
-    "-1.5": 0.904,
-    "-1.0": 1.0,
+    "-2.0": null,
+    "-1.5": null,
+    "-1.0": null,
     "-0.5": 1.0,
     "+0.0": 1.0,
     "+0.5": 1.0
@@ -118,12 +118,12 @@
    "test": "H3 NI at 2.0 (if the dry run's identical chunks generalise)",
    "pi": 0.001,
    "powers": {
-    "-2.0": 0.025,
-    "-1.5": 1.0,
-    "-1.0": 1.0,
-    "-0.5": 1.0,
+    "-2.0": null,
+    "-1.5": null,
+    "-1.0": null,
+    "-0.5": null,
     "+0.0": 1.0,
-    "+0.5": 1.0
+    "+0.5": null
    }
   }
  ],
@@ -145,5 +145,6 @@
    "0.90": 3.21
   }
  },
- "note_h3": "a true difference of exactly 0 with pi -> 0 makes H3 pass trivially: SE -> 0, the interval collapses around 0 and 'non-inferior at 2.0' says nothing a chunk-id overlap of 100% did not already say"
+ "infeasible_cells": "null where |d|/100 > pi: two arms cannot differ by more than their discordance",
+ "note_h3": "with pi below 0.02 the true difference cannot exceed 100*pi points (0.5 at pi = 0.005), so H3 cannot fail its 2.0-point margin at all: H3 can fail only if roughly 2% or more of the questions (about 41) change hit status between S and S-regex; below that the chunk-id overlap carries the finding"
 }

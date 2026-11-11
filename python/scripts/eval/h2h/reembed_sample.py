@@ -129,12 +129,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     cos = json.loads(Path(args.cosines).read_text(encoding="utf-8"))
-    bad, desc = G.check_reembed(cos, args.threshold, args.n)
+    pinned = args.ids_sha256
     if args.ids:
-        sample = json.loads(Path(args.ids).read_text(encoding="utf-8"))
-        got = G.ids_sha256([c["chunk_id"] for c in cos])
-        if got != sample.get("ids_sha256"):
-            bad.append(f"cosines cover ids sha256 {got[:12]}, sample pins {str(sample.get('ids_sha256'))[:12]}")
+        pinned = json.loads(Path(args.ids).read_text(encoding="utf-8")).get("ids_sha256")
+    bad, desc = G.check_reembed(cos, args.threshold, args.n, pinned)
     print(json.dumps({"ok": not bad, "failures": bad, **desc}, indent=1))
     return 0 if not bad else 1
 
@@ -165,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     v = sub.add_parser("verify", help="cosines.json against the §6 threshold")
     v.add_argument("--cosines", required=True)
     v.add_argument("--ids", help="the sample file, to check the cosines cover exactly the pinned ids")
+    v.add_argument("--ids-sha256", help="or the pinned ids sha256 itself (frozen-inputs.json reembed.ids_sha256)")
     v.add_argument("--threshold", type=float, default=0.999)
     v.add_argument("--n", type=int, default=N)
     v.set_defaults(fn=cmd_verify)

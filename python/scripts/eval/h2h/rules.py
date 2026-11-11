@@ -55,6 +55,12 @@ def _iv(d: dict[str, Any], name: str) -> dict[str, Any]:
     return d
 
 
+def g1_holds(D1: dict[str, Any]) -> bool:
+    """Gate G1 (§1, §6): lower(ft512o64s − ft512o64) > 0, setting (a), decision set."""
+    lo = D1.get("lo")
+    return lo is not None and lo > 0
+
+
 def stratum_failures(tested: list[dict[str, Any]], point_limit: float = STRATUM_POINT) -> list[dict[str, Any]]:
     """The strata that fail the guard among ``tested`` (each ``{dim, value, n, point, lo, hi}``
     with ``hi`` already at the two-sided 1 - 0.05/k level, k = len(tested)): point < limit and
@@ -137,8 +143,7 @@ def sentence(res: dict[str, Any], other: dict[str, Any], numbers: dict[str, Any]
     ``setting`` (``"a"``)."""
     tail = f" Under cost order {other['order']} the decision would be {other['decision']}."
     if res["row"] == 8:
-        gates = "; ".join(res["gates"]) or "(none listed)"
-        return (f"{GATE_NOT_EVALUABLE}: {gates}. The contrasts were computed ({_counts(numbers)}) and "
+        return (f"{GATE_NOT_EVALUABLE}: {gate_clause(res['gates'])}. The contrasts were computed ({_counts(numbers)}) and "
                 f"decide nothing; the server default stays as it is." + tail)
     counts = _counts(numbers)
     g1 = f" Gate G1: ft512o64s − ft512o64 = {_ivs(numbers['D1'])}."
@@ -171,6 +176,17 @@ def sentence(res: dict[str, Any], other: dict[str, Any], numbers: dict[str, Any]
     return f"Deploy {res['decision']}: {counts}; {body}{g1}{tail}"
 
 
+def gate_clause(gates: list[str]) -> str:
+    """§4.5 row 8: *each gate with its count* — the gate codes of the failure strings
+    (``[code] …``) with how many failures each produced; the full list stays in the report."""
+    from h2h.gates import gate_counts
+
+    counts = gate_counts(gates)
+    if not counts:
+        return "(none listed)"
+    return ", ".join(f"{code} ×{n}" for code, n in counts.items())
+
+
 def _counts(nb: dict[str, Any]) -> str:
     n = nb.get("n")
     n_s = f"{n:,}" if isinstance(n, int) else "n/a"
@@ -199,34 +215,38 @@ def decide_both_orders(frozen_order: str, *, gates: list[str], D: dict[str, Any]
 # ------------------------------------------------------------------- H3 (§4.3)
 
 
-def h3(*, gates: list[str], D3: dict[str, Any] | None, strata_failed: list[dict[str, Any]], k_strata: int) -> dict[str, Any]:
-    """lower(S-regex − S) ≥ −2.0 and the stratum guard → S may be deployed on any worker;
-    otherwise (or a gate on S-regex) only where Punkt is asserted."""
+def h3(*, gates: list[str], D3: dict[str, Any] | None, strata_failed: list[dict[str, Any]], k_strata: int,
+       overlap_share: float | None = None) -> dict[str, Any]:
+    """lower(S-regex − S) ≥ −2.0 and the stratum guard → S may be deployed on any worker (on
+    this corpus; the chunk-id overlap is quoted); otherwise (or a gate on S-regex, or S-regex
+    not run) only where Punkt is asserted."""
     if gates:
-        reason = "not evaluable: " + "; ".join(gates)
+        reason = "not evaluable: " + gate_clause(gates)
         return {"evaluable": False, "any_worker": False, "reason": reason, "gates": list(gates),
-                "sentence": _h3_sentence(D3, False, reason)}
+                "sentence": _h3_sentence(D3, False, reason, overlap_share)}
     if D3 is None:
         raise RuleError("H3 needs D3 = S-regex − S")
     _iv(D3, "D3")
     margin_ok = D3["lo"] >= -M_NI
     if margin_ok and not strata_failed:
         return {"evaluable": True, "any_worker": True, "reason": "margin and stratum guard hold",
-                "margin_ok": True, "strata_failed": [], "k_strata": k_strata, "sentence": _h3_sentence(D3, True, None)}
+                "margin_ok": True, "strata_failed": [], "k_strata": k_strata,
+                "sentence": _h3_sentence(D3, True, None, overlap_share)}
     reason = "margin" if not margin_ok else "stratum"
     if not margin_ok and strata_failed:
         reason = "margin; stratum"
     detail = reason + (f" ({_strata_clause(strata_failed, k_strata)})" if strata_failed else "")
     return {"evaluable": True, "any_worker": False, "reason": detail, "margin_ok": margin_ok,
             "strata_failed": [dict(s) for s in strata_failed], "k_strata": k_strata,
-            "sentence": _h3_sentence(D3, False, detail)}
+            "sentence": _h3_sentence(D3, False, detail, overlap_share)}
 
 
-def _h3_sentence(D3: dict[str, Any] | None, any_worker: bool, reason: str | None) -> str:
+def _h3_sentence(D3: dict[str, Any] | None, any_worker: bool, reason: str | None, overlap: float | None) -> str:
     d = _ivs(D3) if D3 and D3.get("point") is not None else "not computed"
+    ov = f"chunk-id overlap {overlap * 100:.1f} %" if overlap is not None else "chunk-id overlap not computed"
     if any_worker:
-        return f"Segmenter: S-regex − S = {d}; S may be deployed on any worker."
-    return f"Segmenter: S-regex − S = {d}; S may be deployed only where Punkt is asserted (reason: {reason})."
+        return f"Segmenter: S-regex − S = {d}; S may be deployed on any worker (on this corpus; {ov})."
+    return f"Segmenter: S-regex − S = {d}; S may be deployed only where Punkt is asserted (reason: {reason}; {ov})."
 
 
 # ------------------------------------------------------------------- §4.4 secondary contrasts
