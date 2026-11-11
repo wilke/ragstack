@@ -220,6 +220,8 @@ Shipped on `main` 23 Oct and deployed on **dev only** from 24 Oct: tools v1.6.16
 - Reading: overlap's cost is small, but the production path does not show it is free. 512/64 stays
 
 ### Slide B: "512/64 kept: three arms tie, dropping overlap loses"
+> **Note added 2026-11-11.** Slides B and B2 report the main run as of 5 Nov and are left as written. Two later events change what a reader should take from them. (1) Addendum C (approved 6 Nov, before retrieval) added section-bounded arms; under the same frozen pass rule `ft512o64s` (512/64 cut at JATS sections) replaced `ft512o64`, +3.49 hit@5 [+2.11, +4.86] (`docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md`, #972). (2) The owner adopted a different production default: sentence chunking, 512 tokens, size tolerance 0.25 (640-token ceiling), section cuts, `min_piece` 128 (owner, 5 Nov; `docs/plans/results/alias-boundary-confirm-2026-11/REPORT.md` §1; `docs/plans/results/reach-rechunk-2026-11/REPORT.md` §1). `ft512o64s` was that eval's pass-rule pick, not the adoption. "Kept" below means kept by the 5 Nov rule, not kept in production.
+
 | arm | hit@5 | Δ vs 512/64 [95 % CI] | ctx@5 | rule |
 |---|---|---|---|---|
 | ft512o64 | 79.0 | — | 2,316 | kept |
@@ -229,7 +231,7 @@ Shipped on `main` 23 Oct and deployed on **dev only** from 24 Oct: tools v1.6.16
 | ft512o0 | 77.0 | −2.06 [−3.49, −0.59] | 2,300 | fails NI |
 | ft1024o0 | 76.7 | −2.36 [−4.03, −0.79] | 4,601 | fails |
 - Three challengers score slightly higher than 512/64, but every one of their CIs includes zero: a statistical tie, not a win for either side. 512/64 is shown better only than the two no-overlap arms, whose CIs exclude zero
-- `sent512` passed its non-inferiority test (Holm p 0.001); the pre-registered paired-ladder tie-break switches only when the candidate's two-sided CI against the incumbent excludes zero (−0.74), so the baseline was kept (`settings/a-hybrid-rerank/decision.json`, `ladder.steps[0].switched` false)
+- `sent512` passed its non-inferiority test (Holm p 0.001); the pre-registered paired-ladder tie-break replaces the incumbent only when the candidate's paired difference over it has a 95 % lower bound above zero (here −0.74), so the baseline was kept (`settings/a-hybrid-rerank/decision.json`, `ladder.steps[0].switched` false)
 - `sempool512` and `sem512` deliver 20–24 % less context at equal hit@5 (ctx tokens estimated as chars/4)
 - Pre-registered rule, frozen 5 Nov; 6 arms × 241,930 records; Qwen3.8 gold-quote questions
 - The reranker flattens differences. Semantic chunks gain +8 points in vector-only retrieval and lose 4–6 under BM25
@@ -247,13 +249,13 @@ Derived from chunk counts, not measured. The run recorded no storage, memory or 
 | sempool512 | 830,791 | 1.18× | 13.6 GB | ~919 GB | 80.3, tie | 0.80× |
 | sem512 | 868,937 | 1.23× | 14.2 GB | ~961 GB | 79.2, tie | 0.76× |
 
-- Raw vectors = chunks × 4,096 × 4 bytes (float32, uncompressed). Quantization changes the absolute sizes, not the ratios
-- "At current OA size" applies each arm's ratio to the live `open-access` collection: 47,625,155 chunks over ~1,408,194 articles (distinct `pmcid`), 97.7 % of the 1,441,791-record discovery list, built at `fixed_token` 512/64 (`docs/plans/results/asm-tenant-metadata-audit-2026-09-15.md`; chunk method in `docs/plans/metadata-consistency.md`). That is ~33.8 chunks per article, close to the eval set's ~31.2 (705,204 chunks over 22,600 articles), so the extrapolation is plausible but still an estimate
-- `sent512` is no worse on every measured axis: 4 % fewer vectors, 6 % less reader context, hit@5 tied. Against it: sentence collections need a full re-ingest (#811), and the plan's `cost_rank` puts it above 512/64 (3 vs 2), apparently weighing ingest work, not storage. OPEN: what `cost_rank` was meant to capture
+- Raw vectors = chunks × 4,096 × 4 bytes (float32, uncompressed; GB = 10^9 bytes, so 705,204 chunks is 11.6 GB or 10.8 GiB). Quantization changes the absolute sizes, not the ratios
+- "At current OA size" applies each arm's ratio to the live `open-access` collection: 47,625,155 chunks over ~1,408,194 articles (distinct `pmcid`), 97.7 % of the 1,441,791-record discovery list, built at `fixed_token` 512/64 (`docs/plans/results/asm-tenant-metadata-audit-2026-09-15.md`; chunk method in `docs/plans/metadata-consistency.md`). That is ~33.8 chunks per article, close to the eval set's ~31.2 (705,204 chunks over 22,600 articles), so the extrapolation is plausible but still an estimate. The two per-article figures are not strictly like for like: the live count includes `figure` (8.0 M) and `table` (7.9 M) units beside 31.7 M `article` chunks (audit §5; ~22.5 article chunks per article), and the eval set's 241,930 JATS records are not broken down by unit type here
+- `sent512` is no worse on every measured axis: 4 % fewer vectors, 6 % less reader context, hit@5 tied. Against it: sentence collections need a full re-ingest (#811), and the plan's `cost_rank` puts it above 512/64 (3 vs 2). Addendum B §6 defines `cost_rank` as class order, then stored chunks or ingest compute within a class (owner confirmed 5 Nov); by stored chunks `sent512` would rank below 512/64, so its rank 3 rests on ingest compute (sentence segmentation), not storage
 - No-overlap saves storage and loses answers: ft512o0 −8 % vectors, −2.06 points; ft1024o0 −38 % vectors but 2× reader context and −2.36 points. Overlap 64 costs ~9 % more vectors than overlap 0
 - Semantic arms trade storage and ingest for cheaper queries: +18 to +23 % vectors (~140 to 180 GB more at OA size, uncompressed) and, per the plan, ~4.5 to 7× embed tokens for legacy semantic, for 20 to 24 % less reader context at equal hit@5. Worth it only at high query volume; no query-volume figure is on record
 - Not measured, and the gap that would settle it: ingest wall time and embed GPU-hours per arm
-- Source: chunk counts and context tokens from `ragstack-experiments/oa-chunking-eval-2026-10/main-run-2026-11/RESULTS.md` and `settings/a-hybrid-rerank/decision.json` (context tokens estimated as chars/4); embed-cost note from `reports/PLAN-AND-PASS-RULE.md`
+- Source: chunk counts and context tokens from `ragstack-experiments/oa-chunking-eval-2026-10/main-run-2026-11/RESULTS.md` and `settings/a-hybrid-rerank/decision.json` (context tokens estimated as chars/4); embed-cost note and the `cost_rank` definition from `reports/PLAN-AND-PASS-RULE.md` (public copy: `docs/plans/results/oa-chunking-eval-2026-10/PLAN-AND-PASS-RULE.md`, Addendum B §6)
 
 ### Slide C: "Capped semantic is safe on deployed docs (provisional)"
 - Part 4, pre-registered, citable: 372 two-passage questions, 71 pages, 4,096-token budget, δ 7.5 points, both readers
