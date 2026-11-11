@@ -28,7 +28,10 @@ states what the other order would have decided.
 
 ## What is pinned (2026-11-11, from files and the dry run)
 
-- **Versions.** `dev` server v1.6.25 (`67e53fd`; `GET /v1/version` 2026-11-11), tools tag v1.6.24 (`5d65bead`), GoWe v0.26.1.
+- **Versions.** `dev` server v1.6.25 (`67e53fd`; `GET /v1/version` 2026-11-11), tools tag v1.6.24 (`5d65bead`).
+  GoWe: both sentinel passes ran on server 0.26.1; production was upgraded to 0.28.1 the same day, after them
+  (dev workers now mixed 0.28.1 / 0.26.1, log capture unchanged); the GoWe server version is named in the freeze
+  statement and the engine + per-task worker versions are recorded at the run (PREREG §2, §8).
 - **Images.** S: `ragstack-tools-v1.6.24-b1.sif`, build 1, sha256 `ecf81440…`, `punkt-abbrev-v1`. S-regex:
   `ragstack-tools-v1.6.24-b2.sif`, build 2, sha256 `413f6ec3…`, `regex-abbrev-v1`, built 2026-11-11 from
   the `.def` beside this file (sha256 in `frozen-inputs.json`), placed in the dev worker group's image
@@ -97,12 +100,13 @@ re-embed sample drawn (seed 20261111) from the 859,280 distinct chunk ids of the
 | Place the private configs (+ `noise.json` copies), the manifest template and the private re-embed `ids.json` in the private repository | operator | the configs' and the sample's sha256 are already in `frozen-inputs.json` |
 | Harness changes since d2a8b9b | operator, at the freeze commit | list them here from `git log -- python/scripts/eval/oa_chunk_eval` |
 | `power.json` regenerated from a clean tree at the freeze commit (`python3 -I -B power.py --out power.json`; must be byte-identical) | operator | `test_power_reproduces_prereg_section_5` already checks the committed file equals what `power.py` writes |
-| **The freeze statement** | owner, in writing | names the commit, cost order **B**, server **v1.6.25**, tools tag **v1.6.24**; then `sha256sum PREREG.md` + UTC time into a private `PREREG.sha256`, the signed tag `prereg-adopted-spec-h2h-2026-11` with every §9.1 sha256, and this file's status line rewritten once |
+| **The freeze statement** | owner, in writing | names the commit, cost order **B**, server **v1.6.25**, tools tag **v1.6.24**, the GoWe server version (0.28.1 at drafting); then `sha256sum PREREG.md` + UTC time into a private `PREREG.sha256`, the signed tag `prereg-adopted-spec-h2h-2026-11` with every §9.1 sha256, and this file's status line rewritten once |
 
 ## What runs after the freeze (PREREG §7)
 
-1. Management creates `oa-eval-s` and `oa-eval-sregex` on `dev` (admin, owner's typed go) with the create
-   body of §7 step 2; the operator records the listing and the tenant-wide count.
+1. This study session creates `oa-eval-s` and `oa-eval-sregex` on `dev` with the dev admin key on the owner's
+   typed go (owner decision; as for both sentinel passes), with the create body of §7 step 2; it records the
+   listing and the tenant-wide count.
 2. Two direct `gowe submit`s of the study text (S: the committed file; S-regex: the b2-renamed copy), the
    sentinel shard first — `h2h_report.py dryrun --arm … --receipt … --stderr-file … --logs-json …
    --qdrant-count … --es-count … --collection-entry … --expect-build 1|2 --expect-commit

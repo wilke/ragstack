@@ -12,7 +12,10 @@
    "tag": "v1.6.24",
    "commit": "5d65bead84e65e5fb96f46c3a0d95cd73fa6cad7"
   },
-  "gowe": "v0.26.1 (server; worker log tail 256 KB per stream)"
+  "gowe": {
+   "sentinel_passes": "server 0.26.1",
+   "run": "server and per-task worker version recorded at the run"
+  }
  },
  "images": {
   "S": {

@@ -547,6 +547,7 @@ def build_fixture(tmp_path: Path, shifts: dict[str, float], *, n: int = 1400, se
                   break_decision: bool = False, bad_sregex: bool = False, drop_reembed: bool = False,
                   drop_sregex: bool = False, drop_sent512s_rows: bool = False, s_penalty=None,
                   ladder_alpha: float = 0.05, break_ladder: bool = False, wrong_request: bool = False,
+                  perturb: float = 0.5,
                   refuse_sregex: bool = False, logs_disagree: bool = False, drop_logs: bool = False,
                   refuse_base_in_d: bool = False, malformed_version: bool = False) -> tuple[Path, Path]:
     rows = make_rows(n, seed, shifts, s_penalty=s_penalty)
@@ -563,9 +564,9 @@ def build_fixture(tmp_path: Path, shifts: dict[str, float], *, n: int = 1400, se
         p = tmp_path / "dec-a" / "decision.json"
         d = json.loads(p.read_text())
         if break_decision:
-            d["arms"]["ft512o64s"]["lo"] = round(d["arms"]["ft512o64s"]["lo"] + 0.5, 4)
+            d["arms"]["ft512o64s"]["lo"] = d["arms"]["ft512o64s"]["lo"] + perturb
         if break_ladder:
-            d["ladder"]["steps"][0]["lo"] = round(d["ladder"]["steps"][0]["lo"] + 0.5, 4)
+            d["ladder"]["steps"][0]["lo"] = d["ladder"]["steps"][0]["lo"] + perturb
         p.write_text(json.dumps(d))
     if refuse_sregex:
         p = tmp_path / "rep-a" / "score.json"
@@ -989,3 +990,12 @@ def test_recheck_items(tmp_path):
         assert all(c.get("voided_by") for c in rep["settings"][s]["contrasts"].values()), s
     # N2
     assert report.out_inside_repo(REPO / "docs" / "x.json", REPO) and not report.out_inside_repo(tmp_path / "x.json", REPO)
+
+
+def test_cross_check_boundary_at_four_decimals(tmp_path):
+    """The cross-check compares to 4 decimals: +0.0002 on D1 or a ladder step gates, +0.00004 passes."""
+    for kind in ("break_decision", "break_ladder"):
+        rep = build(*build_fixture(tmp_path / f"{kind}-gate", TIE, perturb=0.0002, **{kind: True}))
+        assert rep["row"] == 8 and "cross_check" in rep["settings"]["a"]["gate_counts"]["decision"], kind
+        rep = build(*build_fixture(tmp_path / f"{kind}-pass", TIE, perturb=0.00004, **{kind: True}))
+        assert rep["row"] == 3 and "decision" not in rep["settings"]["a"]["gates"], kind

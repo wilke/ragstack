@@ -3,7 +3,8 @@
 STATUS: **DRAFT, not frozen; freeze = owner says freeze.** Nothing in §7 runs before the freeze of §9. The
 owner answered the §10 questions on 2026-11-11 (recorded there). This is a record-tier file: once frozen it is never edited; changes go to
 `DEVIATIONS.md` (§9.3). v2–v4 address the three 2026-11-11 independent reviews (11 + 9 + 4 findings, all
-applied). v5 records the sentinel dry run of 2026-11-11 (§2), makes the worker-stderr gate enforceable on
+applied); v5 was then reviewed twice more the same day (an Argo code review of the §9.4 tooling, 12 findings
+and the vacuous-test mutations, and an Argo PREREG review, 10 findings) and re-checked (N1–N7); all applied. v5 records the sentinel dry run of 2026-11-11 (§2), makes the worker-stderr gate enforceable on
 the main shards (§2, §6: a study copy of the workflow text stages every ingest task's full stderr out as
 a file), corrects the create body (§7) and names the committed tooling (§9.4); the open freeze items are
 listed in `README.md`.
@@ -105,8 +106,12 @@ owner names, ≥ v1.6.24, which carries `structure_cuts` and the `sentence` tole
 registered text, sha256 `0f2bc341…`) with one functional addition — the `ingest_shard` tool declares
 `stderr: <shard>.ingest-stderr.txt` and surfaces it as a `File` output, gathered into a workflow output
 `ingest_stderr`. GoWe tees a task's stderr into that file **in full** and into the 256 KB tail it keeps in its
-database for the logs endpoint (GoWe v0.26.1, confirmed by the GoWe session; `maxLogCapture` in the worker
-source). The tail alone could lose the once-per-process warning on a 16,000-document shard (it is written
+database for the logs endpoint (`maxLogCapture` in the worker source). The mechanism was confirmed on GoWe
+server 0.26.1 by the two sentinel passes of 2026-11-11 (file = endpoint, 0 / 1 lines). GoWe production was
+upgraded the same day, after both passes, to server 0.28.1 and the dev worker fleet is now mixed (0.28.1 and
+0.26.1); the GoWe session reports the log capture unchanged. At the run the engine version and each ingest
+task's worker version are recorded in `RESULTS.md` beside the attempt count (§6), and the sentinel shard's
+file-vs-endpoint agreement is the proof that the tee still holds on the fleet that runs it. The tail alone could lose the once-per-process warning on a 16,000-document shard (it is written
 early), so the §6 stderr gate on the 16 main shards reads the staged-out file of every ingest task; the
 sentinel shard is additionally read through the logs endpoint (the dry run's proof) and the two counts must
 agree. The S text is the committed file (its six image-name lines name the b1 image); the S-regex text is the
@@ -482,9 +487,11 @@ per-question file or score; progress is followed by the harness's row counts. An
    workflow text has reproduced them on the sentinel shard with its stderr file staged out (2026-11-11,
    §2), and the sentinel overlap count (0) and chunk count (168) of §6, the reused-arm census, the model
    ids and the re-embed sample are pinned in `frozen-inputs.json`; `dev` reported 1.6.25 / `67e53fd` on
-   2026-11-11 and is re-read on the day of the run (gate: one `git_sha` across every row).
-2. **Build** two collections on `dev`, created by management as admin on the owner's typed go (as the dry
-   run was): `oa-eval-s` (S) and `oa-eval-sregex` (S-regex), tenant `public` as the other arms, with the
+   2026-11-11 and is re-read on the day of the run (gate: one `git_sha` across every row); the GoWe server
+   version is named in the freeze statement (0.28.1 at drafting; the sentinel passes ran on 0.26.1).
+2. **Build** two collections on `dev`, created by this study session itself with the dev admin key on the
+   owner's typed go (owner decision; as it did for both sentinel passes): `oa-eval-s` (S) and
+   `oa-eval-sregex` (S-regex), tenant `public` as the other arms, with the
    chunk spec at create and **no `embedding` key** — dev's config default resolves
    `Salesforce/SFR-Embedding-Mistral`, 4096-d, `openai` api (the model registry is empty), exactly as the
    registry entries of the dry run show. The create body is
@@ -532,6 +539,11 @@ Owner time: the freeze decisions, the acknowledgement of the decision sentence.
   sent512s) and the main run's text on an earlier image (ft512o64). Capturing stderr does not touch chunking
   (the sentinel chunk ids reproduced across both texts); the tools-version difference to ft512o64 is not
   otherwise controlled.
+- **Mixed worker fleet.** The dev GoWe workers run two worker versions (0.28.1 and 0.26.1) and the run's
+  tasks may land on either. No gate is needed: both arms run the same tools image per arm, the worker only
+  launches it, chunk identity is gated by the receipts (`image_commit`, `image_build`, the `chunking`
+  object) and by distinct-id = Qdrant = Elasticsearch, and the stderr tee is proved per run by the sentinel
+  file-vs-endpoint check; the worker version per task is recorded, not gated.
 - **H3's "any worker" is a statement about this corpus.** A pass, trivial or not, shows the regex segmenter
   did not move retrieval on these 241,930 records under this spec; the sentence quotes the chunk-id overlap
   and says *on this corpus*.
@@ -557,7 +569,8 @@ Owner time: the freeze decisions, the acknowledgement of the decision sentence.
   20261111), the embedding and reranker model ids, the two tools images' digests and the `.def`.
 
 ### 9.2 Procedure (the reach study's) and 9.3 deviations
-The owner says freeze in writing, naming the commit, the cost order, the server version and the tools tag;
+The owner says freeze in writing, naming the commit, the cost order, the server version, the tools tag and
+the GoWe server version;
 `sha256sum PREREG.md` and a UTC timestamp go into a private `PREREG.sha256`; a signed annotated tag
 `prereg-adopted-spec-h2h-2026-11` at that commit carries the file's sha256 and every §9.1 sha256; one commit
 records the freeze in this directory's `README.md`; `PREREG.md` is never touched again. The §9.4 script takes
@@ -600,6 +613,7 @@ re-embed ids and cosines, `PREREG.sha256`.
    evidence in the literature) before that study's design depends on it.
 5. **Embedding-drift threshold:** cosine ≥ 0.999 on all 200 re-embedded ft512o64s chunks.
 6. **Context tokens:** chars/4 as frozen (labelled estimated).
-7. **Server version and tools tag:** whatever `dev` runs at the freeze (≥ v1.6.25), named in the freeze
-   statement; both new arms built from stamped images of that tag (S-regex as its no-`nltk` build), all five
-   arms retrieved on it.
+7. **Server version and tools tag:** server version: whatever `dev` runs at the freeze (v1.6.25 on
+   2026-11-11), named in the freeze statement. Tools tag: v1.6.24, the tag dev's registered workflows name;
+   both new arms are its stamped builds (S = b1, S-regex = b2); all five arms retrieved on the server
+   version.
