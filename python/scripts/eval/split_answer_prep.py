@@ -1082,6 +1082,87 @@ def run_wall_counts(sheet_p: Path, key_p: Path, answers_p: Path, out_dir: Path,
     return rec
 
 
+# ------------------------------------------------------------------ report (review nit d)
+
+LABEL_WORDS = ("answers", "not", "unjudged", "no_final_row")
+EDGE_SPLITS = ("all", "without_edge", "edge_only")
+
+
+def read_items_dir(items_dir: Path) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+    """``items``' private export and seed rows, checked against its ``neighbour-items.json``."""
+    summ_p = items_dir / "neighbour-items.json"
+    summ = _json_file(summ_p, SCHEMA["items"], "neighbour-items.json")
+    shas = {"neighbour_export": sha(items_dir / "neighbour-export.jsonl"),
+            "neighbour_seed": sha(items_dir / "neighbour-seed.jsonl"), "neighbour_items": sha(summ_p)}
+    outs = summ.get("outputs_sha256") or {}
+    if outs.get("neighbour_export") != shas["neighbour_export"] or outs.get("neighbour_seed") != shas["neighbour_seed"]:
+        raise SystemExit("REFUSED: the items directory's files are not the ones its neighbour-items.json names")
+    export = {r["chunk_id"]: r for r in read(items_dir / "neighbour-export.jsonl")}
+    return export, read(items_dir / "neighbour-seed.jsonl"), shas
+
+
+def report_counts(export: Mapping[str, Mapping[str, Any]], seeds: Sequence[Mapping[str, Any]],
+                  finals: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Per group and context window: the items' final labels, each group ``all`` / ``without_edge``
+    / ``edge_only`` (§3.2 (b)9), with the Wilson interval of the *answers* rate over the items that
+    have a final row (unjudged counted as *not*, as ``alias_control_chunks.label_of`` does). An item
+    is one (record, neighbour item id), the registry's pair; one in several groups counts in each."""
+    import alias_study_judge as aj
+
+    units: dict[tuple[str, str], dict[str, Any]] = {}
+    for s in seeds:
+        if not parse_nbr_id(s["chunk_id"]) or s["chunk_id"] not in export:
+            raise SystemExit("REFUSED: a seed row names no neighbour item of the export")
+        pid = aj.pair_id(s["record_id"], s["chunk_id"])
+        units[(s["group"], pid)] = {"w": int(s["context_window"]), "edge": export[s["chunk_id"]]["metadata"]["edge"]}
+    foreign = set(finals) - {pid for _g, pid in units}
+    if foreign:
+        raise SystemExit(f"REFUSED: the final file holds {len(foreign)} pair(s) that are no neighbour item; it is not "
+                         "the neighbour registry's final.jsonl")
+    tab: dict[str, dict[str, dict[str, Counter[str]]]] = defaultdict(lambda: defaultdict(lambda: defaultdict(Counter)))
+    for (g, pid), u in units.items():
+        word = rp.label_word(finals.get(pid)) or "no_final_row"
+        w = f"context_window_{u['w']}"
+        for split in ("all", "edge_only" if u["edge"] != "none" else "without_edge"):
+            tab[g][w][split][word] += 1
+    out: dict[str, Any] = {}
+    for g in (*POSITIVE_GROUPS, NEGATIVE_GROUP):
+        out[g] = {}
+        for w in sorted(tab[g]):
+            out[g][w] = {}
+            for split in (EDGE_SPLITS if g != NEGATIVE_GROUP else ("all",)):
+                c = tab[g][w][split]
+                judged = c["answers"] + c["not"] + c["unjudged"]
+                out[g][w][split] = {**{k: c[k] for k in LABEL_WORDS}, "answers_rate": acc.wilson(c["answers"], judged)}
+    return {"by_group": out, "items": len(units), "final_rows": len(finals),
+            "items_without_final_row": sum(1 for _g, pid in units if pid not in finals)}
+
+
+def run_report(items_dir: Path, neighbour_final: Path, out_dir: Path, public_out: Path | None = None) -> dict[str, Any]:
+    rp.refuse_in_repo(out_dir, "--out-dir")
+    rp.refuse_in_repo(Path(neighbour_final), "--neighbour-final")
+    export, seeds, shas = read_items_dir(items_dir)
+    finals = rp.final_rows(neighbour_final)
+    counts = report_counts(export, seeds, finals)
+    rec = {"schema": SCHEMA["report"], "exploratory": True, "offline": True, "calls": CALLS, "plan": PREREG,
+           "item_type": "neighbour",
+           "rate_rule": "answers / items with a final row; unjudged counted as not (alias_control_chunks.label_of)",
+           "edge_rule": "without_edge: M has neighbours on both sides; edge_only: a document edge removed one side "
+                        "(§3.2 (b)9); negatives carry no edge item by the draw's rule",
+           "negative_control": "the negative group's answers_rate is the false-answers rate",
+           **counts,
+           "inputs_sha256": {**shas, "neighbour_final": sha(neighbour_final)},
+           "provenance": acc.public_provenance(acc.provenance())}
+    forbidden = (set(export) | set(finals) | {s["record_id"] for s in seeds} | {s["control_of"] for s in seeds}
+                 | {str(r["metadata"].get("max_overlap_chunk_id")) for r in export.values()}
+                 | {c for r in export.values() for c in r["metadata"].get("neighbour_chunk_ids") or ()}
+                 | {str(r["doc_id"]) for r in export.values()}
+                 | {str(r["metadata"].get("source_path") or "") for r in export.values()})
+    publish(rec, out_dir / "neighbour-report.json", public_out, "neighbour-report.json", forbidden,
+            [r["content"] for r in export.values()])
+    return rec
+
+
 # ------------------------------------------------------------------ CLI
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1119,6 +1200,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     c.add_argument("--answers", type=Path, required=True, help="wall-answers.json, filled in by the reader")
     c.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
     c.add_argument("--public-out", type=Path, help="also write the counts here (artifacts/wall-read-counts.json)")
+    r = sub.add_parser("report", help="review nit d: the counts-only result of the neighbour registry's final.jsonl")
+    r.add_argument("--items-dir", type=Path, required=True, help="the items --out-dir")
+    r.add_argument("--neighbour-final", type=Path, required=True,
+                   help="the neighbour registry's final.jsonl, after finalize")
+    r.add_argument("--out-dir", type=Path, required=True, help="private, outside the repository, written once")
+    r.add_argument("--public-out", type=Path, help="also write the counts here (artifacts/neighbour-report.json)")
     args = ap.parse_args(argv)
     if args.cmd == "items":
         rec = run_items(args.confirm_dir, args.label_table, args.main_config, args.negative_dir, args.out_dir,
@@ -1134,6 +1221,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.cmd == "wall-counts":
         rec = run_wall_counts(args.sheet, args.key, args.answers, args.out_dir, args.public_out)
         print(json.dumps({k: rec[k] for k in ("n", "counts", "reader_role", "date")}, indent=1))
+    elif args.cmd == "report":
+        rec = run_report(args.items_dir, args.neighbour_final, args.out_dir, args.public_out)
+        print(json.dumps(rec["by_group"], indent=1))
     return 0
 
 
