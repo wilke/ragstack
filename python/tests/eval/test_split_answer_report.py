@@ -34,9 +34,11 @@ def items_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(chunker_config, "cached_token_counter", lambda *a, **k: wc)
     w = sfx.World(tmp_path / "w")
     monkeypatch.setattr(sap, "PINNED_INPUTS", {**sap.PINNED_INPUTS, **w.pinned()})
+    monkeypatch.setattr(sap, "NEGATIVE_QUOTAS", {"same": 3, "other": 0})
     nd = sfx.negative_dir(tmp_path, sap.SCHEMA["negative"], [("alias-O-n1-g0", "dC", 1), ("alias-O-n2-g0", "dB", 1),
                                                              ("alias-O-n3-g0", "dC", 1)])
-    sap.run_items(w.p["confirm"], w.p["label_table"], w.p["main_config"], nd, tmp_path / "items")
+    sap.run_items(w.p["confirm"], w.p["label_table"], w.p["main_config"], nd, tmp_path / "items",
+                  repo=tmp_path / "repo")
     return tmp_path / "items"
 
 

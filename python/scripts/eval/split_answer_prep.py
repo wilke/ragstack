@@ -61,6 +61,10 @@ with the confirmatory run's ``chunks-control.jsonl`` identical there.
   order across all cells) is excluded, by the logic of the positive-collision rule: it would get the
   same neighbour item id and ``build-control`` would merge the two into one pair (149 judged, not
   150). ``items`` refuses two negatives on one (record, item id).
+- (b)6 / (a): ``items`` takes only a negative directory ``draw-negative`` wrote after the committed
+  seed: its ``negative-draw.json`` must name the sha256 of the seed file committed at HEAD, the pinned
+  stage-A commit and the pinned draw inputs, per-paper quotas of :data:`NEGATIVE_QUOTAS` and a draw that
+  filled them (150 pairs). A directory that only names its own files' sha256s is refused.
 """
 from __future__ import annotations
 
@@ -132,6 +136,10 @@ STAGE_A_COMMIT_SHA256 = acc.CONFIRM_STAGE_A_COMMIT_SHA256
 
 #: §3.2 (b)
 NEGATIVE_SEED_PROPOSED = "261111|split|negative|draw"
+#: §3.2 (b)6: the seed file, relative to the repository root (module docstring, clarifications)
+SEED_RELPATH = "docs/plans/results/split-answer-2026-11/artifacts/negative-draw-seed.json"
+#: the draw's pinned inputs ``items`` checks again in ``negative-draw.json``
+DRAW_PINNED = ("confirm_sample", "control_sample", "pairs_seed", "chunks_control")
 PAPERS = ("same", "other")
 NEGATIVE_QUOTAS = {"same": 100, "other": 50}
 PREFIX_FACTOR = 3
@@ -583,8 +591,35 @@ def item_counts(it: Items) -> dict[str, Any]:
     }
 
 
-def read_negative_dir(negative_dir: Path) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, str]]:
-    """The draw's ``sample-negative.jsonl`` and its own chunk run, checked against the draw's summary."""
+def negative_summary_problems(summ: Mapping[str, Any], n_sample: int, repo: Path | None = None) -> list[str]:
+    """Review A2: ``items`` takes only a directory ``draw-negative`` wrote after the committed seed:
+    the summary names the seed file committed at HEAD (by sha256), the pinned stage-A commit, the
+    pinned inputs, quotas that are :data:`NEGATIVE_QUOTAS`' and a draw that filled them."""
+    bad = []
+    head = head_seed_sha256(repo)
+    if head is None or summ.get("seed_file_sha256") != head:
+        bad.append(f"its seed_file_sha256 is not the sha256 of {SEED_RELPATH} at HEAD")
+    if summ.get("stage_a_commit_sha256") != STAGE_A_COMMIT_SHA256:
+        bad.append("its stage_a_commit_sha256 is not CONFIRM_STAGE_A_COMMIT_SHA256")
+    ins = summ.get("inputs_sha256") or {}
+    bad += [f"its inputs_sha256.{k} is not the pinned file's" for k in DRAW_PINNED if ins.get(k) != PINNED_INPUTS[k]]
+    quotas, drawn = summ.get("quotas"), summ.get("drawn")
+    keys = {cell_key(p, a) for p, a in cells()}
+    if not isinstance(quotas, dict) or set(quotas) != keys or any(
+            sum(int(quotas[cell_key(p, a)]) for a in asc.ARM_GROUPS) != int(NEGATIVE_QUOTAS[p]) for p in PAPERS):
+        bad.append(f"its quotas are not {dict(NEGATIVE_QUOTAS)} per paper")
+    if drawn != quotas:
+        bad.append("its drawn counts are not its quotas")
+    want = sum(int(v) for v in NEGATIVE_QUOTAS.values())
+    if summ.get("n_drawn") != want or n_sample != want:
+        bad.append(f"it did not draw {want} pairs (n_drawn {summ.get('n_drawn')!r}, sample rows {n_sample})")
+    return bad
+
+
+def read_negative_dir(negative_dir: Path, repo: Path | None = None
+                      ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, str]]:
+    """The draw's ``sample-negative.jsonl`` and its own chunk run, checked against the draw's summary,
+    and the summary against the committed seed and the plan (:func:`negative_summary_problems`)."""
     summ_p = negative_dir / "negative-draw.json"
     samp_p = negative_dir / "sample-negative.jsonl"
     chunks_p = negative_dir / "chunks" / "chunks-control.jsonl"
@@ -595,15 +630,20 @@ def read_negative_dir(negative_dir: Path) -> tuple[list[dict[str, Any]], dict[st
     outs = summ.get("outputs_sha256") or {}
     if outs.get("sample_negative") != shas["negative_sample"] or outs.get("chunks_control") != shas["negative_chunks"]:
         raise SystemExit("REFUSED: the negative directory's files are not the ones its negative-draw.json names")
-    return read(samp_p), acc.control_docs(chunks_p), shas
+    sample = read(samp_p)
+    bad = negative_summary_problems(summ, len(sample), repo)
+    if bad:
+        raise SystemExit(f"REFUSED: the negative directory is not a draw made after the committed seed "
+                         f"({'; '.join(bad)}); nothing written")
+    return sample, acc.control_docs(chunks_p), shas
 
 
 def run_items(confirm_dir: Path, label_table: Path, main_config: Path, negative_dir: Path, out_dir: Path,
-              public_out: Path | None = None) -> dict[str, Any]:
+              public_out: Path | None = None, repo: Path | None = None) -> dict[str, Any]:
     env = acc.require_env()
     rp.refuse_in_repo(out_dir, "--out-dir")
     pairs, cdocs, texts, shas = confirm_pairs(confirm_dir, label_table)
-    negatives, ndocs, nshas = read_negative_dir(negative_dir)
+    negatives, ndocs, nshas = read_negative_dir(negative_dir, repo)
     ntexts = doc_texts(ndocs, "the negative draw's chunks-control.jsonl")
     # review nit e: no chunk the judge can look up may already carry a neighbour id
     main_raw = raw_config(main_config)
@@ -661,6 +701,27 @@ def _drift_size(n: int) -> int:
 
 
 # ------------------------------------------------------------------ draw-negative (§3.2 (b))
+
+def _repo(repo: Path | None) -> Path:
+    import alias_study_judge as aj
+
+    return Path(repo or aj.REPO)
+
+
+def _git(repo: Path | None, *args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["git", "-C", str(_repo(repo)), *args], capture_output=True, check=False, timeout=60)
+
+
+def head_seed_sha256(repo: Path | None = None) -> str | None:
+    """The sha256 of :data:`SEED_RELPATH` as committed at HEAD, ``None`` when HEAD has no such file."""
+    import hashlib
+
+    try:
+        r = _git(repo, "show", f"HEAD:{SEED_RELPATH}")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return hashlib.sha256(r.stdout).hexdigest() if r.returncode == 0 else None
+
 
 def seed_file_problems(seed_file: Path, repo: Path | None = None) -> list[str]:
     """§3.2 (b)6: the tree is clean (untracked files included) and a file tracked at HEAD has

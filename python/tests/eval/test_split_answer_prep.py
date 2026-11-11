@@ -183,6 +183,7 @@ def test_a_change_to_productions_markers_is_refused_by_name(monkeypatch: pytest.
 def world(words: sfx.WordCounter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> sfx.World:
     w = sfx.World(tmp_path / "w")
     monkeypatch.setattr(sap, "PINNED_INPUTS", {**sap.PINNED_INPUTS, **w.pinned()})
+    w.mp = monkeypatch  # type: ignore[attr-defined]
     return w
 
 
@@ -198,9 +199,11 @@ def neg_picks() -> list[tuple[str, str, int]]:
 
 def run_items(world: sfx.World, tmp: Path, picks: list[tuple[str, str, int]] | None = None,
               public: bool = True) -> dict[str, Any]:
-    nd = sfx.negative_dir(tmp, sap.SCHEMA["negative"], neg_picks() if picks is None else picks)
+    picks = neg_picks() if picks is None else picks
+    world.mp.setattr(sap, "NEGATIVE_QUOTAS", {"same": len(picks), "other": 0})  # type: ignore[attr-defined]
+    nd = sfx.negative_dir(tmp, sap.SCHEMA["negative"], picks)
     return sap.run_items(world.p["confirm"], world.p["label_table"], world.p["main_config"], nd, tmp / "items",
-                         tmp / "public" / "neighbour-items.json" if public else None)
+                         tmp / "public" / "neighbour-items.json" if public else None, repo=tmp / "repo")
 
 
 def test_items_end_to_end(world: sfx.World, tmp_path: Path) -> None:
@@ -312,7 +315,58 @@ def test_items_refuses_an_edge_negative_and_a_tampered_draw(world: sfx.World, tm
     nd = sfx.negative_dir(tmp_path / "t", sap.SCHEMA["negative"], neg_picks())
     (nd / "sample-negative.jsonl").write_text((nd / "sample-negative.jsonl").read_text() + "\n")
     with pytest.raises(SystemExit, match="not the ones its negative-draw.json names"):
-        sap.run_items(world.p["confirm"], world.p["label_table"], world.p["main_config"], nd, tmp_path / "i2")
+        sap.run_items(world.p["confirm"], world.p["label_table"], world.p["main_config"], nd, tmp_path / "i2",
+                      repo=tmp_path / "t" / "repo")
+
+
+NEG_PICKS_N = 3
+
+
+@pytest.mark.parametrize(("change", "why"), [
+    ({"seed_file_sha256": "0" * 64}, "seed_file_sha256 is not the sha256 of"),
+    ({"seed_file_sha256": None}, "seed_file_sha256 is not the sha256 of"),
+    ({"stage_a_commit_sha256": "0" * 64}, "stage_a_commit_sha256 is not"),
+    ({"inputs_sha256": {"confirm_sample": "0" * 64}}, "inputs_sha256.confirm_sample is not the pinned"),
+    ({"quotas": None}, "quotas are not"),
+    ({"drawn": {"same:base": 2}}, "drawn counts are not its quotas"),
+    ({"n_drawn": NEG_PICKS_N - 1}, f"did not draw {NEG_PICKS_N} pairs"),
+])
+def test_items_refuses_a_negative_dir_the_draw_did_not_write(world: sfx.World, tmp_path: Path,
+                                                             change: dict[str, Any], why: str) -> None:
+    """Review A2: a hand-written sample with a summary that names its files is not a draw."""
+    world.mp.setattr(sap, "NEGATIVE_QUOTAS", {"same": NEG_PICKS_N, "other": 0})  # type: ignore[attr-defined]
+    nd = sfx.negative_dir(tmp_path, sap.SCHEMA["negative"], neg_picks())
+    if "inputs_sha256" in change:
+        summ = json.loads((nd / "negative-draw.json").read_text())
+        change = {"inputs_sha256": {**summ["inputs_sha256"], **change["inputs_sha256"]}}
+    sfx.rewrite_summary(nd, **change)
+    with pytest.raises(SystemExit, match=f"not a draw made after the committed seed.*{why}"):
+        sap.run_items(world.p["confirm"], world.p["label_table"], world.p["main_config"], nd, tmp_path / "items",
+                      repo=tmp_path / "repo")
+    assert not (tmp_path / "items").exists()
+
+
+def test_items_refuses_a_negative_dir_without_the_committed_seed_or_with_other_quotas(
+        world: sfx.World, tmp_path: Path) -> None:
+    world.mp.setattr(sap, "NEGATIVE_QUOTAS", {"same": NEG_PICKS_N, "other": 0})  # type: ignore[attr-defined]
+    nd = sfx.negative_dir(tmp_path, sap.SCHEMA["negative"], neg_picks())
+    args = (world.p["confirm"], world.p["label_table"], world.p["main_config"], nd, tmp_path / "items")
+    # the summary's seed is the file's bytes, but the file was never committed: a repo without it
+    other, _f = sfx.seed_repo(tmp_path / "bare", commit=False)
+    with pytest.raises(SystemExit, match="seed_file_sha256 is not the sha256 of"):
+        sap.run_items(*args, repo=other)
+    # the old hand-written shape: only the files' sha256s
+    summ = json.loads((nd / "negative-draw.json").read_text())
+    (nd / "negative-draw.json").write_text(json.dumps({"schema": summ["schema"],
+                                                       "outputs_sha256": summ["outputs_sha256"]}))
+    with pytest.raises(SystemExit, match="not a draw made after the committed seed"):
+        sap.run_items(*args, repo=tmp_path / "repo")
+    (nd / "negative-draw.json").write_text(json.dumps(summ))
+    # the plan's quotas: 150 = 100 same + 50 other; this summary's 3 same are not those
+    world.mp.setattr(sap, "NEGATIVE_QUOTAS", {"same": 100, "other": 50})  # type: ignore[attr-defined]
+    with pytest.raises(SystemExit, match=r"quotas are not .*did not draw 150 pairs"):
+        sap.run_items(*args, repo=tmp_path / "repo")
+    assert not (tmp_path / "items").exists()
 
 
 def test_items_refuses_an_export_chunk_id_with_the_nbr_prefix(world: sfx.World, tmp_path: Path) -> None:
@@ -337,6 +391,7 @@ def test_items_refuses_a_kept_identical_pair_in_a_multi_chunk_document(words: sf
     pos = [*sfx.POSITIVE, sfx.Pos("bx", "dB", 0, 3000, False, None)]
     w = sfx.World(tmp_path / "w", positive=pos)
     monkeypatch.setattr(sap, "PINNED_INPUTS", {**sap.PINNED_INPUTS, **w.pinned()})
+    w.mp = monkeypatch  # type: ignore[attr-defined]
     with pytest.raises(SystemExit, match="kept_identical pair sits in a document of several chunks"):
         run_items(w, tmp_path)
 

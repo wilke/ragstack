@@ -6,7 +6,9 @@ network, no model."""
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,9 @@ import alias_control_chunks as acc  # noqa: E402
 import alias_study_common as asc  # noqa: E402
 import alias_study_judge as aj  # noqa: E402
 import rechunk_prep as rp  # noqa: E402
+import split_answer_prep as sap  # noqa: E402
+
+SEED = "test|split|negative|draw"
 
 
 class WordCounter:
@@ -172,9 +177,35 @@ def chunk_rows(doc: str) -> list[dict[str, Any]]:
             for c in cd.chunks]
 
 
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True,
+                   capture_output=True)
+
+
+def seed_repo(tmp: Path, seed: str = SEED, commit: bool = True) -> tuple[Path, Path]:
+    """A git repository at ``tmp/repo`` with the seed file at ``split_answer_prep.SEED_RELPATH``,
+    committed (or only written) on an otherwise clean tree."""
+    repo = tmp / "repo"
+    if (repo / ".git").exists():
+        return repo, repo / sap.SEED_RELPATH
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q")
+    (repo / "README").write_text("x\n")
+    f = repo / sap.SEED_RELPATH
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"seed": seed}) + "\n")
+    git(repo, "add", "README", *([sap.SEED_RELPATH] if commit else []))
+    git(repo, "commit", "-q", "-m", "init")
+    return repo, f
+
+
 def negative_dir(tmp: Path, schema: str, picks: Sequence[tuple[str, str, int]]) -> Path:
     """A hand-made draw-negative directory: ``picks`` = (record, doc, M index) on the draw's own
-    chunk run (documents dB and dC), with a summary naming the files' sha256s."""
+    chunk run (documents dB and dC), all ``same:base``, with a summary as ``draw-negative`` writes
+    it: the files' sha256s, the seed of :func:`seed_repo` (``tmp/repo``, made if missing), the
+    stage-A commit and the pinned inputs as ``split_answer_prep`` holds them now, and quotas =
+    drawn = the picks (the caller sets ``NEGATIVE_QUOTAS`` to ``{"same": len(picks), "other": 0}``)."""
+    _repo, seed_file = seed_repo(tmp)
     d = tmp / "negative"
     rows = chunk_rows("dB") + chunk_rows("dC") + chunk_rows("dE")
     cp = write_jsonl(d / "chunks" / "chunks-control.jsonl", rows)
@@ -188,6 +219,24 @@ def negative_dir(tmp: Path, schema: str, picks: Sequence[tuple[str, str, int]]) 
         samp.append({"pair_id": aj.pair_id(rec, w), "record_id": rec, "stage_a_chunk_id": w,
                      "max_overlap_chunk_id": m, "doc_id": doc, "paper": "same", "arm": "base"})
     sp = write_jsonl(d / "sample-negative.jsonl", samp)
-    (d / "negative-draw.json").write_text(json.dumps({"schema": schema, "outputs_sha256": {
-        "sample_negative": asc.sha256_file(sp), "chunks_control": asc.sha256_file(cp)}}))
+    drawn = Counter(sap.cell_key(r["paper"], r["arm"]) for r in samp)
+    quotas = {sap.cell_key(p, a): drawn[sap.cell_key(p, a)] for p, a in sap.cells()}
+    (d / "negative-draw.json").write_text(json.dumps({
+        "schema": schema, "seed_file_sha256": asc.sha256_file(seed_file),
+        "stage_a_commit_sha256": sap.STAGE_A_COMMIT_SHA256,
+        "inputs_sha256": {k: sap.PINNED_INPUTS[k] for k in sap.DRAW_PINNED},
+        "quotas": quotas, "drawn": dict(quotas), "n_drawn": len(samp),
+        "outputs_sha256": {"sample_negative": asc.sha256_file(sp), "chunks_control": asc.sha256_file(cp)}}))
     return d
+
+
+def rewrite_summary(d: Path, **changes: Any) -> None:
+    """Edit a negative directory's ``negative-draw.json`` (a key set to ``None`` is removed)."""
+    p = d / "negative-draw.json"
+    summ = json.loads(p.read_text())
+    for k, v in changes.items():
+        if v is None:
+            summ.pop(k, None)
+        else:
+            summ[k] = v
+    p.write_text(json.dumps(summ))

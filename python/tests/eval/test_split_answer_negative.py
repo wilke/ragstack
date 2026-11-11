@@ -29,7 +29,7 @@ pytest.importorskip("nltk")
 pytest.importorskip("markdown_it")
 pytest.importorskip("mdit_py_plugins")
 
-SEED = "test|split|negative|draw"
+SEED = sfx.SEED
 
 
 @pytest.fixture()
@@ -43,21 +43,11 @@ def words(monkeypatch: pytest.MonkeyPatch) -> sfx.WordCounter:
 
 # ------------------------------------------------------------------ the seed (§3.2 (b)6)
 
-def git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True,
-                   capture_output=True)
+git = sfx.git
 
 
 def seed_repo(tmp: Path, seed: str = SEED, commit: bool = True) -> tuple[Path, Path]:
-    repo = tmp / "repo"
-    repo.mkdir(parents=True)
-    git(repo, "init", "-q")
-    (repo / "README").write_text("x\n")
-    f = repo / "negative-draw-seed.json"
-    f.write_text(json.dumps({"seed": seed}) + "\n")
-    git(repo, "add", "README", *(["negative-draw-seed.json"] if commit else []))
-    git(repo, "commit", "-q", "-m", "init")
-    return repo, f
+    return sfx.seed_repo(tmp, seed, commit)
 
 
 def test_seed_committed_on_a_clean_tree_is_read(tmp_path: Path) -> None:
@@ -272,7 +262,7 @@ def test_draw_negative_end_to_end(words: sfx.WordCounter, tmp_path: Path, monkey
     assert pub["seed_file_sha256"] == asc.sha256_file(d.seed) and pub["seed_is_the_proposed_one"] is False
     assert pub["passage_tokens"]["n"] == 3
     items = sap.run_items(d.world.p["confirm"], d.world.p["label_table"], d.world.p["main_config"], out,
-                          tmp_path / "items")
+                          tmp_path / "items", repo=d.repo)
     assert items["items"]["negative"] == {"context_window_1": 3} and items["items_per_set"]["negative"] == 3
 
 
