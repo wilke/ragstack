@@ -78,9 +78,12 @@ pairs) does not run. Production `context_window` keeps its default; callers can 
 
 **Not a test of the OA chunking eval's hypotheses.** This study is not part of the OA chunking eval
 ([`../oa-chunking-eval-2026-10/`](../oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md)) and tests none of
-its post-hoc hypotheses A–D. The plan took hypothesis B (overlap's gain sits on quotes that a chunk boundary
-splits) as its prior (PLAN §1). Step 2, the overlap arm, was the closest test of B on this question set; it did not
-run, so this report is no evidence for or against B. Step 1 tested a different remedy, neighbours at judge time.
+its post-hoc hypotheses A–D. The plan took as its prior a finding the OA eval made
+under hypothesis B (PLAN §1). B itself, that overlap wins by making chunks larger, was rejected there; what carried
+over is the subgroup result that overlap's gain sits on quotes a chunk boundary splits. Step 2, the overlap arm, was
+the closest this plan came to testing that finding on this question set, and only at the judge level (cover-any
+under a strict sentence chunker with section cuts), not as a retrieval contrast. It did not run, so this report is
+no evidence for or against that finding. Step 1 tested a different remedy, neighbours at judge time.
 The OA eval's quotes never cross a section boundary, by construction, so it says nothing about wall-crossing
 answers either.
 
