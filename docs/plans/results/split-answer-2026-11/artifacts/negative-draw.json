@@ -1,0 +1,255 @@
+{
+ "agreed": 8580,
+ "agreed_not": {
+  "other:base": 1597,
+  "other:neighbour": 1809,
+  "other:random": 2490,
+  "same:base": 620,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "calls": {
+  "gateway": 0,
+  "llm": 0,
+  "retrieval": 0,
+  "store": 0
+ },
+ "candidates": {
+  "other:base": 51,
+  "other:neighbour": 51,
+  "other:random": 48,
+  "same:base": 172,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "draw_rule": "\u00a73.2 (b): stage-A agreed not pairs minus the confirmatory and control samples (pair id and window); quotas same 100 / other 50, arms by drift_allocation over the cell records; cells walked paper x arm in the seeded order, one pair per (record, arm) and per window across all cells; the prefix counts 3 x quota candidates after that filter; the first quota eligible candidates per cell are drawn; a short cell is refused",
+ "drawn": {
+  "other:base": 17,
+  "other:neighbour": 17,
+  "other:random": 16,
+  "same:base": 100,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "eligibility": "M resolves; M has a neighbour on both sides; the M \u00b1 1 passage is untrimmed; (record, M) is no positive item's and no earlier eligible candidate's (walk order, all cells)",
+ "environment": {
+  "adapter": "markdown/1",
+  "markdown_backend": "markdown-it-py/4.2.0;mdit-py-plugins/0.6.1",
+  "ragstack_in_checkout": true,
+  "segmenter_version": "punkt-abbrev-v1"
+ },
+ "exclusions": {
+  "other:base": {
+   "collision_negative": 0,
+   "collision_positive": 0,
+   "edge": 6,
+   "eligible_beyond_quota": 18,
+   "one_chunk_document": 10,
+   "trim": 0,
+   "unresolved": 0
+  },
+  "other:neighbour": {
+   "collision_negative": 0,
+   "collision_positive": 0,
+   "edge": 3,
+   "eligible_beyond_quota": 19,
+   "one_chunk_document": 12,
+   "trim": 0,
+   "unresolved": 0
+  },
+  "other:random": {
+   "collision_negative": 0,
+   "collision_positive": 0,
+   "edge": 8,
+   "eligible_beyond_quota": 17,
+   "one_chunk_document": 7,
+   "trim": 0,
+   "unresolved": 0
+  },
+  "same:base": {
+   "collision_negative": 0,
+   "collision_positive": 1,
+   "edge": 18,
+   "eligible_beyond_quota": 18,
+   "one_chunk_document": 35,
+   "trim": 0,
+   "unresolved": 0
+  },
+  "same:neighbour": {
+   "collision_negative": 0,
+   "collision_positive": 0,
+   "edge": 0,
+   "eligible_beyond_quota": 0,
+   "one_chunk_document": 0,
+   "trim": 0,
+   "unresolved": 0
+  },
+  "same:random": {
+   "collision_negative": 0,
+   "collision_positive": 0,
+   "edge": 0,
+   "eligible_beyond_quota": 0,
+   "one_chunk_document": 0,
+   "trim": 0,
+   "unresolved": 0
+  }
+ },
+ "exploratory": true,
+ "in_sample_excluded": {
+  "other:base": 21,
+  "other:neighbour": 33,
+  "other:random": 33,
+  "same:base": 12,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "inputs_sha256": {
+  "chunks_control": "e9f00602eca4c6676b7e5968f08d83a01fcbdf36ca910d577419f5cca8748035",
+  "confirm_sample": "227aff47835003c083c2bc222b4c049071eb3753f7d7b7cfd86c6b961b8f3061",
+  "control_sample": "64a8bbc1adc5c22db1f0a3fee447bc3f691d3ee6f7fae7bf1948bfd8a118d39e",
+  "main_config": "3e8768ce71b39501901884d5246757d0150a580469f537ad05ebb0aa8f6908c6",
+  "pairs_seed": "f76f96882009c11242ec79b38d2be621ffa25eab86c521537a566426237407b8"
+ },
+ "max_context_chars": 8000,
+ "n_drawn": 150,
+ "offline": true,
+ "outputs_sha256": {
+  "candidate_sample": "9b9cfa07254442eee08513036db252db6fa5c6cb539443b8483a9cacb068e192",
+  "chunks_control": "c25f79467d9c1efbe8924198cc98f1f43ed028b93d301742a1e8abea8b710345",
+  "pairs_seed": "32af8bc81d0ce4aaa480e345e508b7755a79d60d8ec045e12c22a1037eea47c9",
+  "sample_negative": "af90d10c7ed0919aa13472b07f8193f4ccc02c9a5a7bf943ae4a8c4b2543ffd6"
+ },
+ "passage_tokens": {
+  "max": 1612,
+  "mean": 1220.82,
+  "min": 557,
+  "n": 150,
+  "p10": 841,
+  "p50": 1261,
+  "p90": 1510
+ },
+ "plan": "split-answer-2026-11",
+ "pool": {
+  "other:base": 1524,
+  "other:neighbour": 1754,
+  "other:random": 2431,
+  "same:base": 595,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "pool_records": {
+  "other:base": 227,
+  "other:neighbour": 287,
+  "other:random": 250,
+  "same:base": 174,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "prefix_factor": 3,
+ "prefix_reached": {
+  "other:base": true,
+  "other:neighbour": true,
+  "other:random": true,
+  "same:base": false,
+  "same:neighbour": true,
+  "same:random": true
+ },
+ "prefix_targets": {
+  "other:base": 51,
+  "other:neighbour": 51,
+  "other:random": 48,
+  "same:base": 300,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "provenance": {
+  "citable": true,
+  "commit": "badc6bafe654b90d1111b5bf0b9cc597e801a99b",
+  "describe": "v1.6.26-28-gbadc6baf",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-11T02:13:27Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 147,
+    "n_spans": 37568,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "run",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "b4790aa780ec550044eaf087fc58730ab7191c6d4568f0e4dc209ae9f8b9d245",
+    "texts_sha256": "6ae4566425aa1bfa18f533d172e1cbd65d256af42b237a07fa9728786f22d872"
+   },
+   {
+    "kind": "chunks",
+    "n_docs": 147,
+    "n_spans": 4417,
+    "producer": "sentence/512/0/{\"min_piece\":128,\"pack\":\"318\",\"size_tolerance\":0.25,\"size_unit\":\"tokens\",\"structure_cuts\":\"sections/1\"}",
+    "sha256": "b251132630d426cba92befa0bfe6d518f53a88fd8b38867fed5c4ecb2f04ef4e",
+    "texts_sha256": "6ae4566425aa1bfa18f533d172e1cbd65d256af42b237a07fa9728786f22d872"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.26+badc6baf",
+  "warnings_n": 1
+ },
+ "quotas": {
+  "other:base": 17,
+  "other:neighbour": 17,
+  "other:random": 16,
+  "same:base": 100,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "schema": "split-answer-negative-draw/1",
+ "seed_commit": "badc6bafe654b90d1111b5bf0b9cc597e801a99b",
+ "seed_file": "docs/plans/results/split-answer-2026-11/artifacts/negative-draw-seed.json",
+ "seed_file_sha256": "507d27dcfc3186de14d0b70e955340f1ea9b053090793a690c261eaead971c1e",
+ "seed_is_the_proposed_one": true,
+ "shared_documents_checked": 55,
+ "shared_window_excluded": {
+  "other:base": 52,
+  "other:neighbour": 22,
+  "other:random": 26,
+  "same:base": 13,
+  "same:neighbour": 0,
+  "same:random": 0
+ },
+ "stage_a_commit_sha256": "f53ca9d0b18fb66753ae3fbe219b7b63e2163aee44f8dfe0e9ce386b04d266cd",
+ "stage_a_pairs": 9205,
+ "stratum": "not",
+ "tokenizer": "Salesforce/SFR-Embedding-Mistral",
+ "walk_skips": {
+  "other:base": {
+   "record_arm_taken": 65,
+   "window_taken": 1
+  },
+  "other:neighbour": {
+   "record_arm_taken": 7
+  },
+  "other:random": {
+   "record_arm_taken": 7
+  },
+  "same:base": {
+   "record_arm_taken": 419,
+   "window_taken": 4
+  },
+  "same:neighbour": {},
+  "same:random": {}
+ },
+ "walked": {
+  "other:base": 117,
+  "other:neighbour": 58,
+  "other:random": 55,
+  "same:base": 595,
+  "same:neighbour": 0,
+  "same:random": 0
+ }
+}

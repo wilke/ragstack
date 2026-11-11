@@ -1,0 +1,56 @@
+{
+ "calls": {
+  "gateway": 0,
+  "llm": 0,
+  "retrieval": 0,
+  "store": 0
+ },
+ "counts": {
+  "needs_both": 0,
+  "one_side": 9,
+  "unclear": 1
+ },
+ "date": "2026-11-11",
+ "exploratory": true,
+ "n": 10,
+ "offline": true,
+ "operator_read": "a private read of the split windows a section edge crosses; no judge or gateway call; sets no label",
+ "plan": "split-answer-2026-11",
+ "provenance": {
+  "citable": false,
+  "commit": "badc6bafe654b90d1111b5bf0b9cc597e801a99b",
+  "describe": "v1.6.26-28-gbadc6baf",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-11T02:19:13Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 2,
+  "version": "v1.6.26+badc6baf",
+  "warnings_n": 2
+ },
+ "reader_role": "reviewer-agent",
+ "schema": "split-answer-wall-read-counts/1",
+ "sha256": {
+  "answers": "e024ad7b6aa79a33c6f1ff1ec0027e2fe853355866eee840eda77592be0fd547",
+  "key": "30f0f1be3ba773516963fc67dd81819d0c3fbea1d82c6dcda8bfd7b56ec2e420",
+  "sheet": "522c9e281ecc4d312c360f5a395a51a43be9c537e9bc4b06a3ca58b9daa52a84"
+ }
+}
