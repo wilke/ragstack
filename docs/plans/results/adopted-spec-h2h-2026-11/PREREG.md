@@ -114,9 +114,14 @@ run dev's registered workflow id**; the registered text and the study text diffe
 and the create gate (400) and `names_marker_capable_image` on the submitted text still apply (the dispatch
 gate, 422, is the API's and a direct submit does not pass through it). The study text has been checked by
 GoWe's parser semantics in source (the `stderr` expression is evaluated per shard; a `type: stderr` output
-collects it) but **has not yet run on GoWe**: a sentinel-shard submission of the study text for both arms,
-on scratch collections as in the dry run, is a pre-freeze item (`README.md`); it must reproduce the dry run's
-receipts (168 chunks, identical ids) and stage out a stderr file holding 0 / ≥ 1 warning lines.
+collects it) and **has run on GoWe — study-text sentinel pass, 2026-11-11, after the dry run:** both study
+texts (sha256 as pinned; the S-regex text made by renaming the six b1 lines to b2) were submitted on the
+sentinel shard against two further scratch collections with the same spec (`spec_hash 29236085`, embedding
+unset → SFR 4096). Both completed: 40 documents, 0 failed, 168 chunks, chunk ids and `chunking` objects
+identical to the dry run's on both arms; the staged `oa-eval-part-00.ingest-stderr.txt` exists in each ingest
+task's stage-out; file and logs endpoint agree — S 1,501 bytes / 0 warning lines in both, S-regex 1,765
+bytes / 1 line in both; Qdrant = Elasticsearch = 168 on both; the scratch collections purged, listing clean,
+stores 404. The §7 step 1 precondition on the study text is met.
 
 **Dry run (2026-11-11).** Done on `dev` (server v1.6.25, `67e53fd`), on two scratch collections created with
 the exact spec of §7 step 2 (registry `spec_hash` `29236085` on both), with the sentinel shard ingested into
@@ -175,10 +180,19 @@ the version used is whatever `dev` runs at the freeze, named in `README.md` then
 **Embedding and reranker drift.** The reused arms were embedded on 2026-11-04/06; S and S-regex are embedded
 at run time, and `git_sha` covers neither the embedding endpoint nor the reranker build. Recorded at the
 freeze and at the run, for both: the embedding model id and the serving build reported by the endpoint, and
-the reranker model id and image. Gate: a pinned sample of 200 ft512o64s chunk texts (seeded draw from the
-Addendum C export) is re-embedded through the run-time endpoint, and the cosine similarity to the stored
-vectors is ≥ 0.999 for every one; a lower value is GATE-NOT-EVALUABLE for embedding drift (operator default;
-owner Q5 may move the threshold).
+the reranker model id and image. Recorded 2026-11-11 (read-only; `frozen-inputs.json`): embedding
+`Salesforce/SFR-Embedding-Mistral` (vLLM `/v1/models` on all six endpoints, `max_model_len` 4096); reranker
+`BAAI/bge-reranker-v2-m3` (the crossencoder sidecar's `/health`, `cuda:0`) — that the dev API uses this sidecar
+is inferred from the deployment, not read from dev's config; serving build and reranker image are **not
+exposed by the endpoints** and are recorded as such, so the gate on them is the model ids only. The reused
+arms' census, read the same day (registry = Qdrant = Elasticsearch, sentinel documents included): ft512o64
+705,204; ft512o64s 859,280 (= 859,087 main + 193 sentinel, from its 17 shard receipts); sent512s 850,312.
+Gate: a pinned sample of 200 ft512o64s chunk texts — drawn 2026-11-11 by `h2h_report.py reembed select`
+(seed 20261111) from the sorted distinct `chunk_ids` of that arm's 17 shard receipts, i.e. the whole stored
+collection of 859,280 chunks, sentinel included (193, expected 0.04 in the sample; every one has a stored
+vector, so the inclusion changes nothing); ids private, sha256 pinned — is re-embedded through the run-time
+endpoint, and the cosine similarity to the stored vectors is ≥ 0.999 for every one; a lower value is
+GATE-NOT-EVALUABLE for embedding drift (operator default; owner Q5 may move the threshold).
 
 ## 3. Questions, metric, settings
 
@@ -439,8 +453,10 @@ per-question file or score; progress is followed by the harness's row counts. An
 
 1. **Freeze** (§9); the owner names the server version on `dev`, the tools tag and the cost order; the
    two sentinel dry runs of §2 have succeeded (2026-11-11, receipts and stderr both ways), the study
-   workflow text has reproduced them on the sentinel shard with its stderr file staged out (§2, open at
-   v5), and the sentinel overlap count (0) and chunk count (168) of §6 are pinned.
+   workflow text has reproduced them on the sentinel shard with its stderr file staged out (2026-11-11,
+   §2), and the sentinel overlap count (0) and chunk count (168) of §6, the reused-arm census, the model
+   ids and the re-embed sample are pinned in `frozen-inputs.json`; `dev` reported 1.6.25 / `67e53fd` on
+   2026-11-11 and is re-read on the day of the run (gate: one `git_sha` across every row).
 2. **Build** two collections on `dev`, created by management as admin on the owner's typed go (as the dry
    run was): `oa-eval-s` (S) and `oa-eval-sregex` (S-regex), tenant `public` as the other arms, with the
    chunk spec at create and **no `embedding` key** — dev's config default resolves

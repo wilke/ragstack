@@ -1,9 +1,10 @@
 <!-- experiment: Adopted chunking spec head-to-head (S vs ft512o64s vs ft512o64; S-regex segmenter) | 2026-11-11 | DRAFT · NOT FROZEN -->
 # Adopted-spec head-to-head: does S beat the OA eval's pick?
 
-**Status: DRAFT, not frozen (PREREG v5, 2026-11-11).** Nothing of §7 has run. The sentinel dry run of
-2026-11-11 passed (PREREG §2); the pins that can be computed from files are in `frozen-inputs.json`; the
-tooling is committed and tested. The freeze waits on the items under *What remains for the freeze*.
+**Status: DRAFT, not frozen (PREREG v5, 2026-11-11).** Nothing of §7 has run. The sentinel dry run and the
+study-text sentinel pass of 2026-11-11 both passed (PREREG §2); every §9.1 pin is in `frozen-inputs.json`
+(none left null); the tooling is committed and tested. The freeze waits on the owner's statement and the
+bookkeeping under *What remains for the freeze*.
 
 The question (PREREG §1): on the OA eval's frozen decision set (n = 2,035, hit@5, setting (a)), is the adopted
 production chunking **S** (`sentence` 512 tokens, overlap 0, `size_tolerance` 0.25, `min_piece` 128,
@@ -27,7 +28,7 @@ states what the other order would have decided.
 
 ## What is pinned (2026-11-11, from files and the dry run)
 
-- **Versions.** `dev` server v1.6.25 (`67e53fd`), tools tag v1.6.24 (`5d65bead`), GoWe v0.26.1.
+- **Versions.** `dev` server v1.6.25 (`67e53fd`; `GET /v1/version` 2026-11-11), tools tag v1.6.24 (`5d65bead`), GoWe v0.26.1.
 - **Images.** S: `ragstack-tools-v1.6.24-b1.sif`, build 1, sha256 `ecf81440…`, `punkt-abbrev-v1`. S-regex:
   `ragstack-tools-v1.6.24-b2.sif`, build 2, sha256 `413f6ec3…`, `regex-abbrev-v1`, built 2026-11-11 from
   the `.def` beside this file (sha256 in `frozen-inputs.json`), placed in the dev worker group's image
@@ -53,6 +54,7 @@ states what the other order would have decided.
   `paired_ladder`), `margins`, `api` (request fields, `top_k`), `score.exclude_noise_subset`, `noise`,
   `sample`, `passages` and every path key are copied. The configs themselves are private (they hold hosts and
   paths); their sha256 and the frozen `noise.json` sha256 per setting are in `frozen-inputs.json`.
+- **Reused arms, model ids, re-embed sample.** Read 2026-11-11; see *The dry run* below and `frozen-inputs.json`.
 - **Passages segmenter.** `punkt-abbrev-v1` (so the H3 bias favours S, PREREG §3).
 - **Create body.** No `embedding` key: dev's config default resolves `Salesforce/SFR-Embedding-Mistral`
   4096-d `openai`; the registry entry's `chunk_params` and `spec_hash` (`29236085`) are in
@@ -70,16 +72,29 @@ collections purged (`?purge=true`; a plain `DELETE` is refused with 409 when no 
 listing clean, stores 404. `h2h_report.py dryrun` reproduces every check from the saved records (private).
 The identical chunk ids are an observation on 40 documents and what they imply for H3 is stated in PREREG §2.
 
+**Study-text sentinel pass (2026-11-11, after the dry run).** The two study texts (sha256 as pinned; S-regex =
+the six image-name lines renamed) submitted on the sentinel shard against two further scratch collections with
+the same spec: both completed, 40 documents, 0 failed, 168 chunks, chunk ids and `chunking` objects identical
+to the dry run's; the staged `oa-eval-part-00.ingest-stderr.txt` present for both ingest tasks, file and logs
+endpoint agreeing (S 1,501 B / 0 lines; S-regex 1,765 B / 1 line); Qdrant = ES = 168; scratch collections
+purged, listing clean, stores 404. The study-text precondition of PREREG §7 step 1 is met.
+
+**Read-only live reads (2026-11-11), now in `frozen-inputs.json`:** dev `/v1/version` 1.6.25 / `67e53fd`;
+reused-arm census (registry = Qdrant = ES, sentinel documents included) ft512o64 705,204, ft512o64s 859,280
+(= 859,087 + 193 sentinel, from its 17 receipts), sent512s 850,312; embedding model
+`Salesforce/SFR-Embedding-Mistral` (vLLM, all six endpoints, `max_model_len` 4096); reranker
+`BAAI/bge-reranker-v2-m3` (crossencoder sidecar `/health`; that dev uses this sidecar is inferred from the
+deployment, not read from dev's config); serving build and reranker image not exposed by the endpoints;
+re-embed sample drawn (seed 20261111) from the 859,280 distinct chunk ids of the ft512o64s receipts
+(sentinel included, which changes nothing: every chunk has a stored vector), `ids_sha256 41d5f254…`.
+
 ## What remains for the freeze (PREREG §9.1–§9.2)
 
 | item | who | notes |
 |---|---|---|
-| Sentinel submission of the **study text** for both arms on scratch collections (the stderr `File` output has not yet run on GoWe) | owner / management (create, purge) + operator (submit, `h2h_report.py dryrun --stderr-file …`) | must reproduce 168 chunks and the dry run's chunk ids; the staged `<shard>.ingest-stderr.txt` holds 0 / ≥ 1 warning lines and agrees with the logs endpoint |
-| Addendum C census per reused arm (live Qdrant = ES counts of ft512o64, ft512o64s, sent512s) | operator, read-only, at the freeze | into `frozen-inputs.json` `reused_census` |
-| Embedding endpoint model id + serving build; reranker model id + image | operator, read-only | into `frozen-inputs.json` `model_ids` |
-| 200-chunk re-embed sample: `h2h_report.py reembed select --receipts <the 17 ft512o64s receipts>` (offline, seed 20261111) → private `ids.json`, its `ids_sha256` into `frozen-inputs.json`; then `reembed fetch` (live) at the freeze and again at the run | operator | the receipts are in the Addendum C task directories; `fetch` reads the text index and the vector store read-only and calls the embedding endpoint |
-| Place the private configs + `noise.json` copies in the private repository; create the `out_dir`s and copy the question-side files into each | operator | the harness `score` needs `questions.jsonl`, `audit.jsonl`, `sample.jsonl`, `passages*.jsonl`, `skips.jsonl`, `pending.jsonl` and the three decision arms' retrieval ledgers (copied from the reporting `out_dir` after `retrieve`) in every `out_dir` |
-| Harness changes since d2a8b9b | operator | list them here from `git log -- python/scripts/eval/oa_chunk_eval` at the freeze commit |
+| Place the private configs (+ `noise.json` copies), the manifest template and the private re-embed `ids.json` in the private repository | operator | the configs' and the sample's sha256 are already in `frozen-inputs.json` |
+| Harness changes since d2a8b9b | operator, at the freeze commit | list them here from `git log -- python/scripts/eval/oa_chunk_eval` |
+| `power.json` regenerated from a clean tree at the freeze commit (`python3 -I -B power.py --out power.json`; must be byte-identical) | operator | `test_power_reproduces_prereg_section_5` already checks the committed file equals what `power.py` writes |
 | **The freeze statement** | owner, in writing | names the commit, cost order **B**, server **v1.6.25**, tools tag **v1.6.24**; then `sha256sum PREREG.md` + UTC time into a private `PREREG.sha256`, the signed tag `prereg-adopted-spec-h2h-2026-11` with every §9.1 sha256, and this file's status line rewritten once |
 
 ## What runs after the freeze (PREREG §7)

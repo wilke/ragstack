@@ -1,12 +1,12 @@
 {
  "schema": "adopted-spec-h2h-frozen-inputs/1",
- "status": "DRAFT: pins computed 2026-11-11 from files and the sentinel dry run; every null below is filled at the freeze, then this file is pinned by sha256 in the tag message (PREREG §9.1)",
+ "status": "DRAFT: every pin computed 2026-11-11 (files, the sentinel dry run, the study-text sentinel pass, read-only live reads); nothing is null; the owner's freeze statement pins this file by sha256 in the tag message (PREREG §9.1)",
  "cost_order": "B",
  "versions": {
   "server": {
    "tag": "v1.6.25",
    "commit": "67e53fd4d5dd552eb3d22fa4c8554bff1748d738",
-   "source": "dev GET /v1/version at the dry run (1.6.25); re-read at the freeze"
+   "source": "dev GET /v1/version, 2026-11-11: 1.6.25 / 67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
   },
   "tools_tag": {
    "tag": "v1.6.24",
@@ -63,7 +63,32 @@
     "text": "the v1.6.25 cwl/ stamped with the b2 receipt (image names only)",
     "sha256": "5f7a3a4269eb8d35ca790d0cc6da8c138b2abd49b5578b0ae51c41d9023c2d52"
    },
-   "note": "the dry run proved the gates on dev's text; the study text (stderr as a File output) is submitted on the sentinel shard once more before the freeze (README)"
+   "note": "the dry run proved the gates on dev's text"
+  },
+  "study_text_sentinel_2026_11_11": {
+   "texts": "the two study texts above (S-regex made by renaming b1 to b2, six lines)",
+   "n_docs": 40,
+   "n_docs_failed": 0,
+   "n_chunks": 168,
+   "chunk_ids_equal_dry_run": true,
+   "chunking_equal_dry_run": true,
+   "staged_stderr_file": "oa-eval-part-00.ingest-stderr.txt present for both arms",
+   "warning_lines_file_vs_logs_endpoint": {
+    "S": [
+     0,
+     0
+    ],
+    "S-regex": [
+     1,
+     1
+    ]
+   },
+   "stderr_bytes": {
+    "S": 1501,
+    "S-regex": 1765
+   },
+   "qdrant_eq_es_eq_168": true,
+   "note": "the §7 step 1 precondition (study text reproduces the dry run with its stderr file staged out) is met; scratch collections purged, stores 404"
   }
  },
  "shards": {
@@ -228,25 +253,42 @@
   "note": "window_budget is recorded on the receipt and reported, not gated"
  },
  "reused_census": {
-  "ft512o64": null,
-  "ft512o64s": null,
-  "sent512s": null,
-  "note": "filled at the freeze from a read-only live count (qdrant, es); Addendum C's figures were 705,047 / 859,087 / 850,119 before the sentinel reading is settled"
+  "ft512o64": {
+   "qdrant": 705204,
+   "es": 705204,
+   "registry": 705204
+  },
+  "ft512o64s": {
+   "qdrant": 859280,
+   "es": 859280,
+   "registry": 859280
+  },
+  "sent512s": {
+   "qdrant": 850312,
+   "es": 850312,
+   "registry": 850312
+  },
+  "read": "2026-11-11, read-only; registry = qdrant = es for each arm",
+  "note": "these counts include the 40 sentinel documents: ft512o64s 859,280 = 859,087 (16 main shards) + 193 (sentinel), confirmed from its 17 shard receipts; Addendum C's RESULTS quoted the main-shard figures (705,047 / 859,087 / 850,119)"
  },
  "model_ids": {
-  "embedding_model": null,
-  "reranker_model": null,
-  "embedding_serving_build": null,
-  "reranker_image": null,
-  "note": "filled at the freeze from the endpoints (read-only)"
+  "embedding_model": "Salesforce/SFR-Embedding-Mistral",
+  "reranker_model": "BAAI/bge-reranker-v2-m3",
+  "embedding_serving_build": "not exposed by the endpoints",
+  "reranker_image": "not exposed by the endpoint",
+  "read": "2026-11-11, read-only: the embedding model from vLLM /v1/models on all six endpoints (max_model_len 4096); the reranker from the crossencoder sidecar /health (device cuda:0)",
+  "caveat": "that the dev API uses this crossencoder sidecar is inferred from the deployment, not read from dev's config; the run re-reads both and the gate compares the ids"
  },
  "reembed": {
   "arm": "ft512o64s",
   "n": 200,
   "seed": 20261111,
   "cosine_threshold": 0.999,
-  "ids_sha256": null,
-  "rule": "h2h_report.py reembed select: sorted distinct chunk_ids of the arm's 17 shard receipts, random.Random(seed).sample(ids, 200)"
+  "ids_sha256": "41d5f2542b58ffd19bd0f2d3fef95cd2057d0bca187964ebca53f4dfd9bd8da5",
+  "population_distinct": 859280,
+  "population_sha256": "547ef00e02de6e5fa75010ba1853cadcd88fab267b6590df4adc215d9c5aeb14",
+  "rule": "h2h_report.py reembed select: sorted distinct chunk_ids of the arm's 17 shard receipts (16 main + sentinel, as stored), random.Random(seed).sample(ids, 200)",
+  "note": "the population is the whole stored collection, sentinel chunks included (193 of 859,280, expected 0.04 in the sample); every sampled chunk has a stored vector, so the draw is as the rule says and the inclusion does not matter; drawn 2026-11-11, ids private"
  },
  "harness": {
   "location": "python/scripts/eval/oa_chunk_eval/",
