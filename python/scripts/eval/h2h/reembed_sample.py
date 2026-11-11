@@ -11,7 +11,10 @@ Three steps; only ``fetch`` touches a service and it is run by the operator, nev
 
 ``fetch``   — LIVE (operator, at the freeze and at the run): reads each sampled chunk's text
     and stored vector from the Elasticsearch index and the Qdrant collection named on the
-    command line, embeds the text through the given OpenAI-compatible endpoint, and writes
+    command line — looked up by their tenant-scoped ids (``<tenant>:<chunk_id>`` in the text
+    index, ``ragstack.stores.qdrant._point_id(chunk_id, tenant)`` in the vector store;
+    ``--tenant``, default ``public``) — embeds the text through the given OpenAI-compatible
+    endpoint, and writes
     ``cosines.json``: ``[{"chunk_id", "cosine", "stored_dim", "model"}]``. Hosts and
     collection names are arguments, never defaults, and never written to the output beyond
     the model id.
@@ -91,39 +94,67 @@ def _post_json(url: str, body: dict[str, Any], headers: dict[str, str] | None = 
         return json.loads(resp.read().decode("utf-8"))
 
 
-def cmd_fetch(args: argparse.Namespace) -> int:
-    """LIVE. Not exercised by tests."""
-    sample = json.loads(Path(args.ids).read_text(encoding="utf-8"))
-    ids = sample["chunk_ids"]
-    # stored texts from Elasticsearch (ids are the document ids of the text index)
-    docs = _post_json(f"{args.es_url.rstrip('/')}/{args.es_index}/_mget", {"ids": ids})
-    texts = {}
+def es_doc_id(chunk_id: str, tenant: str) -> str:
+    """Elasticsearch stores a chunk under ``_id = "<tenant>:<chunk_id>"``."""
+    return f"{tenant}:{chunk_id}"
+
+
+def qdrant_point_id(chunk_id: str, tenant: str) -> str:
+    """Qdrant point ids are ``ragstack.stores.qdrant._point_id(chunk_id, tenant)``; imported,
+    never re-implemented."""
+    from ragstack.stores.qdrant import _point_id
+
+    return _point_id(chunk_id, tenant)
+
+
+def fetch_cosines(ids: list[str], *, tenant: str, post, es_url: str, es_index: str, qdrant_url: str,
+                  qdrant_collection: str, embed_url: str, model: str, headers: dict[str, str] | None = None,
+                  batch: int = 16) -> list[dict[str, Any]]:
+    """Texts from the text index and stored vectors from the vector store (both looked up by
+    their tenant-scoped ids), re-embedded through ``embed_url``; the output rows are keyed by
+    the ORIGINAL chunk id, so ``verify`` and the ids-hash gate are unchanged. ``post(url, body,
+    headers)`` performs the HTTP call (injected so tests run on fakes)."""
+    es_ids = {es_doc_id(c, tenant): c for c in ids}
+    docs = post(f"{es_url.rstrip('/')}/{es_index}/_mget", {"ids": list(es_ids)}, None)
+    texts: dict[str, str] = {}
     for d in docs.get("docs", []):
         if not d.get("found"):
-            raise SystemExit(f"chunk {d.get('_id')} not in the text index")
+            raise SystemExit(f"chunk {es_ids.get(d.get('_id'), d.get('_id'))} not in the text index")
         src = d["_source"]
-        texts[d["_id"]] = src.get("content") or src.get("text") or ""
-    # stored vectors from Qdrant
-    pts = _post_json(f"{args.qdrant_url.rstrip('/')}/collections/{args.qdrant_collection}/points",
-                     {"ids": ids, "with_vector": True, "with_payload": False})
-    stored = {str(p["id"]): p["vector"] for p in pts.get("result", [])}
-    missing = [i for i in ids if i not in stored]
+        texts[es_ids[d["_id"]]] = src.get("content") or src.get("text") or ""
+    missing_text = [c for c in ids if c not in texts]
+    if missing_text:
+        raise SystemExit(f"{len(missing_text)} sampled chunk(s) not returned by the text index")
+    point_ids = {qdrant_point_id(c, tenant): c for c in ids}
+    pts = post(f"{qdrant_url.rstrip('/')}/collections/{qdrant_collection}/points",
+               {"ids": list(point_ids), "with_vector": True, "with_payload": False}, None)
+    stored = {point_ids[str(pt["id"])]: pt["vector"] for pt in pts.get("result", []) if str(pt["id"]) in point_ids}
+    missing = [c for c in ids if c not in stored]
     if missing:
         raise SystemExit(f"{len(missing)} sampled chunk(s) have no stored vector")
+    out = []
+    for i in range(0, len(ids), batch):
+        chunk = ids[i:i + batch]
+        resp = post(f"{embed_url.rstrip('/')}/v1/embeddings", {"model": model, "input": [texts[c] for c in chunk]}, headers)
+        vecs = [d["embedding"] for d in sorted(resp["data"], key=lambda d: d["index"])]
+        for c, v in zip(chunk, vecs, strict=True):
+            out.append({"chunk_id": c, "cosine": round(cosine(v, stored[c]), 8), "stored_dim": len(stored[c]),
+                        "model": resp.get("model") or model})
+    return out
+
+
+def cmd_fetch(args: argparse.Namespace) -> int:
+    """LIVE (the HTTP calls); the id mapping and the cosine assembly are tested on fakes."""
+    sample = json.loads(Path(args.ids).read_text(encoding="utf-8"))
     headers = {}
     if args.api_key_file:
         headers["Authorization"] = "Bearer " + Path(args.api_key_file).read_text(encoding="utf-8").strip()
-    out = []
-    for i in range(0, len(ids), args.batch):
-        batch = ids[i:i + args.batch]
-        resp = _post_json(f"{args.embed_url.rstrip('/')}/v1/embeddings",
-                          {"model": args.model, "input": [texts[c] for c in batch]}, headers)
-        vecs = [d["embedding"] for d in sorted(resp["data"], key=lambda d: d["index"])]
-        for c, v in zip(batch, vecs, strict=True):
-            out.append({"chunk_id": c, "cosine": round(cosine(v, stored[c]), 8), "stored_dim": len(stored[c]),
-                        "model": resp.get("model") or args.model})
+    out = fetch_cosines(sample["chunk_ids"], tenant=args.tenant, post=_post_json, es_url=args.es_url,
+                        es_index=args.es_index, qdrant_url=args.qdrant_url, qdrant_collection=args.qdrant_collection,
+                        embed_url=args.embed_url, model=args.model, headers=headers, batch=args.batch)
     Path(args.out).write_text(json.dumps(out, indent=1) + "\n", encoding="utf-8")
-    print(json.dumps({"n": len(out), "min_cosine": min(o["cosine"] for o in out), "model": out[0]["model"] if out else None}))
+    print(json.dumps({"n": len(out), "min_cosine": min(o["cosine"] for o in out), "model": out[0]["model"] if out else None,
+                      "tenant": args.tenant}))
     return 0
 
 
@@ -154,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--es-index", required=True)
     f.add_argument("--qdrant-url", required=True)
     f.add_argument("--qdrant-collection", required=True)
+    f.add_argument("--tenant", default="public", help="the registry tenant: ES ids are <tenant>:<chunk_id>, Qdrant point ids _point_id(chunk_id, tenant)")
     f.add_argument("--embed-url", required=True)
     f.add_argument("--model", required=True)
     f.add_argument("--api-key-file")
