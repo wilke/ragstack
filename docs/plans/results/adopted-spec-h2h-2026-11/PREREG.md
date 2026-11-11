@@ -1,7 +1,7 @@
 # Pre-registration: the adopted chunking spec head-to-head with the OA eval's pick and the server default — DRAFT v4, 2026-11-11
 
 STATUS: **DRAFT, not frozen; freeze = owner says freeze.** Nothing in §7 runs before the freeze of §9. The
-owner questions are in §10. This is a record-tier file: once frozen it is never edited; changes go to
+owner answered the §10 questions on 2026-11-11 (recorded there). This is a record-tier file: once frozen it is never edited; changes go to
 `DEVIATIONS.md` (§9.3). v2–v4 address the three 2026-11-11 independent reviews (11 + 9 + 4 findings, all
 applied).
 
@@ -217,8 +217,9 @@ A tie at H2 goes to the cheaper arm, and the two written rules rank S and ft512o
   ingest compute. Under this reading **S ranks before ft512o64s**; a tie deploys **S**. Integer ranks:
   ft512o64 1, S 2, ft512o64s 3.
 
-The owner names A or B in writing before the freeze (Q1); it is recorded in `README.md` and in the decision
-config. Stored chunk counts, embedded tokens and ctx@5 are reported for every arm and do not move the rank
+**Owner ruling, 2026-11-11 (Q1): Order B.** The decision config's integer ranks are ft512o64 1, S 2,
+ft512o64s 3, and a tie at H2 deploys S unless the frozen ladder finds ft512o64s superior to S. The ruling is
+recorded in `README.md` and in the decision config. Stored chunk counts, embedded tokens and ctx@5 are reported for every arm and do not move the rank
 after the fact. Whatever the order, the §4.5 sentence always states what the decision would be under the
 other one.
 
@@ -439,21 +440,20 @@ harness change. Public here: this file, `README.md`, `power.py`, `power.json`, `
 `artifacts/h2h-report.json`, `RESULTS.md`, `REPORT.md`, `DEVIATIONS.md` if any. Private: configs,
 per-question files, retrieval rows, receipts, worker logs, exports, `PREREG.sha256`.
 
-## 10. Owner questions (decide before the freeze)
+## 10. Owner decisions (answered 2026-11-11, before the freeze)
 
-1. **Cost order** (§4.2): **A** (Addendum C's parent convention; a tie deploys ft512o64s) or **B** (Addendum
-   B's within-class rule by stored chunks / ingest compute; a tie deploys S). No default is offered: the
-   choice most likely decides the outcome, and the prior (sent512s ≈ ft512o64s) is known. The decision
-   under the other order is printed either way.
-2. **Margin.** Default: M_ni = 2.0, the frozen Addendum B value, for H1 and H3.
-3. **sent512s as a secondary arm** (re-retrieval only, 9,748 calls, no collection). Default: include; it is
-   the only way to see what the two adopted knobs add.
-4. **Cross-section / multi-span supplementary set.** Default: out of scope here; a separate pre-registration
-   after this run, with its own passage sampler and writer pass.
-5. **Embedding-drift threshold.** Default: cosine ≥ 0.999 on all 200 re-embedded ft512o64s chunks;
-   alternative: a looser bound with the observed minimum reported.
-6. **Context tokens.** Default: chars/4 as frozen (labelled estimated); alternative: the SFR tokenizer in
-   `score.tokenizer`, which changes only the ctx figures.
-7. **Server version and tools tag** for the run: named at the freeze; default: whatever `dev` runs then
-   (≥ v1.6.25), both new arms built from stamped images of that tag (S-regex as a no-`nltk` build of it),
-   all five arms retrieved on it.
+1. **Cost order** (§4.2): **Order B** (Addendum B's within-class rule by stored chunks / ingest compute).
+   Decision-config ranks ft512o64 1, S 2, ft512o64s 3; a tie at H2 deploys S unless lower(ft512o64s − S) > 0.
+   Chosen with the prior (sent512s ≈ ft512o64s) known; the §4.5 sentence still prints what Order A would
+   have decided.
+2. **Margin:** M_ni = 2.0 hit@5 points, the frozen Addendum B value, for H1 and H3.
+3. **sent512s as a secondary arm:** included (re-retrieval only, 9,748 calls, no collection).
+4. **Cross-section / multi-span supplementary set:** out of scope here; a separate pre-registration after
+   this run. The owner's working assumption for that study is that questions whose answers span sections
+   are usually composite or complex questions; it is an assumption to be tested (from data, or from
+   evidence in the literature) before that study's design depends on it.
+5. **Embedding-drift threshold:** cosine ≥ 0.999 on all 200 re-embedded ft512o64s chunks.
+6. **Context tokens:** chars/4 as frozen (labelled estimated).
+7. **Server version and tools tag:** whatever `dev` runs at the freeze (≥ v1.6.25), named in the freeze
+   statement; both new arms built from stamped images of that tag (S-regex as its no-`nltk` build), all five
+   arms retrieved on it.
