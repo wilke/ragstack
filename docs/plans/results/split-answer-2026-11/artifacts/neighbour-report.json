@@ -1,0 +1,461 @@
+{
+ "by_group": {
+  "kept_changed": {
+   "context_window_1": {
+    "all": {
+     "answers": 215,
+     "answers_rate_unjudged_as_not": {
+      "k": 215,
+      "n": 219,
+      "rate": 0.9817,
+      "wilson95": [
+       0.9539,
+       0.9929
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 215,
+      "n": 219,
+      "rate": 0.9817,
+      "wilson95": [
+       0.9539,
+       0.9929
+      ]
+     },
+     "no_final_row": 0,
+     "not": 4,
+     "unjudged": 0
+    },
+    "edge_only": {
+     "answers": 36,
+     "answers_rate_unjudged_as_not": {
+      "k": 36,
+      "n": 36,
+      "rate": 1.0,
+      "wilson95": [
+       0.9035,
+       1.0
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 36,
+      "n": 36,
+      "rate": 1.0,
+      "wilson95": [
+       0.9035,
+       1.0
+      ]
+     },
+     "no_final_row": 0,
+     "not": 0,
+     "unjudged": 0
+    },
+    "without_edge": {
+     "answers": 179,
+     "answers_rate_unjudged_as_not": {
+      "k": 179,
+      "n": 183,
+      "rate": 0.9781,
+      "wilson95": [
+       0.9451,
+       0.9915
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 179,
+      "n": 183,
+      "rate": 0.9781,
+      "wilson95": [
+       0.9451,
+       0.9915
+      ]
+     },
+     "no_final_row": 0,
+     "not": 4,
+     "unjudged": 0
+    }
+   }
+  },
+  "negative": {
+   "context_window_1": {
+    "all": {
+     "answers": 35,
+     "answers_rate_unjudged_as_not": {
+      "k": 35,
+      "n": 150,
+      "rate": 0.2333,
+      "wilson95": [
+       0.1728,
+       0.3072
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 35,
+      "n": 150,
+      "rate": 0.2333,
+      "wilson95": [
+       0.1728,
+       0.3072
+      ]
+     },
+     "no_final_row": 0,
+     "not": 115,
+     "unjudged": 0
+    }
+   }
+  },
+  "primary_only": {
+   "context_window_1": {
+    "all": {
+     "answers": 4,
+     "answers_rate_unjudged_as_not": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "no_final_row": 0,
+     "not": 0,
+     "unjudged": 0
+    },
+    "edge_only": {
+     "answers": 0,
+     "answers_rate_unjudged_as_not": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "wilson95": null
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 0,
+      "n": 0,
+      "rate": null,
+      "wilson95": null
+     },
+     "no_final_row": 0,
+     "not": 0,
+     "unjudged": 0
+    },
+    "without_edge": {
+     "answers": 4,
+     "answers_rate_unjudged_as_not": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 4,
+      "n": 4,
+      "rate": 1.0,
+      "wilson95": [
+       0.5101,
+       1.0
+      ]
+     },
+     "no_final_row": 0,
+     "not": 0,
+     "unjudged": 0
+    }
+   }
+  },
+  "recovered": {
+   "context_window_1": {
+    "all": {
+     "answers": 45,
+     "answers_rate_unjudged_as_not": {
+      "k": 45,
+      "n": 53,
+      "rate": 0.8491,
+      "wilson95": [
+       0.7294,
+       0.9215
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 45,
+      "n": 53,
+      "rate": 0.8491,
+      "wilson95": [
+       0.7294,
+       0.9215
+      ]
+     },
+     "no_final_row": 0,
+     "not": 8,
+     "unjudged": 0
+    },
+    "edge_only": {
+     "answers": 2,
+     "answers_rate_unjudged_as_not": {
+      "k": 2,
+      "n": 3,
+      "rate": 0.6667,
+      "wilson95": [
+       0.2076,
+       0.9386
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 2,
+      "n": 3,
+      "rate": 0.6667,
+      "wilson95": [
+       0.2076,
+       0.9386
+      ]
+     },
+     "no_final_row": 0,
+     "not": 1,
+     "unjudged": 0
+    },
+    "without_edge": {
+     "answers": 43,
+     "answers_rate_unjudged_as_not": {
+      "k": 43,
+      "n": 50,
+      "rate": 0.86,
+      "wilson95": [
+       0.7381,
+       0.9305
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 43,
+      "n": 50,
+      "rate": 0.86,
+      "wilson95": [
+       0.7381,
+       0.9305
+      ]
+     },
+     "no_final_row": 0,
+     "not": 7,
+     "unjudged": 0
+    }
+   }
+  },
+  "split": {
+   "context_window_1": {
+    "all": {
+     "answers": 8,
+     "answers_rate_unjudged_as_not": {
+      "k": 8,
+      "n": 18,
+      "rate": 0.4444,
+      "wilson95": [
+       0.2455,
+       0.6629
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 8,
+      "n": 18,
+      "rate": 0.4444,
+      "wilson95": [
+       0.2455,
+       0.6629
+      ]
+     },
+     "no_final_row": 0,
+     "not": 10,
+     "unjudged": 0
+    },
+    "edge_only": {
+     "answers": 0,
+     "answers_rate_unjudged_as_not": {
+      "k": 0,
+      "n": 1,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.7935
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 0,
+      "n": 1,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.7935
+      ]
+     },
+     "no_final_row": 0,
+     "not": 1,
+     "unjudged": 0
+    },
+    "without_edge": {
+     "answers": 8,
+     "answers_rate_unjudged_as_not": {
+      "k": 8,
+      "n": 17,
+      "rate": 0.4706,
+      "wilson95": [
+       0.2616,
+       0.6904
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 8,
+      "n": 17,
+      "rate": 0.4706,
+      "wilson95": [
+       0.2616,
+       0.6904
+      ]
+     },
+     "no_final_row": 0,
+     "not": 9,
+     "unjudged": 0
+    }
+   },
+   "context_window_2": {
+    "all": {
+     "answers": 0,
+     "answers_rate_unjudged_as_not": {
+      "k": 0,
+      "n": 2,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.6577
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 0,
+      "n": 2,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.6577
+      ]
+     },
+     "no_final_row": 0,
+     "not": 2,
+     "unjudged": 0
+    },
+    "edge_only": {
+     "answers": 0,
+     "answers_rate_unjudged_as_not": {
+      "k": 0,
+      "n": 1,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.7935
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 0,
+      "n": 1,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.7935
+      ]
+     },
+     "no_final_row": 0,
+     "not": 1,
+     "unjudged": 0
+    },
+    "without_edge": {
+     "answers": 0,
+     "answers_rate_unjudged_as_not": {
+      "k": 0,
+      "n": 1,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.7935
+      ]
+     },
+     "answers_rate_unjudged_dropped": {
+      "k": 0,
+      "n": 1,
+      "rate": 0.0,
+      "wilson95": [
+       0.0,
+       0.7935
+      ]
+     },
+     "no_final_row": 0,
+     "not": 1,
+     "unjudged": 0
+    }
+   }
+  }
+ },
+ "calls": {
+  "gateway": 0,
+  "llm": 0,
+  "retrieval": 0,
+  "store": 0
+ },
+ "edge_rule": "without_edge: M has neighbours on both sides; edge_only: a document edge removed one side (§3.2 (b)9); negatives carry no edge item by the draw's rule",
+ "exploratory": true,
+ "final_rows": 446,
+ "inputs_sha256": {
+  "neighbour_export": "0925596f1c05caab41c0682da8f9fdc69a9467e0ad04093ef8186cb32e0095d8",
+  "neighbour_final": "5bc8903200505624bee16ef88e98e8acc179211422bb5597a88126a56e6f1768",
+  "neighbour_items": "a29c11d546aabac0dbc0f74a1b0f41c85c61ba8aa14382a623261993d22010f7",
+  "neighbour_seed": "33570ef433382a58a63a860f93f755c6f0cde7e09567b1e966b6369dcab1c344"
+ },
+ "item_type": "neighbour",
+ "items": 446,
+ "items_without_final_row": 0,
+ "negative_control": "the negative group's answers rates are the false-answers rate, under both unjudged policies",
+ "offline": true,
+ "plan": "split-answer-2026-11",
+ "provenance": {
+  "citable": true,
+  "commit": "e8b94454478dd76796834c83949436e657039392",
+  "describe": "v1.6.26-31-ge8b94454",
+  "dirty": false,
+  "image": null,
+  "in_image": false,
+  "installed_distribution": null,
+  "python": "3.12.13",
+  "recorded_at": "2026-11-11T02:47:33Z",
+  "schema": 1,
+  "segmentation": [
+   {
+    "backend": "punkt",
+    "kind": "sentences",
+    "n_docs": 5,
+    "n_spans": 40,
+    "nltk": "3.9.4",
+    "producer": "ragstack.ingestion.chunkers.sentence_spans",
+    "sample": "canonical-1",
+    "segmenter_version": "punkt-abbrev-v1",
+    "sha256": "adcd9cfe03aefa47f8a11ca8a5aff7f95fa313d97403ef0455a1f09b65e6cae0",
+    "texts_sha256": "8bde39dd61815b9cb4d5bc58592d8e086da237dbb6dd6d851edbb39276fdee25"
+   }
+  ],
+  "source": "git",
+  "untracked": 0,
+  "version": "v1.6.26+e8b94454",
+  "warnings_n": 1
+ },
+ "rate_rule": {
+  "answers_rate_unjudged_as_not": "answers / (answers + not + unjudged): unjudged counted as not (alias_control_chunks.label_of); lowers the negative control's false-answers rate",
+  "answers_rate_unjudged_dropped": "answers / (answers + not): unjudged dropped (the confirmatory analysis's primary policy)",
+  "no_final_row": "items without a final row are in neither denominator"
+ },
+ "schema": "split-answer-report/1"
+}
