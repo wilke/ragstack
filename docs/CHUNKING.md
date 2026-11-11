@@ -8,15 +8,18 @@ later. For how the chunkers work inside, see
 [ARCHITECTURE-DEEP-DIVE.md §2](ARCHITECTURE-DEEP-DIVE.md#2-chunking). For which
 ingest path runs your upload, see [ingest-paths.md](ingest-paths.md).
 
-**Short version.** Keep the server default, `fixed_token` 512/64. Semantic
-chunking is opt-in, admin-only, and more expensive, and no committed measurement
-shows it retrieving better. Whatever method a collection gets, it keeps for
-life.
+**Short version.** The server default in code is still `fixed_token` 512/64.
+The project has adopted a different default for production: `sentence` chunks
+of 512 tokens with a 640-token ceiling, cut at section boundaries
+([below](#the-adopted-default-not-yet-deployed)). It is not deployed yet. Semantic
+chunking is opt-in, admin-only and more expensive, and in the OA chunking eval
+it was worse than or tied with the section-cut arms in every setting. Whatever
+method a collection gets, it keeps for life.
 
 ## The default
 
-**`fixed_token` (a 512-token window with 64 tokens of overlap) is the default
-for new collections.** The owner decided this on 2026-10-06, "for now". Earlier
+**`fixed_token` (a 512-token window with 64 tokens of overlap) is the server
+default for new collections.** The owner decided this on 2026-10-06, "for now". Earlier
 deployments defaulted to `fixed`, a character window of 512/64 (the
 `chunk_method` / `chunk_size` / `chunk_overlap` defaults in
 `python/ragstack/config.py` `Settings`). Collections created under that default
@@ -24,6 +27,55 @@ stay `fixed`; see [identity](#a-collection-keeps-its-method-for-life).
 
 A deployment can override the default with `CHUNK_METHOD`, `CHUNK_SIZE` and
 `CHUNK_OVERLAP` in its `tenant.env`. No tenant uses a semantic method as its default today.
+
+### The adopted default (not yet deployed)
+
+The project has adopted this spec as the production default (the reach
+study calls it "the adopted chunking":
+[TEST-DATA.md §5](plans/results/reach-rechunk-2026-11/TEST-DATA.md),
+[REPORT.md §1](plans/results/reach-rechunk-2026-11/REPORT.md)):
+
+- method `sentence`, *size* 512 with `size_unit="tokens"`, overlap 0;
+- `size_tolerance` 0.25, so the ceiling is 640 tokens
+  ([size tolerance](#opt-in-size-tolerance-and-small-piece-merge));
+- `min_piece` 128;
+- `structure_cuts` `sections/1`, so section boundaries are preferred cut points.
+
+`sentence` accepts `size_tolerance` and `min_piece` only with all three of
+`structure_cuts` set, `size_unit="tokens"` and overlap 0; otherwise the
+create is refused.
+
+What it rests on:
+
+- **The OA chunking eval** compared ten chunkings on 22,593 PMC articles and
+  2,035 questions
+  ([POSTHOC-HYPOTHESES-2026-11-06.md](plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md)).
+  Section cuts helped every retrieval mode that uses vectors, by 2.5 to 7.9
+  hit@5 points. hit@5 is the share of questions whose top 5 chunks hold at
+  least 90 % of the answer quote. Semantic chunking was worse than or tied
+  with the section-cut arms in every setting. Under that eval's frozen rule the winner was `ft512o64s`, 512/64
+  token windows with section cuts, at +3.5 hit@5 points over plain 512/64.
+- **The adopted spec cuts at sentences instead.** The reach study
+  ([REPORT.md](plans/results/reach-rechunk-2026-11/REPORT.md) §2–3) compared it
+  with fixed 512-token windows (`fixed_token/512/0`) on the alias study's 1,089
+  eligible questions in four collections, 4,356 question-collection units.
+  The answer quote was in the top 10 chunks for 91.5 % of units under the
+  adopted spec and 90.3 % under the windows: +1.1 points, or a net 50 units.
+  The non-inferiority test passed, and so did the superiority test
+  (p = 0.0079).
+
+Why it is not the server default yet:
+
+- Every tenant but `dev` still runs the pre-#816 images (server v1.6.14,
+  tools v1.6.13). They have no `nltk`, so `sentence` runs the regex segmenter
+  there, not Punkt (#815; see [sentence segmentation](#sentence-segmentation)).
+  Images from tools v1.6.16 on carry Punkt.
+- Existing collections keep their spec, so adopting it means re-ingesting them
+  (#811).
+
+Until both land, `Settings` still defaults to `fixed_token` 512/64. An admin
+can create a collection with the adopted spec today. On a pre-#816 image it
+gets the regex segmenter.
 
 ## The six methods
 
@@ -279,8 +331,12 @@ came from an older image.
 
 Issue #831. The strict cap above is what the study tested, and it stays the
 default. A collection can instead opt in to treating *size* as a **target**
-with a tolerance, and to merging small pieces. This becomes the default only if
-the retrieval evaluation planned in #831 supports it.
+with a tolerance, and to merging small pieces. This becomes the semantic
+default only if the retrieval evaluation planned in #831 supports it.
+
+*Note, 2026-11-11:* the semantic default above is unchanged. The adopted
+production default ([above](#the-adopted-default-not-yet-deployed)) uses these
+same two keys on the `sentence` method: `size_tolerance` 0.25 and `min_piece` 128.
 
 Why: a small piece (a heading line, or a one-sentence lead-in cut off at a
 strong topic edge) is a poor retrieval unit and takes one of a fixed top-k's
@@ -292,8 +348,10 @@ uncapped chunks of up to 3,398), not from a tolerance just above the target.
 | `size_tolerance` | a number from 0 to 1 | 0.25 | Turns the setting on. The **ceiling** is ⌊*size* × (1 + `size_tolerance`)⌋ tokens, clamped to the window budget: never above it. |
 | `min_piece` | whole tokens, 0 to *size* | ⌊*size* / 4⌋ | A piece under this many tokens is merged into a neighbour. 0 never merges. |
 
-Both need the size-cap marker, so they are refused on the other methods (400 at
-create) and on an uncapped entry.
+On the semantic methods both need the size-cap marker, so they are refused on
+an uncapped entry. Since #828 PR 7, `sentence` also accepts them, with
+`structure_cuts` set, `size_unit="tokens"` and overlap 0. Every other
+combination gets 400 at create.
 
 **The rule.** At *size* 512 with tolerance 0.25 the ceiling is 640.
 
@@ -732,6 +790,30 @@ In short, for retrieval in these tests, the method and the overlap mattered
 less than the measurements could detect. What `fixed_token` reliably buys is
 determinism and token safety.
 
+Two later, larger evaluations did resolve differences:
+
+- **OA chunking eval**
+  ([POSTHOC-HYPOTHESES-2026-11-06.md](plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md)),
+  with 22,593 PMC articles, 2,035 questions and hit@5 over six retrieval settings:
+  - **Section cuts** help every retrieval mode that uses vectors, by 2.5 to
+    7.9 points. They have no effect on BM25 alone.
+  - **Overlap** helps by about 2 points in the production setting (hybrid plus
+    reranker) and in keyword search. It has no effect elsewhere. The whole gain
+    comes from the ~6 % of answers that a plain fixed-size cut splits in two,
+    and this benchmark's answers are short single spans.
+  - **Size:** 1,024-token chunks lose 5.8 points to 512 under vector search and
+    gain 5.3 under BM25. In production the difference mostly disappears
+    (−0.3 points).
+  - **Semantic** chunking is worse than or tied with the section-cut arms
+    everywhere.
+- **Reach study**
+  ([REPORT.md](plans/results/reach-rechunk-2026-11/REPORT.md)): the adopted
+  sentence/section spec reached the answer quote at least as often as fixed
+  512-token windows (+1.1 points, superiority p = 0.0079).
+
+The older findings above came from short abstracts, title queries or ten
+topics. These two evaluations are the ones the adopted default rests on.
+
 ## Token budget
 
 An embedder silently truncates anything longer than its context window, so
@@ -812,11 +894,16 @@ chunks have to fit inside it.
 
 ## Recommendations
 
-- **Use the default, `fixed_token` 512/64.** It is deterministic and cannot
-  overflow the embedder. No committed comparison beats it with statistical
-  support after Holm correction, though `fixed_tok256` is nominally ahead on
-  both the 7-way and SciFact runs, and on the provisional Leg A grid
-  `fixed_tok512` ranked 21 of 24, inside the noise floor.
+- **For a new collection, prefer the adopted spec** where Punkt is available:
+  `sentence`, 512 tokens, `size_tolerance` 0.25, `min_piece` 128,
+  `structure_cuts` `sections/1`
+  ([the adopted default](#the-adopted-default-not-yet-deployed)). Elsewhere, keep
+  the server default, `fixed_token` 512/64: it is deterministic and cannot
+  overflow the embedder. Adding `structure_cuts` to it is what won the OA
+  eval's frozen rule (`ft512o64s`).
+- **Keep the overlap if you stay on fixed windows.** In the OA eval, dropping
+  it at 512 cost about 2 hit@5 points in production. The older, smaller
+  comparisons above could not resolve overlap either way.
 - **Semantic chunking might be worth it** when your documents change topic
   clearly and you want chunks that follow those changes, and you can afford the
     ingest cost. Measured on 20 papers (one corpus, default params): boundary
@@ -835,10 +922,17 @@ chunks have to fit inside it.
   another method, create a second collection, ingest the same documents, and
   compare them.
 
-## Not built yet: section-aware chunking
+## Section-aware chunking: history
 
-Every method above cuts through flat text and ignores the document's own
-sections, so a chunk can start in the Methods section and end in the Results.
+*Note, 2026-11-11:* this section was headed "Not built yet". Section cuts are
+now built: `structure_cuts` `sections/1` (#828 PR 7) makes section boundaries
+preferred cut points for every method, and it is part of the
+[adopted default](#the-adopted-default-not-yet-deployed). The two paragraphs below
+describe the state before that. The two trials after them carry their own
+dated notes.
+
+Before section cuts, every method above cut through flat text and ignored the document's own
+sections, so a chunk could start in the Methods section and end in the Results.
 A structure-preserving ingest, with one contract and per-format extractors
 (PDF, HTML, JATS), is planned in
 [`plans/structured-ingest.md`](plans/structured-ingest.md) (status: plan, not
@@ -851,7 +945,8 @@ you can choose today, and `CHUNK_SECTION_AWARE` from
 The first piece exists for JATS: `ingestion/jats.py::article_spans` returns
 the article record's text together with each section's and paragraph's
 character span in it. Untitled sections and paragraphs before the first
-section get their own spans. Nothing consumes these spans yet, and the stored
+section get their own spans. At the time nothing consumed these spans;
+`jats_structure.py` (`jats/1`) now does. The stored
 records are unchanged.
 
 ### Offline trial on openchia (2026-10-22) — EXPLORATORY, nothing passed
