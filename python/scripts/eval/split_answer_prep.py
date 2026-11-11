@@ -1229,8 +1229,11 @@ def read_items_dir(items_dir: Path) -> tuple[dict[str, dict[str, Any]], list[dic
 def report_counts(export: Mapping[str, Mapping[str, Any]], seeds: Sequence[Mapping[str, Any]],
                   finals: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     """Per group and context window: the items' final labels, each group ``all`` / ``without_edge``
-    / ``edge_only`` (§3.2 (b)9), with the Wilson interval of the *answers* rate over the items that
-    have a final row (unjudged counted as *not*, as ``alias_control_chunks.label_of`` does). An item
+    / ``edge_only`` (§3.2 (b)9), with the Wilson interval of the *answers* rate under both policies
+    for unjudged items (review A8 / Fable F5): ``answers_rate_unjudged_as_not`` (over answers + not +
+    unjudged, as ``alias_control_chunks.label_of`` counts) and ``answers_rate_unjudged_dropped`` (over
+    answers + not, the confirmatory analysis's primary policy). For the negative control the first
+    lowers the false-answers rate, so neither is reported alone; the unjudged count is kept. An item
     is one (record, neighbour item id), the registry's pair; one in several groups counts in each."""
     import alias_study_judge as aj
 
@@ -1257,8 +1260,10 @@ def report_counts(export: Mapping[str, Mapping[str, Any]], seeds: Sequence[Mappi
             out[g][w] = {}
             for split in (EDGE_SPLITS if g != NEGATIVE_GROUP else ("all",)):
                 c = tab[g][w][split]
-                judged = c["answers"] + c["not"] + c["unjudged"]
-                out[g][w][split] = {**{k: c[k] for k in LABEL_WORDS}, "answers_rate": acc.wilson(c["answers"], judged)}
+                out[g][w][split] = {
+                    **{k: c[k] for k in LABEL_WORDS},
+                    "answers_rate_unjudged_as_not": acc.wilson(c["answers"], c["answers"] + c["not"] + c["unjudged"]),
+                    "answers_rate_unjudged_dropped": acc.wilson(c["answers"], c["answers"] + c["not"])}
     return {"by_group": out, "items": len(units), "final_rows": len(finals),
             "items_without_final_row": sum(1 for _g, pid in units if pid not in finals)}
 
@@ -1271,10 +1276,16 @@ def run_report(items_dir: Path, neighbour_final: Path, out_dir: Path, public_out
     counts = report_counts(export, seeds, finals)
     rec = {"schema": SCHEMA["report"], "exploratory": True, "offline": True, "calls": CALLS, "plan": PREREG,
            "item_type": "neighbour",
-           "rate_rule": "answers / items with a final row; unjudged counted as not (alias_control_chunks.label_of)",
+           "rate_rule": {"answers_rate_unjudged_as_not": "answers / (answers + not + unjudged): unjudged counted as "
+                                                         "not (alias_control_chunks.label_of); lowers the negative "
+                                                         "control's false-answers rate",
+                         "answers_rate_unjudged_dropped": "answers / (answers + not): unjudged dropped (the "
+                                                          "confirmatory analysis's primary policy)",
+                         "no_final_row": "items without a final row are in neither denominator"},
            "edge_rule": "without_edge: M has neighbours on both sides; edge_only: a document edge removed one side "
                         "(§3.2 (b)9); negatives carry no edge item by the draw's rule",
-           "negative_control": "the negative group's answers_rate is the false-answers rate",
+           "negative_control": "the negative group's answers rates are the false-answers rate, under both "
+                               "unjudged policies",
            **counts,
            "inputs_sha256": {**shas, "neighbour_final": sha(neighbour_final)},
            "provenance": acc.public_provenance(acc.provenance())}

@@ -73,19 +73,25 @@ def test_report_counts_with_and_without_edges(items_dir: Path, tmp_path: Path) -
     assert (s1["all"]["answers"], s1["all"]["not"]) == (2, 2)
     assert s1["without_edge"]["answers"] == 2 and s1["without_edge"]["not"] == 0
     assert s1["edge_only"]["not"] == 2 and s1["edge_only"]["answers"] == 0
-    assert s1["all"]["answers_rate"]["k"] == 2 and s1["all"]["answers_rate"]["n"] == 4
-    assert s1["without_edge"]["answers_rate"]["rate"] == 1.0
+    assert s1["all"]["answers_rate_unjudged_as_not"]["k"] == 2 and s1["all"]["answers_rate_unjudged_as_not"]["n"] == 4
+    assert s1["all"]["answers_rate_unjudged_dropped"] == s1["all"]["answers_rate_unjudged_as_not"]  # no unjudged
+    assert s1["without_edge"]["answers_rate_unjudged_dropped"]["rate"] == 1.0
     assert g["split"]["context_window_2"]["all"]["not"] == 1
     assert g["recovered"]["context_window_1"]["edge_only"]["not"] == 1  # a2: M is the first chunk
     # kept_changed: b1 (none), b2 (after, no final row), b3 (none)
     kc = g["kept_changed"]["context_window_1"]
     assert kc["all"]["no_final_row"] == 1 and kc["edge_only"]["no_final_row"] == 1
-    assert kc["all"]["answers_rate"]["n"] == 2 and kc["without_edge"]["answers"] == 2
-    # the negative control: the false-answers rate, unjudged counted as not; no edge split
+    assert kc["all"]["answers_rate_unjudged_as_not"]["n"] == 2 and kc["without_edge"]["answers"] == 2
+    assert kc["all"]["answers_rate_unjudged_dropped"]["n"] == 2  # no final row: in neither denominator
+    # the negative control: the false-answers rate under both unjudged policies (review A8 / Fable F5);
+    # no edge split; the unjudged count is kept
     neg = g["negative"]["context_window_1"]
     assert set(neg) == {"all"}
     assert (neg["all"]["answers"], neg["all"]["not"], neg["all"]["unjudged"]) == (1, 1, 1)
-    assert neg["all"]["answers_rate"]["k"] == 1 and neg["all"]["answers_rate"]["n"] == 3
+    as_not, dropped = neg["all"]["answers_rate_unjudged_as_not"], neg["all"]["answers_rate_unjudged_dropped"]
+    assert (as_not["k"], as_not["n"]) == (1, 3) and (dropped["k"], dropped["n"]) == (1, 2)
+    assert dropped["rate"] == 0.5 > as_not["rate"]
+    assert set(rec["rate_rule"]) == {"answers_rate_unjudged_as_not", "answers_rate_unjudged_dropped", "no_final_row"}
     assert rec["items"] == 13 and rec["items_without_final_row"] == 1 and rec["final_rows"] == 12
     # counts only
     pub = json.loads((tmp_path / "public" / "neighbour-report.json").read_text())
