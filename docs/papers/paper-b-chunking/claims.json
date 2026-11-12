@@ -485,7 +485,7 @@
   {
    "id": "oa-semantic-pooled-vs-sections-setting-a",
    "section": "5.4",
-   "statement": "Capped semantic_pooled chunking scores below fixed windows with section cuts in the production setting: sempool512 - ft512o64s = -2.21 [-3.73, -0.69], unadjusted, descriptive.",
+   "statement": "Capped semantic_pooled chunking scores below fixed windows with section cuts in the production setting: sempool512 - ft512o64s = -2.21 [-3.73, -0.69], recomputed post hoc from the per-question file, unadjusted, descriptive.",
    "value": {
     "point": -2.2113,
     "lo": -3.7346,
@@ -528,7 +528,7 @@
    "pointer": "spread.pairs.C1_hybrid.sd_ratio_reranked_over_not",
    "kind": "json",
    "verified": true,
-   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. The POSTHOC prose prints the lower bound as 0.68; the artifact's recomputation gives 0.67 (markdown_checks). SD across arms 2.05 with the reranker, 2.29 without; best - worst 5.85 vs 7.37. Not a null: up to about a third of compression is inside the interval."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. The POSTHOC prose prints the lower bound as 0.68; the value in rerank_spread.json and in POSTHOC's own C2 table is 0.67, which the aggregate carries (markdown_checks). SD across arms 2.05 with the reranker, 2.29 without; best - worst 5.85 vs 7.37. Not a null: up to about a third of compression is inside the interval."
   },
   {
    "id": "oa-c1-fusion-compresses",
@@ -1454,7 +1454,7 @@
    "pointer": "The legacy semantic chunker also costs ~4.5-7x",
    "kind": "text",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. The plan (PLAN-AND-PASS-RULE.md arm 6) carries the same planned figure. semantic_pooled's cost ratio on this corpus is absent from the public record."
+   "note": "MARKDOWN-ONLY: the committed aggregate does not carry it (a planned figure, not a measurement). The plan (PLAN-AND-PASS-RULE.md arm 6) carries the same planned figure. semantic_pooled's cost ratio on this corpus is absent from the public record."
   },
   {
    "id": "oa-sempool-hit5-setting-a",
@@ -1690,6 +1690,23 @@
    "kind": "json",
    "verified": true,
    "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2, setting (e). The only count-matched random-cut control is on the sentence arm; none exists for the fixed window. Under BM25 + reranker the same contrast is +1.18 [-0.05, +2.41]."
+  },
+  {
+   "id": "oa-sections-sent-vector-reranker",
+   "section": "5.4",
+   "statement": "With the reranker on vector-only candidates, section cuts on sentence chunks (sent512s - sent512) gain +3.24 [+1.67, +4.82].",
+   "value": {
+    "point": 3.24,
+    "lo": 1.67,
+    "hi": 4.82,
+    "n": 2035,
+    "status": "exploratory"
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_e_sections_sent512s_minus_sent512",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2, setting (e). The section gain against which the structure-over-random contrast +2.11 [+0.69, +3.54] (`oa-sections-vs-random-cuts-vector-reranker`) is read; both are unadjusted."
   }
  ]
 }

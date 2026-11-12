@@ -18,16 +18,17 @@ section cuts by +3.49 hit@5 points [+2.11, +4.86] (`oa-sections-ft-setting-a`; t
 pre-specified in a private Addendum C after the six-arm main run); in the production setting, on sentence
 chunks (the only arm with a count-matched random-cut control), real section cuts are not shown to beat
 random cuts: +0.84 [−0.39, +2.11], unresolved, against a section gain of +2.51
-(`oa-sections-vs-random-cuts-setting-a`, `oa-sections-sent-setting-a`), while under vector + reranker they
-do, +2.11 [+0.69, +3.54] (`oa-sections-vs-random-cuts-vector-reranker`); no random-cut control exists for
+(`oa-sections-vs-random-cuts-setting-a`, `oa-sections-sent-setting-a`), while under vector + reranker,
+exploratory and unadjusted, they do, +2.11 [+0.69, +3.54] (`oa-sections-vs-random-cuts-vector-reranker`);
+no random-cut control exists for
 the fixed window; overlap moves hit@5 too (+2.06
 [+0.59, +3.49], `oa-overlap-setting-a`), as do a size tolerance and small-piece merge (+0.79 [+0.10, +1.47],
 secondary, `h2h-s-minus-sent512s`); a sentence-and-section chunker is non-inferior to the section-cut
 window at a 2-point margin and not shown better (+0.34 [−0.64, +1.33], `h2h-s-minus-ft512o64s`) and,
 against plain `fixed_token/512/0` windows on an independent term-question set, reaches the quote more
 often (+1.15 points, superior, `reach-quote10-rates`) with 13 % less context (`reach-context-tokens`);
-capped semantic_pooled chunking scores −2.21 [−3.73, −0.69] below the section-cut window (unadjusted,
-descriptive, `oa-semantic-pooled-vs-sections-setting-a`), does not clear its frozen superiority test, and
+capped semantic_pooled chunking scores −2.21 [−3.73, −0.69] below the section-cut window (recomputed post
+hoc, unadjusted, descriptive, `oa-semantic-pooled-vs-sections-setting-a`), does not clear its frozen superiority test, and
 its realised chunk size was not measured. Exploratorily, hybrid fusion compresses the differences between
 chunkings and the reranker adds a near-uniform lift, and its further compression on hybrid is not
 significant (SD ratio 0.90 [0.67, 1.19]; `oa-c1-fusion-compresses`, `oa-c1-sd-ratio-hybrid`). Exploratory
@@ -90,9 +91,11 @@ narrower than "we do both": one pre-registered contrast at matched delivered con
 chunker against the section-cut window, 2,016 against 2,000 estimated tokens at k = 5, `h2h-ctx5`;
 matched by outcome and by a chars/4 estimate, not by design), a count-matched random-cut control on the
 sentence arm that makes the size-versus-position question answerable and leaves it unresolved in the
-production setting (+0.84 [−0.39, +2.11], `oa-sections-vs-random-cuts-setting-a`) while resolving it in
-favour of position under vector-only and vector + reranker (+4.82 and +2.11 [+0.69, +3.54],
-`oa-sections-vs-random-cuts-vector`, `oa-sections-vs-random-cuts-vector-reranker`), measured realised
+production setting (+0.84 [−0.39, +2.11], `oa-sections-vs-random-cuts-setting-a`), while under vector-only
+(Addendum C, Holm) real cuts beat random cuts by +4.82 [+3.05, +6.58] against a section gain of +6.09
+[+4.18, +7.96] (`oa-sections-vs-random-cuts-vector`, `oa-sections-sent-vector-only`) and under vector +
+reranker (exploratory, unadjusted) by +2.11 [+0.69, +3.54] against +3.24 [+1.67, +4.82]
+(`oa-sections-vs-random-cuts-vector-reranker`, `oa-sections-sent-vector-reranker`), measured realised
 lengths for the judged chunks
 (`confirm-realised-chunk-tokens`), and one demonstration that the article-level metric misses a chunk-level
 effect: overlap moves chunk-level hit@5 by +2.06 [+0.59, +3.49] (`oa-overlap-setting-a`) and article-level
@@ -119,27 +122,31 @@ is tested here against the committed record, and the thesis is restated afterwar
 | clause | verdict | what the record says |
 |---|---|---|
 | *Document-level metrics answer a different question* | **supported, and narrowed to top-1 and to one demonstrated contrast** | Gap@1 of 0.369 at one document, resolved, judge-free (`rescore-gap-k1-tok512-n1`); the gap vanishes at k = 10 and two pre-registered k = 10 predictions failed. On the OA eval, overlap's chunk-level +2.06 (`oa-overlap-setting-a`) is +0.64 [−0.39, +1.67] at the article level (`oa-overlap-article-level`). True for a consumer that acts on the first hits; not badly misleading for one that reads ten passages. |
-| *Realised chunk size confounds chunking method* | **changed: from a claim about the literature to a control in our own design, and the confound is inside our own headline** | Where delivered context happened to match, the method label did little: S ties ft512o64s at 2,016 against 2,000 estimated tokens (`h2h-s-minus-ft512o64s`, `h2h-ctx5`); overlap's gain is not a size effect (`oa-overlap-chunk-size-unchanged`). Where sizes were not matched, how much of the one large effect is size depends on the retriever: in the production setting, on the sentence arm, real section cuts are not shown to beat count-matched random cuts (+0.84 [−0.39, +2.11], unresolved, `oa-sections-vs-random-cuts-setting-a`), while under vector-only and vector + reranker most of the gain is position (+4.82 of +6.09; +2.11 [+0.69, +3.54]; `oa-sections-vs-random-cuts-vector`, `oa-sections-vs-random-cuts-vector-reranker`); no random-cut control exists for the fixed window. The judged adopted-spec chunks have a median of 453 tokens against the windows' 512 (`confirm-realised-chunk-tokens`). The semantic arms' realised size was never measured. The older study's "semantic chunker collapsed to ~350 tokens" exists only in design notes, not in a committed artifact, and is dropped. |
+| *Realised chunk size confounds chunking method* | **changed: from a claim about the literature to a control in our own design, and the confound is inside our own headline** | Where delivered context happened to match, the method label did little: S ties ft512o64s at 2,016 against 2,000 estimated tokens (`h2h-s-minus-ft512o64s`, `h2h-ctx5`); overlap's gain is not a size effect (`oa-overlap-chunk-size-unchanged`). Where sizes were not matched, how much of the one large effect is size depends on the retriever: in the production setting, on the sentence arm, real section cuts are not shown to beat count-matched random cuts (+0.84 [−0.39, +2.11], unresolved, `oa-sections-vs-random-cuts-setting-a`), while under vector-only (Addendum C, Holm) real cuts beat random cuts by +4.82 [+3.05, +6.58] against a section gain of +6.09 [+4.18, +7.96] (`oa-sections-vs-random-cuts-vector`, `oa-sections-sent-vector-only`), and under vector + reranker (exploratory, unadjusted) by +2.11 [+0.69, +3.54] against +3.24 [+1.67, +4.82] (`oa-sections-vs-random-cuts-vector-reranker`, `oa-sections-sent-vector-reranker`); no random-cut control exists for the fixed window. The judged adopted-spec chunks have a median of 453 tokens against the windows' 512 (`confirm-realised-chunk-tokens`). The semantic arms' realised size was never measured. The older study's "semantic chunker collapsed to ~350 tokens" exists only in design notes, not in a committed artifact, and is dropped. |
 | *Reach and containment trade against each other* | **weakened to a calibration reading; restated, exploratorily, as a measurement effect** | The trade is visible on 10 development topics under a judge (`s0bprime-reach-containment-256`, `s0bprime-reach-containment-2048`); the confirmatory run never ran. The newer record shows the tension from the other side, exploratory and judge-dependent: a chunking that keeps quote reach against plain windows (`reach-quote10-rates`, with 62 units reached only by the windows) loses single-passage *answers* labels (`confirm-excess-d`); for 53 of the 75 lost pairs another chunk answers (`confirm-cover-any`), and the pair's own answering chunk is retrieved for 39 of 75 (`found10-all-lost-a-own`) against a 178-of-276 reference (`found10-reference-a-own`); 18 pairs have no single answering chunk, and one reader's offline check of the wall-crossing windows found most answerable from one side (`split-wall-read-one-side`). Containment is a property of the evaluation unit as much as of the chunking. |
-| *Hybrid retrieval flattens the contrast* | **supported in part and made precise, exploratorily: fusion compresses, reranking does not add to it, and neither erases** | Exploratory C1/C2: hybrid fusion halves the vector-only spread across arms (`oa-c1-fusion-compresses`); the reranker adds a near-uniform lift (`oa-c1-reranker-lift`) and no significant further compression on top of fusion (`oa-c1-sd-ratio-hybrid`); on a single source it compresses by 25–40 % and keeps the order (`oa-c2-sd-ratio-vector`). Chunking moves hit@5 by about 2–6 points under the reranker even so (`oa-chunking-matters-under-reranker`), and the size effect that the production setting hides (`oa-size-setting-a`) is −3.54 [−5.21, −1.92] under vector + reranker (`oa-size-vector-reranker`). |
+| *Hybrid retrieval flattens the contrast* | **supported in part and made precise, exploratorily: fusion compresses, reranking does not add to it, and neither erases** | Exploratory C1/C2: hybrid fusion halves the vector-only spread across arms (`oa-c1-fusion-compresses`); the reranker adds a near-uniform lift (`oa-c1-reranker-lift`) and no significant further compression on top of fusion (`oa-c1-sd-ratio-hybrid`); on a single source it compresses by 25–40 % and keeps the order (`oa-c2-sd-ratio-vector`). Under the reranker the ten arms span 5.85 points best to worst, SD 2.05 (`oa-chunking-matters-under-reranker`), and the size contrast that the production setting leaves unresolved (`oa-size-setting-a`) is −3.54 [−5.21, −1.92] under vector + reranker, exploratory and unadjusted (`oa-size-vector-reranker`). |
 
 **Revised thesis.** Chunking full-length scientific articles should be decided at the passage level,
 because at top-1 a document-level metric cannot see which chunk was retrieved, and at matched realised
 chunk length and delivered context, because an unmatched comparison can mix size with method: in the
 production setting the sentence-chunk section gain is not separated from count-matched random cuts,
-while under vector-only most of it is position. On 22,593 PMC articles and 2,035 short single-section
+while under vector-only real section cuts beat random cuts by +4.82 [+3.05, +6.58] against a section gain
+of +6.09 [+4.18, +7.96]. On 241,930 PMC article, table and figure records and 2,035 short single-section
 quotes under hybrid retrieval with a cross-encoder reranker, a 512/64 window cut at section boundaries
 beats the unsectioned window by +3.49 hit@5 points [+2.11, +4.86]; on the sentence arm, the only one with
 a random-cut control, section cuts are not shown to beat random cuts in that setting (+0.84 [−0.39,
-+2.11], unresolved) and do under vector + reranker (+2.11 [+0.69, +3.54]); overlap and a size tolerance
++2.11], unresolved) and do under vector + reranker (+2.11 [+0.69, +3.54], exploratory, unadjusted); overlap
+and a size tolerance
 with small-piece merge move hit@5 as well. The sentence-and-section chunker adopted for production is
 non-inferior to the section-cut window at a 2-point margin and not shown better; against plain 512-token
 windows on an independent term-question set it reaches the quote more often (+1.15 points) with 13 % less
 context (not size-matched: S's top 10 carries 13 % less text). Capped semantic_pooled chunking scores
-−2.21 [−3.73, −0.69] below the section-cut window (unadjusted, descriptive), fails its frozen superiority
+−2.21 [−3.73, −0.69] below the section-cut window (recomputed post hoc, unadjusted, descriptive), fails its
+frozen superiority
 test, and its realised chunk size was not measured. Exploratorily, hybrid fusion compresses the differences
 between chunkings and the reranker adds a near-uniform lift whose further compression on hybrid is not
-significant (SD ratio 0.90 [0.67, 1.19]); about 2–6 points remain. Exploratory and
+significant (SD ratio 0.90 [0.67, 1.19]); the ten arms span 5.85 points best to worst (SD 2.05).
+Exploratory and
 judge-dependent: when a boundary-respecting chunking makes a single-passage judge withdraw *answers*,
 another chunk answers for 53 of 75 pairs and is retrieved for 35 of 53, the rate for unaffected pairs,
 while 18 pairs have no single answering chunk. All of this holds for one domain, embedder, reranker and
@@ -231,7 +238,7 @@ the order they were run:
   **six arms frozen** (two fixed windows at 512, one at 1,024, sentence 512, two capped semantic
   chunkers), hit@5 on quote coverage ≥ 90 %, a pass rule with cost classes (cheap: non-inferiority; mid
   and expensive: superiority), margins set from a 300-question noise run and frozen at the 2.0-point
-  floor (`oa-margins-floor`), a Bonferroni stratum guard over journal family and length band, a
+  floor for the cheap and mid classes and 4.0 for the expensive class (`oa-margins-floor`), a Bonferroni stratum guard over journal family and length band, a
   paired-ladder tie-break by cost rank. What was frozen before the main run: those arms, the decision set
   rule, the margins, the primary setting (hybrid + reranker). What was added after the freeze and before
   any main-run retrieval: setting (d), hybrid without reranker. **What was added after the six-arm run,
@@ -317,49 +324,56 @@ development topics; the confirmatory run did not proceed. 256-token chunks: reac
 but not the pre-registered X_P of 0.05 (`rescore-overlap-512-unresolved`, `rescore-x-p`), unresolved.
 Never read either as a null.
 
-**5.4 What chunking does to hit@5 on 22,593 articles.** Judge-free, n = 2,035, half-width 1.22 points in
-the production setting, where the server default reaches 79.02 % (`oa-hit5-setting-a-baseline`). Every figure
+**5.4 What chunking does to hit@5 on 241,930 records.** Judge-free, n = 2,035 questions over 241,930 article,
+table and figure records (`h2h-records-main`); the noise-run half-width scaled to n = 2,035 is 1.22 points in
+the production setting (`oa-margins-floor`), where the server default reaches 79.02 %
+(`oa-hit5-setting-a-baseline`). Every figure
 below resolves to the committed aggregate artifact (`../../plans/results/oa-chunking-eval-2026-10/artifacts/
 oa-eval-aggregates.json`, aggregates only, citable provenance), which labels each contrast confirmatory
 (the frozen six-arm run), Addendum C (pre-specified privately after the main run) or exploratory; the
-section's sentences carry those labels. Two numbers remain Markdown-only and are said to be: the article
-count (`oa-corpus-articles`) and the sentence and semantic arms' split-quote shares
-(`oa-split-quote-share-sent512`).
+section's sentences carry those labels. Three numbers remain Markdown-only, quoted under the labelled §5.4
+exception in the working rules and named as Markdown-only in their sentences: the article count
+(`oa-corpus-articles`), the legacy semantic arm's planned embedding cost (`oa-legacy-semantic-cost`) and the
+sentence and semantic arms' split-quote shares (`oa-split-quote-share-sent512`).
 - *Section cuts* (four contrasts pre-specified in the private Addendum C after the six-arm run, Holm; the
   paper labels them so): +3.49 [+2.11, +4.86] on the fixed window (`oa-sections-ft-setting-a`,
   re-measured by the head-to-head's drift gate), +2.51 on sentence chunks (`oa-sections-sent-setting-a`);
   +7.91 and +6.09 under vector-only (`oa-sections-ft-vector-only`, `oa-sections-sent-vector-only`); −0.29
   [−1.72, +1.13] under BM25, unresolved at a 1.4-point half-width (`oa-sections-ft-bm25-null`). Against
   count-matched random cuts, a control that exists only on the sentence arm (sent512s − sent512rc; none
-  for the fixed window): +4.82 under vector-only (`oa-sections-vs-random-cuts-vector`), +2.11 [+0.69,
-  +3.54] under vector + reranker (`oa-sections-vs-random-cuts-vector-reranker`), and +0.84 [−0.39, +2.11]
-  in the production setting (`oa-sections-vs-random-cuts-setting-a`): there, real section cuts are not
-  shown to beat random cuts against a section gain of +2.51, an unresolved contrast that the sentence
-  states as such, never as a null. The eval's pick retrieves 14 % less text
+  for the fixed window; both Addendum C, Holm): +4.82 [+3.05, +6.58] under vector-only
+  (`oa-sections-vs-random-cuts-vector`) and +0.84 [−0.39, +2.11] in the production setting
+  (`oa-sections-vs-random-cuts-setting-a`): there, real section cuts are not shown to beat random cuts
+  against a section gain of +2.51, an unresolved contrast that the sentence states as such, never as a
+  null. Exploratory, setting (e), unadjusted: under vector + reranker the same contrast is +2.11 [+0.69,
+  +3.54] against a section gain of +3.24 [+1.67, +4.82] (`oa-sections-vs-random-cuts-vector-reranker`,
+  `oa-sections-sent-vector-reranker`). The eval's pick retrieves 14 % less text
   (`oa-ft512o64s-context-ratio`).
-- *Overlap* (pre-specified whole-set contrast; mechanism post-hoc): +2.06 [+0.59, +3.49], all of it on
-  the 119 questions a plain cut splits (`oa-overlap-setting-a`); chunks are not larger
+- *Overlap* (pre-specified whole-set contrast; mechanism post-hoc): +2.06 [+0.59, +3.49], concentrated on
+  the 119 questions a plain cut splits (+34.45 [+25.21, +43.70]; the other 1,916 +0.05 [−1.36, +1.46],
+  exploratory; `oa-overlap-setting-a`); chunks are not larger
   (`oa-overlap-chunk-size-unchanged`); 5.85 % of quotes split without overlap against 0.20 % under
   sentence cuts (`oa-split-quote-share-ft512o0`, `oa-split-quote-share-sent512`); at the article level +0.64
   [−0.39, +1.67]
   (`oa-overlap-article-level`). Exploratory label: hypotheses B and D.
 - *Size* (exploratory A, two sizes): −5.80 under vector-only (`oa-size-vector-only`), +5.31 under BM25
   (`oa-size-bm25-only`), −0.29 [−1.82, +1.23] in production, unresolved (`oa-size-setting-a`), −3.54
-  [−5.21, −1.92] under vector + reranker (`oa-size-vector-reranker`); methods-section questions −13.9
-  under vector-only (`oa-size-methods-vector-only`, subgroup, hint).
+  [−5.21, −1.92] under vector + reranker (`oa-size-vector-reranker`); methods-section questions (n = 368)
+  −13.86 [−18.48, −9.51] under vector-only (`oa-size-methods-vector-only`, subgroup, hint).
 - *Semantic chunking.* Capped semantic_pooled scores −2.21 [−3.73, −0.69] below the section-cut window
-  in production (unadjusted, descriptive, `oa-semantic-pooled-vs-sections-setting-a`), 80.29 % against the
+  in production (recomputed post hoc, unadjusted, descriptive, `oa-semantic-pooled-vs-sections-setting-a`),
+  80.29 % against the
   server default's 79.02 % (`oa-sempool-hit5-setting-a`), and does not clear its frozen mid-class
   superiority test; it is competitive without sections under vector-only, +7.76 [+5.80, +9.78], the frozen
   run's secondary-setting report (`oa-semantic-pooled-vs-baseline-vector-only`). There is no S − sempool512 contrast. The 4.5–7× embedding
-  cost is the *planned* cost of the legacy semantic arm, not semantic_pooled's
-  (`oa-legacy-semantic-cost`). The semantic arms' realised chunk size was not measured, so by the paper's
+  cost is the *planned* cost of the legacy semantic arm, not semantic_pooled's (`oa-legacy-semantic-cost`,
+  Markdown-only). The semantic arms' realised chunk size was not measured, so by the paper's
   own rule these are unmatched comparisons.
 - *Fusion and reranking* (exploratory C1, C2): fusion halves the vector-only spread
   (`oa-c1-fusion-compresses`); the reranker adds +14.3 to +17.7 to every arm (`oa-c1-reranker-lift`) and
   compresses hybrid spread by a ratio of 0.90 [0.67, 1.19], not significant (`oa-c1-sd-ratio-hybrid`);
   on a single source it compresses to 0.75 [0.65, 0.88] (vector) and 0.60 [0.45, 0.81] (BM25) and keeps
-  the order (`oa-c2-sd-ratio-vector`). After both, chunking matters by about 2–6 points
+  the order (`oa-c2-sd-ratio-vector`). After both, the ten arms span 5.85 points best to worst, SD 2.05
   (`oa-chunking-matters-under-reranker`).
 
 **5.5 The adopted chunker against the eval's pick.** Confirmatory (H1, H2, H3), judge-free, n = 2,035,
@@ -455,16 +469,18 @@ Then, each named as a competing reading of the main result:
   `oa-size-setting-a`.
 - **The realised-size confound is inside our own section result.** In the production setting, on
   sentence chunks, real section boundaries are not shown to beat count-matched random cuts (+0.84 [−0.39,
-  +2.11], unresolved, `oa-sections-vs-random-cuts-setting-a`), while under vector + reranker they are
-  (+2.11 [+0.69, +3.54], `oa-sections-vs-random-cuts-vector-reranker`); no random-cut control was run for
+  +2.11], unresolved, `oa-sections-vs-random-cuts-setting-a`), while under vector + reranker, exploratory
+  and unadjusted, they are (+2.11 [+0.69, +3.54], `oa-sections-vs-random-cuts-vector-reranker`); no
+  random-cut control was run for
   the fixed window, so the +3.49 headline has no such control at all. The judged adopted-spec chunks are
   shorter than the windows (`confirm-realised-chunk-tokens`); the semantic arms' realised size is
   unmeasured. Report the production section gain as "cut position and shorter chunks together, not
   separated". Matching of delivered context holds only for S against ft512o64s, by a chars/4 estimate and
   by outcome, not by design (`h2h-ctx5`).
 - **The reach comparator is weaker than the eval's pick.** The reach test compares S with plain
-  `fixed_token/512/0` windows, which the OA eval's own pick beats by +3.49 on the eval's questions
-  (`oa-sections-ft-setting-a`); the +1.15 and the 13 % context saving are against those windows, not
+  `fixed_token/512/0` windows, while the OA eval's own pick beats the 512/64 server default by +3.49 on
+  the eval's questions (`oa-sections-ft-setting-a`; the aggregate holds no ft512o64s − ft512o0 contrast);
+  the +1.15 and the 13 % context saving are against those windows, not
   against ft512o64s, where context is matched (`h2h-ctx5`).
 - **Adoption preceded the direct comparison.** The production chunker S was adopted on the OA eval, which
   never ran S (its plain-sentence section arm sent512s tied the eval's pick and lost on the cost ladder),
@@ -491,7 +507,8 @@ Then, each named as a competing reading of the main result:
   contrast the paper cites are in a committed aggregate artifact with citable provenance and the sha256 of
   each private source file; the per-question files, the main-run RESULTS and Addendum C itself remain
   private, so a reader can verify the aggregates against their hashes but cannot recompute them. The
-  article count and the sentence and semantic arms' split-quote shares exist only in Markdown.
+  article count, the legacy semantic arm's planned embedding cost and the sentence and semantic arms'
+  split-quote shares exist only in Markdown.
 
 ### 7. Reproducibility
 
@@ -512,17 +529,21 @@ access for the judge tiebreak, and the two-reader human read this record lacks.
 
 ## Working rules for this draft
 
-- Every number cites a claim id from `claims.json` (114 entries; every one resolves under
+- Every number cites a claim id from `claims.json` (115 entries; every one resolves under
   `../check_claims.py`; 9 are tagged `MARKDOWN-ONLY` and resolve to a Markdown file rather than a
-  committed JSON: the OA article count and sentence-arm split share, the position oracle, the older
-  study's corpus size and power, the 7-way and SciFact reports, and the step-0b wall read; the section,
+  committed JSON: the OA article count, the legacy semantic arm's planned cost and the sentence-arm split
+  share, the position oracle, the older study's corpus size and power, the 7-way and SciFact reports, and
+  the step-0b wall read; the section,
   random-cut, overlap, size, semantic and C1/C2 claims the thesis leans on resolve to the OA aggregate
   artifact). Run `../check_claims.py` with `/rag/envs/ragstack/bin/python3` before any commit that touches
   the draft.
 - Read the `note` field before writing the sentence. Four note tags change what may be said:
   `JUDGE-DEPENDENT` (the validity flag goes in the sentence), `MARKDOWN-ONLY` (the number has no committed
-  JSON; the defect is fixed before the sentence is drafted; for §5.2 there is no Markdown-aggregate
-  exception), `ADDENDUM-C` (the sentence says "pre-specified privately after the main run"), `SECONDARY` /
+  JSON; the defect is fixed before the sentence is drafted, with one labelled exception: §5.4 may quote
+  exactly three Markdown-only numbers, each named as Markdown-only in its sentence, because the committed
+  aggregate records that it cannot carry them: the article count `oa-corpus-articles`, the legacy arm's
+  planned cost `oa-legacy-semantic-cost` and the sentence/semantic split shares
+  `oa-split-quote-share-sent512`; for §5.2 and the thesis there is no exception), `ADDENDUM-C` (the sentence says "pre-specified privately after the main run"), `SECONDARY` /
   `EXPLORATORY` (labelled in the sentence, not the caption).
 - No status, no dates, no roadmap; those live in the lab book.
 - Absent is not passed. The semantic arms' realised chunk size is *absent*; the semantic_pooled embedding
