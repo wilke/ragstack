@@ -929,6 +929,15 @@ The raters' names are held in the private study record, not in this public file.
   step 3 say), about 40 calls, not 200; every budget total above therefore overstates by about 160 calls,
   left as a conservative margin.
 
+- **Qd, judge C (facts from the model-gateway maintainer, 2026-11-11).** C is Qwen3.6-35B-A3B on the
+  pinned local server (snapshot `995ad96e…`, vLLM 0.31.0), with `alias-judge/2` and thinking on, as in
+  JUDGE-CALIBRATION.md. It is not the Scout-named alias of the same weights, so that alias's 2026-11-30 end
+  does not bind C. C's server has no end date but is marked not permanent, and an open GPU proposal could
+  stop it. The maintainer promises to change neither C's server nor KX1's without the owner's explicit
+  go-ahead, and to notify this study first; a guarantee for the study window is the owner's to give at
+  the freeze. The §3 fallback (C labelled first; a re-served same snapshot counts as C; anything else is
+  KC′ and K0 cannot be claimed) stands.
+
 The plan is not frozen; it freezes only on the owner's word "freeze".
 
 ---
