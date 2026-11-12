@@ -743,7 +743,7 @@ calls and 60 per candidate:
 | Sol `/3` (KS3) | ~850 | 1.79M / 0.04M |
 | Argon `/3` + Sol `/3` repetitions 2–3 on H (170 items × 2 reps × 2 models; A's and B's items run separately) | 680 | 1.35M / 0.03M |
 | re-issue allowance (single invalid replies, prereg R4; never a batch) | ~80 | 0.1M / — |
-| pre-freeze `/3` live self-check, Argon and Sol (about 20 cases × 5 runs each, §4 selection rule) | ~200 | 0.4M / 0.01M |
+| pre-freeze `/3` live self-check, Argon and Sol (about 20 cases, once each, JUDGE-3-PROMPT.md §4; the 5-run selection rule applies to hosted candidates only) | ~40 | 0.08M / — |
 | **study gateway** | **~7,580** | **~10.8M / ~0.92M** |
 
 **Model-gateway budget** (the §4 panel; its own key and cap). Per candidate: `/2` on all pairs (850), `/3` on
@@ -904,6 +904,32 @@ Owner decision, recorded verbatim:
 It answers §13 Qa: unpinned ALCF-hosted models may be decision judges (§3's definition), with the
 per-call backend header value, the response `model` field and the date recorded, and a revision request to
 ALCF support. The proposed panel of §4 stays the recommendation; the owner confirms it as §13 Qb.
+
+### Amendment 3 (2026-11-11): owner answers to §13
+
+Owner decision, recorded verbatim:
+
+> I agree with your recommendations. I would use [four named raters] as raters.. Depends on the type of
+> question and how easy it is to rate and find the information.
+
+The raters' names are held in the private study record, not in this public file. What this settles:
+
+- **Q1:** R = 5 (the owner plus the four named raters), |A| = 150, 80 items per rater; R = 4 remains the
+  declared fallback if a rater drops out before the freeze.
+- **Q2–Q8, Qb–Qd:** the recommendations in §13 are accepted as written, including the panel (KX1
+  Qwen3.8-27B anchor, Opus as the existing reference, KX2 Mistral-Large-3-675B, KX3 Llama-3.1-70B,
+  optional KX4 gpt-oss-120b), the optional route lock left to the owner and the model gateway, and C's end
+  date to be supplied by the model-gateway maintainer before the freeze.
+- **The owner's caveat** ("depends on the type of question and how easy it is to rate and find the
+  information") is recorded as an open design point to settle before the freeze: the rater
+  familiarisation step (§11 step 3) will report per-rater time and *unsure* rate on the core items by
+  question type, and if a rater cannot rate a type reliably, the owner may re-balance block assignment by
+  amendment before any set-A grading starts. No change to the frozen block design is made here.
+- **Budget slip corrected:** the study-gateway self-check runs once per case (as JUDGE-3-PROMPT.md §4 and §11
+  step 3 say), about 40 calls, not 200; every budget total above therefore overstates by about 160 calls,
+  left as a conservative margin.
+
+The plan is not frozen; it freezes only on the owner's word "freeze".
 
 ---
 
