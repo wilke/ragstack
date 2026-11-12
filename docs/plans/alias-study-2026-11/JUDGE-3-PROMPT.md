@@ -161,9 +161,11 @@ def parse_judgement_v3(text: str) -> tuple[str | None, str]:
   (`alias-judge/3`), `system_sha256`, `prompt_sha256`, the response `model` field, the configuration
   fingerprint the gateway reports for the call (plan §4, Amendment 4: full for a pinned configuration,
   partial for a hosted id; a missing or non-matching fingerprint is a mismatch there, and the serving
-  instance is recorded privately and is not part of identity), the call date, and the thinking flag and
-  reasoning tokens where the gateway reports them. Every judge is reached by model id through its
-  gateway; no label stores an address.
+  instance is recorded privately and is not part of identity), the call date, **the sampling settings as
+  sent** (`max_tokens`, temperature, `top_p`, `top_k`, `n` and the thinking flag; for a local judge these
+  are the plan's §3 pins and are sent on every request, since the fingerprint does not cover sampling
+  defaults), and, where the gateway reports them, the thinking flag and reasoning tokens as served. Every
+  judge is reached by model id through its gateway; no label stores an address.
 
 ### 2.1 Binary readings (derived, never asked)
 
@@ -255,14 +257,15 @@ with K0 and with Opus `/1`, with lenient beside it (plan §8.3).
 * Self-check: a separate set of synthetic cases, not the prompt's examples, at least one per rule, with
   **expected labels set by the owner**. They follow the pattern of `VERIFY_CASES` in
   `test_glossbench_alias.py`. They are run live **before the freeze** (plan §11, step 3): once on each
-  study-gateway `/3` judge, and **5 times per case on each hosted candidate** under its batch settings, so
-  that the plan's canary selection rule can measure each case's flip rate and each hosted candidate's
-  partial fingerprint is recorded. The counts go into the plan's freeze commit beside the system sha
-  (plan §11, step 4). Ten of them, chosen by that rule (identical label in all 5 runs on every hosted
-  candidate, committed case order) and fixed in the freeze commit, are the canary cases that open and
-  close every hosted candidate's batch (plan §4): always sent with `/3`, at temperature 0 and a fixed seed
-  where the serving configuration accepts them, with the plan's 3-of-10 tolerance and its stated
-  false-void rate otherwise. A voided batch is not re-issued (plan §4).
+  study-gateway `/3` judge, and **5 times per case on each model-gateway judge** (C, E, KX1 and the hosted
+  candidates) under its batch settings, so that the plan's canary selection rule can measure each case's
+  flip rate and each hosted candidate's partial fingerprint is recorded. The counts go into the plan's
+  freeze commit beside the system sha (plan §11, step 4). Ten of them, chosen by that rule (identical
+  label in all 5 runs on every model-gateway judge, committed case order) and fixed in the freeze commit,
+  are the canary cases that open and close every model-gateway judge's batch (plan §4): the change
+  detector for hosted ids and the template-and-defaults detector for the local judges; always sent with
+  `/3`, at temperature 0 and a fixed seed where the serving configuration accepts them, with the plan's
+  3-of-10 tolerance and its stated false-void rate otherwise. A voided batch is not re-issued (plan §4).
 * The system sha256 is recorded in the freeze commit, in the same commit as those counts.
 
 ## 5. What the plan decided about this prompt (v2)

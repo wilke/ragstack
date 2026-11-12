@@ -224,6 +224,17 @@ later plan (§13 Q8).
   `fallback_model: ""` on the study gateway and fallback off on the model gateway; a served-model mismatch
   on the study gateway stops the run, and a configuration mismatch on the model gateway is handled by the
   §4 table.
+* **Sampling is pinned for every local judge and sent on every request, never left to defaults** (the
+  §4 fingerprint does not cover sampling defaults or the chat template). For C, E and KX1 the harness
+  sends, on every request: thinking on, `max_tokens` 8192, temperature 0.7 (KX1 runs as E), `top_p` and
+  `top_k`, and `n` (5 for C, 3 for E, 1 for KX1). The main run sent temperature only and took `top_p`
+  and `top_k` from the engine's defaults, so the values pinned here are **the engine's effective defaults
+  for the two pinned configurations as the maintainer reads them before the freeze**, written into the
+  config and the freeze commit; K0 then runs under the same effective settings as the main run. If they
+  cannot be established, the harness sends the model's published thinking-mode values and the freeze
+  commit declares that K0's sampling may differ from the main run's. Every stored label carries the
+  values as sent (JUDGE-3-PROMPT.md §2). The hosted candidates get `max_tokens` 4096 and no temperature
+  (§4), because their defaults are not pinnable and the canaries are their change detector.
 * **Changed from v1:** K3's tiebreak reads Argon `/3` from the KA3 run, which labels every pair, so no
   separate escalation calls are made. K3's escalation rate (C and E not equal, or either without a label)
   is expected to exceed K0's with three classes. It is reported.
@@ -285,9 +296,14 @@ partial value means the engine could not be read at that moment); the two kinds 
 their prefix. The same value comes back as the per-response configuration value on every forwarded
 answer; a gateway-written error carries none. It is read from the gateway's configuration endpoint with
 the study's key; the concrete names of the endpoint and the value live in the private config. **Stated
-limits:** the fingerprint does not cover the chat template or the sampling defaults (speed-only options
-are deliberately excluded too), so the harness pins those itself (thinking on, `max_tokens`, temperature,
-§3) and records them per call; and the snapshot hash cannot be observed through the engine, so it is
+limits:** the fingerprint does not cover the chat template, the reasoning parser or the sampling defaults
+(speed-only options are deliberately excluded too). Sampling is therefore pinned by the harness and sent
+on every request (thinking, `max_tokens`, temperature, `top_p`, `top_k`, `n`; §3) and stored per label as
+sent (JUDGE-3-PROMPT.md §2). The chat template and the reasoning parser cannot be sent per request; for
+the local judges they rest on the maintainer's promise not to change C's or KX1's configuration without
+the owner's go (§13 Qd), **and the canary cases run on the local judges too** (below), so that a template
+or parser change, or a drift in a default the harness does not send, shows up as a canary flip even when
+the fingerprint still matches. The snapshot hash cannot be observed through the engine, so it is
 declared, and is only as good as the gateway's record. A non-empty contradiction list is a mismatch here.
 For hosted (ALCF) ids anything beyond the partial value must come from ALCF support.
 
@@ -312,13 +328,20 @@ gpt-oss-120b's set may hold both clusters if both are seen then.
 
 **Mismatch rules, one per judge class** (code item, §11). A *mismatch* is: the response `model` field not
 in the accepted set for that judge, or the per-response configuration value absent or wrong for that
-judge: for a local judge (C, E, KX1) the answer must carry **exactly its pinned full fingerprint**, and a
-partial value or any different value voids it; for a hosted judge the partial value must be **in the set
-recorded for that candidate in the freeze commit**. **A missing value is a mismatch** on any stored reply.
-**A serving outage is not a mismatch**: an error with fallback off returns no reply (and a gateway-written
-error carries no configuration value), nothing is stored, and labelling resumes when the configuration is
-served again, under the §3 re-serve rule (the same fingerprint continues the batch; anything else is a
-different judge). The interim gate that §13 Qe once offered (instance name in the fingerprint's place) is
+judge: for a local judge (C, E, KX1) the answer must carry **exactly its pinned full fingerprint**, and
+any **different full value** is a mismatch at once; for a hosted judge the partial value must be **in the
+set recorded for that candidate in the freeze commit**. **A missing value is a mismatch** on any stored
+reply. **A serving outage is not a mismatch**: an error with fallback off returns no reply (and a
+gateway-written error carries no configuration value), nothing is stored, and labelling resumes when the
+configuration is served again, under the §3 re-serve rule (the same fingerprint continues the batch;
+anything else is a different judge). **A transient partial value on a local judge is an outage, not an
+identity failure**: a partial value means the gateway could not read the engine at that moment (§4
+above). The reply that carried it is not stored, the harness pauses the batch and re-reads the
+fingerprint from the gateway's configuration endpoint **up to 5 times, one minute apart**; if a read
+returns the pinned full value the batch resumes and the paused pair is re-issued (a re-read, not a
+re-issue of a stored row, so the no-re-issue rule is untouched); if all 5 reads return a partial value,
+or any read returns a different full value, it is a mismatch and the batch stops. The same rule applies
+to the batch start and end reads below. Every pause, its reads and its outcome are logged and counted. The interim gate that §13 Qe once offered (instance name in the fingerprint's place) is
 not needed and is not used; its text is kept in Amendment 4 as history only.
 
 | judge class | judges | accepted `model` | identity gate | on a mismatch |
@@ -333,22 +356,26 @@ served it. The private record is for tracing; the public record carries fingerpr
 
 **Configuration and canary checks.** A *batch* is one model × one prompt over the frozen pair file (or
 over H for repetitions). The fingerprint of a pinned configuration is read from the gateway at the start
-and end of every batch of that model and compared with the pin, besides the per-call comparison above; a
-failed end check **voids that batch's rows since the last passing check** (the void is counted; nothing is
-re-issued within this plan, see the last bullet below). A restart or move between the two reads with the
-same fingerprint is reported (the start time changes) and voids nothing. Hosted models have no revision
-pin, so neither the `model` field nor the partial fingerprint can catch a weight change; each hosted
-candidate's batch therefore starts and ends with **10 fixed synthetic canary cases**, the change detector
-for hosted ids, run as follows:
+and end of every batch of that model and compared with the pin, besides the per-call comparison above
+(a partial value at either read follows the transient rule above: up to 5 re-reads a minute apart before
+it counts); a failed end check **voids that batch's rows since the last passing check** (the void is
+counted; nothing is re-issued within this plan, see the last bullet below). A restart or move between
+the two reads with the same fingerprint is reported (the start time changes) and voids nothing. Hosted
+models have no revision pin, so neither the `model` field nor the partial fingerprint can catch a weight
+change; and for the local judges the fingerprint does not cover the chat template, the reasoning parser
+or any default the harness does not send. **Every model-gateway judge's batch** (C, E, KX1 and the
+hosted candidates) therefore starts and ends with **10 fixed synthetic canary cases**: the change detector
+for hosted ids, and the template-and-defaults detector for the local judges, run as follows:
 
 * the cases are a subset of the JUDGE-3-PROMPT.md §4 self-check cases with owner-set labels, committed
   before the freeze; they are always sent with **`/3`**, whatever prompt the batch runs, so one graded
   construct is tracked across every batch;
-* **selection rule**: before the freeze, the live self-check runs every case **5 times** on each hosted
-  candidate under that candidate's batch settings (JUDGE-3-PROMPT.md §4; costed in §10). The 10 canaries
-  are the cases whose label was identical in all 5 runs on every hosted candidate, taken in the committed
-  case order; if fewer than 10 qualify, the remaining places go to the cases with the most consistent runs,
-  and each chosen case's measured flip rate is recorded in the freeze commit;
+* **selection rule**: before the freeze, the live self-check runs every case **5 times** on each
+  model-gateway judge (hosted and local) under that judge's batch settings (JUDGE-3-PROMPT.md §4; costed
+  in §10). The 10 canaries are the cases whose label was identical in all 5 runs on every model-gateway
+  judge, taken in the committed case order; if fewer than 10 qualify, the remaining places go to the cases
+  with the most consistent runs, and each chosen case's measured flip rate is recorded in the freeze
+  commit;
 * they run at **temperature 0 with a fixed seed** where the serving configuration accepts those parameters
   (recorded per call); where it does not, its default sampling is used and the tolerance below applies;
 * **void rule**: a batch is voided when its end canary differs from its start canary on **3 or more of the
@@ -358,7 +385,9 @@ for hosted ids, run as follows:
   chance that 3 or more of 10 differ is about 1 % per batch at q = 0.05, about 7 % at q = 0.10 (about 48 %
   over nine hosted batches) and about 32 % at q = 0.20; the selection rule above is what keeps q low, and
   the measured q is reported beside every void. Under deterministic settings a single differing case is
-  reported and does not void;
+  reported and does not void. On a local judge, a canary void with a matching fingerprint is reported as
+  **template, parser or default drift** and goes to the maintainer and the owner (§13 Qd) before any later
+  batch of that judge runs; the void itself follows the same rules as a hosted void;
 * **chaining**: each batch's start canary is also compared with the previous batch's end canary for the
   same candidate; a difference on 3 or more cases marks a **canary epoch boundary**, which voids nothing
   (no row was mid-batch) but tags every later row with a new epoch, and the candidate is reported per epoch
@@ -389,11 +418,11 @@ note.
 **Hosted models as decision judges.** Owner decision, 2026-11-11 (Amendment 2): "all models are acceptable
 even from ALCF". Under §3's definition the hosted candidates are **decision judges**: they receive the §9.1
 verdict, can carry the §9.2 licence and can be recommended as a future judge. Conditions this plan
-attaches: every row records the partial configuration fingerprint the gateway reports (id, cluster,
-framework), the response `model` field and the call date, and privately the serving instance (Amendment
-4); a revision request goes to ALCF support before the freeze, and its answer (a revision, or "none
-available") is recorded in the amendment and, if a revision is given, added to the partial fingerprint;
-the mismatch and canary rules above apply. They are outside the §8.3 test only because that family was
+attaches: every row records the partial configuration fingerprint the gateway reports (route, backend
+name, model id; Amendment 5), the response `model` field and the call date, and privately the serving
+instance (Amendment 4); a revision request goes to ALCF support before the freeze, and its answer (a
+revision, or "none available") is recorded in the freeze commit **beside** the partial fingerprint (the
+gateway computes that value; the study cannot add to it); the mismatch and canary rules above apply. They are outside the §8.3 test only because that family was
 fixed by v1.
 
 **Proposed panel** (the agent's suggestion; **OWNER DECISION PENDING**, §13 Qb):
@@ -408,8 +437,10 @@ fixed by v1.
 
 Per candidate: `/2` and `/3` on all pairs, plus `/3` repetitions 2–3 on H (§6.3; A's after A is drawn, B's
 after B is drawn), for self-consistency, and the canary cases above. Settings: `max_tokens` 4096 for the
-hosted candidates and 8192 for KX1 (E's setting, so that truncation does not masquerade as missing labels),
-temperature omitted, fallback off, at most 4 in flight, the model gateway's own size notice and 110 % cap.
+hosted candidates, with temperature omitted (their defaults are not pinnable; the canaries are their
+detector); KX1 runs **as E**, with E's full sampling pin sent on every request (thinking on, `max_tokens`
+8192 so that truncation does not masquerade as missing labels, temperature 0.7, `top_p`, `top_k`, n = 1;
+§3); fallback off, at most 4 in flight, the model gateway's own size notice and 110 % cap.
 The first 20 calls of each candidate are measured for tokens (the size notice), since none of their
 tokenizers is calibrated (JUDGE-CALIBRATION.md gives Argon and Opus only). Each candidate is scored under
 §8.1, §8.2, §8.4 and §9. Family correlation (each candidate's errors against Opus-unanimous, cross-tabulated
@@ -851,7 +882,9 @@ cells); C and E on `/2` and `/3`, now called through the model gateway by model 
 token cost (at the first validation's 1.85 s and 0.74 s per pair: about 37 min per prompt for 850 pairs,
 about 75 min in all, more for `/3`'s longer input). C's and E's calls (about 1,700 requests each at 850
 pairs, one request per pair and prompt, C at n = 5 and E at n = 3) are logged and gated by the gateway
-like every other call. This plan's **recommendation** is that they are **not counted against the 20,000
+like every other call. C and E also run the canary cases (10 at the start and end of each of their two
+batches, 40 each) and the 5-run pre-freeze self-check (about 20 cases × 5, 100 each), all on `/3`, at no
+token cost; KX1's canaries and self-check are already in the per-candidate count above. This plan's **recommendation** is that they are **not counted against the 20,000
 ceiling**: Amendment 1 (3) set that ceiling at 4 × v1's ~5,000 drafted gateway calls, and v1's table
 never included C and E, which it listed off the gateway; only the path changed, not the count. Amendment
 1 (3) said "gateway budget" when there was one gateway, and there are now two, so this is an
@@ -885,9 +918,11 @@ gateway it stops the run and stores nothing, as in v1).
    blocks equal the prompt's (§2); judge-vs-panel scoring (§8.1); the candidate analysis (§8.2–8.4); the
    power script with the panel simulation.
 3. **Before the freeze:** the `/3` live self-check (JUDGE-3-PROMPT.md §4) on every `/3` judge, 5 runs per
-   case on each hosted candidate for the canary selection (§4); the partial fingerprint of every hosted
-   candidate observed during those runs, which becomes that candidate's recorded set (§4); the two pinned
-   fingerprints confirmed with the maintainer; the ALCF revision request filed (§4). Raters confirmed,
+   case on each model-gateway judge (C, E, KX1 and the hosted candidates) for the canary selection (§4);
+   the partial fingerprint of every hosted candidate observed during those runs, which becomes that
+   candidate's recorded set (§4); the two pinned fingerprints confirmed with the maintainer, and the
+   engine's effective sampling defaults for the two pinned configurations read by the maintainer and
+   written into the config as the `top_p` / `top_k` pins (§3); the ALCF revision request filed (§4). Raters confirmed,
    rubric read, familiarisation done.
 4. **The freeze commit.** It records the owner's approvals, the §13 answers, the panel, the `/3` system
    sha, the self-check counts, the chosen canaries with their measured flip rates, the two pinned
@@ -948,7 +983,7 @@ run's judging ended on 2026-11-05 and nothing else runs on the judge configurati
 | Qa | May unpinned ALCF models be decision judges? | **answered** (Amendment 2): yes, with the partial configuration fingerprint, the response `model` field and the date recorded per call (the instance privately; Amendment 4), and a revision request to ALCF support |
 | Qb | Confirm the §4 panel (KX1 Qwen3.8-27B anchor; Opus as the existing reference; KX2 Mistral-Large-3-675B; KX3 Llama-3.1-70B; optional KX4 gpt-oss-120b) | **answered** (Amendment 3): confirmed as proposed |
 | Qc | A gateway-side route lock on the two pinned configurations? | optional; under Amendment 4 the configuration fingerprint carries identity and a route lock adds none; left to the maintainer |
-| Qd | Confirm that C's and KX1's configurations stay available under their model ids for the study window (§3), and the schedule that puts C's labelling first | **answered in part** (Amendment 3, reworded under Amendment 4): the maintainer changes neither configuration without the owner's go; the owner gives the window guarantee at the freeze |
+| Qd | Confirm that C's and KX1's configurations stay available under their model ids for the study window (§3), and the schedule that puts C's labelling first | **answered in part** (Amendment 3, reworded under Amendment 4): the maintainer changes neither configuration without the owner's go; the owner gives the window guarantee at the freeze. The chat template and the reasoning parser are outside the §4 fingerprint, so for the local judges they rest on this promise, backed by the local canaries (§4) |
 | Qe | Did the model gateway expose the configuration record and fingerprint that the §4 identity gate reads? (As of 2026-11-11 it reported the serving instance only; the interim gate of Amendment 4 was the alternative) | **answered** (Amendment 5): the record and fingerprint went live on 2026-11-12. The gate is the per-response configuration value (full for C, E and KX1; partial, in the freeze-commit set, for the hosted candidates). The interim gate is not needed and not used; its text stays in Amendment 4 as history. The freeze commit re-reads and confirms the two expected full fingerprints of §4 |
 
 ## 14. v1 questions: answers and where they are folded in
@@ -1127,6 +1162,32 @@ What this settles:
   weights; the earlier "id, cluster, framework" wording in Amendment 4 described the proposal and is
   superseded by this.
 - **Status and §11** updated accordingly; §4's "Open items" now reads re-read and confirm.
+
+**Review follow-up (2026-11-12, after an independent check of the first Amendment 5 text):**
+
+- **Sampling pinned for every local judge** (§3, §4). C, E and KX1 get thinking, `max_tokens`,
+  temperature 0.7 (KX1 as E), `top_p`, `top_k` and `n` sent on every request, never defaults. The
+  `top_p` / `top_k` values are the engine's effective defaults for the two pinned configurations, read by
+  the maintainer before the freeze and written into the config and the freeze commit, so that K0 keeps
+  the main run's effective settings (the main run sent temperature only); if they cannot be established,
+  the model's published thinking-mode values are sent and the freeze commit declares the possible
+  difference from the main run. The hosted candidates keep `max_tokens` 4096 and no temperature.
+- **Compensating record** (JUDGE-3-PROMPT.md §2). Every stored label carries `max_tokens`, temperature,
+  `top_p`, `top_k`, `n` and the thinking flag **as sent**, beside whatever the gateway reports.
+- **Chat template and reasoning parser** (§4, §13 Qd). Chosen: **both** — the plan states that for the
+  local judges these rest on the maintainer's no-change promise (Qd), **and** the canary cases now run on
+  the local judges too (C, E, KX1: 10 cases at the start and end of every batch, 5-run self-check
+  before the freeze, at no token cost, §10). A local canary void with a matching fingerprint is reported
+  as template, parser or default drift and goes to the maintainer and the owner before any later batch
+  of that judge.
+- **Transient partial fingerprint on a local judge = outage, not identity failure** (§4). The reply is
+  not stored, the batch pauses, the fingerprint is re-read up to 5 times a minute apart; the pinned full
+  value resumes the batch and re-issues the paused pair; 5 partial reads, or any different full value,
+  is a mismatch. The same rule applies to the batch start and end reads, so a momentary unreadable engine
+  neither voids a batch nor ends C's labelling (K0's dependency).
+- **Stale text** (§4). The hosted partial fingerprint is "route, backend name, model id" everywhere
+  outside quoted history; an ALCF revision, if one is given, is recorded in the freeze commit beside the
+  partial fingerprint, not added to it (the gateway computes that value).
 
 The plan is not frozen; it freezes only on the owner's word "freeze".
 
