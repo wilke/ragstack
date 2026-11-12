@@ -18,7 +18,8 @@ Usage (from the repo root, clean tree, so the provenance block carries a version
         DATA_DIR OUT_JSON [--test-dir DIR] [--repro-dir LABEL=DIR[,URL] ...]
 
 ``-I`` (isolated mode, because DATA_DIR is downloaded data) ignores PYTHONPATH, so
-``_import_provenance`` falls back to inserting this repo's ``python/`` explicitly.
+``_provenance`` inserts this repo's ``python/`` explicitly and refuses if the import
+resolves anywhere else.
 
 Deterministic: no randomness except a paper-cluster bootstrap with a fixed seed.
 """
@@ -550,14 +551,19 @@ def _question_level(elig: list[dict]) -> dict[str, Any]:
     }
 
 
-def _import_provenance():
-    try:
-        from ragstack.provenance import experiment_provenance
-    except ImportError:
-        root = Path(__file__).resolve().parents[4]
-        sys.path.insert(0, str(root / "python"))
-        from ragstack.provenance import experiment_provenance
-    return experiment_provenance
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _provenance() -> dict[str, Any]:
+    """Provenance of THIS checkout. This repo's ``python/`` goes first on sys.path, and the
+    import is checked to resolve inside it: an environment may carry an installed ragstack
+    from another checkout, whose git state would otherwise be recorded instead."""
+    sys.path.insert(0, str(REPO_ROOT / "python"))
+    import ragstack.provenance as rp
+
+    if not Path(rp.__file__).resolve().is_relative_to(REPO_ROOT):
+        raise SystemExit(f"REFUSED: ragstack.provenance resolved outside {REPO_ROOT}: {rp.__file__}")
+    return rp.experiment_provenance(repo=REPO_ROOT)
 
 
 def main(argv: list[str]) -> None:
@@ -575,7 +581,7 @@ def main(argv: list[str]) -> None:
         d, _, url = rest.partition(",")
         repro[label] = (Path(d), url or None)
     out = a.out_json
-    prov = _import_provenance()()
+    prov = _provenance()
     prov.pop("host", None)
     w = prov.pop("warnings", None)
     prov["warnings_n"] = len(w or [])
