@@ -1,0 +1,2369 @@
+{
+ "H3_any_worker": true,
+ "decision": "S",
+ "files": {
+  "arms": {
+   "S": {
+    "census": {
+     "chunk_ids_carried": true,
+     "distinct_chunk_ids": 767984,
+     "expected_store_count": 767984,
+     "image_build": [
+      "1"
+     ],
+     "image_commit": "5d65bead84e65e5fb96f46c3a0d95cd73fa6cad7",
+     "n_docs_main": 241930,
+     "n_docs_sentinel": 40,
+     "n_receipts": 17,
+     "segmenter_versions": [
+      "punkt-abbrev-v1"
+     ],
+     "sentinel_n_chunks": 168,
+     "sum_n_chunks": 767984
+    },
+    "es": 767984,
+    "qdrant": 767984,
+    "sentinel_logs_endpoint": {
+     "bytes": {
+      "sentinel": 1413
+     },
+     "total_warning_lines": 0,
+     "warning_lines": {
+      "sentinel": 0
+     }
+    },
+    "stderr": {
+     "bytes": {
+      "main-00": 700,
+      "main-01": 700,
+      "main-02": 700,
+      "main-03": 700,
+      "main-04": 700,
+      "main-05": 700,
+      "main-06": 700,
+      "main-07": 700,
+      "main-08": 700,
+      "main-09": 700,
+      "main-10": 700,
+      "main-11": 700,
+      "main-12": 700,
+      "main-13": 700,
+      "main-14": 700,
+      "main-15": 700,
+      "sentinel": 1413
+     },
+     "total_warning_lines": 0,
+     "warning_lines": {
+      "main-00": 0,
+      "main-01": 0,
+      "main-02": 0,
+      "main-03": 0,
+      "main-04": 0,
+      "main-05": 0,
+      "main-06": 0,
+      "main-07": 0,
+      "main-08": 0,
+      "main-09": 0,
+      "main-10": 0,
+      "main-11": 0,
+      "main-12": 0,
+      "main-13": 0,
+      "main-14": 0,
+      "main-15": 0,
+      "sentinel": 0
+     }
+    }
+   },
+   "S-regex": {
+    "census": {
+     "chunk_ids_carried": true,
+     "distinct_chunk_ids": 767956,
+     "expected_store_count": 767956,
+     "image_build": [
+      "2"
+     ],
+     "image_commit": "5d65bead84e65e5fb96f46c3a0d95cd73fa6cad7",
+     "n_docs_main": 241930,
+     "n_docs_sentinel": 40,
+     "n_receipts": 17,
+     "segmenter_versions": [
+      "regex-abbrev-v1"
+     ],
+     "sentinel_n_chunks": 168,
+     "sum_n_chunks": 767956
+    },
+    "es": 767956,
+    "qdrant": 767956,
+    "sentinel_logs_endpoint": {
+     "bytes": {
+      "sentinel": 1850
+     },
+     "total_warning_lines": 1,
+     "warning_lines": {
+      "sentinel": 1
+     }
+    },
+    "stderr": {
+     "bytes": {
+      "main-00": 1051,
+      "main-01": 1051,
+      "main-02": 1051,
+      "main-03": 1051,
+      "main-04": 1051,
+      "main-05": 1051,
+      "main-06": 1051,
+      "main-07": 1051,
+      "main-08": 1051,
+      "main-09": 1051,
+      "main-10": 1051,
+      "main-11": 1051,
+      "main-12": 1051,
+      "main-13": 1051,
+      "main-14": 1051,
+      "main-15": 1051,
+      "sentinel": 1850
+     },
+     "total_warning_lines": 17,
+     "warning_lines": {
+      "main-00": 1,
+      "main-01": 1,
+      "main-02": 1,
+      "main-03": 1,
+      "main-04": 1,
+      "main-05": 1,
+      "main-06": 1,
+      "main-07": 1,
+      "main-08": 1,
+      "main-09": 1,
+      "main-10": 1,
+      "main-11": 1,
+      "main-12": 1,
+      "main-13": 1,
+      "main-14": 1,
+      "main-15": 1,
+      "sentinel": 1
+     }
+    }
+   }
+  },
+  "chunk_id_overlap": {
+   "n_S": 767984,
+   "n_S_regex": 767956,
+   "share_of_S": 0.992097,
+   "share_of_S_regex": 0.992134,
+   "shared": 761915
+  },
+  "harness_provenance": {
+   "citable": true,
+   "commit": "f4d4ef9a0b3b33116744488766f4e28d51aa51b3",
+   "describe": "v1.6.26-66-gf4d4ef9a",
+   "dirty": false,
+   "schema": 1,
+   "source": "git",
+   "untracked": 0,
+   "version": "v1.6.26+f4d4ef9a"
+  },
+  "reembed": {
+   "min": 0.9999995,
+   "n": 200,
+   "n_below": 0,
+   "threshold": 0.999
+  },
+  "reused_census": {
+   "frozen": {
+    "ft512o64": {
+     "es": 705204,
+     "qdrant": 705204,
+     "registry": 705204
+    },
+    "ft512o64s": {
+     "es": 859280,
+     "qdrant": 859280,
+     "registry": 859280
+    },
+    "sent512s": {
+     "es": 850312,
+     "qdrant": 850312,
+     "registry": 850312
+    }
+   },
+   "live": {
+    "ft512o64": {
+     "es": 705204,
+     "qdrant": 705204
+    },
+    "ft512o64s": {
+     "es": 859280,
+     "qdrant": 859280
+    },
+    "sent512s": {
+     "es": 850312,
+     "qdrant": 850312
+    }
+   }
+  },
+  "shards_hashed": [
+   "main-00",
+   "main-01",
+   "main-02",
+   "main-03",
+   "main-04",
+   "main-05",
+   "main-06",
+   "main-07",
+   "main-08",
+   "main-09",
+   "main-10",
+   "main-11",
+   "main-12",
+   "main-13",
+   "main-14",
+   "main-15",
+   "sentinel"
+  ],
+  "top5_drift": null
+ },
+ "frozen_order": "B",
+ "other_order": {
+  "decision": "ft512o64s",
+  "order": "A",
+  "row": 2,
+  "row_label": "ft512o64s (tie, Order A)"
+ },
+ "prereg": {
+  "checked": true,
+  "prereg_sha256": "31687ee41b036010a49975a1a4b215841e67aa5e5c6e5a979feb91c0160f6f82"
+ },
+ "row": 3,
+ "row_label": "S (tie, Order B)",
+ "schema": "adopted-spec-h2h-report/1",
+ "secondary_settings_disagreeing_with_a": [],
+ "sentences": [
+  "Deploy S: in setting (a), hit@5 was 82.85% under S against 82.51% under ft512o64s (n = 2,035); S \u2212 ft512o64s = +0.34 [-0.64, +1.33], discordance 0.053; S is non-inferior at 2.0 points but not shown superior, and ft512o64s is not shown superior to S (ft512o64s \u2212 S = -0.34 [-1.38, +0.64]); the tie goes to the cheaper arm under cost order B. Gate G1: ft512o64s \u2212 ft512o64 = +3.49 [+2.11, +4.86]. Under cost order A the decision would be ft512o64s.",
+  "Segmenter: S-regex \u2212 S = -0.15 [-0.49, +0.20]; S may be deployed on any worker (on this corpus; chunk-id overlap 99.2 %)."
+ ],
+ "server_version": "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738",
+ "settings": {
+  "a": {
+   "D": {
+    "hi": 1.3268,
+    "lo": -0.6388,
+    "n": 2035,
+    "point": 0.344
+   },
+   "D1": {
+    "hi": 4.8649,
+    "lo": 2.113,
+    "n": 2035,
+    "point": 3.4889
+   },
+   "D3": {
+    "hi": 0.1966,
+    "lo": -0.4914,
+    "n": 2035,
+    "point": -0.1474
+   },
+   "E": {
+    "hi": 0.6388,
+    "lo": -1.3759,
+    "n": 2035,
+    "point": -0.344
+   },
+   "G1": true,
+   "H3": {
+    "any_worker": true,
+    "evaluable": true,
+    "k_strata": 11,
+    "margin_ok": true,
+    "reason": "margin and stratum guard hold",
+    "sentence": "Segmenter: S-regex \u2212 S = -0.15 [-0.49, +0.20]; S may be deployed on any worker (on this corpus; chunk-id overlap 99.2 %).",
+    "strata_failed": []
+   },
+   "arm_gates": {},
+   "arms_missing": [],
+   "bootstrap": {
+    "iters": 10000,
+    "seed": 0
+   },
+   "contrasts": {
+    "C1": {
+     "hi": 1.4742,
+     "holm_sig": true,
+     "in_family": true,
+     "lo": 0.0983,
+     "n": 2035,
+     "p_holm": 0.027197,
+     "p_two_sided": 0.027197,
+     "pair": "S \u2212 sent512s",
+     "point": 0.7862
+    },
+    "C2": {
+     "hi": 5.258,
+     "holm_sig": true,
+     "in_family": true,
+     "lo": 2.457,
+     "n": 2035,
+     "p_holm": 0.0004,
+     "p_two_sided": 0.0002,
+     "pair": "S \u2212 ft512o64",
+     "point": 3.8329
+    },
+    "C3": {
+     "hi": 0.1966,
+     "in_family": false,
+     "lo": -0.4914,
+     "n": 2035,
+     "p_two_sided": 0.49635,
+     "pair": "S-regex \u2212 S",
+     "point": -0.1474
+    },
+    "C4": {
+     "hi": 4.8649,
+     "in_family": false,
+     "lo": 2.113,
+     "n": 2035,
+     "p_two_sided": 0.0002,
+     "pair": "ft512o64s \u2212 ft512o64",
+     "point": 3.4889
+    }
+   },
+   "cross_check": {
+    "d1_harness": {
+     "hi": 4.8649,
+     "lo": 2.113,
+     "point": 3.4889
+    },
+    "d1_match": true,
+    "harness_pass": {
+     "S": true,
+     "ft512o64s": true
+    },
+    "harness_winner": "S",
+    "ladder_steps": [
+     {
+      "harness": {
+       "hi": 5.258,
+       "lo": 2.457,
+       "point": 3.8329
+      },
+      "match": true,
+      "pair": "S - ft512o64",
+      "recomputed": {
+       "hi": 5.258,
+       "lo": 2.457,
+       "point": 3.8329
+      },
+      "switched": true
+     },
+     {
+      "harness": {
+       "hi": 0.6388,
+       "lo": -1.3759,
+       "point": -0.344
+      },
+      "match": true,
+      "pair": "ft512o64s - S",
+      "recomputed": {
+       "hi": 0.6388,
+       "lo": -1.3759,
+       "point": -0.344
+      },
+      "switched": false
+     }
+    ],
+    "note": "a missing step is reported, not a gate; the harness's choice is reported, not compared",
+    "steps_present": [
+     "S - ft512o64",
+     "ft512o64s - S"
+    ]
+   },
+   "ctx5": {
+    "S": 2015.7,
+    "ft512o64": 2315.78,
+    "ft512o64s": 1999.52
+   },
+   "ctx_ratio_S_over_ft512o64": 0.8704,
+   "descriptive": {
+    "S_regex_minus_ft512o64s": {
+     "hi": 1.1794,
+     "lo": -0.8354,
+     "n": 2035,
+     "point": 0.1966
+    },
+    "ctx5": {
+     "S": 2015.7,
+     "S-regex": 2014.34,
+     "ft512o64": 2315.78,
+     "ft512o64s": 1999.52,
+     "sent512s": 1906.31
+    },
+    "discordance5": {
+     "S-regex|S": 0.006388,
+     "S|ft512o64": 0.108108,
+     "S|ft512o64s": 0.05258,
+     "S|sent512s": 0.02457,
+     "ft512o64s|ft512o64": 0.102703
+    },
+    "hit1": {
+     "S": 60.4914,
+     "S-regex": 60.1966,
+     "ft512o64": 56.5602,
+     "ft512o64s": 60.8845,
+     "sent512s": 59.2629
+    },
+    "hit10": {
+     "S": 85.7002,
+     "S-regex": 85.6511,
+     "ft512o64": 82.6536,
+     "ft512o64s": 85.4545,
+     "sent512s": 84.8157
+    },
+    "hit5": {
+     "S": 82.8501,
+     "S-regex": 82.7027,
+     "ft512o64": 79.0172,
+     "ft512o64s": 82.5061,
+     "sent512s": 82.0639
+    },
+    "strict5": {
+     "S": 82.6536,
+     "S-regex": 82.5061,
+     "ft512o64": 78.7715,
+     "ft512o64s": 82.457,
+     "sent512s": 81.8673
+    }
+   },
+   "discordance_S_vs_ft512o64s": 0.05258,
+   "gate_counts": {},
+   "gates": {},
+   "hit5": {
+    "S": 82.8501,
+    "ft512o64": 79.0172,
+    "ft512o64s": 82.5061
+   },
+   "is_decision_setting": true,
+   "missing_by_arm": {
+    "five_arm": {
+     "S": 0,
+     "S-regex": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0,
+     "sent512s": 0
+    },
+    "three_arm": {
+     "S": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0
+    }
+   },
+   "n_decision": 2035,
+   "n_five_arm": 2035,
+   "n_sensitivity": 2335,
+   "sensitivity": {
+    "D": {
+     "hi": 1.4133,
+     "lo": -0.4283,
+     "n": 2335,
+     "point": 0.5139
+    },
+    "D1": {
+     "hi": 4.3255,
+     "lo": 1.7559,
+     "n": 2335,
+     "point": 3.0407
+    },
+    "label": "SENSITIVITY: noise subset included; not the decision",
+    "n": 2335,
+    "set": "clean"
+   },
+   "sequence": {
+    "H1": true,
+    "H2": false,
+    "decision": "S",
+    "frozen_order": "B",
+    "other_order": {
+     "decision": "ft512o64s",
+     "order": "A",
+     "row": 2,
+     "row_label": "ft512o64s (tie, Order A)"
+    },
+    "outcome": "tie",
+    "result": {
+     "H1": true,
+     "H2": false,
+     "ctx_raised": false,
+     "ctx_ratio": 0.8704166134407669,
+     "decision": "S",
+     "gates": [],
+     "h1_threshold": -2.0,
+     "k_strata": 11,
+     "order": "B",
+     "outcome": "tie",
+     "pooled_ok": true,
+     "row": 3,
+     "strata_failed": [],
+     "stratum_ok": true
+    },
+    "row": 3,
+    "row_label": "S (tie, Order B)",
+    "sentence": "Deploy S: in setting (a), hit@5 was 82.85% under S against 82.51% under ft512o64s (n = 2,035); S \u2212 ft512o64s = +0.34 [-0.64, +1.33], discordance 0.053; S is non-inferior at 2.0 points but not shown superior, and ft512o64s is not shown superior to S (ft512o64s \u2212 S = -0.34 [-1.38, +0.64]); the tie goes to the cheaper arm under cost order B. Gate G1: ft512o64s \u2212 ft512o64 = +3.49 [+2.11, +4.86]. Under cost order A the decision would be ft512o64s."
+   },
+   "server_versions": {
+    "five_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "S-regex": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "sent512s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    },
+    "three_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    }
+   },
+   "setting": "a",
+   "stratum_guard": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 2.6393,
+      "hi95": 1.4663,
+      "lo": -5.2786,
+      "lo95": -3.8123,
+      "n": 341,
+      "point": -1.173,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 3.1359,
+      "hi95": 1.7422,
+      "lo": -3.8328,
+      "lo95": -2.7875,
+      "n": 287,
+      "point": -0.3484,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 6.0837,
+      "hi95": 4.5627,
+      "lo": -1.1407,
+      "lo95": 0.0,
+      "n": 263,
+      "point": 2.2814,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.303,
+      "hi95": 3.7879,
+      "lo": -5.303,
+      "lo95": -3.7879,
+      "n": 132,
+      "point": 0.0,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 4.3165,
+      "hi95": 2.1583,
+      "lo": -7.9137,
+      "lo95": -5.7554,
+      "n": 139,
+      "point": -1.4388,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.7534,
+      "hi95": 4.6575,
+      "lo": -2.5411,
+      "lo95": -1.0959,
+      "n": 365,
+      "point": 1.6438,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.314,
+      "hi95": 3.8647,
+      "lo": -1.9324,
+      "lo95": -0.9662,
+      "n": 207,
+      "point": 1.4493,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 3.6545,
+      "hi95": 2.3256,
+      "lo": -4.3189,
+      "lo95": -2.99,
+      "n": 301,
+      "point": -0.3322,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 2.695,
+      "hi95": 1.8721,
+      "lo": -2.4961,
+      "lo95": -1.5601,
+      "n": 641,
+      "point": 0.156,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 3.1928,
+      "hi95": 2.5543,
+      "lo": -1.5326,
+      "lo95": -0.7663,
+      "n": 783,
+      "point": 0.894,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 2.455,
+      "hi95": 1.6367,
+      "lo": -2.946,
+      "lo95": -1.964,
+      "n": 611,
+      "point": -0.1637,
+      "value": "short"
+     }
+    ]
+   },
+   "stratum_guard_H3": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 0.8798,
+      "hi95": 0.5865,
+      "lo": -2.346,
+      "lo95": -1.7595,
+      "n": 341,
+      "point": -0.5865,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 2.439,
+      "hi95": 1.7422,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 287,
+      "point": 0.6969,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": -3.4221,
+      "lo95": -2.6616,
+      "n": 263,
+      "point": -1.1407,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 132,
+      "point": 0.0,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": -3.5971,
+      "lo95": -2.1583,
+      "n": 139,
+      "point": -0.7194,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 1.3699,
+      "hi95": 0.8219,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 365,
+      "point": 0.274,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 2.4155,
+      "hi95": 1.4493,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 207,
+      "point": 0.4831,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": -1.6611,
+      "lo95": -0.9967,
+      "n": 301,
+      "point": -0.3322,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.936,
+      "hi95": 0.624,
+      "lo": -0.936,
+      "lo95": -0.624,
+      "n": 641,
+      "point": 0.0,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.6386,
+      "hi95": 0.3831,
+      "lo": -1.0217,
+      "lo95": -0.7663,
+      "n": 783,
+      "point": -0.1277,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.491,
+      "hi95": 0.3273,
+      "lo": -1.3093,
+      "lo95": -0.982,
+      "n": 611,
+      "point": -0.3273,
+      "value": "short"
+     }
+    ]
+   },
+   "tokens": "chars/4",
+   "tokens_estimated": true
+  },
+  "b": {
+   "D": {
+    "hi": 3.4889,
+    "lo": 0.5897,
+    "n": 2035,
+    "point": 2.0639
+   },
+   "D1": {
+    "hi": 9.9754,
+    "lo": 5.9459,
+    "n": 2035,
+    "point": 7.9607
+   },
+   "D3": {
+    "hi": 0.3931,
+    "lo": -0.4914,
+    "n": 2035,
+    "point": -0.0491
+   },
+   "E": {
+    "hi": -0.5897,
+    "lo": -3.5381,
+    "n": 2035,
+    "point": -2.0639
+   },
+   "G1": null,
+   "arm_gates": {},
+   "arms_missing": [],
+   "bootstrap": {
+    "iters": 10000,
+    "seed": 0
+   },
+   "contrasts": {
+    "C1": {
+     "hi": 1.1794,
+     "holm_sig": false,
+     "in_family": true,
+     "lo": -0.7862,
+     "n": 2035,
+     "p_holm": 1.0,
+     "p_two_sided": 0.734727,
+     "pair": "S \u2212 sent512s",
+     "point": 0.1966
+    },
+    "C2": {
+     "hi": 11.9902,
+     "holm_sig": true,
+     "in_family": true,
+     "lo": 8.059,
+     "n": 2035,
+     "p_holm": 0.0008,
+     "p_two_sided": 0.0002,
+     "pair": "S \u2212 ft512o64",
+     "point": 10.0246
+    },
+    "C3": {
+     "hi": 0.3931,
+     "holm_sig": false,
+     "in_family": true,
+     "lo": -0.4914,
+     "n": 2035,
+     "p_holm": 1.0,
+     "p_two_sided": 0.908309,
+     "pair": "S-regex \u2212 S",
+     "point": -0.0491
+    },
+    "C4": {
+     "hi": 9.9754,
+     "holm_sig": true,
+     "in_family": true,
+     "lo": 5.9459,
+     "n": 2035,
+     "p_holm": 0.0008,
+     "p_two_sided": 0.0002,
+     "pair": "ft512o64s \u2212 ft512o64",
+     "point": 7.9607
+    }
+   },
+   "cross_check": {
+    "d1_harness": {
+     "hi": 9.9754,
+     "lo": 5.9459,
+     "point": 7.9607
+    },
+    "d1_match": true,
+    "harness_pass": {
+     "S": true,
+     "ft512o64s": true
+    },
+    "harness_winner": "S",
+    "ladder_steps": [
+     {
+      "harness": {
+       "hi": 11.9902,
+       "lo": 8.059,
+       "point": 10.0246
+      },
+      "match": true,
+      "pair": "S - ft512o64",
+      "recomputed": {
+       "hi": 11.9902,
+       "lo": 8.059,
+       "point": 10.0246
+      },
+      "switched": true
+     },
+     {
+      "harness": {
+       "hi": -0.5897,
+       "lo": -3.5381,
+       "point": -2.0639
+      },
+      "match": true,
+      "pair": "ft512o64s - S",
+      "recomputed": {
+       "hi": -0.5897,
+       "lo": -3.5381,
+       "point": -2.0639
+      },
+      "switched": false
+     }
+    ],
+    "note": "a missing step is reported, not a gate; the harness's choice is reported, not compared",
+    "steps_present": [
+     "S - ft512o64",
+     "ft512o64s - S"
+    ]
+   },
+   "ctx5": {
+    "S": 1669.81,
+    "ft512o64": 1919.99,
+    "ft512o64s": 1548.63
+   },
+   "ctx_ratio_S_over_ft512o64": 0.8697,
+   "descriptive": {
+    "S_regex_minus_ft512o64s": {
+     "hi": 3.4398,
+     "lo": 0.5405,
+     "n": 2035,
+     "point": 2.0147
+    },
+    "ctx5": {
+     "S": 1669.81,
+     "S-regex": 1670.23,
+     "ft512o64": 1919.99,
+     "ft512o64s": 1548.63,
+     "sent512s": 1528.16
+    },
+    "discordance5": {
+     "S-regex|S": 0.009337,
+     "S|ft512o64": 0.212285,
+     "S|ft512o64s": 0.113022,
+     "S|sent512s": 0.050123,
+     "ft512o64s|ft512o64": 0.223096
+    },
+    "hit1": {
+     "S": 30.2211,
+     "S-regex": 30.172,
+     "ft512o64": 21.2285,
+     "ft512o64s": 29.3857,
+     "sent512s": 30.5651
+    },
+    "hit10": {
+     "S": 67.8624,
+     "S-regex": 67.7641,
+     "ft512o64": 61.1794,
+     "ft512o64s": 67.0762,
+     "sent512s": 68.1572
+    },
+    "hit5": {
+     "S": 59.1646,
+     "S-regex": 59.1155,
+     "ft512o64": 49.14,
+     "ft512o64s": 57.1007,
+     "sent512s": 58.9681
+    },
+    "strict5": {
+     "S": 58.9681,
+     "S-regex": 58.9189,
+     "ft512o64": 48.9435,
+     "ft512o64s": 56.8059,
+     "sent512s": 58.8206
+    }
+   },
+   "discordance_S_vs_ft512o64s": 0.113022,
+   "gate_counts": {},
+   "gates": {},
+   "hit5": {
+    "S": 59.1646,
+    "ft512o64": 49.14,
+    "ft512o64s": 57.1007
+   },
+   "is_decision_setting": false,
+   "missing_by_arm": {
+    "five_arm": {
+     "S": 0,
+     "S-regex": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0,
+     "sent512s": 0
+    },
+    "three_arm": {
+     "S": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0
+    }
+   },
+   "n_decision": 2035,
+   "n_five_arm": 2035,
+   "n_sensitivity": 2335,
+   "sensitivity": {
+    "D": {
+     "hi": 3.469,
+     "lo": 0.7709,
+     "n": 2335,
+     "point": 2.1413
+    },
+    "D1": {
+     "hi": 10.2355,
+     "lo": 6.5096,
+     "n": 2335,
+     "point": 8.394
+    },
+    "label": "SENSITIVITY: noise subset included; not the decision",
+    "n": 2335,
+    "set": "clean"
+   },
+   "sequence": {
+    "H1": true,
+    "H2": true,
+    "decision": "S",
+    "frozen_order": "B",
+    "other_order": {
+     "decision": "S",
+     "order": "A",
+     "row": 1,
+     "row_label": "S (H2 holds)"
+    },
+    "outcome": "S superior",
+    "result": {
+     "H1": true,
+     "H2": true,
+     "ctx_raised": false,
+     "ctx_ratio": 0.8696959800654078,
+     "decision": "S",
+     "gates": [],
+     "h1_threshold": -2.0,
+     "k_strata": 11,
+     "order": "B",
+     "outcome": "S superior",
+     "pooled_ok": true,
+     "row": 1,
+     "strata_failed": [],
+     "stratum_ok": true
+    },
+    "row": 1,
+    "row_label": "S (H2 holds)",
+    "sentence": "Deploy S: in setting (b), hit@5 was 59.16% under S against 57.10% under ft512o64s (n = 2,035); S \u2212 ft512o64s = +2.06 [+0.59, +3.49], discordance 0.113; non-inferiority at 2.0 points holds and S is superior (lower bound > 0). Gate G1: ft512o64s \u2212 ft512o64 = +7.96 [+5.95, +9.98]. Under cost order A the decision would be S."
+   },
+   "server_versions": {
+    "five_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "S-regex": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "sent512s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    },
+    "three_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    }
+   },
+   "setting": "b",
+   "stratum_guard": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 6.7449,
+      "hi95": 4.9853,
+      "lo": -4.6921,
+      "lo95": -2.6466,
+      "n": 341,
+      "point": 1.173,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 11.4983,
+      "hi95": 9.4077,
+      "lo": -1.0453,
+      "lo95": 1.0453,
+      "n": 287,
+      "point": 5.2265,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.7034,
+      "hi95": 4.1825,
+      "lo": -5.3232,
+      "lo95": -3.4221,
+      "n": 263,
+      "point": 0.3802,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 16.6667,
+      "hi95": 13.6364,
+      "lo": -0.7576,
+      "lo95": 1.5152,
+      "n": 132,
+      "point": 7.5758,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 12.2302,
+      "hi95": 9.3525,
+      "lo": -5.036,
+      "lo95": -2.1583,
+      "n": 139,
+      "point": 3.5971,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 6.8493,
+      "hi95": 5.4795,
+      "lo": -2.1918,
+      "lo95": -0.5479,
+      "n": 365,
+      "point": 2.4658,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 3.3816,
+      "hi95": 1.4493,
+      "lo": -9.6618,
+      "lo95": -7.2464,
+      "n": 207,
+      "point": -2.8986,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 6.6445,
+      "hi95": 4.9834,
+      "lo": -3.9867,
+      "lo95": -2.3256,
+      "n": 301,
+      "point": 1.3289,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 6.3963,
+      "hi95": 5.3042,
+      "lo": -1.092,
+      "lo95": 0.0,
+      "n": 641,
+      "point": 2.6521,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 4.3423,
+      "hi95": 3.3206,
+      "lo": -2.2989,
+      "lo95": -1.2771,
+      "n": 783,
+      "point": 1.0217,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 6.7103,
+      "hi95": 5.401,
+      "lo": -1.1457,
+      "lo95": 0.0,
+      "n": 611,
+      "point": 2.7823,
+      "value": "short"
+     }
+    ]
+   },
+   "stratum_guard_H3": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 1.173,
+      "hi95": 0.8798,
+      "lo": -1.173,
+      "lo95": -0.8798,
+      "n": 341,
+      "point": 0.0,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 2.0906,
+      "hi95": 1.7422,
+      "lo": -1.3937,
+      "lo95": -0.6969,
+      "n": 287,
+      "point": 0.3484,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 1.1407,
+      "hi95": 0.7605,
+      "lo": -3.0418,
+      "lo95": -2.2814,
+      "n": 263,
+      "point": -0.7605,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 132,
+      "point": 0.0,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 4.3165,
+      "hi95": 3.5971,
+      "lo": -2.8777,
+      "lo95": -1.4388,
+      "n": 139,
+      "point": 0.7194,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 2.1918,
+      "hi95": 1.6438,
+      "lo": -1.6438,
+      "lo95": -0.8219,
+      "n": 365,
+      "point": 0.274,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 207,
+      "point": 0.0,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": -2.3256,
+      "lo95": -1.6611,
+      "n": 301,
+      "point": -0.6645,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.936,
+      "hi95": 0.624,
+      "lo": -1.4041,
+      "lo95": -0.936,
+      "n": 641,
+      "point": -0.156,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 1.4049,
+      "hi95": 1.0217,
+      "lo": -0.5109,
+      "lo95": -0.2554,
+      "n": 783,
+      "point": 0.3831,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.491,
+      "hi95": 0.1637,
+      "lo": -1.6367,
+      "lo95": -1.3093,
+      "n": 611,
+      "point": -0.491,
+      "value": "short"
+     }
+    ]
+   },
+   "tokens": "chars/4",
+   "tokens_estimated": true
+  },
+  "c": {
+   "D": {
+    "hi": 1.9656,
+    "lo": -0.0983,
+    "n": 2035,
+    "point": 0.9337
+   },
+   "D1": {
+    "hi": 1.1302,
+    "lo": -1.7199,
+    "n": 2035,
+    "point": -0.2948
+   },
+   "D3": {
+    "hi": 0.0,
+    "lo": -0.1474,
+    "n": 2035,
+    "point": -0.0491
+   },
+   "E": {
+    "hi": 0.0983,
+    "lo": -1.9656,
+    "n": 2035,
+    "point": -0.9337
+   },
+   "G1": null,
+   "arm_gates": {},
+   "arms_missing": [],
+   "bootstrap": {
+    "iters": 10000,
+    "seed": 0
+   },
+   "contrasts": {
+    "C1": {
+     "hi": 2.0639,
+     "holm_sig": true,
+     "in_family": true,
+     "lo": 0.5405,
+     "n": 2035,
+     "p_holm": 0.005599,
+     "p_two_sided": 0.0014,
+     "pair": "S \u2212 sent512s",
+     "point": 1.2776
+    },
+    "C2": {
+     "hi": 2.113,
+     "holm_sig": false,
+     "in_family": true,
+     "lo": -0.8354,
+     "n": 2035,
+     "p_holm": 1.0,
+     "p_two_sided": 0.40336,
+     "pair": "S \u2212 ft512o64",
+     "point": 0.6388
+    },
+    "C3": {
+     "hi": 0.0,
+     "holm_sig": false,
+     "in_family": true,
+     "lo": -0.1474,
+     "n": 2035,
+     "p_holm": 1.0,
+     "p_two_sided": 0.736926,
+     "pair": "S-regex \u2212 S",
+     "point": -0.0491
+    },
+    "C4": {
+     "hi": 1.1302,
+     "holm_sig": false,
+     "in_family": true,
+     "lo": -1.7199,
+     "n": 2035,
+     "p_holm": 1.0,
+     "p_two_sided": 0.721128,
+     "pair": "ft512o64s \u2212 ft512o64",
+     "point": -0.2948
+    }
+   },
+   "cross_check": {
+    "d1_harness": {
+     "hi": 1.1302,
+     "lo": -1.7199,
+     "point": -0.2948
+    },
+    "d1_match": true,
+    "harness_pass": {
+     "S": true,
+     "ft512o64s": true
+    },
+    "harness_winner": "ft512o64",
+    "ladder_steps": [
+     {
+      "harness": {
+       "hi": 2.113,
+       "lo": -0.8354,
+       "point": 0.6388
+      },
+      "match": true,
+      "pair": "S - ft512o64",
+      "recomputed": {
+       "hi": 2.113,
+       "lo": -0.8354,
+       "point": 0.6388
+      },
+      "switched": false
+     },
+     {
+      "harness": {
+       "hi": 1.1302,
+       "lo": -1.7199,
+       "point": -0.2948
+      },
+      "match": true,
+      "pair": "ft512o64s - ft512o64",
+      "recomputed": {
+       "hi": 1.1302,
+       "lo": -1.7199,
+       "point": -0.2948
+      },
+      "switched": false
+     }
+    ],
+    "note": "a missing step is reported, not a gate; the harness's choice is reported, not compared",
+    "steps_present": [
+     "S - ft512o64",
+     "ft512o64s - ft512o64"
+    ]
+   },
+   "ctx5": {
+    "S": 1922.39,
+    "ft512o64": 2269.21,
+    "ft512o64s": 1915.49
+   },
+   "ctx_ratio_S_over_ft512o64": 0.8472,
+   "descriptive": {
+    "S_regex_minus_ft512o64s": {
+     "hi": 1.9165,
+     "lo": -0.1474,
+     "n": 2035,
+     "point": 0.8845
+    },
+    "ctx5": {
+     "S": 1922.39,
+     "S-regex": 1922.13,
+     "ft512o64": 2269.21,
+     "ft512o64s": 1915.49,
+     "sent512s": 1823.83
+    },
+    "discordance5": {
+     "S-regex|S": 0.000491,
+     "S|ft512o64": 0.111548,
+     "S|ft512o64s": 0.055528,
+     "S|sent512s": 0.030467,
+     "ft512o64s|ft512o64": 0.106143
+    },
+    "hit1": {
+     "S": 31.8428,
+     "S-regex": 31.8919,
+     "ft512o64": 29.9754,
+     "ft512o64s": 31.6953,
+     "sent512s": 30.9091
+    },
+    "hit10": {
+     "S": 63.8329,
+     "S-regex": 63.8329,
+     "ft512o64": 62.5061,
+     "ft512o64s": 63.3907,
+     "sent512s": 62.7518
+    },
+    "hit5": {
+     "S": 56.3145,
+     "S-regex": 56.2654,
+     "ft512o64": 55.6757,
+     "ft512o64s": 55.3808,
+     "sent512s": 55.0369
+    },
+    "strict5": {
+     "S": 56.2654,
+     "S-regex": 56.2162,
+     "ft512o64": 55.4791,
+     "ft512o64s": 55.2334,
+     "sent512s": 54.9877
+    }
+   },
+   "discordance_S_vs_ft512o64s": 0.055528,
+   "gate_counts": {},
+   "gates": {},
+   "hit5": {
+    "S": 56.3145,
+    "ft512o64": 55.6757,
+    "ft512o64s": 55.3808
+   },
+   "is_decision_setting": false,
+   "missing_by_arm": {
+    "five_arm": {
+     "S": 0,
+     "S-regex": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0,
+     "sent512s": 0
+    },
+    "three_arm": {
+     "S": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0
+    }
+   },
+   "n_decision": 2035,
+   "n_five_arm": 2035,
+   "n_sensitivity": 2335,
+   "sensitivity": {
+    "D": {
+     "hi": 1.8844,
+     "lo": 0.0,
+     "n": 2335,
+     "point": 0.9422
+    },
+    "D1": {
+     "hi": 1.1991,
+     "lo": -1.4561,
+     "n": 2335,
+     "point": -0.1285
+    },
+    "label": "SENSITIVITY: noise subset included; not the decision",
+    "n": 2335,
+    "set": "clean"
+   },
+   "sequence": {
+    "H1": true,
+    "H2": false,
+    "decision": "S",
+    "frozen_order": "B",
+    "other_order": {
+     "decision": "ft512o64s",
+     "order": "A",
+     "row": 2,
+     "row_label": "ft512o64s (tie, Order A)"
+    },
+    "outcome": "tie",
+    "result": {
+     "H1": true,
+     "H2": false,
+     "ctx_raised": false,
+     "ctx_ratio": 0.8471639909958,
+     "decision": "S",
+     "gates": [],
+     "h1_threshold": -2.0,
+     "k_strata": 11,
+     "order": "B",
+     "outcome": "tie",
+     "pooled_ok": true,
+     "row": 3,
+     "strata_failed": [],
+     "stratum_ok": true
+    },
+    "row": 3,
+    "row_label": "S (tie, Order B)",
+    "sentence": "Deploy S: in setting (c), hit@5 was 56.31% under S against 55.38% under ft512o64s (n = 2,035); S \u2212 ft512o64s = +0.93 [-0.10, +1.97], discordance 0.056; S is non-inferior at 2.0 points but not shown superior, and ft512o64s is not shown superior to S (ft512o64s \u2212 S = -0.93 [-1.97, +0.10]); the tie goes to the cheaper arm under cost order B. Gate G1: ft512o64s \u2212 ft512o64 = -0.29 [-1.72, +1.13]. Under cost order A the decision would be ft512o64s."
+   },
+   "server_versions": {
+    "five_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "S-regex": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "sent512s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    },
+    "three_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    }
+   },
+   "setting": "c",
+   "stratum_guard": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 4.9853,
+      "hi95": 3.8123,
+      "lo": -2.9326,
+      "lo95": -1.4663,
+      "n": 341,
+      "point": 1.173,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 4.878,
+      "hi95": 3.8328,
+      "lo": -2.7875,
+      "lo95": -1.7422,
+      "n": 287,
+      "point": 1.0453,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 3.8023,
+      "hi95": 2.6616,
+      "lo": -4.943,
+      "lo95": -3.4221,
+      "n": 263,
+      "point": -0.3802,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 4.5455,
+      "hi95": 2.2727,
+      "lo": -8.3333,
+      "lo95": -6.0606,
+      "n": 132,
+      "point": -1.5152,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 6.4748,
+      "hi95": 4.3165,
+      "lo": -5.036,
+      "lo95": -2.8777,
+      "n": 139,
+      "point": 0.7194,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 6.3014,
+      "hi95": 5.2055,
+      "lo": -0.8219,
+      "lo95": 0.274,
+      "n": 365,
+      "point": 2.7397,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.314,
+      "hi95": 3.8647,
+      "lo": -3.3816,
+      "lo95": -1.9324,
+      "n": 207,
+      "point": 0.9662,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 4.3189,
+      "hi95": 3.3223,
+      "lo": -2.99,
+      "lo95": -1.6611,
+      "n": 301,
+      "point": 0.6645,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 4.5242,
+      "hi95": 3.7441,
+      "lo": -1.603,
+      "lo95": -0.624,
+      "n": 641,
+      "point": 1.5601,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 2.4266,
+      "hi95": 1.788,
+      "lo": -2.2989,
+      "lo95": -1.5326,
+      "n": 783,
+      "point": 0.1277,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 3.6007,
+      "hi95": 2.7823,
+      "lo": -0.8633,
+      "lo95": -0.1637,
+      "n": 611,
+      "point": 1.3093,
+      "value": "short"
+     }
+    ]
+   },
+   "stratum_guard_H3": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 341,
+      "point": 0.0,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": -1.7422,
+      "lo95": -1.0453,
+      "n": 287,
+      "point": -0.3484,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 263,
+      "point": 0.0,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 132,
+      "point": 0.0,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 139,
+      "point": 0.0,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 365,
+      "point": 0.0,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 207,
+      "point": 0.0,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 301,
+      "point": 0.0,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 641,
+      "point": 0.0,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 783,
+      "point": 0.0,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": -0.8183,
+      "lo95": -0.491,
+      "n": 611,
+      "point": -0.1637,
+      "value": "short"
+     }
+    ]
+   },
+   "tokens": "chars/4",
+   "tokens_estimated": true
+  },
+  "d": {
+   "D": {
+    "hi": 2.9484,
+    "lo": 0.441,
+    "n": 2035,
+    "point": 1.6708
+   },
+   "D1": {
+    "hi": 5.9459,
+    "lo": 2.3587,
+    "n": 2035,
+    "point": 4.1278
+   },
+   "D3": {
+    "hi": 0.2948,
+    "lo": -0.2948,
+    "n": 2035,
+    "point": 0.0
+   },
+   "E": {
+    "hi": -0.3931,
+    "lo": -2.9975,
+    "n": 2035,
+    "point": -1.6708
+   },
+   "G1": null,
+   "arm_gates": {},
+   "arms_missing": [],
+   "bootstrap": {
+    "iters": 10000,
+    "seed": 0
+   },
+   "contrasts": {
+    "C1": {
+     "hi": 1.4251,
+     "holm_sig": false,
+     "in_family": true,
+     "lo": -0.2457,
+     "n": 2035,
+     "p_holm": 0.356764,
+     "p_two_sided": 0.178382,
+     "pair": "S \u2212 sent512s",
+     "point": 0.5897
+    },
+    "C2": {
+     "hi": 7.5676,
+     "holm_sig": true,
+     "in_family": true,
+     "lo": 4.0295,
+     "n": 2035,
+     "p_holm": 0.0008,
+     "p_two_sided": 0.0002,
+     "pair": "S \u2212 ft512o64",
+     "point": 5.7985
+    },
+    "C3": {
+     "hi": 0.2948,
+     "holm_sig": false,
+     "in_family": true,
+     "lo": -0.2948,
+     "n": 2035,
+     "p_holm": 1.0,
+     "p_two_sided": 1.0,
+     "pair": "S-regex \u2212 S",
+     "point": 0.0
+    },
+    "C4": {
+     "hi": 5.9459,
+     "holm_sig": true,
+     "in_family": true,
+     "lo": 2.3587,
+     "n": 2035,
+     "p_holm": 0.0008,
+     "p_two_sided": 0.0002,
+     "pair": "ft512o64s \u2212 ft512o64",
+     "point": 4.1278
+    }
+   },
+   "cross_check": {
+    "d1_harness": {
+     "hi": 5.9459,
+     "lo": 2.3587,
+     "point": 4.1278
+    },
+    "d1_match": true,
+    "harness_pass": {
+     "S": true,
+     "ft512o64s": true
+    },
+    "harness_winner": "S",
+    "ladder_steps": [
+     {
+      "harness": {
+       "hi": 7.5676,
+       "lo": 4.0295,
+       "point": 5.7985
+      },
+      "match": true,
+      "pair": "S - ft512o64",
+      "recomputed": {
+       "hi": 7.5676,
+       "lo": 4.0295,
+       "point": 5.7985
+      },
+      "switched": true
+     },
+     {
+      "harness": {
+       "hi": -0.3931,
+       "lo": -2.9975,
+       "point": -1.6708
+      },
+      "match": true,
+      "pair": "ft512o64s - S",
+      "recomputed": {
+       "hi": -0.3931,
+       "lo": -2.9975,
+       "point": -1.6708
+      },
+      "switched": false
+     }
+    ],
+    "note": "a missing step is reported, not a gate; the harness's choice is reported, not compared",
+    "steps_present": [
+     "S - ft512o64",
+     "ft512o64s - S"
+    ]
+   },
+   "ctx5": {
+    "S": 1801.25,
+    "ft512o64": 2103.67,
+    "ft512o64s": 1745.19
+   },
+   "ctx_ratio_S_over_ft512o64": 0.8562,
+   "descriptive": {
+    "S_regex_minus_ft512o64s": {
+     "hi": 2.9484,
+     "lo": 0.441,
+     "n": 2035,
+     "point": 1.6708
+    },
+    "ctx5": {
+     "S": 1801.25,
+     "S-regex": 1799.76,
+     "ft512o64": 2103.67,
+     "ft512o64s": 1745.19,
+     "sent512s": 1685.7
+    },
+    "discordance5": {
+     "S-regex|S": 0.004914,
+     "S|ft512o64": 0.173956,
+     "S|ft512o64s": 0.086486,
+     "S|sent512s": 0.036364,
+     "ft512o64s|ft512o64": 0.17199
+    },
+    "hit1": {
+     "S": 36.1671,
+     "S-regex": 36.2654,
+     "ft512o64": 29.828,
+     "ft512o64s": 35.3808,
+     "sent512s": 36.1671
+    },
+    "hit10": {
+     "S": 76.7568,
+     "S-regex": 76.5111,
+     "ft512o64": 71.9902,
+     "ft512o64s": 75.5774,
+     "sent512s": 76.4619
+    },
+    "hit5": {
+     "S": 67.0762,
+     "S-regex": 67.0762,
+     "ft512o64": 61.2776,
+     "ft512o64s": 65.4054,
+     "sent512s": 66.4865
+    },
+    "strict5": {
+     "S": 66.9779,
+     "S-regex": 66.9779,
+     "ft512o64": 61.1302,
+     "ft512o64s": 65.2088,
+     "sent512s": 66.3882
+    }
+   },
+   "discordance_S_vs_ft512o64s": 0.086486,
+   "gate_counts": {},
+   "gates": {},
+   "hit5": {
+    "S": 67.0762,
+    "ft512o64": 61.2776,
+    "ft512o64s": 65.4054
+   },
+   "is_decision_setting": false,
+   "missing_by_arm": {
+    "five_arm": {
+     "S": 0,
+     "S-regex": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0,
+     "sent512s": 0
+    },
+    "three_arm": {
+     "S": 0,
+     "ft512o64": 0,
+     "ft512o64s": 0
+    }
+   },
+   "n_decision": 2035,
+   "n_five_arm": 2035,
+   "n_sensitivity": 2335,
+   "sensitivity": {
+    "D": {
+     "hi": 2.6981,
+     "lo": 0.2998,
+     "n": 2335,
+     "point": 1.4989
+    },
+    "D1": {
+     "hi": 5.9529,
+     "lo": 2.6124,
+     "n": 2335,
+     "point": 4.2827
+    },
+    "label": "SENSITIVITY: noise subset included; not the decision",
+    "n": 2335,
+    "set": "clean"
+   },
+   "sequence": {
+    "H1": true,
+    "H2": true,
+    "decision": "S",
+    "frozen_order": "B",
+    "other_order": {
+     "decision": "S",
+     "order": "A",
+     "row": 1,
+     "row_label": "S (H2 holds)"
+    },
+    "outcome": "S superior",
+    "result": {
+     "H1": true,
+     "H2": true,
+     "ctx_raised": false,
+     "ctx_ratio": 0.8562449281259679,
+     "decision": "S",
+     "gates": [],
+     "h1_threshold": -2.0,
+     "k_strata": 11,
+     "order": "B",
+     "outcome": "S superior",
+     "pooled_ok": true,
+     "row": 1,
+     "strata_failed": [],
+     "stratum_ok": true
+    },
+    "row": 1,
+    "row_label": "S (H2 holds)",
+    "sentence": "Deploy S: in setting (d), hit@5 was 67.08% under S against 65.41% under ft512o64s (n = 2,035); S \u2212 ft512o64s = +1.67 [+0.44, +2.95], discordance 0.086; non-inferiority at 2.0 points holds and S is superior (lower bound > 0). Gate G1: ft512o64s \u2212 ft512o64 = +4.13 [+2.36, +5.95]. Under cost order A the decision would be S."
+   },
+   "server_versions": {
+    "five_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "S-regex": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "sent512s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    },
+    "three_arm": {
+     "S": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ],
+     "ft512o64s": [
+      "1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738"
+     ]
+    }
+   },
+   "setting": "d",
+   "stratum_guard": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 9.9707,
+      "hi95": 8.5044,
+      "lo": -0.5865,
+      "lo95": 1.173,
+      "n": 341,
+      "point": 4.6921,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.9233,
+      "hi95": 4.5296,
+      "lo": -3.8328,
+      "lo95": -2.0906,
+      "n": 287,
+      "point": 1.0453,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.7034,
+      "hi95": 4.1825,
+      "lo": -4.1825,
+      "lo95": -2.6616,
+      "n": 263,
+      "point": 0.7605,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.303,
+      "hi95": 3.7879,
+      "lo": -5.303,
+      "lo95": -3.7879,
+      "n": 132,
+      "point": 0.0,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 12.2302,
+      "hi95": 9.3525,
+      "lo": -3.5971,
+      "lo95": -0.7194,
+      "n": 139,
+      "point": 4.3165,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 5.7534,
+      "hi95": 4.6575,
+      "lo": -2.5411,
+      "lo95": -1.0959,
+      "n": 365,
+      "point": 1.6438,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 6.2802,
+      "hi95": 4.3478,
+      "lo": -5.314,
+      "lo95": -3.3816,
+      "n": 207,
+      "point": 0.4831,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 4.9834,
+      "hi95": 3.3223,
+      "lo": -5.0748,
+      "lo95": -3.3223,
+      "n": 301,
+      "point": 0.0,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 4.9922,
+      "hi95": 4.0562,
+      "lo": -1.248,
+      "lo95": -0.312,
+      "n": 641,
+      "point": 1.8721,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 4.0868,
+      "hi95": 3.1928,
+      "lo": -1.9157,
+      "lo95": -0.894,
+      "n": 783,
+      "point": 1.1494,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 5.5646,
+      "hi95": 4.5827,
+      "lo": -1.473,
+      "lo95": -0.3273,
+      "n": 611,
+      "point": 2.1277,
+      "value": "short"
+     }
+    ]
+   },
+   "stratum_guard_H3": {
+    "failed": [],
+    "k": 11,
+    "level": 0.995455,
+    "not_tested": [],
+    "tested": [
+     {
+      "dim": "journal_family",
+      "hi": 1.7595,
+      "hi95": 1.4663,
+      "lo": -1.173,
+      "lo95": -0.5865,
+      "n": 341,
+      "point": 0.2933,
+      "value": "infectious-disease"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 1.7422,
+      "hi95": 1.0453,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 287,
+      "point": 0.3484,
+      "value": "microbiology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 1.5209,
+      "hi95": 0.7605,
+      "lo": -2.2814,
+      "lo95": -1.9011,
+      "n": 263,
+      "point": -0.3802,
+      "value": "molbio-immunology"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 132,
+      "point": 0.0,
+      "value": "multidisciplinary"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 3.5971,
+      "hi95": 2.1583,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 139,
+      "point": 0.7194,
+      "value": "other"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": -1.9178,
+      "lo95": -1.3699,
+      "n": 365,
+      "point": -0.5479,
+      "value": "plos-one"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 207,
+      "point": 0.0,
+      "value": "sci-reports"
+     },
+     {
+      "dim": "journal_family",
+      "hi": 0.0,
+      "hi95": 0.0,
+      "lo": 0.0,
+      "lo95": 0.0,
+      "n": 301,
+      "point": 0.0,
+      "value": "virology"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.624,
+      "hi95": 0.468,
+      "lo": -0.624,
+      "lo95": -0.468,
+      "n": 641,
+      "point": 0.0,
+      "value": "long"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.8014,
+      "hi95": 0.6386,
+      "lo": -0.5109,
+      "lo95": -0.2554,
+      "n": 783,
+      "point": 0.1277,
+      "value": "medium"
+     },
+     {
+      "dim": "length_band",
+      "hi": 0.8183,
+      "hi95": 0.491,
+      "lo": -1.3093,
+      "lo95": -0.982,
+      "n": 611,
+      "point": -0.1637,
+      "value": "short"
+     }
+    ]
+   },
+   "tokens": "chars/4",
+   "tokens_estimated": true
+  }
+ }
+}

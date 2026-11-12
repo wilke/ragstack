@@ -1,0 +1,337 @@
+{
+ "arms": {
+  "S": {
+   "distinct_chunk_ids": 767984,
+   "docs_main": 241930,
+   "elasticsearch": 767984,
+   "expected_store_count": 767984,
+   "failed_docs": 0,
+   "failed_shards": 0,
+   "ingest_retries_by_shard": {
+    "main-00": 0,
+    "main-01": 0,
+    "main-02": 0,
+    "main-03": 0,
+    "main-04": 0,
+    "main-05": 0,
+    "main-06": 0,
+    "main-07": 0,
+    "main-08": 0,
+    "main-09": 0,
+    "main-10": 0,
+    "main-11": 0,
+    "main-12": 0,
+    "main-13": 0,
+    "main-14": 1,
+    "main-15": 0
+   },
+   "ingest_run_s_by_shard": {
+    "main-00": 1423.8,
+    "main-01": 1436.6,
+    "main-02": 1421.8,
+    "main-03": 1522.3,
+    "main-04": 1194.1,
+    "main-05": 751.9,
+    "main-06": 1171.8,
+    "main-07": 1062.7,
+    "main-08": 1237.7,
+    "main-09": 1344.9,
+    "main-10": 855.9,
+    "main-11": 576.5,
+    "main-12": 558.0,
+    "main-13": 614.2,
+    "main-14": 782.9,
+    "main-15": 1274.5
+   },
+   "listing_capture": {
+    "has_more": true,
+    "ingest_tasks_with_worker_version": {
+     "main-00": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.26.1+be35a2f"
+     },
+     "main-01": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.28.1+e805888"
+     },
+     "main-02": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.26.1+be35a2f"
+     },
+     "main-03": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.28.1+e805888"
+     }
+    },
+    "page_limit": 20,
+    "records_captured": 20,
+    "records_total": 33,
+    "steps_captured": {
+     "glossary": 16,
+     "ingest_shard": 4
+    }
+   },
+   "main_chunks": 767816,
+   "qdrant": 767984,
+   "receipts": 17,
+   "sentinel_chunks": 168,
+   "submission_wall_s": 3569.8,
+   "tasks": {
+    "by_step": {
+     "glossary": 16,
+     "ingest_shard": 16,
+     "merge": 1
+    },
+    "states": {
+     "SUCCESS": 33
+    },
+    "total": 33
+   }
+  },
+  "S-regex": {
+   "distinct_chunk_ids": 767956,
+   "docs_main": 241930,
+   "elasticsearch": 767956,
+   "expected_store_count": 767956,
+   "failed_docs": 0,
+   "failed_shards": 0,
+   "ingest_retries_by_shard": {
+    "main-00": 0,
+    "main-01": 0,
+    "main-02": 0,
+    "main-03": 0,
+    "main-04": 0,
+    "main-05": 0,
+    "main-06": 0,
+    "main-07": 0,
+    "main-08": 0,
+    "main-09": 0,
+    "main-10": 2,
+    "main-11": 0,
+    "main-12": 0,
+    "main-13": 0,
+    "main-14": 0,
+    "main-15": 0
+   },
+   "ingest_run_s_by_shard": {
+    "main-00": 1171.2,
+    "main-01": 1268.0,
+    "main-02": 1295.0,
+    "main-03": 1420.7,
+    "main-04": 1258.0,
+    "main-05": 1136.2,
+    "main-06": 1150.4,
+    "main-07": 1086.9,
+    "main-08": 903.1,
+    "main-09": 825.9,
+    "main-10": 381.8,
+    "main-11": 932.0,
+    "main-12": 844.9,
+    "main-13": 965.4,
+    "main-14": 971.2,
+    "main-15": 976.6
+   },
+   "listing_capture": {
+    "has_more": true,
+    "ingest_tasks_with_worker_version": {
+     "main-00": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.26.1+be35a2f"
+     },
+     "main-01": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.26.1+be35a2f"
+     },
+     "main-02": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.28.1+e805888"
+     },
+     "main-03": {
+      "retry_count": 0,
+      "state": "SUCCESS",
+      "worker_version": "0.28.1+e805888"
+     }
+    },
+    "page_limit": 20,
+    "records_captured": 20,
+    "records_total": 33,
+    "steps_captured": {
+     "glossary": 16,
+     "ingest_shard": 4
+    }
+   },
+   "main_chunks": 767788,
+   "qdrant": 767956,
+   "receipts": 17,
+   "sentinel_chunks": 168,
+   "submission_wall_s": 4469.6,
+   "tasks": {
+    "by_step": {
+     "glossary": 16,
+     "ingest_shard": 16,
+     "merge": 1
+    },
+    "states": {
+     "SUCCESS": 33
+    },
+    "total": 33
+   }
+  }
+ },
+ "chunk_id_overlap": {
+  "n_S": 767984,
+  "n_S_regex": 767956,
+  "share_of_S": 0.992097,
+  "share_of_S_regex": 0.992134,
+  "shared": 761915
+ },
+ "gowe": {
+  "all_groups_total_members": 44,
+  "dev_worker_group_by_version": {
+   "0.26.1+be35a2f": 8,
+   "0.28.1+e805888": 2
+  },
+  "fleet_read_at": "2026-11-11T22:31:31Z",
+  "sentinel_passes_pre_freeze_ran_on_server": "0.26.1",
+  "server_version_at_freeze": "0.28.1+e805888"
+ },
+ "note": "counts only, derived by the write-up from the private run records (ingest-gates.json, the GoWe status/timing listings, the first page of the GoWe task listing, the fleet listing, the sentinel checks, reembed/cosines.json); no ids, paths or hosts. The decision artifact is h2h-report.json; this file documents the ingest and gate record beside it.",
+ "reembed": {
+  "fetched_at": "2026-11-11T22:38:32Z",
+  "max": 1.0,
+  "min": 0.9999995,
+  "model": [
+   "Salesforce/SFR-Embedding-Mistral"
+  ],
+  "n": 200,
+  "n_below": 0,
+  "stored_dim": [
+   4096
+  ],
+  "threshold": 0.999,
+  "tooling_commit": "d9051640 (PR #1006, merged 8d0dd703)"
+ },
+ "schema": "adopted-spec-h2h-ingest-summary/1",
+ "sentinel": {
+  "S": {
+   "chunk_id_overlap_with_other_arm": {
+    "n_S": 168,
+    "n_S_regex": 168,
+    "share_of_S": 1.0,
+    "share_of_S_regex": 1.0,
+    "shared": 168
+   },
+   "chunk_ids_equal_pre_freeze_dry_run_and_study_text_pass": true,
+   "chunking": {
+    "ceiling": 640,
+    "chunk_size": 512,
+    "method": "sentence",
+    "min_piece": 128,
+    "size_tolerance": 0.25,
+    "structure_cuts": "sections/1",
+    "v": 1,
+    "window_budget": 4080
+   },
+   "failures": [],
+   "image_build": "1",
+   "image_version": "v1.6.24",
+   "ingest_exit_code": 0,
+   "logs_endpoint_bytes": 1413,
+   "logs_endpoint_warning_lines": 0,
+   "n_chunks": 168,
+   "ok": true,
+   "registry": {
+    "chunk_params": {
+     "min_piece": 128,
+     "size_tolerance": 0.25,
+     "size_unit": "tokens",
+     "structure_cuts": "sections/1"
+    },
+    "dim": 4096,
+    "embedding_api": "openai",
+    "model": "Salesforce/SFR-Embedding-Mistral",
+    "spec_hash": "29236085"
+   },
+   "segmenter_version": "punkt-abbrev-v1",
+   "stderr_file_bytes": 1413,
+   "stderr_file_warning_lines": 0
+  },
+  "S-regex": {
+   "chunk_id_overlap_with_other_arm": {
+    "n_S": 168,
+    "n_S_regex": 168,
+    "share_of_S": 1.0,
+    "share_of_S_regex": 1.0,
+    "shared": 168
+   },
+   "chunk_ids_equal_pre_freeze_dry_run_and_study_text_pass": true,
+   "chunking": {
+    "ceiling": 640,
+    "chunk_size": 512,
+    "method": "sentence",
+    "min_piece": 128,
+    "size_tolerance": 0.25,
+    "structure_cuts": "sections/1",
+    "v": 1,
+    "window_budget": 4080
+   },
+   "failures": [],
+   "image_build": "2",
+   "image_version": "v1.6.24",
+   "ingest_exit_code": 0,
+   "logs_endpoint_bytes": 1850,
+   "logs_endpoint_warning_lines": 1,
+   "n_chunks": 168,
+   "ok": true,
+   "registry": {
+    "chunk_params": {
+     "min_piece": 128,
+     "size_tolerance": 0.25,
+     "size_unit": "tokens",
+     "structure_cuts": "sections/1"
+    },
+    "dim": 4096,
+    "embedding_api": "openai",
+    "model": "Salesforce/SFR-Embedding-Mistral",
+    "spec_hash": "29236085"
+   },
+   "segmenter_version": "regex-abbrev-v1",
+   "stderr_file_bytes": 1850,
+   "stderr_file_warning_lines": 1
+  }
+ },
+ "server": {
+  "git_sha": "67e53fd4d5dd552eb3d22fa4c8554bff1748d738",
+  "read_at": "2026-11-11T22:31:31Z",
+  "started_at": "2026-11-06T01:12:12Z",
+  "version": "1.6.25"
+ },
+ "timeline_utc": {
+  "S_completed_approx": "2026-11-11T23:33:47Z (submit + wall)",
+  "S_regex_completed_approx": "2026-11-11T23:48:47Z (submit + wall)",
+  "collections_created": "2026-11-11T22:31:53Z",
+  "freeze_recorded": "2026-11-11T22:30:22Z",
+  "gowe_records_read": "2026-11-11T23:50:47Z",
+  "ingest_gates_written": "2026-11-11T23:51:15Z",
+  "inputs_staged": "2026-11-11T23:53:02Z",
+  "main_submitted": "2026-11-11T22:34:17Z",
+  "reembed_cosines_written": "2026-11-11T22:38:32Z",
+  "report_written": "2026-11-12T00:33:47Z",
+  "retrieve_ended": "2026-11-12T00:27:51Z",
+  "retrieve_first_attempt_zero_calls": "2026-11-11T23:52:08Z",
+  "retrieve_started": "2026-11-11T23:53:12Z",
+  "score_decide": "2026-11-12T00:29:03Z to 00:31:44Z",
+  "sentinel_dryrun_checks_passed": "2026-11-11T22:34:03Z",
+  "sentinel_records_read": "2026-11-11T22:33:53Z",
+  "sentinel_submitted": "2026-11-11T22:32:38Z",
+  "server_version_and_fleet_read": "2026-11-11T22:31:31Z",
+  "tag_signed": "2026-11-11T22:31:08Z"
+ }
+}

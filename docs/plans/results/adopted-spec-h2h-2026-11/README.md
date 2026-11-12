@@ -1,10 +1,30 @@
-<!-- experiment: Adopted chunking spec head-to-head (S vs ft512o64s vs ft512o64; S-regex segmenter) | 2026-11-11 | DRAFT · NOT FROZEN -->
+<!-- experiment: Adopted chunking spec head-to-head (S vs ft512o64s vs ft512o64; S-regex segmenter) | 2026-11-12 | CONFIRMATORY · TIE AT H2, DECISION S (ORDER B) -->
 # Adopted-spec head-to-head: does S beat the OA eval's pick?
 
-**Status: DRAFT, not frozen (PREREG v5, 2026-11-11).** Nothing of §7 has run. The sentinel dry run and the
-study-text sentinel pass of 2026-11-11 both passed (PREREG §2); every §9.1 pin is in `frozen-inputs.json`
-(none left null); the tooling is committed and tested. The freeze waits on the owner's statement and the
-bookkeeping under *What remains for the freeze*.
+**Status: RUN 2026-11-12 — Decision S (tie at H2 under the frozen cost order B; no gate fired): in setting (a), hit@5 was 82.85 % under S against 82.51 % under ft512o64s on the 2,035 decision-set questions, S − ft512o64s = +0.34 [−0.64, +1.33] (discordance 0.053); S is non-inferior at 2.0 points but not shown superior, and ft512o64s is not shown superior to S, so the tie goes to the cheaper arm; under cost order A the decision would be ft512o64s. Gate G1: +3.49 [+2.11, +4.86]. H3: S-regex − S = −0.15 [−0.49, +0.20], chunk-id overlap 99.2 %, S may be deployed on any worker (on this corpus). Reader's report: [REPORT.md](REPORT.md); record: [RESULTS.md](RESULTS.md), [`artifacts/h2h-report.json`](artifacts/h2h-report.json), [`artifacts/ingest-gates-summary.json`](artifacts/ingest-gates-summary.json); test data: [TEST-DATA.md](TEST-DATA.md); deviations: [DEVIATIONS.md](DEVIATIONS.md) (D-1 the re-embed fetch id-lookup fix, PR #1006; D-2 the frozen inputs staged by symlink after a 0-call first retrieval attempt; D-3 the optional top-5 drift figure absent; D-4 GoWe upgraded, mixed worker fleet; D-5 procedural; D-6 this freeze record written after the run).** The freeze record below is kept as the signed tag and the private `PREREG.sha256` state it.
+
+**Status: FROZEN 2026-11-11T22:30:22Z on the owner's go of 2026-11-11 ("freeze adopted-spec-h2h-2026-11: cost order
+B, margin 2.0, server v1.6.25, tools v1.6.24 (S = b1, S-regex = b2", then "run"); the run started 2026-11-11T22:31:31Z.**
+`PREREG.md` is frozen as written at commit `f4d4ef9a0b3b33116744488766f4e28d51aa51b3` (the merge of #1004), sha256
+`31687ee41b036010a49975a1a4b215841e67aa5e5c6e5a979feb91c0160f6f82` (its own status line, which still reads *DRAFT*,
+is part of the frozen text, as is `frozen-inputs.json`'s `status` field). `frozen-inputs.json` sha256
+`89991983a59d8dd22e57bdbc265d9929f71d7c3a8be667e8c33e49e3834d0224`; `power.json` sha256
+`10cd5d4ab0a764479d4df938f2be6bcadea4903989a5946306e88e4edcba65b5`; `config-diff.json` sha256
+`202ef0fb6c16414c5369547ceccd7488e5d741008dde288d2919a2e6e2199f56`; `ingest-bulk-h2h.cwl` sha256
+`b3df95911dc19bfb2491c2569fd43b4a1f9660b2afe053fe61b869b5134f0ecc`; `ragstack-tools-nonltk.def` sha256
+`8bfa31bb02d90c4b90302e727b9038ce9e77f783e63efe989f9a498c65d47df2`; this file at the freeze commit sha256
+`bf417cb3b32d3dddf5265741877b43580ef2f4f8a930831d27ec653312854aa5` (the DRAFT text below). Images: S
+`ragstack-tools-v1.6.24-b1.sif` `ecf81440…`; S-regex `ragstack-tools-v1.6.24-b2.sif` `413f6ec3…`; the S-regex study
+text (b1 → b2 rename) `65b7a927…`. Signed annotated tag `prereg-adopted-spec-h2h-2026-11` at that commit (verify
+with `git tag -v`), signed 2026-11-11T22:31:08Z, whose message carries every sha256 above; the sha256, the UTC time,
+the owner's go verbatim and the GoWe versions at the freeze (server 0.28.1+e805888; dev workers 1–2 on 0.28.1,
+3–10 on 0.26.1; the sentinel passes ran on server 0.26.1) are in a private `PREREG.sha256`, written before the run
+(PREREG §9.2). The §9.2 commit that records the freeze here was not made before the run; this is it, written with
+the results ([DEVIATIONS.md](DEVIATIONS.md) D-6). The two bookkeeping rows of *What remains for the freeze* below,
+left open at the freeze: harness changes since `d2a8b9b` in `python/scripts/eval/oa_chunk_eval/` up to the freeze
+commit: **one**, `e6323f4c` (the PR #972 review fixes); `power.json` as committed equals the tag's sha256 and
+`test_power_reproduces_prereg_section_5` regenerates it byte-identically. The text below is kept as written at the
+freeze, except the file table, whose after-the-run rows now exist.
 
 The question (PREREG §1): on the OA eval's frozen decision set (n = 2,035, hit@5, setting (a)), is the adopted
 production chunking **S** (`sentence` 512 tokens, overlap 0, `size_tolerance` 0.25, `min_piece` 128,
@@ -17,14 +37,18 @@ states what the other order would have decided.
 
 | file | tier | what |
 |---|---|---|
-| [PREREG.md](PREREG.md) | record, once frozen | hypotheses, arms, images, gates, the decision rule under both cost orders, the §4.5 sentences, power, procedure, freeze, owner decisions |
-| [frozen-inputs.json](frozen-inputs.json) | record, once frozen | every §9.1 pin that is a hash or a count: shard files, question-id lists, `noise.json`, configs, the two workflow texts, the two images, the `.def`, the sentinel counts, the reused-arm census, the model ids, the re-embed sample hash (nothing null) |
-| [ingest-bulk-h2h.cwl](ingest-bulk-h2h.cwl) | record, once frozen | the study workflow text: `cwl/ingest-bulk.cwl` at v1.6.25 plus a per-shard stderr `File` output; the S text as committed, the S-regex text = the six image-name lines renamed (both sha256 in `frozen-inputs.json`) |
-| [ragstack-tools-nonltk.def](ragstack-tools-nonltk.def) | record, once frozen | the recipe of the S-regex image (`ragstack-tools-v1.6.24-b2.sif`): the v1.6.24 tools def without the `chunking` extra, with build-time assertions and a variant label |
-| [config-diff.json](config-diff.json) | record, once frozen | the key-by-key diff of the decision (3-arm) and reporting (5-arm) harness configs against the Addendum C configs, per setting; written by `h2h_report.py configs` |
-| [power.py](power.py), [power.json](power.json) | record, once frozen | the §5 planning numbers (standard library, deterministic, no data) |
+| [PREREG.md](PREREG.md) | record, frozen | hypotheses, arms, images, gates, the decision rule under both cost orders, the §4.5 sentences, power, procedure, freeze, owner decisions |
+| [frozen-inputs.json](frozen-inputs.json) | record, frozen | every §9.1 pin that is a hash or a count: shard files, question-id lists, `noise.json`, configs, the two workflow texts, the two images, the `.def`, the sentinel counts, the reused-arm census, the model ids, the re-embed sample hash (nothing null) |
+| [ingest-bulk-h2h.cwl](ingest-bulk-h2h.cwl) | record, frozen | the study workflow text: `cwl/ingest-bulk.cwl` at v1.6.25 plus a per-shard stderr `File` output; the S text as committed, the S-regex text = the six image-name lines renamed (both sha256 in `frozen-inputs.json`) |
+| [ragstack-tools-nonltk.def](ragstack-tools-nonltk.def) | record, frozen | the recipe of the S-regex image (`ragstack-tools-v1.6.24-b2.sif`): the v1.6.24 tools def without the `chunking` extra, with build-time assertions and a variant label |
+| [config-diff.json](config-diff.json) | record, frozen | the key-by-key diff of the decision (3-arm) and reporting (5-arm) harness configs against the Addendum C configs, per setting; written by `h2h_report.py configs` |
+| [power.py](power.py), [power.json](power.json) | record, frozen | the §5 planning numbers (standard library, deterministic, no data) |
 | `python/scripts/eval/h2h_report.py`, `python/scripts/eval/h2h/` | code | the §9.4 script: `report`, `dryrun`, `reembed`, `configs`; tests in `python/tests/eval/test_h2h_report.py` |
-| `RESULTS.md`, `artifacts/h2h-report.json`, `REPORT.md`, `DEVIATIONS.md` | after the run | not yet written |
+| [REPORT.md](REPORT.md) | reader's report, revised in place (like a paper; not record) | hypothesis → results summary → how it was tested → results → conclusion; cites RESULTS.md |
+| [TEST-DATA.md](TEST-DATA.md) | record | how the test data was made: the OA eval's corpus, records and 2,035-question decision set (reused, pinned), the five arms, the build of S and S-regex with the sentinel, retrieval and scoring, with counts and their artifacts |
+| [RESULTS.md](RESULTS.md) | record | the outcome, the §4.5 decision sentence and the H3 sentence verbatim, the decision cell with its counts, every setting, the secondary contrasts, the gates and checks, the ingest record (counts, retries, worker versions), power against the observed discordance, procedural notes, provenance |
+| [artifacts/](artifacts/) | record | `h2h-report.json` (§7 step 5, the frozen script's output, byte-identical to the run's; it passed the script's public-file guard) and `ingest-gates-summary.json` (counts only, derived by the write-up from the private ingest, sentinel, fleet and re-embed records) |
+| [DEVIATIONS.md](DEVIATIONS.md) | record, append-only | post-freeze deviations (PREREG §9.3): D-1 to D-6 |
 
 ## What is pinned (2026-11-11, from files and the dry run)
 
