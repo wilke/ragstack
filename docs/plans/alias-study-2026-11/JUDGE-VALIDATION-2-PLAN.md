@@ -18,7 +18,7 @@ corrections is in the PR that merged it.
 | topic | v1 | v2 | why |
 |---|---|---|---|
 | label scale | binary *answers* / *not* | graded **full / partial / none** for one (question, passage) pair (§2) | Amendment 1 (2); the spot check could not give credit to partial evidence |
-| human reference | owner alone, 100 pairs | a panel of R raters (default 4, minimum 2; the owner is one of them). Each rater grades fewer items: a shared core plus overlapping blocks (§6.3) | Amendment 1 (1) |
+| human reference | owner alone, 100 pairs | a panel of R raters (recommended 5, minimum 2; the owner is one of them). Each rater grades at most 80 items: a shared core plus overlapping blocks (§6.3) | Amendment 1 (1) |
 | "unsure" | not allowed | allowed, with a reason code, treated as missing (§2.3) | Amendment 1 (1) |
 | inter-rater agreement | none (one rater) | Krippendorff's α (ordinal) is primary; weighted κ and AC2 beside it (§7) | more than one rater |
 | disagreement | n/a | no forced adjudication; the distribution of panel grades is reported (§7.3) | "partial allows for disagreement between graders" |
@@ -28,7 +28,7 @@ corrections is in the PR that merged it.
 | alias-judge/3 | "/2 with sharper *not* criteria", drafted from 12 pilot pairs | a graded prompt drafted by the agent from public repository text only; owner approves it ([JUDGE-3-PROMPT.md](JUDGE-3-PROMPT.md)) | Amendment 1 (4) |
 | candidates | K0, K3, KA, KS, KY, KO | adds graded KA3 and KS3, and a candidate panel from the model gateway (§4) | Amendment 1 (3), (4); Amendment 2 |
 | frames | near-miss / partial / clear answer / clear non-answer | near-miss / mid-coverage / high-coverage / off-topic. Only the names change | "partial" is now a label |
-| budget | about 5,000 calls | about 7,300 calls on the study gateway plus about 6,100–8,200 on the model gateway at 850 pairs; the ceiling is 20,000 in all (§10) | Amendment 1 (3) |
+| budget | about 5,000 calls | about 7,400 calls on the study gateway plus about 6,300–8,400 on the model gateway at 850 pairs; the ceiling is 20,000 in all (§10) | Amendment 1 (3) |
 | v1 questions Q1–Q11 | open | answered and folded in (§14) | Amendment 1 (5) |
 
 Background: [JUDGE-VALIDATION-PLAN.md](JUDGE-VALIDATION-PLAN.md) (the first validation),
@@ -274,22 +274,37 @@ listing is read at the start and end of every batch of a pinned local model and 
 snapshot; a failed end check **voids that batch's rows since the last passing check** (they are re-issued
 after the owner decides, and the void is counted). Hosted models have no revision pin, so the `model` field
 cannot catch a weight change; each hosted candidate's batch therefore starts and ends with **10 fixed
-synthetic canary cases** (a subset of the JUDGE-3-PROMPT.md §4 self-check cases, owner-set labels, committed
-before the freeze), and a batch whose end canary differs from its start canary on any case is voided the
-same way. Canary calls are in the budget (§10). **Open items:** the vllm session confirms the backend names
-and the snapshot before the freeze; an optional owner decision is a gateway-side route lock on the two
-pinned Qwen records, §13 Qc.
+synthetic canary cases**, run as follows:
 
-**Hosted (ALCF) models**: a catalogue of 52 ids with no revision pins, reached through a shared account
-with a request-rate limit; models not running need a cold start of more than 30 minutes at node cost;
-availability was interrupted briefly during the inventory. Running chat models at the time of the read
-include `Mistral-Large-3-675B-Instruct-2512` (tested live), `Meta-Llama-3.1-70B-Instruct`,
-`Llama-4-Scout-17B-16E-Instruct` (the real Scout), `gpt-oss-120b` (served on two clusters), `gemma-4-31B-it`
-and `mistral-large-4`. The four proposed judges below were all listed and reported *running*.
+* the cases are a subset of the JUDGE-3-PROMPT.md §4 self-check cases with owner-set labels, committed
+  before the freeze; they are always sent with **`/3`**, whatever prompt the batch runs, so one graded
+  construct is tracked across every batch;
+* they run at **temperature 0 with a fixed seed** where the backend accepts those parameters (recorded per
+  call); where it does not, the backend's default sampling is used and the tolerance below applies;
+* **void rule** (pre-specified, so that sampling noise alone cannot void a batch): a batch is voided when
+  its end canary differs from its start canary on **3 or more of the 10 cases**, or when the end canary's
+  agreement with the owner-set labels is **3 or more cases lower** than the start canary's. Under
+  deterministic settings a single differing case is reported and does not void;
+* **chaining**: each batch's start canary is also compared with the previous batch's end canary for the
+  same candidate; a difference on 3 or more cases marks a **canary epoch boundary**, which voids nothing
+  (no row was mid-batch) but tags every later row with a new epoch, and the candidate is reported per epoch
+  if more than one exists;
+* a voided batch is re-issued once after the owner decides; the re-issue counts against the 110 % cap.
 
-**Not recommended**: the local id named `Llama-4-Scout` (it serves Qwen3.6, judge C's model, and ends
-2026-11-30, §3); small models; domain fine-tunes; ids whose provenance the inventory could not establish
-(listed in the private note); anything needing a cold start, as a main judge.
+Canary calls are in the budget (§10). **Open items:** the vllm session confirms the backend names and the
+snapshot before the freeze; an optional owner decision is a gateway-side route lock on the two pinned Qwen
+records, §13 Qc.
+
+**Hosted (ALCF) models**: a catalogue of hosted ids with no revision pins, reached through a shared
+rate-limited account; a model that is not running needs a long cold start at a cost, so only models
+reported *running* at the time of the read are proposed. The catalogue size, the account limits, the
+availability observed during the inventory and the other running chat models it listed are in the private
+inventory note. The four proposed judges below were all listed and reported *running*.
+
+**Not recommended**: a local id whose name does not match the model it serves (it serves Qwen3.6, judge
+C's model, and ends 2026-11-30, §3); small models; domain fine-tunes; ids whose provenance the inventory
+could not establish; anything needing a cold start, as a main judge. The ids concerned are in the private
+note.
 
 **Hosted models as decision judges.** Owner decision, 2026-11-11 (Amendment 2): "all models are acceptable
 even from ALCF". Under §3's definition the hosted candidates are **decision judges**: they receive the §9.1
@@ -401,14 +416,16 @@ Opus repetition 1 is scored against the panel (§8.1). This replaces v1's Opus-v
 
 ### 6.3 Rater panel
 
-**Raters.** R raters (default **4**, minimum **2**; Amendment 1 (1)). r1 is the owner. Raters are
-pseudonymous (r1…rR) and no name is committed.
+**Raters.** R raters (recommended **5**, fallback **4**, minimum **2**; Amendment 1 (1)). r1 is the owner.
+Raters are pseudonymous (r1…rR) and no name is committed.
 
 **H, the items the panel grades:**
 
-* **A**: 120 pairs, drawn before any model label exists, seed `261103|alias|validation-2|panel`, by frame:
-  near-miss 60, mid-coverage 30, high-coverage 15, off-topic 15 (v1's 80 at 40/20/10/10, scaled by 1.5 for
-  the panel). A carries the weighted estimates.
+* **A**: **150** pairs at the recommended R = 5 (120 at R = 4; the table below gives |A| per R), drawn before
+  any model label exists, seed `261103|alias|validation-2|panel`, by frame in the proportions 1/2, 1/4, 1/8,
+  1/8 (150: near-miss 75, mid-coverage 37, high-coverage 19, off-topic 19; 120: 60 / 30 / 15 / 15; v1's 80
+  at 40/20/10/10). A carries the weighted estimates. |A| is chosen so that the §7.2 precision target is met
+  without raising any rater's load above 80 items: more raters, not more items each (Amendment 1 (1)).
 * **B**: 20 pairs, drawn **from the pairs not in A** after the model labels exist (seed `…|panel|B`): up
   to 10 Opus-split pairs, the rest pairs on which at least two of K0, K3 (strict), KA, KS and KY disagree
   under either collapse, in the seeded order. B is reported separately and never weighted.
@@ -417,28 +434,33 @@ pseudonymous (r1…rR) and no name is committed.
 **All raters grade the core.** It gives every rater pair the same items for severity profiles and for the
 thinned-α check (§7.1).
 
-**Blocks.** The other 100 A pairs are split into R(R−1)/2 rater-pair blocks, round-robin within each frame
-in the seeded order, so that **each non-core item is graded by exactly two raters** and every rater pair
-shares one block. B's 20 pairs are split the same way when B is drawn. Each rater's load is
-L = 20 + 2·100/R + 2·20/R = 20 + 240/R.
+**Blocks.** The other |A| − 20 A pairs are split into R(R−1)/2 rater-pair blocks, round-robin within each
+frame in the seeded order, so that **each non-core item is graded by exactly two raters** and every rater
+pair shares one block. B's 20 pairs are split the same way when B is drawn. Each rater's load is
+**L = 20 + 2·(|A| − 20 + |B|) / R**, and each rater pair shares 20 + (|A| − 20 + |B|) / (R(R−1)/2) items.
 
-| R | A (by frame) | items per rater | shared by each rater pair (core + block) | grades in total |
-|---|---|---|---|---|
-| 2 | **80** (40 / 20 / 10 / 10) | 100: both raters grade everything (no block structure) | 100 | 200 |
-| 3 | **100** (50 / 25 / 13 / 12) | about 87 | about 53 | 260 |
-| **4 (default)** | 120 | **80** | **40** | **320** |
-| 5 | 120 | 68 | 32 | 340 |
-| 6 | 120 | 60 | 28 | 360 |
+| R | A (by frame) | items per rater | shared by each rater pair (core + block) | grades in total | expected α half-width (ordinal, A) |
+|---|---|---|---|---|---|
+| 2 | **80** (40 / 20 / 10 / 10) | 100: both raters grade everything (no block structure) | 100 | 200 | about ±0.14 |
+| 3 | **100** (50 / 25 / 13 / 12) | about 87 | about 53 | 260 | about ±0.12 |
+| 4 (fallback) | 120 (60 / 30 / 15 / 15) | 80 | 40 | 320 | about ±0.11 |
+| **5 (recommended)** | **150** (75 / 37 / 19 / 19) | **80** | **35** | **400** | **about ±0.10** |
+| 6 | 150 | 70 | 30 | 420 | about ±0.10 |
 
-Block sizes are not whole numbers at every R, so loads vary by one or two items. R = 2 is the floor the
+Block sizes are not whole numbers at every R, so loads vary by one or two items. The half-width column is
+the rough figure of §7.2 scaled by 1/√items; the power script replaces it before drafting. **R = 5 with
+|A| = 150 is the recommendation**: it meets the §7.2 target (≤ 0.10) at the same 80-item load as R = 4,
+which is how Amendment 1 (1) is honoured (more raters, not more items each). If only three raters besides
+the owner are available, R = 4 with |A| = 120 is run and its expected ±0.11 is **declared now** as a
+limitation of the α band (§7.2); it is not an escape hatch found after the fact. R = 2 is the floor the
 owner confirmed: it keeps the rater load at v1's 100 items by shrinking A to v1's 80, and gives no
 leave-one-rater-out or without-owner figure (§7.1); those rows are then marked *not computable*. R = 3
-shrinks A to 100 so that each rater has fewer items than v1's single rater (Amendment 1 (1)). Any reduction
-is stated in the freeze commit, and the §10 precision figures are recomputed for it.
+shrinks A to 100 so that each rater has fewer items than v1's single rater. The configuration run is stated
+in the freeze commit, and the §10 figures are recomputed for it.
 
 **Time and sessions.** The binary spot check took about 1.5 h for 100 pairs (prereg R15). A graded rubric
-with parts and conditions is slower: plan on 1–1.5 minutes per item, so about 1.5–2 h per rater at R = 4,
-and about 2–2.5 h at R = 2. Each rater's items are split into **sessions of at most 40 items**, in the
+with parts and conditions is slower: plan on 1–1.5 minutes per item, so about 1.5–2 h per rater at R = 4 or
+5, and about 2–2.5 h at R = 2. Each rater's items are split into **sessions of at most 40 items**, in the
 rater's seeded order, with a break between sessions; grade shares, *unsure* and the doubt tick are reported
 by position tertile within each rater's order, as a fatigue check.
 
@@ -501,13 +523,14 @@ top-up. No rater is excluded for disagreeing.
 | < 0.667 | any | not reliable: the scheme is **not evaluable** (§9.1) |
 
 * The cut-offs are Krippendorff's conventional ones; the source is verified before freeze. The lower-bound
-  clause exists because at R = 4 A holds about 150 two-rater-equivalent items, which at α ≈ 0.70 gives an
-  interval of roughly ±0.11 (ordinal) to ±0.14 (per collapse), wider on a frame or without the owner; a
-  point estimate alone cannot place α in a band.
-* **Precision target.** The power script (§10) reports the expected 95 % half-width of α_ordinal on A
-  against a target of **≤ 0.10** at α = 0.70 before any record is drafted; if the target is missed at the
-  chosen R, A is enlarged by a dated amendment before any label exists, or the miss is recorded as a
-  limitation.
+  clause exists because at R = 4 with |A| = 120 A holds about 150 two-rater-equivalent items, which at
+  α ≈ 0.70 gives an interval of roughly ±0.11 (ordinal) to ±0.14 (per collapse), wider on a frame or without
+  the owner; a point estimate alone cannot place α in a band.
+* **Precision target: a 95 % half-width of α_ordinal on A ≤ 0.10 at α = 0.70.** It is met by the
+  recommended R = 5 with |A| = 150 (§6.3) and missed by about 0.01 at the fallback R = 4 with |A| = 120; that
+  miss is declared here, before the freeze, as a limitation of the α band if the fallback is run. The power
+  script (§10) reports the expected half-width for the configuration actually chosen before any record is
+  drafted; |A| is not raised after the freeze.
 * A pairwise κ below 0.40 is flagged and has no other effect.
 * If strict turns out less reliable than lenient (or the reverse), that is an expected and informative
   result, not a failure.
@@ -638,17 +661,23 @@ hold:
 4. the figures come from a clean-commit `citable: true` artifact under `docs/plans/results/`, pass through
    `claims.json` / `check_claims.py`, and quote α_S, Δ and n beside the first figure.
 
-**Outcome map** (per judge configuration; S = strict, L = lenient):
+**Outcome map** (per judge configuration). Only the strict and lenient verdicts feed the map; the
+**ordinal verdict of a graded judge is report-only** and licenses nothing by itself. Each judge gets
+**exactly one wording** per figure:
 
-| strict outcome | lenient outcome | how its judged figures may be cited in paper-b |
-|---|---|---|
-| meets | any | as a "full answer in the top 10" figure (and, if lenient also meets, as "any support" too) |
-| below, unresolved or not evaluable | meets | as an "any support in the top 10" figure only; never as "answers" without that wording |
-| below, unresolved or not evaluable | below, unresolved or not evaluable | only with "judge validity not established", next to the judge-free figure (found@10-gold or quote@10) |
+| strict outcome | lenient outcome | binary judge (one Hit@10 figure) | graded judge (full@10 and support@10) |
+|---|---|---|---|
+| meets | meets | cited under the strict wording, "full answer in the top 10", with the note "also meets lenient" | full@10 cited as "full answer"; support@10 cited as "any support" |
+| meets | below, unresolved or not evaluable | "full answer in the top 10" | full@10 cited as "full answer"; support@10 only with "judge validity not established" |
+| below, unresolved or not evaluable | meets | "any support in the top 10"; never as "answers" without that wording | support@10 cited as "any support"; full@10 only with "judge validity not established" |
+| below, unresolved or not evaluable | below, unresolved or not evaluable | only with "judge validity not established", next to the judge-free figure (found@10-gold or quote@10) | the same, for both figures |
 
-Conditions 2–4 apply to every row of the map, and condition 2's "tentative" clause attaches to whichever S
-is cited. Paper-c keeps the §13.5 flag on every judged figure; it may quote the panel result beside the
-flag as later evidence, under the same map.
+Conditions 2–4 apply to every row of the map, and condition 2's "tentative" clause attaches to whichever
+scheme is cited. **Rubric-author robustness:** §9.1 computes every verdict with and without the owner's
+grades; when the verdict without the owner is lower than the verdict with the owner (a lower row of this
+map, or *not evaluable*), the citing sentence adds "not robust to excluding the rubric author". Paper-c
+keeps the §13.5 flag on every judged figure; it may quote the panel result beside the flag as later
+evidence, under the same map.
 
 ## 10. Size, power, cost
 
@@ -659,11 +688,11 @@ at α 0.05 and about 525 at the strictest Holm level (0.0125); a 4-point differe
 
 **Panel precision** (rough normal approximations):
 
-* At agreement about 0.85 under a collapse, the Wilson half-width is about 0.065 on 120 items and about
-  0.09 on the 60 near-miss items.
+* At agreement about 0.85 under a collapse, the Wilson half-width is about 0.065 on 120 items (0.058 on
+  150) and about 0.09 on the 60 near-miss items (0.08 on 75).
 * Per block item under a collapse, the paired difference d = a_JH − a_HH takes values in {−1, 0, +½}. With
-  an SD of about 0.35 the **unweighted** SE of Δ is about 0.03 on 120 items. Weighting inflates it by the
-  Kish design effect of the frame weights, which is not known until the pool exists.
+  an SD of about 0.35 the **unweighted** SE of Δ is about 0.03 on 120 items and 0.029 on 150. Weighting
+  inflates it by the Kish design effect of the frame weights, which is not known until the pool exists.
 * At SE 0.03, clause (iii) (lower bound ≥ −0.10) binds only when Δ̂ is just below −0.05, so it adds almost
   nothing beyond (i); it starts to bind at SE above about 0.030, and holds for a judge at true Δ = 0 with
   probability Φ(0.10 / SE − 1.645): 0.95 at SE 0.03, 0.72 at 0.045, 0.51 at 0.06. **Rule, decided before
@@ -683,7 +712,9 @@ for Argon (4.26 chars/token, the harness's calibration) and about 1.2k at the fl
 candidates. Argon `/3` is therefore about 1.86k per call and Sol `/3` about 2.1k. (v2's first draft put the
 difference at 0.4k; the measured text says 0.93k.)
 
-**Study-gateway budget at 850 pairs** (Amendment 1 (3): up to 4 × the ~5,000 drafted = **20,000 calls**):
+**Study-gateway budget at 850 pairs** (Amendment 1 (3): up to 4 × the ~5,000 drafted = **20,000 calls**).
+H is costed at its recommended size, 170 items (|A| 150 + |B| 20); the fallback R = 4 saves 120 study-gateway
+calls and 60 per candidate:
 
 | item | calls | prompt / completion tokens |
 |---|---|---|
@@ -693,31 +724,32 @@ difference at 0.4k; the measured text says 0.93k.)
 | Sol `/2` (KS) | ~850 | 0.76M / 0.04M |
 | Argon `/3` (KA3, K3's tiebreaks) | ~850 | 1.58M / 0.04M |
 | Sol `/3` (KS3) | ~850 | 1.79M / 0.04M |
-| Argon `/3` + Sol `/3` repetitions 2–3 on H (140 items × 2 reps × 2 models; A's and B's items run separately) | 560 | 1.1M / 0.03M |
+| Argon `/3` + Sol `/3` repetitions 2–3 on H (170 items × 2 reps × 2 models; A's and B's items run separately) | 680 | 1.35M / 0.03M |
 | re-issue allowance | ~80 | 0.1M / — |
-| **study gateway** | **~7,260** | **~10.2M / ~0.95M** |
+| **study gateway** | **~7,380** | **~10.4M / ~0.91M** |
 
 **Model-gateway budget** (the §4 panel; its own key and cap). Per candidate: `/2` on all pairs (850), `/3` on
-all pairs (850), `/3` repetitions 2–3 on H (280), and the canary cases (10 at the start and end of each of
-the three batches, 60) = **2,040 calls**, about 3.2M prompt tokens at the flat 3.4 (0.9k × 850 + 2.1k ×
-1,190); completion unknown until measured.
+all pairs (850), `/3` repetitions 2–3 on H (340), and the canary cases (10 at the start and end of each of
+the three batches, 60, all on `/3`) = **2,100 calls**, about 3.4M prompt tokens at the flat 3.4 (0.9k × 850 +
+2.1k × 1,250); completion unknown until measured.
 
 | panel | calls at 850 pairs | prompt tokens |
 |---|---|---|
-| KX1–KX3 | ~6,120 | ~9.6M |
-| KX1–KX4 (with the optional gpt-oss-120b) | ~8,160 | ~12.8M |
+| KX1–KX3 | ~6,300 | ~10.2M |
+| KX1–KX4 (with the optional gpt-oss-120b) | ~8,400 | ~13.6M |
 
-**Totals and the ceiling.** Counted together against the 20,000 ceiling, whichever budget pays:
+**Totals and the ceiling.** Counted together against the 20,000 ceiling, whichever budget pays (study
+gateway at 1,000 pairs: 270 + 3,470 + 4,000 + 680 + 80 = 8,500; per candidate 2,400):
 
 | pairs | study gateway | + 3 candidates | + 4 candidates | with the 110 % caps (4 candidates) |
 |---|---|---|---|---|
-| 850 | ~7,260 | ~13,380 | ~15,420 | ~16,960 |
-| 1,000 | ~8,380 | ~15,400 | ~17,720 | ~19,490 |
+| 850 | ~7,380 | ~13,680 | ~15,780 | ~17,360 |
+| 1,000 | ~8,500 | ~15,700 | ~18,100 | ~19,910 |
 
-Every cell is under 20,000. **Pre-specified drop order** if the realised pair count would push the capped
-total over 20,000: first the optional candidate's `/2` run (850–1,000 calls), then the optional candidate,
-then all candidates' repetitions 2–3. The order is applied before any candidate call and recorded. The
-Opus reference, the Holm-family runs and the canary cases are never cut.
+Every cell is under 20,000, the last by 90 calls. **Pre-specified drop order** if the realised pair count
+would push the capped total over 20,000: first the optional candidate's `/2` run (850–1,000 calls), then the
+optional candidate, then all candidates' repetitions 2–3. The order is applied before any candidate call
+and recorded. The Opus reference, the Holm-family runs and the canary cases are never cut.
 
 * Sol (GPT-6.1) and the candidates have no measured tokens; the first 20 calls of each are measured for the
   size notice.
@@ -728,7 +760,8 @@ Opus reference, the Holm-family runs and the canary cases are never cut.
 and E on `/2` and `/3` (at the first validation's 1.85 s and 0.74 s per pair: about 37 min per prompt for 850
 pairs, about 75 min in all, more for `/3`'s longer input).
 
-**Human time:** 320 grades at R = 4, about 1.5–2 h per rater, plus at most 10 % in top-ups (§6.3).
+**Human time:** 400 grades at R = 5 (320 at R = 4), about 1.5–2 h per rater, plus at most 10 % in top-ups
+(§6.3).
 
 **Caps and notices** (kept from v1): at most 4 calls in flight per gateway, models one after the other;
 `fallback_model: ""` on the study gateway and the fallback-off request header on the model gateway; the
@@ -745,8 +778,9 @@ mismatch is handled by the §4 table (on the study gateway it stops the run and 
    the per-class mismatch rules, the model-listing snapshot check and the canary cases (§4); panel
    assignment (core, blocks, top-up, sessions);
    per-rater sheet writer and ingest; agreement statistics (α ordinal and nominal, weighted κ, AC2/AC1, the
-   bootstrap, the published worked example as a test); judge-vs-panel scoring (§8.1); the candidate
-   analysis (§8.2–8.4); the power script with the panel simulation.
+   bootstrap, the published worked example as a test); a test that the sheet writer's rubric and examples
+   blocks equal the prompt's (§2); judge-vs-panel scoring (§8.1); the candidate analysis (§8.2–8.4); the
+   power script with the panel simulation.
 3. The `/3` live self-check (JUDGE-3-PROMPT.md §4) on every `/3` judge; the system sha and the counts go into
    an amendment here. Raters confirmed, rubric read, familiarisation done.
 4. Exclusions, config and `run-waves` with the size notice; the ALCF revision request filed (§4).
@@ -791,7 +825,7 @@ run's judging ended on 2026-11-05 and nothing else runs on the judge endpoints.
 
 | # | question | recommendation |
 |---|---|---|
-| Q1 | How many raters (R), and who? | R = 4: confirm three raters besides the owner. If fewer, the §6.3 table applies; R = 2 reduces A to 80 |
+| Q1 | How many raters (R), and who? | R = 5 with A = 150: confirm four raters besides the owner (80 items each, the §7.2 target met). R = 4 with A = 120 is the fallback at the same load with a declared ±0.11; R = 2 reduces A to 80 |
 | Q2 | Are the thresholds and margins right? | α cut-offs 0.800 / 0.667; Δ margins −0.05 (point) and −0.10 (lower bound) |
 | Q3 | Does §8.3 (c), the panel in the owner's place, fit the accepted Q8 "owner condition"? | yes; the owner-alone figure is printed beside it either way |
 | Q4 | Confirm `/3`'s six synthetic examples and its rule that naming the topic is *none*, not *partial* (JUDGE-3-PROMPT.md §3, item 3) | yes to both; the lenient collapse would otherwise readmit the pilot's false yeses |
