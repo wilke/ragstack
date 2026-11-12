@@ -261,7 +261,8 @@ this plan fixes about it:
   approved by the owner, who is also rater r1. Figures without the owner (§7.1) show how much this matters.
 * `/3` gets no paraphrase check (the `/2` check is in JUDGE-CALIBRATION.md). That is a limitation.
 * Before the freeze (§11 step 3), the live self-check of JUDGE-3-PROMPT.md §4 (synthetic cases with
-  owner-set expected labels) runs once per `/3` judge (5 times per case on each hosted candidate, for the
+  owner-set expected labels) runs once per study-gateway `/3` judge and 5 times per case on each
+  model-gateway judge (C, E, KX1 and the hosted candidates, under each judge's canary setting, for the
   canary selection), and its counts go into the freeze commit beside the system sha.
 
 ## 4. Candidate judges (from the model gateway inventory, 2026-11-11)
@@ -370,14 +371,24 @@ for hosted ids, and the template-and-defaults detector for the local judges, run
 * the cases are a subset of the JUDGE-3-PROMPT.md §4 self-check cases with owner-set labels, committed
   before the freeze; they are always sent with **`/3`**, whatever prompt the batch runs, so one graded
   construct is tracked across every batch;
+* **one canary setting per judge, used for both the selection runs and the canaries.** Canary calls are
+  **n = 1** for every judge (C's n = 5 vote is a batch setting, not a canary setting, so each selection
+  run yields one label). The setting is:
+
+  | judge | canary setting (selection runs and canaries alike) |
+  |---|---|
+  | C, E, KX1 | temperature 0, a fixed seed, n = 1; otherwise the §3 pin (thinking on, `max_tokens` 8192, `top_p`, `top_k`) |
+  | hosted candidate whose serving configuration accepts temperature 0 and a seed | temperature 0, the fixed seed, n = 1, `max_tokens` 4096 |
+  | hosted candidate that accepts neither | its batch settings (`max_tokens` 4096, temperature omitted, n = 1); the tolerance rule below applies |
+
+  Which row each hosted candidate falls in is established in the self-check and recorded in the freeze
+  commit; every canary call records the setting it was sent with;
 * **selection rule**: before the freeze, the live self-check runs every case **5 times** on each
-  model-gateway judge (hosted and local) under that judge's batch settings (JUDGE-3-PROMPT.md §4; costed
-  in §10). The 10 canaries are the cases whose label was identical in all 5 runs on every model-gateway
-  judge, taken in the committed case order; if fewer than 10 qualify, the remaining places go to the cases
-  with the most consistent runs, and each chosen case's measured flip rate is recorded in the freeze
-  commit;
-* they run at **temperature 0 with a fixed seed** where the serving configuration accepts those parameters
-  (recorded per call); where it does not, its default sampling is used and the tolerance below applies;
+  model-gateway judge (hosted and local) **under that judge's canary setting above** (JUDGE-3-PROMPT.md
+  §4; costed in §10), so that the measured flip rate describes the canaries as they will run. The 10
+  canaries are the cases whose label was identical in all 5 runs on every model-gateway judge, taken in
+  the committed case order; if fewer than 10 qualify, the remaining places go to the cases with the most
+  consistent runs, and each chosen case's measured flip rate is recorded in the freeze commit;
 * **void rule**: a batch is voided when its end canary differs from its start canary on **3 or more of the
   10 cases**, or when the end canary's agreement with the owner-set labels is **3 or more cases lower** than
   the start canary's (the second clause is implied by the first and is kept for readability). **Stated
@@ -842,7 +853,7 @@ calls and 60 per candidate:
 | Sol `/3` (KS3) | ~850 | 1.79M / 0.04M |
 | Argon `/3` + Sol `/3` repetitions 2–3 on H (170 items × 2 reps × 2 models; A's and B's items run separately) | 680 | 1.35M / 0.03M |
 | re-issue allowance (single invalid replies, prereg R4; never a batch) | ~80 | 0.1M / — |
-| pre-freeze `/3` live self-check, Argon and Sol (about 20 cases, once each, JUDGE-3-PROMPT.md §4; the 5-run selection rule applies to hosted candidates only) | ~40 | 0.08M / — |
+| pre-freeze `/3` live self-check, Argon and Sol (about 20 cases, once each, JUDGE-3-PROMPT.md §4; the 5-run selection rule applies to the model-gateway judges, costed below) | ~40 | 0.08M / — |
 | **study gateway** | **~7,580** | **~10.8M / ~0.92M** |
 
 **Model-gateway budget** (the §4 panel; its own key and cap). Per candidate: `/2` on all pairs (850), `/3` on
@@ -880,16 +891,17 @@ can only lower the total.
 **Off the two paid budgets:** about 160 verifier CLI calls; about 1,650 retrieval calls (110 records × 15
 cells); C and E on `/2` and `/3`, now called through the model gateway by model id (Amendment 4) at no
 token cost (at the first validation's 1.85 s and 0.74 s per pair: about 37 min per prompt for 850 pairs,
-about 75 min in all, more for `/3`'s longer input). C's and E's calls (about 1,700 requests each at 850
-pairs, one request per pair and prompt, C at n = 5 and E at n = 3) are logged and gated by the gateway
-like every other call. C and E also run the canary cases (10 at the start and end of each of their two
-batches, 40 each) and the 5-run pre-freeze self-check (about 20 cases × 5, 100 each), all on `/3`, at no
-token cost; KX1's canaries and self-check are already in the per-candidate count above. This plan's **recommendation** is that they are **not counted against the 20,000
+about 75 min in all, more for `/3`'s longer input). C's and E's calls are **about 1,840 requests each at
+850 pairs**: 1,700 labelling requests (one per pair and prompt; C at n = 5 and E at n = 3 samples per
+request), plus the canary cases (10 at the start and end of each of their two batches, 40, at n = 1) and
+the 5-run pre-freeze self-check (about 20 cases × 5, 100, under the canary setting), all on `/3`; they
+are logged and gated by the gateway like every other call, at no token cost. KX1's canaries and
+self-check are already in the per-candidate count above. This plan's **recommendation** is that they are **not counted against the 20,000
 ceiling**: Amendment 1 (3) set that ceiling at 4 × v1's ~5,000 drafted gateway calls, and v1's table
 never included C and E, which it listed off the gateway; only the path changed, not the count. Amendment
 1 (3) said "gateway budget" when there was one gateway, and there are now two, so this is an
 interpretation of an owner decision, put to the owner as §13 Q5. If the owner counts them in, the capped
-total at 850 pairs with four candidates rises by about 3,400 to about 21,400 and the §10 drop order
+total at 850 pairs with four candidates rises by about 3,680 to about 21,700 and the §10 drop order
 applies.
 
 **Human time:** 400 grades at R = 5 (320 at R = 4), about 1.5–2 h per rater, plus at most 10 % in top-ups
@@ -976,7 +988,7 @@ run's judging ended on 2026-11-05 and nothing else runs on the judge configurati
 | Q2 | Are the thresholds and margins right? | α cut-offs 0.800 / 0.667; Δ margins −0.05 (point) and −0.10 (lower bound) |
 | Q3 | Does §8.3 (c), the panel in the owner's place, fit the accepted Q8 "owner condition"? | yes; the owner-alone figure is printed beside it either way |
 | Q4 | Confirm `/3`'s six synthetic examples and its rule that naming the topic is *none*, not *partial* (JUDGE-3-PROMPT.md §3, item 3) | yes to both; the lenient collapse would otherwise readmit the pilot's false yeses |
-| Q5 | Which budget pays for the panel candidates? And, now that C's and E's calls pass through the model gateway too (Amendment 4): are they inside or outside the 20,000 ceiling? Amendment 1 (3) said "gateway budget" when there was one gateway | the model gateway's own key; both paid budgets counted against the 20,000 ceiling in §10 either way; **C and E outside the ceiling** (v1's ~5,000, which the ceiling is 4× of, never included them; only their path changed). **Owner to confirm**; if they count, the capped total at 850 pairs with four candidates is about 21,400 and the drop order applies (§10) |
+| Q5 | Which budget pays for the panel candidates? And, now that C's and E's calls pass through the model gateway too (Amendment 4): are they inside or outside the 20,000 ceiling? Amendment 1 (3) said "gateway budget" when there was one gateway | the model gateway's own key; both paid budgets counted against the 20,000 ceiling in §10 either way; **C and E outside the ceiling** (v1's ~5,000, which the ceiling is 4× of, never included them; only their path changed). **Owner to confirm**; if they count (about 1,840 each), the capped total at 850 pairs with four candidates is about 21,700 and the drop order applies (§10) |
 | Q6 | Add reach-rechunk's adopted-chunking (S) collections as extra read-only cells? | yes, if still loaded; sizes amended before freeze |
 | Q7 | What is paper-b's scope under §9.2? | the panel licenses OA-1000 judged figures only; HR-dev remains the CDS blocker; re-scoping paper-b is the owner's decision |
 | Q8 | Set-level sufficiency? | a later plan |
@@ -1188,6 +1200,17 @@ What this settles:
 - **Stale text** (§4). The hosted partial fingerprint is "route, backend name, model id" everywhere
   outside quoted history; an ALCF revision, if one is given, is recorded in the freeze commit beside the
   partial fingerprint, not added to it (the gateway computes that value).
+
+**Second follow-up (2026-11-12, confirm check):**
+
+- **One canary setting per judge** (§4 table). The 5-run selection and the canaries run under the same
+  setting: temperature 0, a fixed seed and n = 1 for C, E, KX1 and every hosted candidate whose serving
+  configuration accepts them; a hosted candidate that accepts neither uses its batch settings at n = 1
+  for both, with the tolerance rule. Canaries are n = 1 for every judge, so C's n = 5 batch vote plays no
+  part in them. The measured flip rate therefore describes the canaries as they will run.
+- The "hosted candidates only" limits on the 5-run selection in §3.2 and the §10 self-check row are
+  removed; the C/E figures in §10 and §13 Q5 are about 1,840 calls each (1,700 labelling + 40 canary +
+  100 self-check), and about +3,680 to about 21,700 if the owner counts them.
 
 The plan is not frozen; it freezes only on the owner's word "freeze".
 

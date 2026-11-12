@@ -258,14 +258,16 @@ with K0 and with Opus `/1`, with lenient beside it (plan §8.3).
   **expected labels set by the owner**. They follow the pattern of `VERIFY_CASES` in
   `test_glossbench_alias.py`. They are run live **before the freeze** (plan §11, step 3): once on each
   study-gateway `/3` judge, and **5 times per case on each model-gateway judge** (C, E, KX1 and the hosted
-  candidates) under its batch settings, so that the plan's canary selection rule can measure each case's
-  flip rate and each hosted candidate's partial fingerprint is recorded. The counts go into the plan's
-  freeze commit beside the system sha (plan §11, step 4). Ten of them, chosen by that rule (identical
-  label in all 5 runs on every model-gateway judge, committed case order) and fixed in the freeze commit,
-  are the canary cases that open and close every model-gateway judge's batch (plan §4): the change
-  detector for hosted ids and the template-and-defaults detector for the local judges; always sent with
-  `/3`, at temperature 0 and a fixed seed where the serving configuration accepts them, with the plan's
-  3-of-10 tolerance and its stated false-void rate otherwise. A voided batch is not re-issued (plan §4).
+  candidates) **under that judge's canary setting** (plan §4: temperature 0, a fixed seed and n = 1
+  wherever the serving configuration accepts them, otherwise the judge's batch settings at n = 1), so
+  that the measured flip rate describes the canaries as they will run, and each hosted candidate's
+  partial fingerprint is recorded. The counts go into the plan's freeze commit beside the system sha
+  (plan §11, step 4). Ten of them, chosen by that rule (identical label in all 5 runs on every
+  model-gateway judge, committed case order) and fixed in the freeze commit, are the canary cases that
+  open and close every model-gateway judge's batch (plan §4): the change detector for hosted ids and the
+  template-and-defaults detector for the local judges; always sent with `/3` under the same canary
+  setting, with the plan's 3-of-10 tolerance and its stated false-void rate where the setting is not
+  deterministic. A voided batch is not re-issued (plan §4).
 * The system sha256 is recorded in the freeze commit, in the same commit as those counts.
 
 ## 5. What the plan decided about this prompt (v2)
