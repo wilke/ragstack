@@ -6,10 +6,11 @@ text is in that appendix. Nothing in this plan has been run. No label, pair file
 v1 said the plan would freeze once the owner answered its questions. That has changed. v2 freezes at the
 commit that records four things: (a) the owner approves this text and the prompt in
 [JUDGE-3-PROMPT.md](JUDGE-3-PROMPT.md), (b) the owner answers §13, (c) §4's panel is confirmed
-(§13 Qb), and (d) the model gateway exposes the configuration information that the §4 identity gate
-reads, or the owner accepts the interim gate as a declared limitation (§13 Qe, Amendment 4). It also
+(§13 Qb), and (d) the two pinned configuration fingerprints and the hosted partial sets are re-read from
+the gateway's configuration endpoint and confirmed against the expected values of §4 (the gateway's
+configuration record and fingerprint went live on 2026-11-12; §13 Qe answered, Amendment 5). It also
 records the pre-freeze results that §11 step 4 lists (the `/3` system sha, the self-check counts, the
-canaries, the pinned and hosted fingerprints). Every output records the sha of that commit. Any change after it is a dated amendment at the end of the v2 text
+canaries). Every output records the sha of that commit. Any change after it is a dated amendment at the end of the v2 text
 (before the appendix).
 
 Owner rule (Amendment 1 (6)): plans are made or checked with Fable and always reviewed. This draft was
@@ -271,47 +272,60 @@ repository or id, the weights snapshot or revision, the quantisation, the servin
 and the serving flags that change outputs (context length, the default chat-template arguments including
 the default thinking setting, the reasoning parser). Where that configuration runs, under which instance
 name, and when it was started are not part of its identity. **A move or restart with an identical
-configuration is not a mismatch.** The gateway is the source of this information: it keeps a
-**configuration record** per local model, of two kinds held apart, *declared* (its own record of the
-repository, snapshot or revision, quantisation, engine and start flags) and *observed* (read from the
-running engine without a model call: served repository, context length, engine version, cache settings,
-start time), and derives a **configuration fingerprint**, a hash over the declared and observed fields that
-excludes the start time and the instance, so that a move or restart with the same setup keeps it; the
-start time is shown beside it. The fingerprint is available per model on an authenticated gateway
-endpoint and on every forwarded response. A disagreement between declared and observed fields is flagged
-by the gateway and is a mismatch here. **Honest limit:** the snapshot hash cannot be observed through the
-engine; it is declared, and is only as good as the gateway's record. For hosted (ALCF) ids the gateway
-can report only a **partial fingerprint** over the id, the cluster and the serving framework, marked
-partial; anything more must come from ALCF support. **Dependency:** as of 2026-11-11 the gateway exposes
-model ids, instances and per-response instance names only, not the configuration record or the
-fingerprint; the record and fingerprint above are the maintainer's proposal to the owner (§13 Qe), and
-the gate below is written against them.
+configuration is not a mismatch.** The gateway is the source of this information (live since 2026-11-12,
+Amendment 5): it keeps a **configuration record** per model, of two kinds held apart, *declared* (its own
+record of the repository, revision, quantisation, engine, context and settings) and, for a local backend,
+*observed* (read from the running engine without a model call: served repository, context length, engine
+version, KV-cache dtype, start time), lists every field on which the engine contradicts the record, and
+derives a **configuration fingerprint**: a hash over the declared and observed fields that excludes the
+backend's name, its address and the start time, so that a move or restart with the same setup keeps it.
+The fingerprint is **full** when the engine could be read and **partial** otherwise (always for a hosted
+id, where it covers the route, the serving backend's name and the model id only; for a local id, a
+partial value means the engine could not be read at that moment); the two kinds are distinguishable by
+their prefix. The same value comes back as the per-response configuration value on every forwarded
+answer; a gateway-written error carries none. It is read from the gateway's configuration endpoint with
+the study's key; the concrete names of the endpoint and the value live in the private config. **Stated
+limits:** the fingerprint does not cover the chat template or the sampling defaults (speed-only options
+are deliberately excluded too), so the harness pins those itself (thinking on, `max_tokens`, temperature,
+§3) and records them per call; and the snapshot hash cannot be observed through the engine, so it is
+declared, and is only as good as the gateway's record. A non-empty contradiction list is a mismatch here.
+For hosted (ALCF) ids anything beyond the partial value must come from ALCF support.
 
-**Pinned configurations** (serving engine vLLM 0.31.0 today): `Qwen3.8-27B` FP8 (weights snapshot
-`017b9c7a…`, 131k context, thinking switchable; judge E's model, and KX1) and `Qwen3.6-35B-A3B` (snapshot
-`995ad96e…`; judge C's model, Amendment 3; not permanently served, §3). Each pin is the full configuration
-fingerprint, confirmed with the maintainer and recorded in the freeze commit; the model id is the handle,
-the fingerprint is the identity. Today each is served by one instance; that fact is recorded in the private
-inventory note and plays no part in the gate.
+**Pinned configurations and expected fingerprints** (read from the gateway's configuration endpoint on
+2026-11-12 with the study's service key, no model call, no contradictions listed; a private copy of the
+reading is kept):
+
+| judge | model id | declared | observed | expected full fingerprint |
+|---|---|---|---|---|
+| C | `Qwen3.6-35B-A3B` | repo `Qwen/Qwen3.6-35B-A3B`, revision `995ad96e…`, vLLM, context 131072 | the same repo, context 131072, engine 0.31.0, cache fp8 | `v1:c94d715990c85f58` |
+| E and KX1 | `Qwen3.8-27B` | repo `Qwen/Qwen3.8-27B-FP8`, revision `017b9c7a…`, fp8, vLLM, context 131072 | the same repo, engine 0.31.0, fp8 | `v1:76874a40425f4e01` |
+
+These are the **expected values**; the freeze commit re-reads both from the endpoint and confirms them
+(§11 step 4). Each pin is that full fingerprint: the model id is the handle, the fingerprint is the
+identity. Today each is served by one local backend and fallback off keeps a request on the first route
+of the model's route order (there is no per-request route preference); that is recorded in the private
+inventory note and plays no part in the gate. Hosted partial values read the same day: Mistral-Large-3
+`v1-partial:1b3b761acf47e93c`, Llama-3.1-70B `v1-partial:806c83f705876ae0`, gpt-oss-120b
+`v1-partial:354bfb398ce854ba` and `v1-partial:32ef49512f6c83ac` (two clusters). They are the expected
+hosted sets; the sets actually used are the ones seen in the pre-freeze self-check (§11 step 3), and
+gpt-oss-120b's set may hold both clusters if both are seen then.
 
 **Mismatch rules, one per judge class** (code item, §11). A *mismatch* is: the response `model` field not
-in the accepted set for that judge, or the configuration fingerprint reported for the call absent or not
-equal to the fingerprint pinned for that judge (for a hosted id, not in that candidate's recorded set of
-partial fingerprints). **A missing fingerprint is a mismatch** after the freeze. **A serving outage is not
-a mismatch**: an error with fallback off returns no reply, nothing is stored, and labelling resumes when
-the configuration is served again, under the §3 re-serve rule (the same fingerprint continues the batch;
-anything else is a different judge). **Interim gate** (§13 Qe, only if the owner accepts it): the instance
-name stands in for the fingerprint, with one allowance so that the gate does not defeat Amendment 4: a
-move of the same configuration to a different instance that the maintainer has confirmed in writing
-before the first call on the new instance is not a mismatch; the confirmation is recorded privately and
-every row carries the instance it ran on. An unconfirmed instance change is a mismatch. This is the
-declared limitation of the interim: it records where a judge ran and trusts the maintainer for what it was.
+in the accepted set for that judge, or the per-response configuration value absent or wrong for that
+judge: for a local judge (C, E, KX1) the answer must carry **exactly its pinned full fingerprint**, and a
+partial value or any different value voids it; for a hosted judge the partial value must be **in the set
+recorded for that candidate in the freeze commit**. **A missing value is a mismatch** on any stored reply.
+**A serving outage is not a mismatch**: an error with fallback off returns no reply (and a gateway-written
+error carries no configuration value), nothing is stored, and labelling resumes when the configuration is
+served again, under the §3 re-serve rule (the same fingerprint continues the batch; anything else is a
+different judge). The interim gate that §13 Qe once offered (instance name in the fingerprint's place) is
+not needed and is not used; its text is kept in Amendment 4 as history only.
 
 | judge class | judges | accepted `model` | identity gate | on a mismatch |
 |---|---|---|---|---|
 | study gateway | Opus, Argon, Sol | the requested name and its versioned id (TIEBREAKER-PLAN.md §1) | the served-model check only (no configuration record exists there) | the run **stops** and the reply is not stored (prereg §6.3, v1 §6) |
 | model gateway, pinned configuration | C, E, KX1 (and any local candidate) | the pinned id | the full configuration fingerprint equals the pin | the reply is not stored and the **batch stops**; the only remedy is a dated amendment with its own budget line and the owner's approval (no re-issue within this plan, see below); the void is counted |
-| model gateway, hosted (ALCF) | KX2–KX4 | the requested id (no revision pin exists) | the partial fingerprint (id, cluster, framework) is in the **set recorded for that candidate in the freeze commit** from the pre-freeze self-check (§11 step 3); a model served on two clusters has both fingerprints in the set only if both were seen then, and the cluster is recorded per row | the reply is not stored and **that candidate stops** (a cluster outside the set is a mismatch); its rows up to the last passing check are kept and dated; the other judges continue |
+| model gateway, hosted (ALCF) | KX2–KX4 | the requested id (no revision pin exists) | the partial fingerprint (route, serving backend's name, model id) is in the **set recorded for that candidate in the freeze commit** from the pre-freeze self-check (§11 step 3); a model served on two clusters (gpt-oss-120b today) has both values in the set only if both were seen then, and the cluster is recorded per row | the reply is not stored and **that candidate stops** (a cluster outside the set is a mismatch); its rows up to the last passing check are kept and dated; the other judges continue |
 
 **Per call, every row records:** the configuration fingerprint the gateway reports (full or partial), the
 response `model` field, the call date, and (private, never in a public file) the instance or backend that
@@ -356,11 +370,10 @@ for hosted ids, run as follows:
   own budget line and the owner's approval. The same rule applies to a pinned-configuration batch voided
   by the fingerprint check.
 
-Canary calls are in the budget (§10). **Open items:** the gateway's configuration record and fingerprint
-must exist before the freeze, or the owner accepts the interim gate (§13 Qe, **blocks the freeze**); the
-model-gateway maintainer confirms the two pinned fingerprints before the freeze; a gateway-side route
-lock on the two pinned configurations (§13 Qc) is optional and, under Amendment 4, no longer carries
-identity.
+Canary calls are in the budget (§10). **Open items:** the two pinned fingerprints are re-read from the
+gateway's configuration endpoint and confirmed against the expected values above in the freeze commit
+(§13 Qe is answered: the record and fingerprint are live, Amendment 5); a gateway-side route lock on the
+two pinned configurations (§13 Qc) is optional and, under Amendment 4, no longer carries identity.
 
 **Hosted (ALCF) models**: a catalogue of hosted ids with no revision pins, reached through a shared
 rate-limited account; a model that is not running needs a long cold start at a cost, so only models
@@ -858,9 +871,9 @@ gateway it stops the run and stores nothing, as in v1).
 
 ## 11. Order of work, freezing, outputs
 
-1. This text and JUDGE-3-PROMPT.md approved by the owner, §13 answered, the §4 panel confirmed, the
-   gateway's configuration record and fingerprint in place or the interim gate accepted (§13 Qe). Nothing
-   is frozen yet: steps 2 and 3 run first, because the freeze commit records their results.
+1. This text and JUDGE-3-PROMPT.md approved by the owner, §13 answered, the §4 panel confirmed. The
+   gateway's configuration record and fingerprint are live (2026-11-12, §13 Qe answered). Nothing is
+   frozen yet: steps 2 and 3 run first, because the freeze commit records their results.
 2. Code, with tests: exclusion builder (as in the first validation); pool builder with the added-arm
    fallback (Q1); frame features and cuts; F/S sampler; `alias-judge/3` and `parse_judgement_v3`
    (JUDGE-3-PROMPT.md §2 and §4); C's graded majority and the K3 rule; KY; the model-gateway client, the
@@ -876,10 +889,12 @@ gateway it stops the run and stores nothing, as in v1).
    candidate observed during those runs, which becomes that candidate's recorded set (§4); the two pinned
    fingerprints confirmed with the maintainer; the ALCF revision request filed (§4). Raters confirmed,
    rubric read, familiarisation done.
-4. **The freeze commit.** It records the owner's approvals, the §13 answers, the panel, the Qe state (the
-   fingerprint in place, or the interim accepted), the `/3` system sha, the self-check counts, the chosen
-   canaries with their measured flip rates, the two pinned fingerprints and each hosted candidate's
-   partial-fingerprint set. Every output records this commit's sha.
+4. **The freeze commit.** It records the owner's approvals, the §13 answers, the panel, the `/3` system
+   sha, the self-check counts, the chosen canaries with their measured flip rates, the two pinned
+   fingerprints **re-read from the gateway's configuration endpoint that day and confirmed equal to the
+   expected values of §4** (a different value is not frozen over; it goes back to the maintainer and the
+   owner), and each hosted candidate's partial-fingerprint set as seen in step 3. Every output records
+   this commit's sha.
 5. Exclusions, config and `run-waves` with the size notice.
 6. Retrieval, pool, frames; the pair file frozen; A drawn, assigned and the sheets written.
 7. Labelling, in this order: **C on `/2` and `/3` first** (§3, the end-date rule), then E; Opus ×3; Argon
@@ -934,7 +949,7 @@ run's judging ended on 2026-11-05 and nothing else runs on the judge configurati
 | Qb | Confirm the §4 panel (KX1 Qwen3.8-27B anchor; Opus as the existing reference; KX2 Mistral-Large-3-675B; KX3 Llama-3.1-70B; optional KX4 gpt-oss-120b) | **answered** (Amendment 3): confirmed as proposed |
 | Qc | A gateway-side route lock on the two pinned configurations? | optional; under Amendment 4 the configuration fingerprint carries identity and a route lock adds none; left to the maintainer |
 | Qd | Confirm that C's and KX1's configurations stay available under their model ids for the study window (§3), and the schedule that puts C's labelling first | **answered in part** (Amendment 3, reworded under Amendment 4): the maintainer changes neither configuration without the owner's go; the owner gives the window guarantee at the freeze |
-| Qe | **Blocks the freeze.** The §4 identity gate reads a configuration record and fingerprint from the model gateway. As of 2026-11-11 the gateway reports model ids, instances and per-response instance names only: the serving instance, not the weights. The maintainer has put a configuration record (declared and observed, kept apart) and a fingerprint (a hash over both, excluding start time and instance; available per model on an authenticated endpoint and on every forwarded response; partial for hosted ids) to the owner: about a day of work after the owner's go, plus one brief gateway restart. **The freeze waits for the gateway's configuration record and fingerprint (owner's go to the maintainer), or the owner accepts the interim gate (instance name + response `model` field + canaries) as a declared limitation** | **wait for it**: about a day, and the alternative would record where a judge ran rather than what it was, which is the thing Amendment 4 says does not identify a judge. If the owner chooses the interim: the instance name is the gate, so a same-configuration move to another instance stops the batch **unless the maintainer confirms the move in writing before the first call on the new instance** (then it is recorded per row and is not a mismatch, §4); every output of this study carries "judge identity by instance, not configuration" beside its first judged figure; and a later fingerprint cannot be back-filled for calls already made |
+| Qe | Did the model gateway expose the configuration record and fingerprint that the §4 identity gate reads? (As of 2026-11-11 it reported the serving instance only; the interim gate of Amendment 4 was the alternative) | **answered** (Amendment 5): the record and fingerprint went live on 2026-11-12. The gate is the per-response configuration value (full for C, E and KX1; partial, in the freeze-commit set, for the hosted candidates). The interim gate is not needed and not used; its text stays in Amendment 4 as history. The freeze commit re-reads and confirms the two expected full fingerprints of §4 |
 
 ## 14. v1 questions: answers and where they are folded in
 
@@ -1066,6 +1081,52 @@ What this changes, and where:
   3's Qd bullet are reworded in configuration terms; the freeze conditions gain item (d). C's and E's
   calls now pass through the model gateway; whether they count against the 20,000 ceiling is put to the
   owner as §13 Q5, with the recommendation that they do not (§10).
+
+### Amendment 5 (2026-11-12): the gateway's configuration record and fingerprint are live; §13 Qe answered
+
+The model-gateway maintainer built and deployed the configuration record and fingerprint on 2026-11-12,
+after a brief front-door restart. It was read the same day with the study's service key, with no model
+call; a private copy of the reading is kept beside the config. Facts, stated generically (the concrete
+names of the endpoint and the per-response value are in the private config, not here):
+
+- Per model, a *declared* record (repository, revision, quantisation, engine, context, settings); for a
+  local backend an *observed* block (served repository, context, engine version, KV-cache dtype, start
+  time); a list of the fields on which the engine contradicts the record; and a fingerprint. The
+  fingerprint is **full** when the engine could be read and **partial** when it could not (always for an
+  ALCF id, where it covers the route, the serving backend's name and the model id only; for a local id a
+  partial value means the engine was unreadable at that moment). The two kinds carry different prefixes.
+- The same value comes back on every forwarded answer; a gateway-written error carries none.
+- It excludes the backend's name, its address and the start time (so a move or restart with the same
+  setup keeps it). It does not cover the chat template or the sampling defaults, and speed-only options
+  are deliberately excluded. The snapshot hash is declared, not observed.
+- Read on 2026-11-12, no contradictions listed: C (`Qwen3.6-35B-A3B`) `v1:c94d715990c85f58`; E and KX1
+  (`Qwen3.8-27B`) `v1:76874a40425f4e01`; hosted, all partial: Mistral-Large-3 `v1-partial:1b3b761acf47e93c`,
+  Llama-3.1-70B `v1-partial:806c83f705876ae0`, gpt-oss-120b `v1-partial:354bfb398ce854ba` and
+  `v1-partial:32ef49512f6c83ac` (two clusters). The declared and observed fields behind the two full values
+  are tabulated in §4.
+- Fallback off keeps a request on the first route of the model's route order; there is no per-request
+  route preference. The two Qwen ids have a local backend only.
+
+What this settles:
+
+- **§13 Qe is answered.** The freeze no longer waits on the gateway. The interim gate (instance name in
+  the fingerprint's place, with the maintainer-confirmed-move allowance) is not needed and is not used;
+  Amendment 4's text about it is kept as history.
+- **Expected values** (§4). The two full fingerprints above are the pins. The freeze commit re-reads both
+  from the gateway's configuration endpoint and confirms them (§11 step 4, status paragraph item (d)); a
+  different value is not frozen over. The hosted partial values above are the expected sets; the sets
+  actually recorded are those seen in the pre-freeze self-check (§11 step 3), and gpt-oss-120b's may hold
+  both clusters.
+- **The gate** (§4). A local judge's answer must carry exactly its pinned full fingerprint; a partial or
+  different value voids it. A hosted judge's partial value must be in its freeze-commit set. Canaries stay
+  the change detector for hosted judges. A missing value on a stored reply is a mismatch; a gateway error
+  is an outage, not a mismatch (§4).
+- **Stated limits** (§4). The chat template and the sampling defaults are outside the fingerprint, so the
+  harness pins and records them per call (thinking on, `max_tokens`, temperature, §3); the snapshot is
+  declared only. The partial fingerprint for ALCF ids covers route, backend name and model id, not
+  weights; the earlier "id, cluster, framework" wording in Amendment 4 described the proposal and is
+  superseded by this.
+- **Status and §11** updated accordingly; §4's "Open items" now reads re-read and confirm.
 
 The plan is not frozen; it freezes only on the owner's word "freeze".
 
