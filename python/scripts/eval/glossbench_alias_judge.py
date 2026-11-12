@@ -470,7 +470,11 @@ DEFAULTS: dict[str, Any] = {
                  # judge validation 2: the single /3 self-check run (backend ``gateway-selfcheck``) over the
                  # cases of ``selfcheck_file`` (a JSON list, alias_judge3_selfcheck.py's shape; default: the
                  # committed SELF_CHECK_CASES_V3); refused while any owner label is empty
-                 "selfcheck_file": None},
+                 "selfcheck_file": None,
+                 # judge validation 2: the study gateway's address lives in a PRIVATE config (a JSON file
+                 # with ``base_url``), never in the study config; required for a graded version, whose
+                 # rows, plan and notice carry no address
+                 "private_config": None},
     # tiebreak-subset / analyse-tiebreaker (TIEBREAKER-PLAN.md)
     "tiebreak": {"subset_seed": "20261031|tiebreaker|selfcons", "subset_unanimous": 100, "labels": [],
                  "max_filtered_refusal": 0.05, "plan_commit": None},
@@ -497,6 +501,10 @@ def merged(cfg: Mapping[str, Any]) -> dict[str, Any]:
         raise SystemExit(f"judge_gw.tag {t!r}: letters, digits and _ only")
     if out["qwen"]["judge_version"] not in JUDGE_SYSTEMS:
         raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r}: one of {sorted(JUDGE_SYSTEMS)}")
+    jg = out["judge_gw"]
+    if jg["judge_version"] in GRADED_VERSIONS and jg["base_url"]:
+        raise SystemExit("judge_gw: a graded version takes the gateway address from judge_gw.private_config, "
+                         "never from the study config (judge_gw.base_url must be unset)")
     if out["qwen"]["judge_version"] in GRADED_VERSIONS:
         raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r} is graded: this backend parses "
                          "binary labels only (the model-gateway client, model_gateway_judge.py, runs it)")
@@ -864,7 +872,8 @@ class Labeler:
             in_sub = set(sub)
             est_gw = gateway_est_input_tokens(jg["model"], system, prompts,
                                               [reps_sub if p["pair_id"] in in_sub else 1 for p in pairs])
-            plan.update({"model": jg["model"], "tag": jg["tag"], "base_url": str(jg["base_url"]),
+            plan.update({"model": jg["model"], "tag": jg["tag"],
+                         **({} if jg["judge_version"] in GRADED_VERSIONS else {"base_url": str(jg["base_url"])}),
                          "served_models": self.gw_served(), "judge_version": jg["judge_version"],
                          "system_sha256": g.sha_text(system), "max_tokens": jg["max_tokens"],
                          "temperature": jg["temperature"], "inflight": jg["inflight"], "reps": 1,
@@ -904,8 +913,7 @@ class Labeler:
         system = JUDGE_SYSTEMS[jg["judge_version"]]
         prompts = [judge_prompt_v3(c["question"], c["term"], c["passage"], c["title"], c["defs"]) for c in cases]
         return {"backend": "gateway-selfcheck", "pairs": len(cases), "reps": 1, "calls": len(cases),
-                "model": jg["model"], "tag": jg["tag"], "base_url": str(jg["base_url"]),
-                "served_models": self.gw_served(), "judge_version": jg["judge_version"],
+                "model": jg["model"], "tag": jg["tag"], "served_models": self.gw_served(), "judge_version": jg["judge_version"],
                 "system_sha256": g.sha_text(system), "max_tokens": jg["max_tokens"],
                 "temperature": jg["temperature"], "inflight": jg["inflight"],
                 "cases_sha256": g.sha_text(json.dumps(cases, sort_keys=True, ensure_ascii=False)),
@@ -1097,6 +1105,20 @@ class Labeler:
         return EXIT_OK if status == "done" else EXIT_PAUSED
 
     # -- any model on the partner gateway (TIEBREAKER-PLAN.md)
+    def gw_base_url(self) -> str | None:
+        """The study gateway's address: ``base_url`` of ``judge_gw.private_config`` when set (required
+        for a graded version), else ``judge_gw.base_url`` (the binary runs as before)."""
+        jg = self.cfg["judge_gw"]
+        if jg["private_config"]:
+            url = json.loads(Path(jg["private_config"]).read_text(encoding="utf-8")).get("base_url")
+            if not url:
+                raise SystemExit("judge_gw.private_config: base_url is required")
+            return str(url)
+        if jg["judge_version"] in GRADED_VERSIONS:
+            raise SystemExit("judge_gw.private_config is required for a graded version (no address in the study "
+                             "config)")
+        return jg["base_url"]
+
     def gw_served(self) -> list[str]:
         jg = self.cfg["judge_gw"]
         return sorted({str(jg["model"]), *(str(x) for x in (jg["served_models"] or []))})
@@ -1124,12 +1146,13 @@ class Labeler:
         and stores ``grade`` (``verdict`` null). ``selfcheck``: the single self-check run, each case
         once (backend ``gateway-selfcheck``, its own files and notice)."""
         jg, lim = self.cfg["judge_gw"], self.cfg["limits"]
-        if not jg.get("base_url") or not jg.get("model"):
-            raise SystemExit("judge_gw.base_url and judge_gw.model are required")
+        base_url = self.gw_base_url()
+        if not base_url or not jg.get("model"):
+            raise SystemExit("judge_gw.base_url (or private_config) and judge_gw.model are required")
         backend = "gateway-selfcheck" if selfcheck else "gateway"
         graded = jg["judge_version"] in GRADED_VERSIONS
         key = self.key(backend)
-        url = str(jg["base_url"]).rstrip("/").removesuffix("/v1")
+        url = str(base_url).rstrip("/").removesuffix("/v1")
         served = set(self.gw_served())
         system = JUDGE_SYSTEMS[jg["judge_version"]]
         st = self.store(backend)
@@ -1219,7 +1242,9 @@ class Labeler:
                         "latency_s": round(time.time() - t0, 2), "defs_cut": cut,
                         "prompt_sha256": g.sha_text(prompt), "judge_version": jg["judge_version"],
                         "system_sha256": g.sha_text(system), "max_tokens": int(jg["max_tokens"]),
-                        "temperature": jg.get("temperature"), "endpoint": str(jg["base_url"]), "t": g.now_iso()})
+                        "temperature": jg.get("temperature"), "t": g.now_iso(),
+                        # no address in a graded row (JUDGE-3-PROMPT.md §2); the binary runs keep theirs
+                        **({} if graded else {"endpoint": str(jg["base_url"])})})
             return fn
 
         async def go(items: list[tuple[str, int]]) -> None:

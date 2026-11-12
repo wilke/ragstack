@@ -40,15 +40,22 @@ A local judge's reply must carry exactly its pinned full fingerprint: a *partial
 gateway-written error (an outage status, a connection error; no fingerprint) is an **outage** -- the
 reply is not stored, the batch pauses and the configuration endpoint is re-read up to
 :data:`REREAD_TRIES` times :data:`REREAD_INTERVAL_S` apart (``sleep`` injected); the pinned full value
-resumes the batch and re-issues the paused item; all reads partial or unreadable, any different full
-value, or a non-empty contradiction list is a **mismatch**: the batch stops and is void, and the judge
-runs no later batch (``STOPPED-<judge>``). A different full value or a served ``model`` outside the
+resumes the batch and re-issues the paused item; ALL reads partial, any different full value, or a
+non-empty contradiction list (on any backend) is a **mismatch**: the batch stops and is void, and the
+judge runs no later batch (``STOPPED-<judge>``); a try that was unreadable makes it an outage that
+outlasted the re-reads, which PAUSES the batch (resumable). A different full value or a served ``model`` outside the
 accepted set on a reply is a mismatch at once; a forwarded reply WITHOUT a fingerprint is a mismatch (a
 missing value on a stored reply). A hosted judge's value must be in its freeze-commit set; otherwise
 that candidate stops, its rows up to the stop kept. The configuration endpoint is read at the start and
-end of every batch (the same transient rule); a failed end read voids the rows since the last passing
-check. **A pause is not a void**: a paused batch keeps its rows and checkpoint and resumes under the same
-batch id (``label --resume``), also after a restart; only a void or a mismatch stop spends the id.
+end of every batch (the same transient rule), and its observed block is recorded (a same-fingerprint
+restart is reported, not voided); an end read that finds a mismatch voids the rows since the last
+passing check (deliberately narrower than a per-call local mismatch, which voids from the batch's first
+row), and an end read in an outage pauses the batch. **A pause is not a void**: a paused batch keeps its
+rows and checkpoint and resumes under the same batch id (``label --resume``), also after a restart,
+with the judge's configuration and the canary cases pinned by sha256; only a closed outcome (done,
+``ended:cap``, a void, a mismatch stop) spends the id. **The 110 % cap ends the labels phase**: the end
+canary and end read still run and the batch closes as ``ended:cap`` (not resumable). One process per
+judge (``LOCK-<judge>``, ``O_EXCL``).
 
 **Canaries** (plan §4): every batch starts and ends with the 10 fixed canary cases, always on
 ``alias-judge/3``, under the judge's one canary setting (``deterministic``: temperature 0, the fixed
@@ -74,6 +81,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sys
 import threading
@@ -393,14 +401,17 @@ def check_config_read(judge: Mapping[str, Any], entries: Mapping[str, Any] | Non
     judge's read is recorded, not gated (``pass`` when it holds a value; its per-call gate compares the
     per-response value with the freeze-commit set)."""
     e = (entries or {}).get(judge["model"]) if entries is not None else None
-    bs = [b for b in (e or {}).get("backends") or [] if b.get("fingerprint")]
+    every = list((e or {}).get("backends") or [])
+    if judge["class"] == "local":
+        # a contradiction list counts on ANY backend, with or without a fingerprint
+        for b in every:
+            if b.get("mismatch"):
+                return "mismatch", f"contradictions:{','.join(map(str, b['mismatch']))}"
+    bs = [b for b in every if b.get("fingerprint")]
     if not bs:
         return "transient", "unread"
     if judge["class"] == "hosted":
         return "pass", ""
-    for b in bs:
-        if b["mismatch"]:
-            return "mismatch", f"contradictions:{','.join(map(str, b['mismatch']))}"
     fulls = [b["fingerprint"] for b in bs if b["fingerprint_kind"] == "full"]
     other = [f for f in fulls if f != judge["pinned_fingerprint"]]
     if other:
@@ -412,20 +423,23 @@ def check_config_read(judge: Mapping[str, Any], entries: Mapping[str, Any] | Non
 
 def reread(gw: Gateway, judge: Mapping[str, Any], sleep: Callable[[float], None], log: Callable[[dict], None],
            marker: str = PARTIAL_MARKER, why: str = "") -> tuple[str, str]:
-    """The pause rule: up to :data:`REREAD_TRIES` reads :data:`REREAD_INTERVAL_S` apart. ``pass`` on the
-    pinned value; ``mismatch`` on a different full value or contradiction (at once) or when every read
-    stayed transient (a local judge); ``outage`` when every read stayed unreadable on a hosted judge."""
-    last = ""
+    """The pause rule (plan §4): up to :data:`REREAD_TRIES` reads :data:`REREAD_INTERVAL_S` apart.
+    ``pass`` on the pinned value; ``mismatch`` at once on a different full value or a contradiction, or
+    when EVERY try returned a partial fingerprint on a local judge (the engine stayed unreadable while
+    the gateway answered: plan §4's "all 5 reads return a partial value"); otherwise -- any try
+    unreadable (no value at all: the serving outage the plan says is not a mismatch) -- ``outage``,
+    which pauses the batch (resumable)."""
+    reasons = []
     for i in range(1, REREAD_TRIES + 1):
         sleep(REREAD_INTERVAL_S)
         res, reason = check_config_read(judge, gw.read_config(marker))
         log({"event": "reread", "try": i, "result": res, "reason": reason, "why": why})
         if res in ("pass", "mismatch"):
             return res, reason
-        last = reason
-    if judge["class"] == "local":
-        return "mismatch", f"transient_sustained:{last}"
-    return "outage", f"outage_sustained:{last}"
+        reasons.append(reason)
+    if judge["class"] == "local" and all(r == "fingerprint_partial" for r in reasons):
+        return "mismatch", "transient_sustained:fingerprint_partial"
+    return "outage", f"outage_sustained:{','.join(sorted(set(reasons)))}"
 
 
 def config_check(gw: Gateway, judge: Mapping[str, Any], sleep: Callable[[float], None],
@@ -435,13 +449,15 @@ def config_check(gw: Gateway, judge: Mapping[str, Any], sleep: Callable[[float],
     a hosted judge per call against its freeze-commit set."""
     entries = gw.read_config(marker)
     res, reason = check_config_read(judge, entries)
-    fps = entry_fingerprints((entries or {}).get(judge["model"]))
-    log({"event": f"config_{at}", "result": res, "reason": reason, "fingerprints": fps})
+    e = (entries or {}).get(judge["model"])
+    fps = entry_fingerprints(e)
+    observed = [b.get("observed") for b in (e or {}).get("backends") or []]
+    log({"event": f"config_{at}", "result": res, "reason": reason, "fingerprints": fps, "observed": observed})
     if judge["class"] == "hosted":
-        return {"result": "recorded", "reason": reason, "fingerprints": fps}
+        return {"result": "recorded", "reason": reason, "fingerprints": fps, "observed": observed}
     if res == "transient":
         res, reason = reread(gw, judge, sleep, log, marker, why=f"config_{at}")
-    return {"result": res, "reason": reason, "fingerprints": fps}
+    return {"result": res, "reason": reason, "fingerprints": fps, "observed": observed}
 
 
 # ------------------------------------------------------------------ one gated call
@@ -469,8 +485,9 @@ class Ctx:
     counts: Counter = field(default_factory=Counter)
     observed: set = field(default_factory=set)
     last_check_rows: int = 0
-    lock: Any = field(default_factory=threading.Lock)        # counters
+    lock: Any = field(default_factory=threading.Lock)        # counters and the cap reservation
     pause_lock: Any = field(default_factory=threading.Lock)  # one pause (re-read sequence) at a time
+    halt: Any = field(default_factory=threading.Event)       # set on a mismatch: no new sends
 
     def count(self, key: str, n: int = 1) -> None:
         with self.lock:
@@ -486,14 +503,20 @@ def gated_call(ctx: Ctx, judge: Mapping[str, Any], version: str, item: Mapping[s
     body, sent, user = build_body(judge, version, item, canary)
     outages = invalid_reissues = 0
     while True:
-        if ctx.cap is not None and ctx.answered >= ctx.cap:
-            raise Stop("cap", f"call_cap:{ctx.cap}")
+        if ctx.halt.is_set():
+            raise Stop("halted", "mismatch_in_wave")
+        with ctx.lock:  # check and reserve one answered-call slot: no overshoot with several in flight
+            if ctx.cap is not None and ctx.answered >= ctx.cap:
+                raise Stop("cap", f"call_cap:{ctx.cap}")
+            ctx.answered += 1
         raw = ctx.gw.chat(body)
         ctx.count("calls")
-        if raw.status == 200:  # an outage or an error returns no answer and does not use up the cap
+        if raw.status != 200:  # an outage or an error returns no answer: the slot is released
             with ctx.lock:
-                ctx.answered += 1
+                ctx.answered -= 1
         kind, reason = classify_reply(judge, raw, ctx.priv, observe_hosted=observe_hosted, marker=ctx.marker)
+        if kind == "mismatch":
+            ctx.halt.set()
         if kind == "outage":
             outages += 1
             ctx.count("pauses")
@@ -506,12 +529,16 @@ def gated_call(ctx: Ctx, judge: Mapping[str, Any], version: str, item: Mapping[s
             if res == "pass":
                 ctx.last_check_rows = n_rows()
                 continue
+            if res == "mismatch":
+                ctx.halt.set()
             raise Stop("mismatch" if res == "mismatch" else "outage", why)
         if kind != "ok":
             raise Stop(kind, reason)
         if observe_hosted and judge["class"] == "hosted":
             ctx.observed.add(raw.fingerprint)
         ch = _choices(raw.data)
+        if len(ch) != int(sent.get("n", 1)):  # fewer (or more) samples than sent: the vote would change
+            raise Stop("error", f"n_served:{len(ch)}/{sent.get('n', 1)}")
         parsed = [_parse(version, (x.get("message") or {}).get("content") or "") for x in ch]
         labels = [p[0] for p in parsed]
         if len(ch) == 1 and labels[0] is None and invalid_reissues == 0:
@@ -532,7 +559,7 @@ def gated_call(ctx: Ctx, judge: Mapping[str, Any], version: str, item: Mapping[s
         ("grades" if graded else "verdicts"): [(lab if graded else (None if lab is None else int(lab)))
                                                 for lab in labels],
         "reasons": [p[1] for p in parsed], "invalid": sum(lab is None for lab in labels),
-        "attempts": 1 + invalid_reissues + outages,
+        "attempts": 1 + invalid_reissues + outages, "n_served": len(ch),
         "model": raw.data.get("model"), "requested_model": judge["model"], "fingerprint": raw.fingerprint,
         "fingerprint_kind": fingerprint_kind(raw.fingerprint, ctx.marker), "sampling_sent": sent,
         "thinking_served": thinking_served, "reasoning_tokens": None if rt is None else int(rt),
@@ -624,19 +651,45 @@ def _rows(path: Path) -> list[dict[str, Any]]:
 def paths(out: Path, jid: str) -> dict[str, Path]:
     return {"labels": out / f"labels-mg-{jid}.jsonl", "canary": out / f"canary-mg-{jid}.jsonl",
             "batches": out / f"batches-mg-{jid}.jsonl", "events": out / f"events-mg-{jid}.jsonl",
-            "state": out / f"state-mg-{jid}.json", "stopped": out / f"STOPPED-{jid}"}
+            "state": out / f"state-mg-{jid}.json", "stopped": out / f"STOPPED-{jid}", "lock": out / f"LOCK-{jid}"}
+
+
+#: closed batches whose rows count: done, ended at the cap, and a hosted candidate's mismatch stop
+#: (plan §4: "its rows up to the last passing check are kept and dated"; not a void)
+KEPT_STATUSES = ("done", "ended:cap")
+
+
+def _kept(b: Mapping[str, Any]) -> bool:
+    return not b.get("void") and (b["status"] in KEPT_STATUSES or str(b["status"]).startswith("stopped:mismatch"))
+
+
+def valid_rows_report(out: Path, jid: str) -> dict[str, Any]:
+    """A judge's usable label rows: a row counts only when its batch has a CLOSED ledger row that keeps
+    rows (:data:`KEPT_STATUSES`, or a hosted mismatch stop, which is not void) and it lies outside the
+    batch's void range. Rows of open or paused batches (no ledger row yet) are excluded and listed;
+    rows of voided ranges are counted, never used."""
+    p = paths(out, jid)
+    ledger = {b["batch"]: b for b in _rows(p["batches"])}
+    keep: list[dict[str, Any]] = []
+    open_b: Counter[str] = Counter()
+    voided: Counter[str] = Counter()
+    for r in _rows(p["labels"]):
+        b = ledger.get(r["batch"])
+        if b is None:
+            open_b[r["batch"]] += 1
+        elif b.get("void") and r["seq"] >= int(b.get("void_from_seq") or 0):
+            voided[r["batch"]] += 1
+        elif _kept(b) or b.get("void"):
+            keep.append(r)
+    return {"rows": keep, "excluded_open": dict(open_b), "excluded_void": dict(voided)}
 
 
 def valid_rows(out: Path, jid: str) -> list[dict[str, Any]]:
-    """A judge's label rows outside every voided range (the voided rows are counted, never used)."""
-    p = paths(out, jid)
-    voids = {b["batch"]: b for b in _rows(p["batches"]) if b.get("void")}
-    keep = []
-    for r in _rows(p["labels"]):
-        b = voids.get(r["batch"])
-        if b is None or r["seq"] < int(b.get("void_from_seq", 0)):
-            keep.append(r)
-    return keep
+    return valid_rows_report(out, jid)["rows"]
+
+
+def _sha(obj: Any) -> str:
+    return g.sha_text(json.dumps(obj, sort_keys=True, ensure_ascii=False, default=list))
 
 
 # ------------------------------------------------------------------ one batch
@@ -653,19 +706,66 @@ def canary_cases(cfg: Mapping[str, Any], cases: Sequence[Mapping[str, Any]]) -> 
     return [dict(by[n]) for n in names]
 
 
+def _canary_identity(canaries: Sequence[Mapping[str, Any]]) -> str:
+    keys = ("name", "title", "term", "question", "defs", "passage", "expected_label")
+    return _sha([{k: c.get(k) for k in keys} for c in canaries])
+
+
+class JudgeLock:
+    """One process per judge: an ``O_EXCL`` lock file (``LOCK-<judge>``) held while a batch runs. A
+    stale lock (a killed process) is removed by the operator after checking the pid it records."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def __enter__(self) -> JudgeLock:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise SystemExit(f"{self.path.name} exists: another process runs this judge (or a stale lock: "
+                             "check the pid inside, then remove it)") from None
+        with os.fdopen(fd, "w") as fh:
+            fh.write(f"{os.getpid()} {g.now_iso()}\n")
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.path.unlink(missing_ok=True)
+
+
 def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version: str,
               items: Sequence[Mapping[str, Any]], cases: Sequence[Mapping[str, Any]], *,
               sleep: Callable[[float], None] = time.sleep, resume: bool = False) -> dict[str, Any]:
-    """One batch (one judge x one prompt over the items): a configuration read, the start canary,
-    the items, the end canary, the end read; the void and epoch rules.
+    """One batch under the judge's lock file: :func:`_run_batch`."""
+    with JudgeLock(paths(Path(cfg["out_dir"]), jid)["lock"]):
+        return _run_batch(cfg, gw, jid, batch, version, items, cases, sleep=sleep, resume=resume)
 
-    **A pause is not a void.** An outage that does not recover on a hosted judge, more than
-    :data:`MAX_OUTAGES_PER_ITEM` outages on one item, another HTTP error or the call cap PAUSE the batch:
-    its checkpoint (``checkpoint-mg-<judge>-<batch>.json``) keeps the phase, the canary labels so far, the
-    epoch and the counters, the stored rows stay, and ``resume=True`` continues it under the same batch
-    id after a configuration re-read (a passing check), with only the unanswered canary cases and items
-    -- also after a process restart. Only a final outcome (done, a void, a mismatch stop) is written to
-    ``batches-mg-<judge>.jsonl`` and spends the batch id."""
+
+def _run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version: str,
+               items: Sequence[Mapping[str, Any]], cases: Sequence[Mapping[str, Any]], *,
+               sleep: Callable[[float], None], resume: bool) -> dict[str, Any]:
+    """One batch (one judge x one prompt over the items): a configuration read, the start canary,
+    the items, the end canary, the end read; the void, cap and epoch rules.
+
+    **A pause is not a void.** A serving outage (unreadable configuration reads, gateway errors, more
+    than :data:`MAX_OUTAGES_PER_ITEM` outages on one item), another HTTP error or a short sample count
+    PAUSE the batch: its checkpoint keeps the phase, the epoch, the counters and the configuration
+    identity (``judge_sha256``, ``canary_sha256``, ``items_sha256``), the stored rows stay, and
+    ``resume=True`` continues it under the same batch id after a configuration re-read, sending only the
+    unanswered canary cases (rebuilt from the canary file) and items -- also after a process restart. A
+    resume, or a later batch of the judge, is refused when the judge's configuration or the canary cases
+    differ. Only a closed outcome (done, ended at the cap, a void, a mismatch stop) is written to the
+    ledger and spends the batch id.
+
+    **The cap ends the labels phase** (owner decision): once the 110 % answered-call cap of the labels
+    phase is reached, no further item is sent; the end canary and the end read still run (so the stored
+    rows are vouched for), the ledger row says ``ended:cap`` with the unlabelled count, no STOPPED file is
+    written and nothing is voided. A cap-ended batch cannot be resumed; more calls need a dated amendment.
+
+    **Void ranges, deliberately different:** a per-call mismatch on a local judge voids the whole batch
+    (from its first row: the identity failed while the batch was open), while a failed END read voids
+    only the rows since the last passing configuration check (the rows before it were vouched for by
+    that check)."""
     judge = cfg["judges"][jid]
     out = Path(cfg["out_dir"])
     p = paths(out, jid)
@@ -676,61 +776,80 @@ def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version
     if p["stopped"].exists():
         raise SystemExit(f"judge {jid} is stopped ({p['stopped'].read_text().strip()}): no later batch runs")
     if any(b["batch"] == batch for b in _rows(p["batches"])):
-        raise SystemExit(f"judge {jid}: batch {batch!r} already ran (a batch is never re-issued)")
+        raise SystemExit(f"judge {jid}: batch {batch!r} already closed (a batch is never re-issued)")
     if judge["class"] == "hosted" and not judge["freeze_set"]:
         raise SystemExit(f"judge {jid} (hosted): no freeze_set (recorded in the freeze commit)")
     canaries = canary_cases(cfg, cases)
     expected = {c["name"]: c["expected_label"] for c in canaries}
+    judge_sha, canary_sha = _sha(judge), _canary_identity(canaries)
     ck_path = out / f"checkpoint-mg-{jid}-{batch}.json"
-    others = [x.name for x in out.glob(f"checkpoint-mg-{jid}-*.json") if x != ck_path] if out.exists() else []
+    others = [x.name for x in out.glob(f"checkpoint-mg-{jid}-*.json") if x != ck_path]
     if others:
         raise SystemExit(f"judge {jid}: another batch is paused ({others}); resume or close it first")
-    items_sha = g.sha_text(json.dumps([dict(i) for i in items], sort_keys=True, ensure_ascii=False))
+    items_sha = _sha([dict(i) for i in items])
     state: dict[str, Any] = (json.loads(p["state"].read_text()) if p["state"].exists()
                              else {"epoch": 0, "last_end_canary": None})
+    for k, v in (("judge_sha256", judge_sha), ("canary_sha256", canary_sha)):
+        if state.get(k) not in (None, v):
+            raise SystemExit(f"judge {jid}: {k} differs from the previous batch's (the configuration or the "
+                             "canary cases changed); a change needs a dated amendment")
     labels_now = len(_rows(p["labels"]))
     if ck_path.exists():
         if not resume:
             raise SystemExit(f"judge {jid}: batch {batch!r} is paused; pass --resume to continue it")
         ck = json.loads(ck_path.read_text())
-        if (ck["version"], ck["items_sha256"], ck["canaries"]) != (version, items_sha, list(expected)):
-            raise SystemExit(f"judge {jid}: batch {batch!r} resumed with other items, prompt or canaries")
+        for k, v in (("version", version), ("items_sha256", items_sha), ("judge_sha256", judge_sha),
+                     ("canary_sha256", canary_sha)):
+            if ck[k] != v:
+                raise SystemExit(f"judge {jid}: batch {batch!r} resumed with a different {k}")
         ck["resumes"] += 1
     else:
         if resume:
             raise SystemExit(f"judge {jid}: batch {batch!r} has no paused checkpoint to resume")
         ck = {"batch": batch, "judge": jid, "version": version, "items_sha256": items_sha,
-              "canaries": list(expected), "phase": "start", "start_canary": {}, "end_canary": {},
-              "epoch": state["epoch"], "epoch_boundary": None, "differ_from_previous_end": None,
-              "seq0": labels_now, "last_check_seq": labels_now, "calls": 0, "pauses": 0, "invalid_reissues": 0,
-              "resumes": 0, "started": g.now_iso(), "config_reads": []}
+              "judge_sha256": judge_sha, "canary_sha256": canary_sha, "canaries": list(expected),
+              "phase": "start", "epoch": state["epoch"], "epoch_boundary": None,
+              "differ_from_previous_end": None, "seq0": labels_now, "last_check_seq": labels_now, "calls": 0,
+              "answered": 0, "pauses": 0, "invalid_reissues": 0, "resumes": 0, "capped": False,
+              "started": g.now_iso(), "config_reads": []}
     done_ids = {r["item_id"] for r in _rows(p["labels"]) if r["batch"] == batch}
     session_rows: list[dict[str, Any]] = []
     planned = len(items) + 2 * N_CANARIES
+    cap_total = math.floor(planned * float(cfg["cap_factor"]))
     ctx = Ctx(gw=gw, priv=gw.priv, marker=cfg["partial_marker"], sleep=sleep,
               log=lambda e: _append(p["events"], {"judge": jid, "batch": batch, "t": g.now_iso(), **e}),
-              cap=math.floor(planned * float(cfg["cap_factor"])), answered=int(ck.get("answered", 0)))
+              answered=int(ck["answered"]))
 
     def n_rows() -> int:
         return labels_now + len(session_rows)
 
+    def canary_got(at: str) -> dict[str, Any]:
+        """The canary labels already stored for this batch and phase, from the canary file itself."""
+        return {r["item_id"]: _label_of(r) for r in _rows(p["canary"])
+                if r["batch"] == batch and r["kind"] == f"canary_{at}"}
+
     def save() -> None:
-        ck.update({"calls": ck["calls"] + ctx.counts["calls"], "pauses": ck["pauses"] + ctx.counts["pauses"],
-                   "invalid_reissues": ck["invalid_reissues"] + ctx.counts["invalid_reissues"],
-                   "last_check_seq": max(int(ck["last_check_seq"]), ctx.last_check_rows),
-                   "answered": ctx.answered})
-        ctx.counts.clear()
+        with ctx.lock:
+            ck.update({"calls": ck["calls"] + ctx.counts["calls"], "pauses": ck["pauses"] + ctx.counts["pauses"],
+                       "invalid_reissues": ck["invalid_reissues"] + ctx.counts["invalid_reissues"],
+                       "last_check_seq": max(int(ck["last_check_seq"]), ctx.last_check_rows),
+                       "answered": ctx.answered})
+            ctx.counts.clear()
         g.write_json_atomic(ck_path, ck)
 
     def summary(status: str, **extra: Any) -> dict[str, Any]:
         stored = sum(1 for r in _rows(p["labels"]) if r["batch"] == batch)
+        reads = ck["config_reads"]
+        obs_start = reads[0].get("observed") if reads else None
+        obs_end = reads[-1].get("observed") if reads else None
         return {"batch": batch, "judge": jid, "judge_version": version, "items": len(items),
-                "planned_calls": planned, "void": False, "epoch": ck["epoch"],
+                "planned_calls": planned, "cap": cap_total, "void": False, "epoch": ck["epoch"],
                 "epoch_boundary": ck["epoch_boundary"], "differ_from_previous_end": ck["differ_from_previous_end"],
                 "canary_setting": sampling_sent(judge, canary=True), "started": ck["started"], "status": status,
-                "stored": stored, "calls": ck["calls"], "pauses": ck["pauses"],
-                "invalid_reissues": ck["invalid_reissues"], "resumes": ck["resumes"],
-                "config_reads": ck["config_reads"], "ended": g.now_iso(), **extra}
+                "stored": stored, "unlabelled": len(items) - stored, "calls": ck["calls"],
+                "answered": ck["answered"], "pauses": ck["pauses"], "invalid_reissues": ck["invalid_reissues"],
+                "resumes": ck["resumes"], "judge_sha256": judge_sha, "canary_sha256": canary_sha,
+                "config_reads": reads, "observed_changed": obs_start != obs_end, "ended": g.now_iso(), **extra}
 
     def finish(status: str, **extra: Any) -> dict[str, Any]:
         save()
@@ -741,7 +860,8 @@ def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version
 
     def stop(e: Stop, at: str) -> dict[str, Any]:
         if e.kind == "mismatch":
-            # local: the batch stops and is void; hosted: that candidate stops, its rows kept
+            # local: the batch stops and is void (from its first row); hosted: that candidate stops,
+            # its rows kept
             local = judge["class"] == "local"
             p["stopped"].write_text(f"{batch}:{at}:{e.reason}\n")
             return finish(f"stopped:mismatch:{e.reason}", void=local,
@@ -753,66 +873,86 @@ def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version
         return summary(f"paused:{e.kind}:{e.reason}", stopped_at=at)
 
     def canary(at: str) -> None:
-        got = ck[f"{at}_canary"]
+        got = canary_got(at)
         for c in canaries:
             if c["name"] in got:
                 continue
             row = gated_call(ctx, judge, CANARY_VERSION, c, canary=True, n_rows=n_rows)
             row.update({"judge": jid, "batch": batch, "kind": f"canary_{at}", "epoch": ck["epoch"]})
             _append(p["canary"], row)
-            got[c["name"]] = _label_of(row)
             save()
+
+    def read(at: str) -> dict[str, Any]:
+        r = config_check(gw, judge, sleep, ctx.log, ctx.marker, at)
+        ck["config_reads"].append({"at": at, **r})
+        return r
+
+    def read_failed(r: Mapping[str, Any], at: str) -> Stop | None:
+        if r["result"] in ("pass", "recorded"):
+            return None
+        return Stop("mismatch" if r["result"] == "mismatch" else "outage", r["reason"])
 
     det = judge["canary"]["mode"] == "deterministic"
     at = "start" if not ck["resumes"] else f"resume{ck['resumes']}"
     ck.pop("paused", None)
-    read = config_check(gw, judge, sleep, ctx.log, ctx.marker, at)
-    ck["config_reads"].append({"at": at, **read})
-    if read["result"] not in ("pass", "recorded"):
-        return stop(Stop("mismatch" if read["result"] == "mismatch" else "outage", read["reason"]), f"config_{at}")
+    bad = read_failed(read(at), at)
+    if bad is not None:
+        return stop(bad, f"config_{at}")
     ctx.last_check_rows = n_rows()  # a passing check: the rows before it are vouched for
     try:
         if ck["phase"] == "start":
             canary("start")
-            boundary, d_prev = epoch_boundary(state["last_end_canary"], ck["start_canary"])
+            start_c = canary_got("start")
+            boundary, d_prev = epoch_boundary(state["last_end_canary"], start_c)
             ck.update({"epoch": state["epoch"] + (1 if boundary else 0), "epoch_boundary": boundary,
                        "differ_from_previous_end": d_prev, "phase": "labels"})
+            _retag_epoch(p["canary"], batch, "canary_start", ck["epoch"])
             save()
         if ck["phase"] == "labels":
+            ctx.cap = max(0, cap_total - N_CANARIES)  # the labels phase; the end canary always runs
             todo = [it for it in items if it["item_id"] not in done_ids]
-            k = int(judge["max_in_flight"])
-            with ThreadPoolExecutor(max_workers=k) as pool:
-                for w in range(0, len(todo), k):
-                    wave = todo[w:w + k]
+            nk = int(judge["max_in_flight"])
+            with ThreadPoolExecutor(max_workers=nk) as pool:
+                for w in range(0, len(todo), nk):
+                    wave = todo[w:w + nk]
                     futs = [pool.submit(gated_call, ctx, judge, version, it, canary=False, n_rows=n_rows)
                             for it in wave]
-                    first: Stop | None = None
+                    stops: list[Stop] = []
                     for f in futs:
                         try:
                             row = f.result()
                         except Stop as e:
-                            first = first or e
+                            stops.append(e)
                             continue
                         row.update({"judge": jid, "batch": batch, "kind": "label", "epoch": ck["epoch"],
                                     "seq": n_rows(), "k": f"{jid}|{batch}|{row['item_id']}"})
                         _append(p["labels"], row)
                         session_rows.append(row)
                     save()
-                    if first is not None:
-                        raise first
+                    real = [e for e in stops if e.kind not in ("cap", "halted")]
+                    if real:  # a mismatch outranks a pause
+                        raise next((e for e in real if e.kind == "mismatch"), real[0])
+                    if any(e.kind == "cap" for e in stops):
+                        ck["capped"] = True
+                        ctx.log({"event": "cap_reached", "cap": ctx.cap})
+                        break
+            ctx.cap = None
             ck["phase"] = "end"
             save()
         canary("end")
     except Stop as e:
         return stop(e, ck["phase"])
-    cmp = compare_canaries(ck["start_canary"], ck["end_canary"], expected, det)
-    end = config_check(gw, judge, sleep, ctx.log, ctx.marker, "end")
-    ck["config_reads"].append({"at": "end", **end})
-    state.update({"epoch": ck["epoch"], "last_end_canary": ck["end_canary"]})
-    p["state"].write_text(json.dumps(state, sort_keys=True))
-    if end["result"] not in ("pass", "recorded"):
+    end_c = canary_got("end")
+    cmp = compare_canaries(canary_got("start"), end_c, expected, det)
+    end = read("end")
+    bad = read_failed(end, "end")
+    if bad is not None and bad.kind == "outage":  # a serving outage at the end read: pause (phase "end")
+        return stop(bad, "config_end")
+    state.update({"epoch": ck["epoch"], "last_end_canary": end_c, "judge_sha256": judge_sha,
+                  "canary_sha256": canary_sha})
+    g.write_json_atomic(p["state"], state)
+    if bad is not None:
         p["stopped"].write_text(f"{batch}:config_end:{end['reason']}\n")
-        save()
         return finish(f"void:config_end:{end['reason']}", canary=cmp, void=True,
                       void_from_seq=int(ck["last_check_seq"]))
     if cmp["void"]:
@@ -820,7 +960,19 @@ def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version
         p["stopped"].write_text(f"{batch}:canary:{','.join(cmp['reasons'])}\n")
         return finish("void:canary", canary=cmp, void=True, void_from_seq=ck["seq0"],
                       drift_report="template_parser_or_default_drift" if drift else None)
-    return finish("done", canary=cmp)
+    return finish("ended:cap" if ck["capped"] else "done", canary=cmp)
+
+
+def _retag_epoch(path: Path, batch: str, kind: str, epoch: int) -> None:
+    """Set the epoch on a batch's rows of one kind (the start canary is written before the epoch
+    boundary is known); an atomic rewrite."""
+    rows = _rows(path)
+    for r in rows:
+        if r.get("batch") == batch and r.get("kind") == kind:
+            r["epoch"] = epoch
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("".join(json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 # ------------------------------------------------------------------ self-check and selection
@@ -861,8 +1013,15 @@ def run_selfcheck(cfg: Mapping[str, Any], gw: Gateway, cases: Sequence[Mapping[s
             "observed_fingerprints": sorted(ctx.observed) if judge["class"] == "hosted" else None}
         if status == "done":
             labels[jid] = lab
-    res["selection"] = select_canaries(labels, [c["name"] for c in cases], n_runs=runs) if labels else None
+    requested = list(judge_ids or cfg["judges"])
+    unfinished = [j for j in requested if j not in labels]
     res["selection_judges"] = sorted(labels)
+    if unfinished:  # plan §4: the canaries are stable on EVERY model-gateway judge
+        res["selection"] = None
+        res["selection_reason"] = f"no selection: self-check not finished on {unfinished}"
+    else:
+        res["selection"] = select_canaries(labels, [c["name"] for c in cases], n_runs=runs)
+        res["selection_reason"] = None
     return res
 
 
@@ -1009,6 +1168,8 @@ def main(argv: Sequence[str] | None = None, *, transport: Any = None, sleep: Cal
     if a.cmd == "self-check":
         res = run_selfcheck(cfg, gw, sc.load_cases(a.cases), a.judge, a.runs, sleep=sleep)
         g.write_json_atomic(out / "selfcheck-mg.json", res)
+        if res["selection_reason"]:
+            echo(res["selection_reason"])
         echo(json.dumps({k: res[k] for k in ("selection", "selection_judges")}, sort_keys=True))
         return 0
     res = run_batch(cfg, gw, a.judge, a.batch, a.version, _items(a.items), sc.load_cases(a.cases), sleep=sleep,

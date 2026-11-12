@@ -51,7 +51,8 @@ class FakeTransport:
     model (``None`` = unreadable)."""
 
     def __init__(self, model: str, fp: str | None, *, script: list | None = None, answer: Any = None,
-                 configs: list | None = None, config_default: dict | None = None, delay: float = 0.0) -> None:
+                 configs: list | None = None, config_default: dict | None = None, delay: float = 0.0,
+                 n_served: int | None = None) -> None:
         self.model, self.fp = model, fp
         self.script = list(script or [])
         self.answer = answer or (lambda q, k: "full")
@@ -62,6 +63,7 @@ class FakeTransport:
         self.gets = 0
         self.seen: Counter[str] = Counter()
         self.delay, self.now, self.peak = delay, 0, 0
+        self.n_served = n_served
         self.lock = threading.Lock()
 
     def post(self, url: str, headers: dict[str, str] | None = None, json: dict | None = None) -> Resp:  # noqa: A002
@@ -84,7 +86,7 @@ class FakeTransport:
         with self.lock:
             self.seen[q] += 1
         graded = "How fully" in user
-        n = int(json.get("n", 1))
+        n = self.n_served if self.n_served is not None else int(json.get("n", 1))
         grade = self.answer(q, self.seen[q]) if graded else "yes"
         data = {"model": model, "usage": {"prompt_tokens": 10, "completion_tokens": 5,
                                           "completion_tokens_details": {"reasoning_tokens": 3}},
@@ -112,7 +114,8 @@ def config_doc(model: str, e: dict) -> dict:
     else:
         fp = e.get("fingerprint")
         b = {"name": "fake-backend-1", "route": "fake-route", "state": "up", "config": fp,
-             "partial": bool(fp) and "-partial:" in fp, "observed": {"engine_version": "0.0-fake"}}
+             "partial": bool(fp) and "-partial:" in fp,
+             "observed": e.get("observed", {"engine_version": "0.0-fake", "started": "t0"})}
         if e.get("mismatch"):
             b["mismatch"] = e["mismatch"]
         bs = [b]
@@ -274,7 +277,8 @@ def test_config_endpoint_reader_real_shape(tmp_path: Path) -> None:
     b0 = e[LOCAL["model"]]["backends"][0]
     assert {k: b0[k] for k in ("name", "route", "state", "fingerprint", "fingerprint_kind", "observed", "mismatch")} \
         == {"name": "fake-backend-1", "route": "fake-route", "state": "up", "fingerprint": PIN_C,
-            "fingerprint_kind": "full", "observed": {"engine_version": "0.0-fake"}, "mismatch": []}
+            "fingerprint_kind": "full", "observed": {"engine_version": "0.0-fake", "started": "t0"},
+            "mismatch": []}
     assert mg.check_config_read(loc, e) == ("pass", "")
     assert mg.check_config_read(loc, g.read_config())[0] == "mismatch"
     assert g.read_config() is None and mg.check_config_read(loc, None)[0] == "transient"
@@ -711,7 +715,7 @@ def test_resume_guards(tmp_path: Path) -> None:
                      items(1), CASES, sleep=Sleeper(), resume=True)
     t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 10 + [(400, None, None)], answer=owner_answer)
     mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(2), CASES, sleep=Sleeper())
-    with pytest.raises(SystemExit, match="other items"):
+    with pytest.raises(SystemExit, match="items_sha256"):
         mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C)), "C", "b1", "alias-judge/3",
                      items(3), CASES, sleep=Sleeper(), resume=True)
 
@@ -744,13 +748,253 @@ def test_max_in_flight(tmp_path: Path) -> None:
     assert t1.peak == 1
 
 
-def test_call_cap_pauses_and_counts_answered_calls_only(tmp_path: Path) -> None:
-    # mutation: no cap (a runaway batch), or counting outage errors against the cap, fails this
+def test_cap_ends_the_labels_phase(tmp_path: Path) -> None:
+    # mutation: pausing (or voiding / stopping the judge) at the cap, skipping the end canary, or counting
+    # an outage against the cap fails this
     cfg = mg.validate_study({"out_dir": str(tmp_path / "out"), "judges": {"C": LOCAL_N1}, "cap_factor": 1.0,
                              "canary_cases": [f"c{i}" for i in range(10)]})
-    seq = iter(["unsure", "unsure", "full", "full"])  # item 0 is re-issued once: 23 answered needed > 22
+    out = Path(cfg["out_dir"])
+    seq = iter(["unsure", "full", "full", "full"])  # item 0 is re-issued once: item 2 finds no slot left
     t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 10 + [(503, None, None)],
                       answer=lambda q, k: owner_answer(q, k) if q.startswith("Canary") else next(seq))
+    r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(3), CASES, sleep=Sleeper())
+    assert r["status"] == "ended:cap" and r["stored"] == 2 and r["unlabelled"] == 1 and not r["void"]
+    assert r["canary"]["differ"] == 0 and [c["at"] for c in r["config_reads"]] == ["start", "end"]
+    assert sum("Item question" in b["messages"][1]["content"] for b in t.posts) == 4  # incl. the 503
+    assert not mg.paths(out, "C")["stopped"].exists() and len(mg.valid_rows(out, "C")) == 2
+    with pytest.raises(SystemExit, match="already closed"):
+        mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C)), "C", "b1", "alias-judge/3",
+                     items(3), CASES, sleep=Sleeper(), resume=True)
+
+
+def test_cap_reservation_has_no_overshoot_in_flight(tmp_path: Path) -> None:
+    # mutation: checking the cap without reserving the slot under the lock lets parallel calls overshoot
+    cfg = mg.validate_study({"out_dir": str(tmp_path / "out"), "judges": {"C": {**LOCAL_N1, "max_in_flight": 4}},
+                             "cap_factor": 1.0, "canary_cases": [f"c{i}" for i in range(10)]})
+    t = FakeTransport(LOCAL["model"], PIN_C, delay=0.01,
+                      answer=lambda q, k: owner_answer(q, k) if q.startswith("Canary") else
+                      ("unsure" if k == 1 else "full"))  # every item needs 2 answered calls
+    r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(8), CASES, sleep=Sleeper())
+    item_posts = sum("Item question" in b["messages"][1]["content"] for b in t.posts)
+    assert r["status"] == "ended:cap" and item_posts == 8 and r["answered"] == 8 + 20
+
+
+
+# ------------------------------------------------------------------ review round 2
+
+def test_unreadable_reads_are_an_outage_not_a_mismatch(tmp_path: Path) -> None:
+    # mutation: returning mismatch after 5 unreadable re-reads (a serving outage would void C's batch
+    # and stop the judge for good) fails this
+    cfg = study(tmp_path)
+    out = Path(cfg["out_dir"])
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 10 + [(503, None, None)], answer=owner_answer,
+                      configs=[{"fingerprint": PIN_C}] + [None] * 5)
     r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(2), CASES, sleep=Sleeper())
-    assert r["status"] == "paused:cap:call_cap:22" and r["stored"] == 2
-    assert len(t.posts) == 10 + 1 + 2 + 1 + 9  # the 503 is not an answered call
+    assert r["status"].startswith("paused:outage:outage_sustained:unread") and not r["void"]
+    assert not mg.paths(out, "C")["stopped"].exists() and ledger(out) == []
+
+
+def test_mixed_unreadable_and_partial_reads_are_an_outage(tmp_path: Path) -> None:
+    # mutation: counting a mix of unreadable and partial reads as "all partial" fails this
+    cfg = study(tmp_path)
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 10 + [(200, PART_LOCAL, LOCAL["model"])],
+                      answer=owner_answer, configs=[{"fingerprint": PIN_C}, None, {"fingerprint": PART_LOCAL},
+                                                    None, {"fingerprint": PART_LOCAL}, None])
+    r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(2), CASES, sleep=Sleeper())
+    assert r["status"] == "paused:outage:outage_sustained:fingerprint_partial,unread"
+
+
+def test_end_read_outage_pauses_and_resume_rereads(tmp_path: Path) -> None:
+    # mutation: voiding on an unreadable end read, or re-sending the end canary on resume, fails this
+    cfg = study(tmp_path)
+    out = Path(cfg["out_dir"])
+    t = FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer, configs=[{"fingerprint": PIN_C}] + [None] * 6)
+    r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(2), CASES, sleep=Sleeper())
+    assert r["status"].startswith("paused:outage") and r["stopped_at"] == "config_end" and not r["void"]
+    t2 = FakeTransport(LOCAL["model"], PIN_C)
+    r2 = mg.run_batch(cfg, gw(tmp_path, t2), "C", "b1", "alias-judge/3", items(2), CASES, sleep=Sleeper(),
+                      resume=True)
+    assert r2["status"] == "done" and t2.posts == [] and r2["canary"]["differ"] == 0
+    assert len(mg.valid_rows(out, "C")) == 2
+
+
+@pytest.mark.parametrize("change", ["seed", "top_k", "pin", "label", "text"])
+def test_resume_refuses_a_changed_configuration(tmp_path: Path, change: str) -> None:
+    # mutation: a resume guard that compares only the prompt, items and canary names fails this
+    cfg = study(tmp_path)
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 11 + [(400, None, None)], answer=owner_answer)
+    mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(3), CASES, sleep=Sleeper())
+    j, cases = dict(LOCAL), [dict(c) for c in CASES]
+    if change == "seed":
+        j["canary"] = {**LOCAL["canary"], "seed": 8}
+    elif change == "top_k":
+        j["sampling"] = {**LOCAL["sampling"], "top_k": 40}
+    elif change == "pin":
+        j["pinned_fingerprint"] = PIN_OTHER
+    elif change == "label":
+        cases[0]["expected_label"] = "none" if cases[0]["expected_label"] != "none" else "full"
+    else:
+        cases[1]["passage"] += " (edited)"
+    with pytest.raises(SystemExit, match="different (judge|canary)_sha256"):
+        mg.run_batch(study(tmp_path, C=j), gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C)), "C", "b1",
+                     "alias-judge/3", items(3), cases, sleep=Sleeper(), resume=True)
+
+
+def test_later_batch_refuses_a_changed_configuration(tmp_path: Path) -> None:
+    # mutation: not pinning the judge's configuration across batches (canary chaining) fails this
+    cfg = study(tmp_path)
+    mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)), "C", "b1",
+                 "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    j = {**LOCAL, "sampling": {**LOCAL["sampling"], "temperature": 0.6}}
+    with pytest.raises(SystemExit, match="judge_sha256 differs"):
+        mg.run_batch(study(tmp_path, C=j), gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C)), "C", "b2",
+                     "alias-judge/3", items(1), CASES, sleep=Sleeper())
+
+
+def test_resume_refuses_same_length_different_items(tmp_path: Path) -> None:
+    # mutation (P1): checking only the number of items on resume fails this
+    cfg = study(tmp_path)
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 11 + [(400, None, None)], answer=owner_answer)
+    mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(3), CASES, sleep=Sleeper())
+    other = items(3)
+    other[2] = {**other[2], "passage": "A different passage."}
+    with pytest.raises(SystemExit, match="items_sha256"):
+        mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C)), "C", "b1", "alias-judge/3",
+                     other, CASES, sleep=Sleeper(), resume=True)
+
+
+def test_answered_count_restored_across_resume(tmp_path: Path) -> None:
+    # mutation (P3): not restoring the answered count from the checkpoint lets a resumed batch overrun
+    cfg = mg.validate_study({"out_dir": str(tmp_path / "out"), "judges": {"C": LOCAL_N1}, "cap_factor": 1.0,
+                             "canary_cases": [f"c{i}" for i in range(10)]})
+    seq = iter(["unsure", "full"])
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 12 + [(400, None, None)],
+                      answer=lambda q, k: owner_answer(q, k) if q.startswith("Canary") else next(seq))
+    r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(3), CASES, sleep=Sleeper())
+    assert r["status"] == "paused:error:http_400" and r["answered"] == 12
+    t2 = FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)
+    t2.seen.update({c["question"]: 1 for c in CASES[:10]})
+    r2 = mg.run_batch(cfg, gw(tmp_path, t2), "C", "b1", "alias-judge/3", items(3), CASES, sleep=Sleeper(),
+                      resume=True)
+    # cap 23, labels phase 13: 12 used, so one of the two remaining items is sent
+    assert r2["status"] == "ended:cap" and r2["unlabelled"] == 1 and r2["answered"] == 23
+
+
+class ShortN(FakeTransport):
+    """Serves 3 samples whenever 5 are requested (the n = 1 canaries are served in full)."""
+
+    def post(self, url: str, headers: dict | None = None, json: dict | None = None) -> Resp:  # noqa: A002
+        self.n_served = 3 if (json or {}).get("n") == 5 else None
+        return super().post(url, headers=headers, json=json)
+
+
+def test_served_sample_count_is_checked(tmp_path: Path) -> None:
+    # mutation: storing a row with fewer samples than sent (C's vote would change quietly) fails this
+    ok = study(tmp_path / "ok")
+    mg.run_batch(ok, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)), "C", "b1",
+                 "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    assert labels(Path(ok["out_dir"]))[0]["n_served"] == 5
+    cfg = study(tmp_path)
+    r = mg.run_batch(cfg, gw(tmp_path, ShortN(LOCAL["model"], PIN_C, answer=owner_answer)), "C", "b1",
+                     "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    assert r["status"] == "paused:error:n_served:3/5" and r["stored"] == 0 and not r["void"]
+
+
+def test_valid_rows_exclude_open_and_paused_batches(tmp_path: Path) -> None:
+    # mutation: counting rows of a batch with no closed ledger row fails this
+    cfg = study(tmp_path)
+    out = Path(cfg["out_dir"])
+    mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)), "C", "b1",
+                 "alias-judge/3", items(2), CASES, sleep=Sleeper())
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 11 + [(400, None, None)], answer=owner_answer)
+    mg.run_batch(cfg, gw(tmp_path, t), "C", "b2", "alias-judge/3", items(3), CASES, sleep=Sleeper())
+    rep = mg.valid_rows_report(out, "C")
+    assert [r["batch"] for r in rep["rows"]] == ["b1", "b1"] and rep["excluded_open"] == {"b2": 1}
+
+
+def test_canary_rows_rebuilt_from_the_file_after_a_crash(tmp_path: Path) -> None:
+    # mutation: taking the answered canary cases from the checkpoint only (a crash between the row write
+    # and the checkpoint save then re-asks the case and duplicates the row) fails this
+    cfg = study(tmp_path)
+    out = Path(cfg["out_dir"])
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[None] * 4 + [(400, None, None)], answer=owner_answer)
+    mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    rows = mg._rows(mg.paths(out, "C")["canary"])
+    mg._append(mg.paths(out, "C")["canary"], {**rows[-1], "item_id": "c4", "grade": "partial"})  # written, unsaved
+    t2 = FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)
+    mg.run_batch(cfg, gw(tmp_path, t2), "C", "b1", "alias-judge/3", items(1), CASES, sleep=Sleeper(), resume=True)
+    asked = [re.search(r"QUESTION: (.*)\n", b["messages"][1]["content"]).group(1) for b in t2.posts]
+    assert asked[0] == "Canary question 5?"
+    starts = [r["item_id"] for r in mg._rows(mg.paths(out, "C")["canary"]) if r["kind"] == "canary_start"]
+    assert sorted(starts) == sorted(f"c{i}" for i in range(10))
+
+
+def test_judge_lock_file_and_halt(tmp_path: Path) -> None:
+    # mutation: no O_EXCL lock (two processes on one judge), or sending after a mismatch, fails this
+    cfg = study(tmp_path)
+    out = Path(cfg["out_dir"])
+    out.mkdir(parents=True)
+    mg.paths(out, "C")["lock"].write_text("12345\n")
+    with pytest.raises(SystemExit, match="another process"):
+        mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C)), "C", "b1", "alias-judge/3",
+                     items(1), CASES, sleep=Sleeper())
+    mg.paths(out, "C")["lock"].unlink()
+    mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)), "C", "b1",
+                 "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    assert not mg.paths(out, "C")["lock"].exists()
+    t = FakeTransport(LOCAL["model"], PIN_C)
+    ctx = mg.Ctx(gw=gw(tmp_path, t), priv=priv(tmp_path), marker=mg.PARTIAL_MARKER, sleep=Sleeper(), log=lambda e: None)
+    ctx.halt.set()
+    with pytest.raises(mg.Stop, match="halted"):
+        mg.gated_call(ctx, mg.validate_judge("C", LOCAL), "alias-judge/3", items(1)[0], canary=False)
+    assert t.posts == []
+    # a mismatch sets the halt for the wave's other workers
+    t3 = FakeTransport(LOCAL["model"], PIN_OTHER)
+    ctx3 = mg.Ctx(gw=gw(tmp_path, t3), priv=priv(tmp_path), marker=mg.PARTIAL_MARKER, sleep=Sleeper(),
+                  log=lambda e: None)
+    with pytest.raises(mg.Stop, match="mismatch"):
+        mg.gated_call(ctx3, mg.validate_judge("C", LOCAL), "alias-judge/3", items(1)[0], canary=False)
+    assert ctx3.halt.is_set()
+
+
+def test_start_canary_rows_carry_the_new_epoch(tmp_path: Path) -> None:
+    # mutation: tagging the start-canary rows before the epoch boundary is computed fails this
+    cfg = study(tmp_path)
+    out = Path(cfg["out_dir"])
+    mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)), "C", "b1",
+                 "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    shifted = _flip(10)
+    r = mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=lambda q, k: shifted(q, 2))),
+                     "C", "b2", "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    assert r["epoch"] == 1
+    b2 = [x for x in mg._rows(mg.paths(out, "C")["canary"]) if x["batch"] == "b2"]
+    assert {x["epoch"] for x in b2} == {1}
+
+
+def test_observed_block_recorded_and_restart_reported(tmp_path: Path) -> None:
+    # mutation: not recording the observed block, or voiding a same-fingerprint restart, fails this
+    cfg = study(tmp_path)
+    t = FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer,
+                      configs=[{"fingerprint": PIN_C, "observed": {"started": "t0"}},
+                               {"fingerprint": PIN_C, "observed": {"started": "t1"}}])
+    r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    assert r["status"] == "done" and r["observed_changed"] is True
+    assert [c["observed"] for c in r["config_reads"]] == [[{"started": "t0"}], [{"started": "t1"}]]
+
+
+def test_contradiction_without_fingerprint_is_a_mismatch() -> None:
+    # mutation: skipping a backend that has a contradiction list but no fingerprint fails this
+    loc = mg.validate_judge("C", LOCAL)
+    e = mg.parse_config(config_doc(LOCAL["model"], {"backends": [
+        {"config": PIN_C, "partial": False}, {"config": None, "mismatch": ["revision"]}]}))
+    assert mg.check_config_read(loc, e) == ("mismatch", "contradictions:revision")
+
+
+def test_selection_needs_every_requested_judge(tmp_path: Path) -> None:
+    # mutation (P10): selecting canaries over the judges that happened to finish fails this
+    t = FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)
+    other = {**LOCAL, "model": "fake-other-model"}  # its replies come back as LOCAL's model: a mismatch
+    cfg = study(tmp_path, C=LOCAL, X=other)
+    res = mg.run_selfcheck(cfg, gw(tmp_path, t), CASES, runs=1, sleep=Sleeper())
+    assert res["judges"]["C"]["status"] == "done" and res["judges"]["X"]["status"].startswith("stopped:mismatch")
+    assert res["selection"] is None and "X" in res["selection_reason"]

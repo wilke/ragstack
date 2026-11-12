@@ -34,9 +34,15 @@ def world(tmp_path: Path) -> Path:
     return cfg
 
 
+def private_gw(world: Path) -> Path:
+    path = world.parent / "study-gateway-private.json"
+    path.write_text(json.dumps({"base_url": FAKE_GW}))
+    return path
+
+
 def gw3(world: Path, **extra: Any) -> Path:
-    return tgj.gw_cfg(world, tag="argon3", model="Fake Argon", base_url=FAKE_GW, judge_version="alias-judge/3",
-                      **extra)
+    return tgj.gw_cfg(world, tag="argon3", model="Fake Argon", base_url=None, judge_version="alias-judge/3",
+                      private_config=str(private_gw(world)), **extra)
 
 
 # ------------------------------------------------------------------ (a) the study-gateway /3 path
@@ -64,6 +70,22 @@ def test_study_gateway_runs_v3_with_the_graded_parser_and_the_notice(world: Path
     assert plan["est_input_tokens"] == jd.gateway_est_input_tokens("Fake Argon", jd.JUDGE_SYSTEM_V3, users,
                                                                    [1] * len(users))
     assert "GATEWAY SIZE-NOTICE" in (out / "LOG").read_text()
+    # no address in a graded row, in the plan or in the notice
+    assert all("endpoint" not in r for r in rows) and "base_url" not in plan
+    assert FAKE_GW not in (out / "labels-gw-argon3.jsonl").read_text() + (out / "LOG").read_text()
+    assert FAKE_GW not in (out / "preflight-gw-argon3.json").read_text()
+
+
+def test_v3_address_only_from_the_private_config(world: Path) -> None:
+    # mutation: accepting the study gateway's address in the study config for /3 fails this
+    cfg = tgj.gw_cfg(world, tag="argon3", model="Fake Argon", base_url=FAKE_GW, judge_version="alias-judge/3")
+    with pytest.raises(SystemExit, match="private_config"):
+        jd.main(["--config", str(cfg), "preflight", "--backend", "gateway"], prov=tgj.PROV)
+    cfg2 = tgj.gw_cfg(world, tag="argon3b", model="Fake Argon", base_url=None, judge_version="alias-judge/3")
+    assert jd.main(["--config", str(cfg2), "preflight", "--backend", "gateway"], prov=tgj.PROV) == 0
+    with pytest.raises(SystemExit, match="private_config is required"):
+        jd.main(["--config", str(cfg2), "label", "--backend", "gateway", "--notice-acknowledged"],
+                http_factory=lambda: tgj.FakeHTTP(lambda b: tgj.chat(GRADED, model="Fake Argon")), prov=tgj.PROV)
 
 
 def test_study_gateway_binary_reply_to_v3_stores_no_grade(world: Path) -> None:
@@ -99,6 +121,7 @@ def test_study_gateway_selfcheck_runs_each_case_once(world: Path, tmp_path: Path
     for b, c in zip(http.bodies, sc.SELF_CHECK_CASES_V3[:4], strict=False):
         assert f"QUESTION: {c['question']}" in b["messages"][1]["content"]
     out = tgj.out_of(world)
+    assert FAKE_GW not in (out / "preflight-gw-argon3-selfcheck.json").read_text()
     res = json.loads((out / "selfcheck-gw-argon3-selfcheck.json").read_text())
     assert res["cases"] == 4 and res["graded"] == 4 and set(res["per_case"]) == set(names)
     want = sum(1 for c in sc.SELF_CHECK_CASES_V3[:4] if c["suggested"] == "partial")
@@ -110,8 +133,8 @@ def test_study_gateway_selfcheck_guards(world: Path, tmp_path: Path) -> None:
     # mutation: running the self-check with empty owner labels, or on a binary prompt, fails this
     with pytest.raises(SystemExit, match="owner-set"):
         jd.main(["--config", str(gw3(world)), "preflight", "--backend", "gateway-selfcheck"], prov=tgj.PROV)
-    cfg2 = tgj.gw_cfg(world, tag="argon2", model="Fake Argon", base_url=FAKE_GW,
-                      selfcheck_file=str(_cases_file(tmp_path)))
+    cfg2 = tgj.gw_cfg(world, tag="argon2", model="Fake Argon", base_url=None,
+                      private_config=str(private_gw(world)), selfcheck_file=str(_cases_file(tmp_path)))
     with pytest.raises(SystemExit, match="graded"):
         jd.main(["--config", str(cfg2), "preflight", "--backend", "gateway-selfcheck"], prov=tgj.PROV)
 
@@ -142,6 +165,9 @@ def test_k3_rule() -> None:
     assert jd.k3_label(c + ["full"] * 4, ["partial"], None) == ("partial", "agree")  # first 5 samples only
     assert jd.k3_label(c, ["partial"], "yes") == ("partial", "agree")
     assert jd.k3_label(c, ["full"], "yes") == (None, "unjudged")  # a binary value is no grade
+    # mutation (P9): two missing labels are not an agreement
+    assert jd.k3_label([None] * 5, [None], "full") == ("full", "tiebreak")
+    assert jd.k3_label([None] * 5, [None], None) == (None, "unjudged")
 
 
 def test_ky_rule() -> None:
