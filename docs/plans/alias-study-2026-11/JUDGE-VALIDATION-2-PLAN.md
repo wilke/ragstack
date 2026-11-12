@@ -28,7 +28,7 @@ corrections is in the PR that merged it.
 | alias-judge/3 | "/2 with sharper *not* criteria", drafted from 12 pilot pairs | a graded prompt drafted by the agent from public repository text only; owner approves it ([JUDGE-3-PROMPT.md](JUDGE-3-PROMPT.md)) | Amendment 1 (4) |
 | candidates | K0, K3, KA, KS, KY, KO | adds graded KA3 and KS3, and a candidate panel from the model gateway (§4) | Amendment 1 (3), (4); Amendment 2 |
 | frames | near-miss / partial / clear answer / clear non-answer | near-miss / mid-coverage / high-coverage / off-topic. Only the names change | "partial" is now a label |
-| budget | about 5,000 calls | about 7,400 calls on the study gateway plus about 6,300–8,400 on the model gateway at 850 pairs; the ceiling is 20,000 in all (§10) | Amendment 1 (3) |
+| budget | about 5,000 calls | about 7,600 calls on the study gateway plus about 6,600–8,800 on the model gateway at 850 pairs; the ceiling is 20,000 in all, held by a pre-specified drop order (§10) | Amendment 1 (3) |
 | v1 questions Q1–Q11 | open | answered and folded in (§14) | Amendment 1 (5) |
 
 Background: [JUDGE-VALIDATION-PLAN.md](JUDGE-VALIDATION-PLAN.md) (the first validation),
@@ -271,25 +271,39 @@ recorded for that judge in the private config. **A missing header is a mismatch.
 **Pin and canary checks.** A *batch* is one model × one prompt over the frozen pair file (or over H for
 repetitions). The weights pin holds only while the local server is not restarted: the gateway's model
 listing is read at the start and end of every batch of a pinned local model and compared with the pinned
-snapshot; a failed end check **voids that batch's rows since the last passing check** (they are re-issued
-after the owner decides, and the void is counted). Hosted models have no revision pin, so the `model` field
+snapshot; a failed end check **voids that batch's rows since the last passing check** (the void is counted;
+nothing is re-issued within this plan, see the last bullet below). Hosted models have no revision pin, so the `model` field
 cannot catch a weight change; each hosted candidate's batch therefore starts and ends with **10 fixed
 synthetic canary cases**, run as follows:
 
 * the cases are a subset of the JUDGE-3-PROMPT.md §4 self-check cases with owner-set labels, committed
   before the freeze; they are always sent with **`/3`**, whatever prompt the batch runs, so one graded
   construct is tracked across every batch;
+* **selection rule**: before the freeze, the live self-check runs every case **5 times** on each hosted
+  candidate under that candidate's batch settings (JUDGE-3-PROMPT.md §4; costed in §10). The 10 canaries
+  are the cases whose label was identical in all 5 runs on every hosted candidate, taken in the committed
+  case order; if fewer than 10 qualify, the remaining places go to the cases with the most consistent runs,
+  and each chosen case's measured flip rate is recorded in the freeze commit;
 * they run at **temperature 0 with a fixed seed** where the backend accepts those parameters (recorded per
   call); where it does not, the backend's default sampling is used and the tolerance below applies;
-* **void rule** (pre-specified, so that sampling noise alone cannot void a batch): a batch is voided when
-  its end canary differs from its start canary on **3 or more of the 10 cases**, or when the end canary's
-  agreement with the owner-set labels is **3 or more cases lower** than the start canary's. Under
-  deterministic settings a single differing case is reported and does not void;
+* **void rule**: a batch is voided when its end canary differs from its start canary on **3 or more of the
+  10 cases**, or when the end canary's agreement with the owner-set labels is **3 or more cases lower** than
+  the start canary's (the second clause is implied by the first and is kept for readability). **Stated
+  false-void rate under default sampling**: if each case flips between two runs with probability q, the
+  chance that 3 or more of 10 differ is about 1 % per batch at q = 0.05, about 7 % at q = 0.10 (about 48 %
+  over nine hosted batches) and about 32 % at q = 0.20; the selection rule above is what keeps q low, and
+  the measured q is reported beside every void. Under deterministic settings a single differing case is
+  reported and does not void;
 * **chaining**: each batch's start canary is also compared with the previous batch's end canary for the
   same candidate; a difference on 3 or more cases marks a **canary epoch boundary**, which voids nothing
   (no row was mid-batch) but tags every later row with a new epoch, and the candidate is reported per epoch
   if more than one exists;
-* a voided batch is re-issued once after the owner decides; the re-issue counts against the 110 % cap.
+* **no re-issue**: a voided batch is **not** re-issued within this plan (a batch is 850–1,000 calls, and
+  neither the 110 % cap nor the 20,000 ceiling has room for a second one). The candidate is **reported up
+  to its last passing batch**: the batches before the void stand, the voided batch's rows are counted and
+  excluded, and any later batch of that candidate is not run. A re-run is a new dated amendment with its
+  own budget line and the owner's approval. The same rule applies to a pinned-local batch voided by the
+  pin check.
 
 Canary calls are in the budget (§10). **Open items:** the vllm session confirms the backend names and the
 snapshot before the freeze; an optional owner decision is a gateway-side route lock on the two pinned Qwen
@@ -425,7 +439,8 @@ Raters are pseudonymous (r1…rR) and no name is committed.
   any model label exists, seed `261103|alias|validation-2|panel`, by frame in the proportions 1/2, 1/4, 1/8,
   1/8 (150: near-miss 75, mid-coverage 37, high-coverage 19, off-topic 19; 120: 60 / 30 / 15 / 15; v1's 80
   at 40/20/10/10). A carries the weighted estimates. |A| is chosen so that the §7.2 precision target is met
-  without raising any rater's load above 80 items: more raters, not more items each (Amendment 1 (1)).
+  with every rater grading fewer items than v1's single rater (80 against 100): more raters, fewer items
+  each (Amendment 1 (1)).
 * **B**: 20 pairs, drawn **from the pairs not in A** after the model labels exist (seed `…|panel|B`): up
   to 10 Opus-split pairs, the rest pairs on which at least two of K0, K3 (strict), KA, KS and KY disagree
   under either collapse, in the seeded order. B is reported separately and never weighted.
@@ -450,7 +465,9 @@ pair shares one block. B's 20 pairs are split the same way when B is drawn. Each
 Block sizes are not whole numbers at every R, so loads vary by one or two items. The half-width column is
 the rough figure of §7.2 scaled by 1/√items; the power script replaces it before drafting. **R = 5 with
 |A| = 150 is the recommendation**: it meets the §7.2 target (≤ 0.10) at the same 80-item load as R = 4,
-which is how Amendment 1 (1) is honoured (more raters, not more items each). If only three raters besides
+and every rater grades fewer items than v1's single rater (80 against 100), which is how Amendment 1 (1) is
+honoured (more raters, fewer items each than v1; the load does not fall further from R = 4 to R = 5 because
+|A| grows with R to meet the target). If only three raters besides
 the owner are available, R = 4 with |A| = 120 is run and its expected ±0.11 is **declared now** as a
 limitation of the α band (§7.2); it is not an escape hatch found after the fact. R = 2 is the floor the
 owner confirmed: it keeps the rater load at v1's 100 items by shrinking A to v1's 80, and gives no
@@ -725,31 +742,36 @@ calls and 60 per candidate:
 | Argon `/3` (KA3, K3's tiebreaks) | ~850 | 1.58M / 0.04M |
 | Sol `/3` (KS3) | ~850 | 1.79M / 0.04M |
 | Argon `/3` + Sol `/3` repetitions 2–3 on H (170 items × 2 reps × 2 models; A's and B's items run separately) | 680 | 1.35M / 0.03M |
-| re-issue allowance | ~80 | 0.1M / — |
-| **study gateway** | **~7,380** | **~10.4M / ~0.91M** |
+| re-issue allowance (single invalid replies, prereg R4; never a batch) | ~80 | 0.1M / — |
+| pre-freeze `/3` live self-check, Argon and Sol (about 20 cases × 5 runs each, §4 selection rule) | ~200 | 0.4M / 0.01M |
+| **study gateway** | **~7,580** | **~10.8M / ~0.92M** |
 
 **Model-gateway budget** (the §4 panel; its own key and cap). Per candidate: `/2` on all pairs (850), `/3` on
-all pairs (850), `/3` repetitions 2–3 on H (340), and the canary cases (10 at the start and end of each of
-the three batches, 60, all on `/3`) = **2,100 calls**, about 3.4M prompt tokens at the flat 3.4 (0.9k × 850 +
-2.1k × 1,250); completion unknown until measured.
+all pairs (850), `/3` repetitions 2–3 on H (340), the canary cases (10 at the start and end of each of the
+three batches, 60, all on `/3`) and the pre-freeze self-check (about 20 cases × 5 runs, 100) = **2,200
+calls**, about 3.6M prompt tokens at the flat 3.4 (0.9k × 850 + 2.1k × 1,350); completion unknown until
+measured.
 
 | panel | calls at 850 pairs | prompt tokens |
 |---|---|---|
-| KX1–KX3 | ~6,300 | ~10.2M |
-| KX1–KX4 (with the optional gpt-oss-120b) | ~8,400 | ~13.6M |
+| KX1–KX3 | ~6,600 | ~10.8M |
+| KX1–KX4 (with the optional gpt-oss-120b) | ~8,800 | ~14.4M |
 
 **Totals and the ceiling.** Counted together against the 20,000 ceiling, whichever budget pays (study
-gateway at 1,000 pairs: 270 + 3,470 + 4,000 + 680 + 80 = 8,500; per candidate 2,400):
+gateway at 1,000 pairs: 270 + 3,470 + 4,000 + 680 + 80 + 200 = 8,700; per candidate 2,500):
 
 | pairs | study gateway | + 3 candidates | + 4 candidates | with the 110 % caps (4 candidates) |
 |---|---|---|---|---|
-| 850 | ~7,380 | ~13,680 | ~15,780 | ~17,360 |
-| 1,000 | ~8,500 | ~15,700 | ~18,100 | ~19,910 |
+| 850 | ~7,580 | ~14,180 | ~16,380 | ~18,020 |
+| 1,000 | ~8,700 | ~16,200 | ~18,700 | ~20,570 → **drop order applies** |
 
-Every cell is under 20,000, the last by 90 calls. **Pre-specified drop order** if the realised pair count
-would push the capped total over 20,000: first the optional candidate's `/2` run (850–1,000 calls), then the
-optional candidate, then all candidates' repetitions 2–3. The order is applied before any candidate call
-and recorded. The Opus reference, the Holm-family runs and the canary cases are never cut.
+**Pre-specified drop order**, applied once the pair file is frozen (so the pair count is known) and before
+any candidate call, whenever the capped total would exceed 20,000: first the optional candidate's `/2` run
+(850–1,000 calls; at 1,000 pairs with four candidates this brings the capped total to about 19,470), then
+the optional candidate, then all candidates' repetitions 2–3. The step taken is recorded. The Opus
+reference, the Holm-family runs, the self-check and the canary cases are never cut. **There is no re-issue
+reserve for a voided batch**: a void ends that candidate's labelling at its last passing batch (§4), which
+can only lower the total.
 
 * Sol (GPT-6.1) and the candidates have no measured tokens; the first 20 calls of each are measured for the
   size notice.
@@ -781,8 +803,9 @@ mismatch is handled by the §4 table (on the study gateway it stops the run and 
    bootstrap, the published worked example as a test); a test that the sheet writer's rubric and examples
    blocks equal the prompt's (§2); judge-vs-panel scoring (§8.1); the candidate analysis (§8.2–8.4); the
    power script with the panel simulation.
-3. The `/3` live self-check (JUDGE-3-PROMPT.md §4) on every `/3` judge; the system sha and the counts go into
-   an amendment here. Raters confirmed, rubric read, familiarisation done.
+3. The `/3` live self-check (JUDGE-3-PROMPT.md §4) on every `/3` judge, 5 runs per case on each hosted
+   candidate for the canary selection (§4); the system sha, the counts, the chosen canaries and their
+   measured flip rates go into an amendment here. Raters confirmed, rubric read, familiarisation done.
 4. Exclusions, config and `run-waves` with the size notice; the ALCF revision request filed (§4).
 5. Retrieval, pool, frames; the pair file frozen; A drawn, assigned and the sheets written.
 6. Labelling, in this order: **C on `/2` and `/3` first** (§3, the end-date rule), then E; Opus ×3; Argon

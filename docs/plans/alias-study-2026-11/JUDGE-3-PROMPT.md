@@ -250,11 +250,14 @@ with K0 and with Opus `/1`, with lenient beside it (plan §8.3).
   * parser cases for every bullet of §2, including the cross-version fail-closed property.
 * Self-check: a separate set of synthetic cases, not the prompt's examples, at least one per rule, with
   **expected labels set by the owner**. They follow the pattern of `VERIFY_CASES` in
-  `test_glossbench_alias.py`. They are run live once on each `/3` judge before any validation-2 record is
-  drafted, and the counts go into the plan amendment that records the system sha (plan §11, step 3). Ten
-  of them, fixed before the freeze, are the canary cases that open and close every hosted candidate's batch
-  (plan §4): always sent with `/3`, at temperature 0 and a fixed seed where the backend accepts them, with
-  the plan's 3-of-10 tolerance otherwise.
+  `test_glossbench_alias.py`. They are run live before any validation-2 record is drafted: once on each
+  study-gateway `/3` judge, and **5 times per case on each hosted candidate** under its batch settings, so
+  that the plan's canary selection rule can measure each case's flip rate. The counts go into the plan
+  amendment that records the system sha (plan §11, step 3). Ten of them, chosen by that rule (identical
+  label in all 5 runs on every hosted candidate, committed case order) and fixed before the freeze, are the
+  canary cases that open and close every hosted candidate's batch (plan §4): always sent with `/3`, at
+  temperature 0 and a fixed seed where the backend accepts them, with the plan's 3-of-10 tolerance and its
+  stated false-void rate otherwise. A voided batch is not re-issued (plan §4).
 * The system sha256 is recorded in that amendment in the same commit.
 
 ## 5. What the plan decided about this prompt (v2)
