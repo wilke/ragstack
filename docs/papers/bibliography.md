@@ -170,6 +170,8 @@ Questions over NLP papers. The question writers saw only the title and abstract,
 
 **Weight: strong as a paragraph-level base rate, provided the denominator is stated; absent for any relation to question type.**
 
+**Re-measured on the released data (2026-11-11, exploratory).** The paper's 55.5% does not reproduce from the public release. Under the paper's own definition (answerable answers, text-only evidence, more than one paragraph) the v0.3 release gives 32.3% (train), 30.1% (dev) and 31.4% (test), and the v0.1 release gives the same counts; only the union of paragraphs over a question's annotators on the test split comes near (57.6%). The same measurement gives the section-level shares the paper does not report: 14.2% of train+dev answers span more than one full-path section and 10.1% more than one top-level section, with Fleiss κ 0.22–0.33 for the single- versus multi-section label ([qasper-dispersion-2026-11](../plans/results/qasper-dispersion-2026-11/RESULTS.md), `artifacts/qasper-dispersion.json`). Until the gap is explained, cite the paper's figure only as the paper's claim and use the re-measured figures for anything load-bearing.
+
 ### `baumgartner-2025-peerqa` — PeerQA: A Scientific Question Answering Dataset from Peer Reviews
 Tim Baumgärtner, Ted Briscoe, Iryna Gurevych. NAACL 2025. doi 10.18653/v1/2025.naacl-long.22 ·
 arXiv 2502.13668 · **verified, read (full PDF)**
