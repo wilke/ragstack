@@ -1505,6 +1505,17 @@
    "kind": "json",
    "verified": true,
    "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable. Every released version (v0.1, v0.3) and split gives 30-32 % under the paper's definition; the gap is unexplained in the record. Cite the paper's figure as what it published, beside this."
+  },
+  {
+   "id": "oa-sections-vs-random-cuts-vector-reranker",
+   "section": "5.4",
+   "statement": "With the reranker on vector-only candidates, real section boundaries beat count-matched random cuts on sentence chunks by +2.11 [+0.69, +3.54], down from +4.82 without the reranker.",
+   "value": 2.11,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "+4.82 → **+2.11** [+0.69, +3.54]",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C2, setting (e), unadjusted; sent512s - sent512rc. The only count-matched random-cut control is on the sentence arm; none exists for the fixed window. Under BM25 + reranker the same contrast is +1.18 [-0.05, +2.41]."
   }
  ]
 }

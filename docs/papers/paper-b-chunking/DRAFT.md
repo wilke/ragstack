@@ -8,9 +8,11 @@
 
 ## Abstract
 
-[Four to six sentences: the decision, the design, the result in the two-number form
-(`confirm-control-not-rate` / `confirm-retest-not-rate` against `reach-quote10-rates`), what it does
-not show.]
+[Four to six sentences: the decision, the design, the result: +3.49 (`oa-sections-ft-setting-a`, private
+pre-specification) and its random-cut caveat (`oa-sections-vs-random-cuts-setting-a`, unresolved in
+production; `oa-sections-vs-random-cuts-vector-reranker`); the tie (`h2h-s-minus-ft512o64s`); reach +1.15
+against plain windows (`reach-quote10-rates`); the judged 21.4 % / 4.6 % (`confirm-control-not-rate`,
+`confirm-retest-not-rate`) only as the flagged mechanism; what it does not show.]
 
 ## 1. Problem
 
