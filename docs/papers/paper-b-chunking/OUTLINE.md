@@ -278,7 +278,8 @@ which set the margins is excluded from the decision set.
 
 ### 4. Data
 
-- **Corpus (OA eval, head-to-head):** 22,593 PMC OA bacteria/virus articles (`oa-corpus-articles`),
+- **Corpus (OA eval, head-to-head):** 22,593 PMC OA bacteria/virus articles (`oa-corpus-articles`;
+  Markdown-only: the committed aggregate records that it cannot carry this count),
   extracted once into 241,930 article, table and figure records identical in every arm
   (`h2h-records-main`); about 20,000 articles hold no question and serve as distractors.
 - **Questions (OA eval):** 2,592 passages (median 1,242 characters, `oa-passage-median-chars`; section
@@ -331,8 +332,8 @@ the production setting (`oa-margins-floor`), where the server default reaches 79
 below resolves to the committed aggregate artifact (`../../plans/results/oa-chunking-eval-2026-10/artifacts/
 oa-eval-aggregates.json`, aggregates only, citable provenance), which labels each contrast confirmatory
 (the frozen six-arm run), Addendum C (pre-specified privately after the main run) or exploratory; the
-section's sentences carry those labels. Three numbers remain Markdown-only, quoted under the labelled §5.4
-exception in the working rules and named as Markdown-only in their sentences: the article count
+section's sentences carry those labels. Three numbers remain Markdown-only, quoted under the labelled §4/§5.4
+exception in the working rules (the article count in §4) and named as Markdown-only in their sentences: the article count
 (`oa-corpus-articles`), the legacy semantic arm's planned embedding cost (`oa-legacy-semantic-cost`) and the
 sentence and semantic arms' split-quote shares (`oa-split-quote-share-sent512`).
 - *Section cuts* (four contrasts pre-specified in the private Addendum C after the six-arm run, Holm; the
@@ -353,7 +354,7 @@ sentence and semantic arms' split-quote shares (`oa-split-quote-share-sent512`).
   the 119 questions a plain cut splits (+34.45 [+25.21, +43.70]; the other 1,916 +0.05 [−1.36, +1.46],
   exploratory; `oa-overlap-setting-a`); chunks are not larger
   (`oa-overlap-chunk-size-unchanged`); 5.85 % of quotes split without overlap against 0.20 % under
-  sentence cuts (`oa-split-quote-share-ft512o0`, `oa-split-quote-share-sent512`); at the article level +0.64
+  sentence cuts (`oa-split-quote-share-ft512o0`; the 0.20 % is Markdown-only, `oa-split-quote-share-sent512`); at the article level +0.64
   [−0.39, +1.67]
   (`oa-overlap-article-level`). Exploratory label: hypotheses B and D.
 - *Size* (exploratory A, two sizes): −5.80 under vector-only (`oa-size-vector-only`), +5.31 under BM25
@@ -539,7 +540,7 @@ access for the judge tiebreak, and the two-reader human read this record lacks.
   the draft.
 - Read the `note` field before writing the sentence. Four note tags change what may be said:
   `JUDGE-DEPENDENT` (the validity flag goes in the sentence), `MARKDOWN-ONLY` (the number has no committed
-  JSON; the defect is fixed before the sentence is drafted, with one labelled exception: §5.4 may quote
+  JSON; the defect is fixed before the sentence is drafted, with one labelled exception: §4 and §5.4 may quote
   exactly three Markdown-only numbers, each named as Markdown-only in its sentence, because the committed
   aggregate records that it cannot carry them: the article count `oa-corpus-articles`, the legacy arm's
   planned cost `oa-legacy-semantic-cost` and the sentence/semantic split shares
