@@ -13,8 +13,10 @@ PYTHONPATH=python /rag/envs/ragstack/bin/python \
   docs/plans/results/oa-chunking-eval-2026-10/artifacts/make_aggregates.py <private-dir>
 ```
 
-Run it from a clean checkout so that `provenance.citable` is true. The script refuses to
-run if `ragstack` or the harness is imported from outside this checkout. Two runs on the
+Run it from a clean checkout so that `provenance.citable` is true. The script pins its
+imports (`ragstack` and the `oa_chunk_eval` harness) to its own checkout by putting that
+checkout first on `sys.path`, so provenance always describes the tree that holds the
+script. Two runs on the
 same inputs give the same output, except for `provenance.recorded_at`.
 
 ## What is in it
@@ -32,7 +34,9 @@ same inputs give the same output, except for `provenance.recorded_at`.
 - `chunk_counts`: receipt chunk totals per arm for the full ingest.
 - `noise_run`: per-setting noise results and the CI half-widths that set the frozen margins.
 - `settings.<s>.arms.<arm>`: n, hit@1, hit@5 (with its 95% CI), hit@10, context tokens at
-  k = 5 (chars/4 estimates) and sensitivity-set hit@5. Settings: (a) hybrid + reranker
+  k = 5 (chars/4 estimates), sensitivity-set hit@5 and a per-arm `status`. In settings
+  (a)-(d) the six main-run arms are `confirmatory` and the four section arms `addendum-C`;
+  in (e)-(f) every arm is `exploratory`. Settings: (a) hybrid + reranker
   (decision), (d) hybrid, (b) vector, (c) BM25; post-hoc (e) vector + reranker and
   (f) BM25 + reranker.
 - `contrasts.<id>`: one entry per paired contrast. Each entry gives `pair`, `setting`, `set`,

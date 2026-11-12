@@ -139,6 +139,8 @@ def slug(s: str) -> str:
 
 # --------------------------------------------------------------------------- recompute
 def harness():
+    # Pin the harness import to this script's own checkout: the path is inserted first, so the
+    # module always resolves here. The check below is a sanity assertion, not a guard.
     sys.path.insert(0, str(REPO_ROOT / "python" / "scripts" / "eval"))
     from oa_chunk_eval import stats as st  # noqa: E402
     from oa_chunk_eval.score import set_rows  # noqa: E402
@@ -325,13 +327,16 @@ def build(src: Src) -> dict:
                         "ctx_tokens@5": st["context_tokens"]["5"][arm],
                         "sensitivity_hit@5": r(sc["sets"][SENS_SET]["primary"]["5"]["pooled"]["hit"][arm]["point"]),
                         "sensitivity_n": sc["sets"][SENS_SET]["n"],
+                        "status": ("confirmatory" if arm in MAIN_ARMS else "addendum-C") if s in "adbc" else "exploratory",
                         "source": rel}
             if s in MAIN_DIRS and arm in MAIN_ARMS:  # the sections score re-scored the old arms
                 o = scores_sec[s]["sets"][DECISION_SET]["primary"]
                 same = all(o[k]["pooled"]["hit"][arm]["point"] == h[k]["point"] for k in ("1", "5", "10"))
                 cross.append({"setting": s, "arm": arm, "main_run_equals_sections_rescore": same})
         settings[s] = {"label": SETTING_LABEL[s],
-                       "status": "confirmatory" if s in "adbc" else "exploratory",
+                       "status": "per arm (arms.<arm>.status)",
+                       "status_note": ("settings a-d: the six main-run arms are confirmatory (frozen rule); the four section "
+                                       "arms are addendum-C. Settings e-f are post hoc: every arm is exploratory."),
                        "context_tokens_estimated": "chars/4",
                        "bootstrap": scores_sec[s]["bootstrap"], "arms": tab}
     out["settings"] = settings
@@ -676,10 +681,10 @@ MARKDOWN_CHECKS += [
     ("chunk_counts.arms.sent512.chunks", RS, "677,432", 1),
     ("chunk_counts.section_arms.ft512o64s.chunks", RS, "859,087", 1),
     ("chunk_counts.section_arms.sent512s.chunks", RS, "850,119", 1),
-    ("noise_run.settings.a.half_width_at_planned_n", RM, "1.15", 1),
+    ("noise_run.settings.a.half_width_at_n2035_scaled.value", RM, "1.15", 1),
     ("noise_run.settings.d.half_width_at_planned_n", RM, "1.66", 1),
-    ("noise_run.settings.b.half_width_at_planned_n", RM, "1.70", 1),
-    ("noise_run.settings.c.half_width_at_planned_n", RM, "1.34", 1),
+    ("noise_run.settings.b.half_width_at_n2035_scaled.value", RM, "1.70", 1),
+    ("noise_run.settings.c.half_width_at_n2035_scaled.value", RM, "1.34", 1),
     ("noise_run.settings.a.half_width_at_n2035_scaled.value", "PLAN-AND-PASS-RULE.md Addendum B item 3", "1.22", 1),
     ("noise_run.settings.b.half_width_at_n2035_scaled.value", "PLAN-AND-PASS-RULE.md Addendum B item 3", "1.79", 1),
     ("noise_run.settings.c.half_width_at_n2035_scaled.value", "PLAN-AND-PASS-RULE.md Addendum B item 3", "1.41", 1),
@@ -746,6 +751,12 @@ MISMATCH_NOTES = {
         "RESULTS prints -1.08; the harness stream (seed 0) gives -1.13. Point and lower bound match. "
         "Seed 1 and an index-resampling bootstrap give -1.08, so the printed bound came from another "
         "bootstrap draw; the difference (0.05) is resampling noise, not a different contrast."),
+    "noise_run.settings.a.half_width_at_n2035_scaled.value": (
+        'RESULTS prints the planned-n (2,260) half-width under an "n = 2,035" label; at n = 2,035 the figure is the scaled value here (the PLAN\'s Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.'),
+    "noise_run.settings.b.half_width_at_n2035_scaled.value": (
+        'RESULTS prints the planned-n (2,260) half-width under an "n = 2,035" label; at n = 2,035 the figure is the scaled value here (the PLAN\'s Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.'),
+    "noise_run.settings.c.half_width_at_n2035_scaled.value": (
+        'RESULTS prints the planned-n (2,260) half-width under an "n = 2,035" label; at n = 2,035 the figure is the scaled value here (the PLAN\'s Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.'),
     "spread.pairs.C1_hybrid.sd_ratio_reranked_over_not.lo": (
         "POSTHOC's C1 prose prints 0.68; rerank_spread.json and POSTHOC's own C2 table give 0.67. "
         "The prose figure is a transcription error."),
@@ -780,6 +791,8 @@ def markdown_checks(doc) -> dict:
 
 # --------------------------------------------------------------------------- provenance / main
 def provenance() -> dict:
+    # Pin ragstack to this script's own checkout (inserted first, so it always resolves here);
+    # provenance then describes the tree that holds this script.
     sys.path.insert(0, str(REPO_ROOT / "python"))
     import ragstack
     import ragstack.provenance as rp
