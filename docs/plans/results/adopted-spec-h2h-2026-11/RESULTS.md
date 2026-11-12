@@ -44,7 +44,7 @@ artifact. Deviations: [`DEVIATIONS.md`](DEVIATIONS.md) D-1 to D-6.
   `1.6.25+67e53fd4d5dd552eb3d22fa4c8554bff1748d738` (`server_version`, `settings.<s>.server_versions`), the version
   named in the freeze statement.
 - **Reproduction from files.** For this write-up the frozen script was re-run from the same private inputs at
-  `8d0dd703` (main after #1006; the script and its package are unchanged since `f4d4ef9a`). Its output equals the
+  `8d0dd703` (main after #1006; the `report` subcommand and everything it imports are unchanged since `f4d4ef9a`; the package's one change is the `reembed fetch` fix of D-1). Its output equals the
   committed artifact in every field except `files.harness_provenance`, which names the other commit.
 - **Private companion.** The run directory (receipts, stderr, store counts, task listings, cosines, ledgers,
   per-question files, the manifest); the pre-freeze records in the private experiments repository.
@@ -254,7 +254,7 @@ From `ingest-summary` unless marked otherwise.
 - **Worker version per task.** The task listing the operator captured is the endpoint's first page: 20 of 33 records
   per arm (`listing_capture`: all 16 glossary tasks and ingest shards 00–03; `has_more` true, the rest was not
   fetched). For those, the worker's version from the fleet listing: S shards 00–03 ran on 0.26.1 / 0.28.1 / 0.26.1 /
-  0.28.1; S-regex shards 00–03 on 0.26.1 / 0.26.1 / 0.28.1 / 0.28.1 (`ingest_tasks_with_worker_version`). Both worker
+  0.28.1; S-regex shards 00–03 on 0.26.1 / 0.26.1 / 0.28.1 / 0.28.1 (`ingest_tasks_with_worker_version`; the task listing carries no worker field, so this join of task to fleet version is the operator's, not reproducible from the committed records). Both worker
   versions ran ingest tasks of both arms; the version of the other 12 ingest tasks per arm is **absent**.
 - **GoWe versions.** Server `0.28.1+e805888` at the freeze (the freeze record; the sentinel passes before the
   freeze ran on 0.26.1). The dev worker group at 22:31:31Z: 2 workers at `0.28.1+e805888`, 8 at `0.26.1+be35a2f`,

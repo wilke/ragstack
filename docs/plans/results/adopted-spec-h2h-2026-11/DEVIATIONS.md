@@ -42,7 +42,8 @@ below are tooling, staging and bookkeeping; each says what it touches.
 - **What had been seen.** The harness's *0 calls* lines only.
 - **Verification.** For this write-up, every staged file in all eight `out_dir`s was compared by sha256 with the same
   file in Addendum C's `out_dir` of the same setting: all 16 files identical in every directory, and the
-  `extracted` link resolves to the same directory. The staged `passages.summary.json` has the sha256 pinned in
+  `extracted` link resolves to the same directory. Addendum C's `out_dir` entries are themselves symlinks to the one
+  shared OA-eval `out/` directory, so the comparison is identity by construction. The staged `passages.summary.json` has the sha256 pinned in
   `frozen-inputs.json` (`passages_summary_sha256`; `segmenter` `punkt-abbrev-v1`). The report's `[sets]` gate
   independently checked the three-arm decision and sensitivity sets by count and sorted-id sha256 against the
   frozen pins, and `[config_pin]` the eight configs; neither fired.

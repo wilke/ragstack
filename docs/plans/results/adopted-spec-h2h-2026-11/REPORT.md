@@ -47,7 +47,7 @@ v1.6.25, tools v1.6.24 with S on build 1 and S-regex on build 2).
 ## 2. Results summary
 
 **Decision: deploy S.** A tie at H2 under cost order B; no validity gate fired; H3 passes, so S may be deployed on
-any worker.
+any worker (on this corpus).
 - **Rates.** In the production setting, hit@5 was **82.85 %** under S against **82.51 %** under ft512o64s and
   79.02 % under the server default ft512o64 (`settings.a.hit5`).
 - **What one point means here.** The decision set has 2,035 questions, one per article, so one hit@5 point is
@@ -213,7 +213,7 @@ ft512o64 rather than against ft512o64s; reported, not compared.
   0.9999995) and the one-version gate held. The ingest path differs between the new and reused arms (the study
   text captures stderr; the server default ran on an older tools image); the sentinel chunk ids reproduced across
   the texts, and the tools-version difference to ft512o64 is not otherwise controlled.
-- **What it means in practice.** The adopted default can go to the re-ingest (#811) as adopted: it does not cost
+- **What it means in practice.** The adopted default stands: it does not cost
   hit@5 against the eval's pick, it stores about 10 % fewer chunks, and it may run on workers without `nltk`
   (receipts still record the backend). The choice between S and ft512o64s on these questions is a cost
   judgement, not a retrieval one, and the record carries both orders' decisions so that judgement can be
