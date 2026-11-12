@@ -1114,16 +1114,28 @@
   {
    "id": "rescore-overlap-512-unresolved",
    "section": "5.3",
-   "statement": "At the passage level, 12.5 % overlap at 512 tokens raises top-1 gold-section coverage by 0.025 [0.011, 0.040], below the 0.021 power floor's resolution rule: unresolved.",
+   "statement": "At the passage level, 12.5 % overlap at 512 tokens raises top-1 gold-section coverage by +0.025 [0.011, 0.040]; that exceeds the 0.021 power floor (delta80) but not the pre-registered smallest effect of interest X_P = 0.05, so the contrast is unresolved under the rule's second condition.",
    "value": {
     "mean": 0.02528108323313352,
+    "delta80": 0.020692601566934175,
     "verdict": "UNRESOLVED (|mean| 0.0253 < delta80 0.0207)"
    },
    "source": "docs/plans/results/rescore/report-rescore.json",
    "pointer": "R6_overlap[\"512\"][\"cov1|12.5%-0%\"]",
    "kind": "json",
    "verified": true,
-   "note": "JUDGE-FREE, n = 260. The pre-registered rule needs |mean| >= delta80 AND >= X_P; the RESULTS file reads this as 'does not translate into a resolved passage-retrieval gain'. The quoted verdict string is the artifact's own."
+   "note": "JUDGE-FREE, n = 260. The artifact's own verdict string misprints the inequality: 0.0253 is GREATER than 0.0207. The rule (PREREG-rescore) resolves only when |mean| >= delta80 AND |mean| >= X_P (0.05, `rescore-x-p`) AND the CI excludes 0; the X_P condition fails. The RESULTS file reads it as 'does not translate into a resolved passage-retrieval gain'. Do not quote the verdict string's inequality."
+  },
+  {
+   "id": "rescore-x-p",
+   "section": "5.3",
+   "statement": "The re-score's pre-registered smallest passage-level effect of interest X_P is 0.05.",
+   "value": 0.05,
+   "source": "docs/plans/results/rescore/report-rescore.json",
+   "pointer": "bars.X_P",
+   "kind": "json",
+   "verified": true,
+   "note": "X_B (document level) is 0.01."
   },
   {
    "id": "sevenway-fixed-tok512-rerank-mrr",
@@ -1190,7 +1202,7 @@
    "pointer": "spot_checks.judge_validity.metrics",
    "kind": "json",
    "verified": true,
-   "note": "Unweighted 100-pair sample; the re-weighted figure is the gate."
+   "note": "Unweighted 100-pair sample; the re-weighted figure is the gate. The single rater also designed the study. Precision 0.783 means the human rejected about one in five of the judge's *answers* labels (13 fp of 60), which bears on every lost/recovered count in 5.7 and on the 75-of-75 saturation."
   },
   {
    "id": "s0-joint-power-at-80",
@@ -1213,6 +1225,209 @@
    "kind": "text",
    "verified": true,
    "note": "MARKDOWN-ONLY; the corpus plan artifact is stage0/artifacts/corpus_plan.json (not inspected here)."
+  },
+  {
+   "id": "oa-overlap-article-level",
+   "section": "5.1",
+   "statement": "At the article level (any top-5 chunk from the gold article) overlap moves hit@5 by only +0.64 [-0.39, +1.67] in the production setting, against +2.06 at the chunk level.",
+   "value": 0.64,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "| (a) | +0.64 [-0.39, +1.67] |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Hypothesis D item 5; unadjusted; the one in-record demonstration that a document-level metric misses a chunk-level effect on the OA eval. The only significant article-level gain is under BM25 on the split questions (+9.2 [+4.2, +15.1])."
+  },
+  {
+   "id": "oa-questions-passing",
+   "section": "4",
+   "statement": "2,437 passages yielded a question and exact answer quote passing the programmatic checks in three attempts.",
+   "value": 2437,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "| Questions | 2,437 |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. 155 passages failed all three attempts."
+  },
+  {
+   "id": "oa-clean-set",
+   "section": "4",
+   "statement": "The clean set holds 2,335 questions after removing 63 ambiguous-gold items and 66 within-record repeats.",
+   "value": 2335,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "| Clean set | 2,335 |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Some items carried both flags."
+  },
+  {
+   "id": "oa-chunking-matters-under-reranker",
+   "section": "5.4",
+   "statement": "Under the reranker in hybrid retrieval, chunking moves hit@5 by about 2-6 points across the ten arms.",
+   "value": 6,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "matters by about 2-6 points under the reranker",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C1; best - worst across arms 5.9 in setting (a). The claim value is the upper end of the quoted range; 'about 2-6' is the artifact's own phrasing."
+  },
+  {
+   "id": "oa-size-vector-reranker",
+   "section": "5.4",
+   "statement": "With the reranker on vector-only candidates, the 1,024-vs-512 size penalty shrinks from -5.80 to -3.54 [-5.21, -1.92] and stays significant.",
+   "value": -3.54,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "-5.80 → **-3.54** [-5.21, -1.92]",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C2, setting (e), unadjusted. The BM25 counterpart is +5.31 → +3.88 [+2.36, +5.45]."
+  },
+  {
+   "id": "oa-legacy-semantic-cost",
+   "section": "5.4",
+   "statement": "The legacy semantic chunker costs about 4.5-7x the embedding tokens of a fixed window; this is the planned cost of the legacy arm, not a measurement of semantic_pooled.",
+   "value": 4.5,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "The legacy semantic chunker also costs ~4.5-7x",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. The plan (PLAN-AND-PASS-RULE.md arm 6) carries the same planned figure. semantic_pooled's cost ratio on this corpus is absent from the public record."
+  },
+  {
+   "id": "oa-sempool-hit5-setting-a",
+   "section": "5.4",
+   "statement": "Capped semantic_pooled reaches 80.29 % hit@5 in the production setting, above the server default's 79.02 % and below the section-cut arms.",
+   "value": 80.29,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "| sempool512 | 80.29 | 64.67 | 56.95 | 51.74 |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Its mid-class superiority test (lower bound >= +2.0 over the baseline) did not clear: the point gain over ft512o64 is +1.27. Columns: (a), (d), (b), (c)."
+  },
+  {
+   "id": "found10-all-lost-a-own",
+   "section": "5.7",
+   "statement": "For all 75 lost pairs, the pair's own answering chunk is in production retrieval's top 10 for 39 (52 %).",
+   "value": {
+    "k": 39,
+    "n": 75,
+    "rate": 0.52
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q1_lost_pairs.all_lost.by_retriever.default.A_own",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY, no test; the 18 split pairs count 0 by construction. Reference: 178 of 276 (`found10-reference-a-own`)."
+  },
+  {
+   "id": "found10-a-own-by-corpus",
+   "section": "5.7",
+   "statement": "Retrieval of the pair's own answering chunk falls with collection size: 73.5 % on the base corpus, 53.8 %, 54.7 % and 62.3 % on the neighbour and two random expansions.",
+   "value": {
+    "base.by_retriever.default.A_own.rate": 0.735,
+    "neighbour.by_retriever.default.A_own.rate": 0.5385,
+    "random1.by_retriever.default.A_own.rate": 0.5469,
+    "random2.by_retriever.default.A_own.rate": 0.6226
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q2_all_pairs.all_pairs.by_corpus_arm",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY, all 351 pairs, default retriever; n per arm 117 / 117 / 64 / 53."
+  },
+  {
+   "id": "split-wall-read-one-side",
+   "section": "5.7",
+   "statement": "In an offline read of the 10 wall-crossing split windows, one reader judged 9 answerable from one side of the section wall alone, none needing both sides, one unclear.",
+   "value": 9,
+   "source": "docs/plans/results/split-answer-2026-11/REPORT.md",
+   "pointer": "In 9 of the 10 wall-crossing split windows",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY and NOT A JUDGE LABEL: a private operator read that set no label. The counts artifact artifacts/wall-read-counts.json carries provenance.citable false (an operator read, not a harness run), so it is not cited; REPORT.md is a reader-facing file revised in place. Defect: the record file (RESULTS.md) does not carry this count. n = 10."
+  },
+  {
+   "id": "chunker-window-budget",
+   "section": "3",
+   "statement": "Every chunk is bounded by the embedder's 4,096-token window less a 16-token reserve: a 4,080-token budget.",
+   "value": {
+    "window_budget": 4080,
+    "model_window": 4096
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "chunker",
+   "kind": "json",
+   "verified": true,
+   "note": "SFR-Embedding-Mistral. Recorded by the confirmation test's chunker block; the same budget applies to every arm in every study here."
+  },
+  {
+   "id": "reach-prereg-sha",
+   "section": "7",
+   "statement": "The reach test's pre-registration (sha256 1e3791ed…4458) was verified against the frozen file by the report.",
+   "value": {
+    "sha256": "1e3791ede2b7252cf43b940fd24f99a40a4126cabfc3a698f9f3a3ba3ade4458",
+    "verified": true
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "prereg",
+   "kind": "json",
+   "verified": true,
+   "note": "Signed tag prereg-reach-rechunk-2026-11."
+  },
+  {
+   "id": "h2h-prereg-sha",
+   "section": "7",
+   "statement": "The head-to-head's pre-registration (sha256 31687ee4…6f82) was checked by the report.",
+   "value": {
+    "prereg_sha256": "31687ee41b036010a49975a1a4b215841e67aa5e5c6e5a979feb91c0160f6f82",
+    "checked": true
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "prereg",
+   "kind": "json",
+   "verified": true,
+   "note": "Signed tag prereg-adopted-spec-h2h-2026-11."
+  },
+  {
+   "id": "confirm-prereg-sha",
+   "section": "7",
+   "statement": "The boundary-confirmation test's pre-registration has sha256 b3a2d9e6…9b0e.",
+   "value": "b3a2d9e61f42675d9dccdd84bc449a0e7507e4b9c9d15bf957b6a3613e589b0e",
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "confirmatory.prereg_sha256",
+   "kind": "json",
+   "verified": true,
+   "note": "PREREG v3.2; signed tag prereg-alias-boundary-confirm-2026-11."
+  },
+  {
+   "id": "h2h-harness-provenance",
+   "section": "7",
+   "statement": "The head-to-head report was produced from a clean tree at commit f4d4ef9a with citable provenance.",
+   "value": {
+    "commit": "f4d4ef9a0b3b33116744488766f4e28d51aa51b3",
+    "citable": true,
+    "dirty": false,
+    "untracked": 0
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "files.harness_provenance",
+   "kind": "json",
+   "verified": true,
+   "note": ""
+  },
+  {
+   "id": "confirm-provenance",
+   "section": "7",
+   "statement": "The boundary-confirmation report was produced from a clean tree at commit 016fb61 with citable provenance.",
+   "value": {
+    "commit": "016fb61d03784e6505b43275e4ee7536a2fddec7",
+    "citable": true,
+    "dirty": false
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "provenance",
+   "kind": "json",
+   "verified": true,
+   "note": ""
   }
  ]
 }
