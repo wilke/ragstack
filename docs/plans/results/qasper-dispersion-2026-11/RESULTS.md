@@ -149,6 +149,14 @@ One train paper repeats a full section name. At the full-path level its two entr
 
 ### 4.1 The 55.5% reproduction check
 
+*Anchor (independent review, 2026-11-11).* The paper's other §3 and Table 1 figures reproduce exactly from the same
+release: the answer-type shares 51.8 / 24.2 / 13.9 / 10.2 % over all 7,993 answers of the three splits, the 11.6 %
+table/figure share, and the 3.0 % "no evidence" share among *No* answers over the 7,183 answerable ones. So the
+paper's denominators are known and match the release; the 55.5 % is the one figure that does not. A wide search of
+alternative definitions (per-question union, floats included, highlighted items or sentences, any/max annotator,
+v0.1) found nothing at 55.5 %; the nearest are the test-split union (57.6 %) and multi-sentence highlights (61.7 %),
+both different definitions.
+
 The QASPER paper says, in section 3: *"Among the answerable questions with text-only evidence,
 55.5% of the answers have multi-paragraph evidence."* Computed literally from the JSON (more
 than one distinct evidence string; `reproduction_55_5`):

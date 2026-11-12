@@ -185,6 +185,6 @@ Caveat: the arXiv API matches quoted phrases strictly, so some of these zeros ma
 3. **Chase the forward citation graph** (OpenAlex `cited_by`) from QASPER, PeerQA, LURCH, Min 2019 and TAT-QA. None of the three surveys did this.
 4. **PDF-check the counter-evidence before citing it.** Every entry under "Surveyed but not PDF-checked" stays out of `bibliography.md` and `claims.json` until its claim has been found in the PDF. Start with LongDocURL, IIRC, DROP, StrategyQA, Evidence Inference and the LURCH claim that HotpotQA evidence is localised.
 
-## Note added 2026-11-12
+## Note added 2026-11-11
 
 The QASPER 55.5% figure cited above (verdict item 2, the QASPER line under the evidence) does not reproduce from the released data: the paper's definition gives about 31% on every released split and version. See the QASPER entry in `bibliography.md` and `docs/plans/results/qasper-dispersion-2026-11/`. The survey's verdict does not depend on the exact figure: about 31% multi-paragraph and 10% cross-section are still common among questions not written to be composite.
