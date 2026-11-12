@@ -67,7 +67,7 @@ Deciding:
 Examples (synthetic: invented terms, not from any paper):
 - QUESTION: At what temperature are plates incubated for the Morvane test? PASSAGE: "Plates for the Morvane test were incubated at 30 °C for two days before colonies were counted." -> "full": the temperature is stated; the duration and the counting are extra.
 - QUESTION: What is the purpose of the Morvane test? PASSAGE: "All isolates underwent the Morvane test and a growth assay." -> "none": the test is named, but its purpose is not stated.
-- QUESTION: By how much does velorin lower the KV index in adult zebrafish? PASSAGE: "In adult zebrafish, velorin lowered the KV index." -> "partial": the direction is stated; the amount asked for is absent.
+- QUESTION: By how much does velorin lower the ZQ index in adult zebrafish? PASSAGE: "In adult zebrafish, velorin lowered the ZQ index." -> "partial": the direction is stated; the amount asked for is absent.
 - QUESTION: Which solvent is used to extract tarsin, and why? PASSAGE: "Tarsin was extracted with cold ethanol." -> "partial": the solvent is stated; the reason is absent.
 - QUESTION: What is the half-life of tarsin in seawater? PASSAGE (no medium in the passage or the title): "Tarsin had a half-life of 12 days." -> "partial": the value is stated; the seawater condition is unstated. Had the passage said "in fresh water", the condition would be contradicted: "none".
 - TERM: Plinth ratio. QUESTION: Above what Plinth ratio is a slope classed as unstable? PASSAGE from another paper, whose definitions say "PR" stands for "Plinth ratio": "Slopes with PR above 1.4 were classed as unstable." -> "full": PR is the TERM in that paper, and the threshold is stated.
@@ -158,8 +158,8 @@ def parse_judgement_v3(text: str) -> tuple[str | None, str]:
   sample is left out of the vote and counted.
 * **Stored per label.** `grade` (`full` / `partial` / `none` / null), `reason`, `judge_version`
   (`alias-judge/3`), `system_sha256`, `prompt_sha256`, the served model id, the serving backend where the
-  gateway reports it (plan §4), the call date, and the thinking flag and reasoning tokens where the backend
-  reports them.
+  gateway reports it (plan §4; a missing backend value is a mismatch there), the call date, and the
+  thinking flag and reasoning tokens where the backend reports them.
 
 ### 2.1 Binary readings (derived, never asked)
 
@@ -224,7 +224,8 @@ with K0 and with Opus `/1`, with lenient beside it (plan §8.3).
 7. **The examples.** There are six. Each one maps to one rule: a full answer with extra detail; topic named
    only; direction without amount; one of two parts; a condition left unstated, with its contradicted
    variant; a short form defined as the TERM in another paper. All terms are invented (Morvane test,
-   velorin, KV index, tarsin, Plinth ratio). The alias rules get one example only, because the pilot found 0
+   velorin, ZQ index, tarsin, Plinth ratio; "ZQ" replaced an earlier "KV", which names a real zebrafish
+   structure). The alias rules get one example only, because the pilot found 0
    alias disagreements. **Known bias** (plan §3.2): the examples and rules encode one reading of
    completeness. So K3's agreement with the owner, who is rater r1, is partly by construction, and its
    agreement with Opus `/1` and with the other raters is not.
@@ -249,7 +250,9 @@ with K0 and with Opus `/1`, with lenient beside it (plan §8.3).
 * Self-check: a separate set of synthetic cases, not the prompt's examples, at least one per rule, with
   **expected labels set by the owner**. They follow the pattern of `VERIFY_CASES` in
   `test_glossbench_alias.py`. They are run live once on each `/3` judge before any validation-2 record is
-  drafted, and the counts go into the plan amendment that records the system sha (plan §11, step 3).
+  drafted, and the counts go into the plan amendment that records the system sha (plan §11, step 3). Ten
+  of them, fixed before the freeze, are the canary cases that open and close every hosted candidate's batch
+  (plan §4).
 * The system sha256 is recorded in that amendment in the same commit.
 
 ## 5. What the plan decided about this prompt (v2)
@@ -261,8 +264,8 @@ Plan v1 had left these to the plan; v2 settles them:
 * **The K3 rule** (plan §3): C and E agree when their grades are equal; otherwise Argon `/3` decides, read
   from the KA3 run on all pairs.
 * **Primary binary reading** (plan §8.3): strict; lenient printed beside it.
-* **Raters** (plan §2, §6.3): the rater sheet reproduces this prompt's *Parts and conditions*, *Labels* and
-  *Deciding* blocks verbatim and shows the same fields as the judge, so that humans and judges rate one
-  construct. Per decision (1), more raters with fewer pairs each; agreement by Krippendorff's α (plan §7).
+* **Raters** (plan §2, §6.3): the rater sheet reproduces this prompt's *Parts and conditions*, *Labels*,
+  *Deciding* and *Examples* blocks verbatim and shows the same fields as the judge, so that humans and
+  judges rate one construct and no rater sees less than the owner, who approved the examples. Per decision (1), more raters with fewer pairs each; agreement by Krippendorff's α (plan §7).
 * **The candidate judges** (plan §4): each runs both `/2` and `/3`; the panel and its per-call gate are in
   the plan, not here.
