@@ -998,3 +998,60 @@ def test_selection_needs_every_requested_judge(tmp_path: Path) -> None:
     res = mg.run_selfcheck(cfg, gw(tmp_path, t), CASES, runs=1, sleep=Sleeper())
     assert res["judges"]["C"]["status"] == "done" and res["judges"]["X"]["status"].startswith("stopped:mismatch")
     assert res["selection"] is None and "X" in res["selection_reason"]
+
+
+
+# ------------------------------------------------------------------ re-check N1, N2, N4
+
+def test_end_read_mismatch_with_canary_void_voids_the_whole_batch(tmp_path: Path) -> None:
+    # mutation: letting the end-read branch void only since the last passing check when the canary
+    # also voids (N1) fails this
+    cfg = study(tmp_path)
+    out = Path(cfg["out_dir"])
+    script = [None] * 12 + [(503, None, None)]  # a pause after two rows: last_check_seq = 2 > seq0 = 0
+    t = FakeTransport(LOCAL["model"], PIN_C, script=script, answer=_flip(3),
+                      configs=[{"fingerprint": PIN_C}, {"fingerprint": PIN_C}, {"fingerprint": PIN_OTHER}])
+    r = mg.run_batch(cfg, gw(tmp_path, t), "C", "b1", "alias-judge/3", items(3), CASES, sleep=Sleeper())
+    assert r["status"].startswith("void:config_end") and r["canary"]["void"] and r["void_from_seq"] == 0
+    assert mg.valid_rows(out, "C") == []
+    # without the canary void, only the rows since the last passing check are voided
+    cfg2 = study(tmp_path / "b")
+    t2 = FakeTransport(LOCAL["model"], PIN_C, script=list(script), answer=owner_answer,
+                       configs=[{"fingerprint": PIN_C}, {"fingerprint": PIN_C}, {"fingerprint": PIN_OTHER}])
+    r2 = mg.run_batch(cfg2, gw(tmp_path, t2), "C", "b1", "alias-judge/3", items(3), CASES, sleep=Sleeper())
+    assert not r2["canary"]["void"] and r2["void_from_seq"] == 2
+    assert r2["status"].startswith("void:config_end") and len(mg.valid_rows(Path(cfg2["out_dir"]), "C")) == 2
+
+
+def test_halt_rechecked_after_waiting_for_the_pause_lock(tmp_path: Path) -> None:
+    # mutation: re-reading after a mismatch was seen while waiting for the pause lock (N2) fails this
+    t = FakeTransport(LOCAL["model"], PIN_C, script=[(503, None, None)])
+    s = Sleeper()
+    ctx = mg.Ctx(gw=gw(tmp_path, t), priv=priv(tmp_path), marker=mg.PARTIAL_MARKER, sleep=s, log=lambda e: None)
+
+    class SetHaltOnAcquire:
+        def __enter__(self) -> None:
+            ctx.halt.set()  # another worker saw a mismatch while this one waited
+
+        def __exit__(self, *a: Any) -> None:
+            pass
+
+    ctx.pause_lock = SetHaltOnAcquire()
+    with pytest.raises(mg.Stop, match="halted"):
+        mg.gated_call(ctx, mg.validate_judge("C", LOCAL), "alias-judge/3", items(1)[0], canary=False)
+    assert s.calls == [] and t.gets == 0
+
+
+def test_operational_keys_do_not_pin_but_prompts_do(tmp_path: Path) -> None:
+    # mutation: hashing max_in_flight / optional / h_reps into judge_sha256, or leaving prompts out (N4)
+    cfg = study(tmp_path)
+    mg.run_batch(cfg, gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)), "C", "b1",
+                 "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    ops = {**LOCAL, "max_in_flight": 2, "optional": True, "h_reps": 2}
+    r = mg.run_batch(study(tmp_path, C=ops), gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C, answer=owner_answer)),
+                     "C", "b2", "alias-judge/3", items(1), CASES, sleep=Sleeper())
+    assert r["status"] == "done"
+    with pytest.raises(SystemExit, match="judge_sha256 differs"):
+        mg.run_batch(study(tmp_path, C={**ops, "prompts": ["alias-judge/3"]}),
+                     gw(tmp_path, FakeTransport(LOCAL["model"], PIN_C)), "C", "b3", "alias-judge/3", items(1),
+                     CASES, sleep=Sleeper())

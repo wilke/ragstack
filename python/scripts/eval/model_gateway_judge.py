@@ -524,6 +524,8 @@ def gated_call(ctx: Ctx, judge: Mapping[str, Any], version: str, item: Mapping[s
             if outages > MAX_OUTAGES_PER_ITEM:  # a pause of the batch (resumable), never a void
                 raise Stop("outage", f"outages_per_item:{reason}")
             with ctx.pause_lock:
+                if ctx.halt.is_set():  # a mismatch was seen while this worker waited: no re-read
+                    raise Stop("halted", "mismatch_in_wave")
                 res, why = reread(ctx.gw, judge, ctx.sleep, ctx.log, ctx.marker, why=reason)
             ctx.log({"event": "pause_outcome", "result": res, "reason": why})
             if res == "pass":
@@ -706,6 +708,15 @@ def canary_cases(cfg: Mapping[str, Any], cases: Sequence[Mapping[str, Any]]) -> 
     return [dict(by[n]) for n in names]
 
 
+#: judge keys that only steer how a batch is run, not what is asked or how it is sampled: left out of
+#: ``judge_sha256`` (``prompts`` stays in: it changes what is asked)
+OPERATIONAL_KEYS = ("max_in_flight", "optional", "h_reps")
+
+
+def _judge_identity(judge: Mapping[str, Any]) -> str:
+    return _sha({k: v for k, v in judge.items() if k not in OPERATIONAL_KEYS})
+
+
 def _canary_identity(canaries: Sequence[Mapping[str, Any]]) -> str:
     keys = ("name", "title", "term", "question", "defs", "passage", "expected_label")
     return _sha([{k: c.get(k) for k in keys} for c in canaries])
@@ -765,7 +776,18 @@ def _run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, versio
     **Void ranges, deliberately different:** a per-call mismatch on a local judge voids the whole batch
     (from its first row: the identity failed while the batch was open), while a failed END read voids
     only the rows since the last passing configuration check (the rows before it were vouched for by
-    that check)."""
+    that check). When an end-read mismatch and a canary void meet in one batch, the broader void (from
+    the first row) wins.
+
+    **Identity pins.** ``judge_sha256`` covers the judge's whole entry except the operational keys
+    :data:`OPERATIONAL_KEYS` (``max_in_flight``, ``optional``, ``h_reps``), which may change between
+    batches; ``prompts``, sampling, the pin or freeze set, the model and the canary setting are in it.
+
+    **In flight.** With ``max_in_flight`` > 1, a mismatch sets a halt: no new sends, and a worker that
+    waited for the pause lock re-checks the halt before re-reading (no queued 5 x 60 s re-reads). A row's
+    ``seq`` follows the order rows are written (item order within a wave), not the order replies arrived;
+    on a hosted mismatch stop the rows of the same wave that passed their own freeze-set check are kept
+    even when their reply arrived after the mismatching one."""
     judge = cfg["judges"][jid]
     out = Path(cfg["out_dir"])
     p = paths(out, jid)
@@ -781,7 +803,7 @@ def _run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, versio
         raise SystemExit(f"judge {jid} (hosted): no freeze_set (recorded in the freeze commit)")
     canaries = canary_cases(cfg, cases)
     expected = {c["name"]: c["expected_label"] for c in canaries}
-    judge_sha, canary_sha = _sha(judge), _canary_identity(canaries)
+    judge_sha, canary_sha = _judge_identity(judge), _canary_identity(canaries)
     ck_path = out / f"checkpoint-mg-{jid}-{batch}.json"
     others = [x.name for x in out.glob(f"checkpoint-mg-{jid}-*.json") if x != ck_path]
     if others:
@@ -953,8 +975,9 @@ def _run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, versio
     g.write_json_atomic(p["state"], state)
     if bad is not None:
         p["stopped"].write_text(f"{batch}:config_end:{end['reason']}\n")
+        # with a canary void in the same batch the broader void (the whole batch) wins
         return finish(f"void:config_end:{end['reason']}", canary=cmp, void=True,
-                      void_from_seq=int(ck["last_check_seq"]))
+                      void_from_seq=int(ck["seq0"]) if cmp["void"] else int(ck["last_check_seq"]))
     if cmp["void"]:
         drift = judge["class"] == "local"  # the fingerprint matched at the end read
         p["stopped"].write_text(f"{batch}:canary:{','.join(cmp['reasons'])}\n")
