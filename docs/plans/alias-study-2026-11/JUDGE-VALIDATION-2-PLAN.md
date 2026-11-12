@@ -4,10 +4,12 @@ Status: **DRAFT v2**, written 2026-11-11. It supersedes DRAFT v1 (2026-11-04), w
 the appendix at the end of this file so that nothing it specified is lost; where v2 says "as in v1", the
 text is in that appendix. Nothing in this plan has been run. No label, pair file or rater sheet exists yet.
 v1 said the plan would freeze once the owner answered its questions. That has changed. v2 freezes at the
-commit that records three things: (a) the owner approves this text and the prompt in
-[JUDGE-3-PROMPT.md](JUDGE-3-PROMPT.md), (b) the owner answers §13, and (c) §4's panel is confirmed
-(§13 Qb). Every output records the sha of that commit. Any change after it is a dated amendment at the
-end of the v2 text (before the appendix).
+commit that records four things: (a) the owner approves this text and the prompt in
+[JUDGE-3-PROMPT.md](JUDGE-3-PROMPT.md), (b) the owner answers §13, (c) §4's panel is confirmed
+(§13 Qb), and (d) the model gateway exposes the configuration information that the §4 identity gate
+reads, or the owner accepts the interim gate as a declared limitation (§13 Qe, Amendment 4). Every output
+records the sha of that commit. Any change after it is a dated amendment at the end of the v2 text
+(before the appendix).
 
 Owner rule (Amendment 1 (6)): plans are made or checked with Fable and always reviewed. This draft was
 written by an Argo Opus agent and checked, corrected and finished by Fable on 2026-11-11; the list of
@@ -194,20 +196,32 @@ later plan (§13 Q8).
 * **Decision judge** means: a judge configuration that receives the §9.1 verdict, can carry the §9.2
   licence, and can be recommended as a future judge (§12). **Every judge in this table is a decision
   judge**, the §4 panel included (Amendment 2). "Descriptive" in this table refers only to the §8.3 test.
-* **Judge C's model has an end date.** The inventory (§4) records C's model as not permanently served, and
-  a local id that runs the same model ends on 2026-11-30; the vllm session confirms C's own end date before
-  the freeze, and it is recorded in the freeze commit (§13 Qd). K0, K3, KY and KC3 all need C. Therefore
-  C's `/2` and `/3` labelling of the frozen pair file runs **first**, before any gateway judge (§11, step
-  6), and the schedule is set so that it completes before that date. If C's serving ends before its
-  labelling completes: a re-served C from the **same weights snapshot** (recorded) counts as C, with a
-  provenance note; a different snapshot or quantisation is a different judge (KC′), and then K0 cannot be
-  claimed as the main run's rule. Without K0 the §8.3 comparison is **not run** and is reported as such;
-  the §9.1 verdicts for every judge that did label (Opus, KA, KA3, KS, KS3, KE3, the panel) still stand.
-  Nothing is re-labelled to fit.
-* Settings are v1's (appendix §2): thinking on for C and E; `max_tokens` 8192 (local) and 4096 (Argon,
-  Sol); temperature omitted on the gateway, T 0.7 locally; E requested with n = 3 and read at sample 0
-  (samples 1–2 reported for information); `fallback_model: ""`; the served-model check stops the run on a
-  mismatch.
+* **Judge C's configuration is not permanently served.** The inventory (§4) records C's model as not
+  permanently served, and a local id that runs the same model ends on 2026-11-30 (that id is not C,
+  Amendment 3). C's availability is confirmed by the model-gateway maintainer before the freeze and
+  recorded in the freeze commit (§13 Qd). K0, K3, KY and KC3 all need C. Therefore C's `/2` and `/3`
+  labelling of the frozen pair file runs **first**, before any other judge (§11, step 6), and the schedule
+  is set so that it completes while C's configuration is available. **C is a configuration, not a
+  location** (Amendment 4): its pin is the configuration fingerprint of §4 (model repository or id,
+  weights snapshot or revision, quantisation, serving engine and version, and the serving flags). If C's
+  serving stops before its labelling completes: a re-served C with the **identical configuration**
+  (the same fingerprint, wherever and whenever it runs) counts as C, with a provenance note; any other
+  configuration (a different snapshot, quantisation, engine version or flag) is a different judge (KC′),
+  and then K0 cannot be claimed as the main run's rule. Without K0 the §8.3 comparison is **not run** and
+  is reported as such; the §9.1 verdicts for every judge that did label (Opus, KA, KA3, KS, KS3, KE3, the
+  panel) still stand. Nothing is re-labelled to fit.
+* **Every judge is reached by model id** (Amendment 4). C, E, KX1 and the hosted candidates are called
+  through the model gateway by their model ids; Opus, Argon and Sol are called through the study gateway
+  by their model names, as in v1 and the main run (that path is unchanged; it never used a direct
+  address). No direct address or port of any model appears in this plan, in the prompt, or in any
+  study config: the two gateways are the only addresses the harness knows, and the private config holds
+  them.
+* Settings are v1's (appendix §2): thinking on for C and E; `max_tokens` 8192 (C, E, KX1) and 4096
+  (Argon, Sol, the hosted candidates); temperature omitted on the study gateway, T 0.7 for C and E (as
+  the main run); E requested with n = 3 and read at sample 0 (samples 1–2 reported for information);
+  `fallback_model: ""` on the study gateway and fallback off on the model gateway; a served-model mismatch
+  on the study gateway stops the run, and a configuration mismatch on the model gateway is handled by the
+  §4 table.
 * **Changed from v1:** K3's tiebreak reads Argon `/3` from the KA3 run, which labels every pair, so no
   separate escalation calls are made. K3's escalation rate (C and E not equal, or either without a label)
   is expected to exceed K0's with three classes. It is reported.
@@ -241,40 +255,70 @@ this plan fixes about it:
 
 Source: the inventory of the **model gateway** made by the vllm session on 2026-11-11 and verified by it
 from the gateway's status and model listings, read with the study's service key. **No model call was
-made.** The operational details of that inventory (header names, backend names, account limits, observed
-availability, catalogue ids not adopted here, the host it was read from) live in the private inventory note
-beside the config, not in this file. This gateway is distinct from the study gateway that serves Opus,
-Argon and Sol (§6, §10); the two have separate budgets and separate caps.
+made.** The operational details of that inventory (account limits, observed availability, catalogue ids
+not adopted here, instance names, the host it was read from) live in the private inventory note beside
+the config, not in this file. This gateway is distinct from the study gateway that serves Opus, Argon and
+Sol (§6, §10); the two have separate budgets and separate caps.
 
-**The gateway.** OpenAI-compatible, with a service key labelled for this study. Each response carries a
-header naming the backend that served the call; a request header switches fallback off, after which an
-unavailable backend returns an error rather than another backend. It logs labels, model ids and timing,
-and no text.
+**The gateway.** OpenAI-compatible, with a service key labelled for this study. It is the only path to
+C, E, KX1 and the hosted candidates (Amendment 4): every call names a model id, and the gateway decides
+where it is served. A request option switches fallback off, after which an unavailable model returns an
+error rather than another model. It logs labels, model ids and timing, and no text.
 
-**Pinned local models** (vLLM 0.31.0): `Qwen3.8-27B` FP8 (weights snapshot `017b9c7a…`, 131k context,
-thinking switchable; judge E's model) and `Qwen3.6-35B-A3B` (judge C's model; not permanently served, §3).
-Routing, from the gateway's status: a model's route order is a preference list and a route is used only
-where the model has an instance. `Qwen3.8-27B` has one instance, the local vLLM backend; the hosted
-catalogue lists no such id; so today every call by that id is served locally. No per-request route
-override exists.
+**Identity = configuration, not location** (Amendment 4). A judge is a configuration: the model
+repository or id, the weights snapshot or revision, the quantisation, the serving engine and its version,
+and the serving flags that change outputs (context length, the default chat-template arguments including
+the default thinking setting, the reasoning parser). Where that configuration runs, under which instance
+name, and when it was started are not part of its identity. **A move or restart with an identical
+configuration is not a mismatch.** The gateway is the source of this information: it keeps a
+**configuration record** per local model, of two kinds held apart, *declared* (its own record of the
+repository, snapshot or revision, quantisation, engine and start flags) and *observed* (read from the
+running engine without a model call: served repository, context length, engine version, cache settings,
+start time), and derives a **configuration fingerprint**, a hash over the declared and observed fields that
+excludes the start time and the instance, so that a move or restart with the same setup keeps it; the
+start time is shown beside it. The fingerprint is available per model on an authenticated gateway
+endpoint and on every forwarded response. A disagreement between declared and observed fields is flagged
+by the gateway and is a mismatch here. **Honest limit:** the snapshot hash cannot be observed through the
+engine; it is declared, and is only as good as the gateway's record. For hosted (ALCF) ids the gateway
+can report only a **partial fingerprint** over the id, the cluster and the serving framework, marked
+partial; anything more must come from ALCF support. **Dependency:** as of 2026-11-11 the gateway exposes
+model ids, instances and per-response instance names only, not the configuration record or the
+fingerprint; the record and fingerprint above are the maintainer's proposal to the owner (§13 Qe), and
+the gate below is written against them.
 
-**Mismatch rules, one per backend class** (code item, §11). A *mismatch* is: the response `model` field not
-in the accepted set for that judge, or the backend header absent or not equal to the expected backend
-recorded for that judge in the private config. **A missing header is a mismatch.**
+**Pinned configurations** (serving engine vLLM 0.31.0 today): `Qwen3.8-27B` FP8 (weights snapshot
+`017b9c7a…`, 131k context, thinking switchable; judge E's model, and KX1) and `Qwen3.6-35B-A3B` (snapshot
+`995ad96e…`; judge C's model, Amendment 3; not permanently served, §3). Each pin is the full configuration
+fingerprint, confirmed with the maintainer and recorded in the freeze commit; the model id is the handle,
+the fingerprint is the identity. Today each is served by one instance; that fact is recorded in the private
+inventory note and plays no part in the gate.
 
-| backend class | judges | accepted `model` | expected backend | on a mismatch |
+**Mismatch rules, one per judge class** (code item, §11). A *mismatch* is: the response `model` field not
+in the accepted set for that judge, or the configuration fingerprint reported for the call absent or not
+equal to the fingerprint pinned for that judge (the partial fingerprint, for a hosted id). **A missing
+fingerprint is a mismatch** once the gateway reports one; under the interim gate of §13 Qe, if the owner
+accepts it, the instance name stands in and the rule is the same with the instance in the fingerprint's
+place, declared as a limitation.
+
+| judge class | judges | accepted `model` | identity gate | on a mismatch |
 |---|---|---|---|---|
-| study gateway | Opus, Argon, Sol | the requested name and its versioned id (TIEBREAKER-PLAN.md §1) | n/a (no backend header) | the run **stops** and the reply is not stored (prereg §6.3, v1 §6) |
-| model gateway, pinned local | KX1 (and any local candidate) | the pinned id | the local backend name | the reply is not stored and the **batch stops**; the owner decides the remedy, recorded as a deviation |
-| model gateway, hosted (ALCF) | KX2–KX4 | the requested id (no revision pin exists) | the hosted backend name; for a model served on two clusters, the cluster is recorded per row | the reply is not stored and **that candidate stops**; its rows up to the last passing check are kept and dated; the other judges continue |
+| study gateway | Opus, Argon, Sol | the requested name and its versioned id (TIEBREAKER-PLAN.md §1) | the served-model check only (no configuration record exists there) | the run **stops** and the reply is not stored (prereg §6.3, v1 §6) |
+| model gateway, pinned configuration | C, E, KX1 (and any local candidate) | the pinned id | the full configuration fingerprint equals the pin | the reply is not stored and the **batch stops**; the owner decides the remedy, recorded as a deviation |
+| model gateway, hosted (ALCF) | KX2–KX4 | the requested id (no revision pin exists) | the partial fingerprint (id, cluster, framework) equals the one recorded at the candidate's first call; a model served on two clusters is two fingerprints, and the cluster is recorded per row | the reply is not stored and **that candidate stops**; its rows up to the last passing check are kept and dated; the other judges continue |
 
-**Pin and canary checks.** A *batch* is one model × one prompt over the frozen pair file (or over H for
-repetitions). The weights pin holds only while the local server is not restarted: the gateway's model
-listing is read at the start and end of every batch of a pinned local model and compared with the pinned
-snapshot; a failed end check **voids that batch's rows since the last passing check** (the void is counted;
-nothing is re-issued within this plan, see the last bullet below). Hosted models have no revision pin, so the `model` field
-cannot catch a weight change; each hosted candidate's batch therefore starts and ends with **10 fixed
-synthetic canary cases**, run as follows:
+**Per call, every row records:** the configuration fingerprint the gateway reports (full or partial), the
+response `model` field, the call date, and (private, never in a public file) the instance or backend that
+served it. The private record is for tracing; the public record carries fingerprints and dates.
+
+**Configuration and canary checks.** A *batch* is one model × one prompt over the frozen pair file (or
+over H for repetitions). The fingerprint of a pinned configuration is read from the gateway at the start
+and end of every batch of that model and compared with the pin, besides the per-call comparison above; a
+failed end check **voids that batch's rows since the last passing check** (the void is counted; nothing is
+re-issued within this plan, see the last bullet below). A restart or move between the two reads with the
+same fingerprint is reported (the start time changes) and voids nothing. Hosted models have no revision
+pin, so neither the `model` field nor the partial fingerprint can catch a weight change; each hosted
+candidate's batch therefore starts and ends with **10 fixed synthetic canary cases**, the change detector
+for hosted ids, run as follows:
 
 * the cases are a subset of the JUDGE-3-PROMPT.md §4 self-check cases with owner-set labels, committed
   before the freeze; they are always sent with **`/3`**, whatever prompt the batch runs, so one graded
@@ -284,8 +328,8 @@ synthetic canary cases**, run as follows:
   are the cases whose label was identical in all 5 runs on every hosted candidate, taken in the committed
   case order; if fewer than 10 qualify, the remaining places go to the cases with the most consistent runs,
   and each chosen case's measured flip rate is recorded in the freeze commit;
-* they run at **temperature 0 with a fixed seed** where the backend accepts those parameters (recorded per
-  call); where it does not, the backend's default sampling is used and the tolerance below applies;
+* they run at **temperature 0 with a fixed seed** where the serving configuration accepts those parameters
+  (recorded per call); where it does not, its default sampling is used and the tolerance below applies;
 * **void rule**: a batch is voided when its end canary differs from its start canary on **3 or more of the
   10 cases**, or when the end canary's agreement with the owner-set labels is **3 or more cases lower** than
   the start canary's (the second clause is implied by the first and is kept for readability). **Stated
@@ -302,12 +346,14 @@ synthetic canary cases**, run as follows:
   neither the 110 % cap nor the 20,000 ceiling has room for a second one). The candidate is **reported up
   to its last passing batch**: the batches before the void stand, the voided batch's rows are counted and
   excluded, and any later batch of that candidate is not run. A re-run is a new dated amendment with its
-  own budget line and the owner's approval. The same rule applies to a pinned-local batch voided by the
-  pin check.
+  own budget line and the owner's approval. The same rule applies to a pinned-configuration batch voided
+  by the fingerprint check.
 
-Canary calls are in the budget (§10). **Open items:** the vllm session confirms the backend names and the
-snapshot before the freeze; an optional owner decision is a gateway-side route lock on the two pinned Qwen
-records, §13 Qc.
+Canary calls are in the budget (§10). **Open items:** the gateway's configuration record and fingerprint
+must exist before the freeze, or the owner accepts the interim gate (§13 Qe, **blocks the freeze**); the
+model-gateway maintainer confirms the two pinned fingerprints before the freeze; a gateway-side route
+lock on the two pinned configurations (§13 Qc) is optional and, under Amendment 4, no longer carries
+identity.
 
 **Hosted (ALCF) models**: a catalogue of hosted ids with no revision pins, reached through a shared
 rate-limited account; a model that is not running needs a long cold start at a cost, so only models
@@ -323,20 +369,22 @@ note.
 **Hosted models as decision judges.** Owner decision, 2026-11-11 (Amendment 2): "all models are acceptable
 even from ALCF". Under §3's definition the hosted candidates are **decision judges**: they receive the §9.1
 verdict, can carry the §9.2 licence and can be recommended as a future judge. Conditions this plan
-attaches: every row records the backend header value, the response `model` field and the call date; a
-revision request goes to ALCF support before the freeze, and its answer (a revision, or "none available")
-is recorded in the amendment; the mismatch and canary rules above apply. They are outside the §8.3 test
-only because that family was fixed by v1.
+attaches: every row records the partial configuration fingerprint the gateway reports (id, cluster,
+framework), the response `model` field and the call date, and privately the serving instance (Amendment
+4); a revision request goes to ALCF support before the freeze, and its answer (a revision, or "none
+available") is recorded in the amendment and, if a revision is given, added to the partial fingerprint;
+the mismatch and canary rules above apply. They are outside the §8.3 test only because that family was
+fixed by v1.
 
 **Proposed panel** (the agent's suggestion; **OWNER DECISION PENDING**, §13 Qb):
 
-| id | model | served from | role | thinking |
+| id | model | reached as | role | thinking |
 |---|---|---|---|---|
-| KX1 | `Qwen3.8-27B` FP8, pinned | model gateway, local | anchor: judge E's model behind the gateway's pin and gate; measures serving and pin stability, adds no family | on, as E; `max_tokens` 8192, as E |
-| — | `Claude Opus 5.5` | the study gateway | reference family; already in the design as Opus ×3 `/1` and KO (§6). No `/3` call: Q9 declined a fourth Opus call | — |
-| KX2 | `Mistral-Large-3-675B-Instruct-2512` | ALCF | family diversity (tested live) | recorded if the backend reports it |
-| KX3 | `Meta-Llama-3.1-70B-Instruct` | ALCF | family diversity | — |
-| KX4 (optional) | `gpt-oss-120b` | ALCF | a fourth family, funded only if §10's ceiling allows | recorded |
+| KX1 | `Qwen3.8-27B` FP8, pinned configuration | model gateway, by id; full fingerprint | anchor: judge E's configuration behind the gateway's identity gate; measures serving and configuration stability, adds no family | on, as E; `max_tokens` 8192, as E |
+| — | `Claude Opus 5.5` | the study gateway, by name | reference family; already in the design as Opus ×3 `/1` and KO (§6). No `/3` call: Q9 declined a fourth Opus call | — |
+| KX2 | `Mistral-Large-3-675B-Instruct-2512` | model gateway, by id; hosted (ALCF), partial fingerprint | family diversity (tested live) | recorded if the gateway reports it |
+| KX3 | `Meta-Llama-3.1-70B-Instruct` | model gateway, by id; hosted (ALCF), partial fingerprint | family diversity | — |
+| KX4 (optional) | `gpt-oss-120b` | model gateway, by id; hosted (ALCF), partial fingerprint | a fourth family, funded only if §10's ceiling allows | recorded |
 
 Per candidate: `/2` and `/3` on all pairs, plus `/3` repetitions 2–3 on H (§6.3; A's after A is drawn, B's
 after B is drawn), for self-consistency, and the canary cases above. Settings: `max_tokens` 4096 for the
@@ -778,9 +826,14 @@ can only lower the total.
 * The study gateway's budget is at least 10M tokens a day (prereg §14 O7), so the Opus and `/3` batches are
   spread over several days.
 
-**Off-gateway:** about 160 verifier CLI calls; about 1,650 retrieval calls (110 records × 15 cells); local C
-and E on `/2` and `/3` (at the first validation's 1.85 s and 0.74 s per pair: about 37 min per prompt for 850
-pairs, about 75 min in all, more for `/3`'s longer input).
+**Off the two paid budgets:** about 160 verifier CLI calls; about 1,650 retrieval calls (110 records × 15
+cells); C and E on `/2` and `/3`, now called through the model gateway by model id (Amendment 4) at no
+token cost (at the first validation's 1.85 s and 0.74 s per pair: about 37 min per prompt for 850 pairs,
+about 75 min in all, more for `/3`'s longer input). C's and E's calls (about 1,700 requests each at 850
+pairs, one request per pair and prompt, C at n = 5 and E at n = 3) are logged and gated by the gateway
+like every other call, but they are **not counted against the 20,000 ceiling**: Amendment 1 (3) set that
+ceiling at 4 × v1's ~5,000 drafted gateway calls, and v1's table never included C and E, which it listed
+off the gateway. Only the path changed, not the count.
 
 **Human time:** 400 grades at R = 5 (320 at R = 4), about 1.5–2 h per rater, plus at most 10 % in top-ups
 (§6.3).
@@ -788,17 +841,21 @@ pairs, about 75 min in all, more for `/3`'s longer input).
 **Caps and notices** (kept from v1): at most 4 calls in flight per gateway, models one after the other;
 `fallback_model: ""` on the study gateway and the fallback-off request header on the model gateway; the
 `GATEWAY SIZE-NOTICE` with `preflight` and `--notice-acknowledged` before each batch; the budget stop writes
-`PAUSE` and is not retried; each batch capped at 110 % of its planned calls; a served-model or backend
-mismatch is handled by the §4 table (on the study gateway it stops the run and stores nothing, as in v1).
+`PAUSE` and is not retried; each batch capped at 110 % of its planned calls; a served-model mismatch (study
+gateway) or a configuration-fingerprint mismatch (model gateway) is handled by the §4 table (on the study
+gateway it stops the run and stores nothing, as in v1).
 
 ## 11. Order of work, freezing, outputs
 
-1. This text and JUDGE-3-PROMPT.md approved, §13 answered, the §4 panel confirmed. The freeze commit.
+1. This text and JUDGE-3-PROMPT.md approved, §13 answered, the §4 panel confirmed, the gateway's
+   configuration record and fingerprint in place or the interim gate accepted (§13 Qe). The freeze commit,
+   which records the two pinned fingerprints.
 2. Code, with tests: exclusion builder (as in the first validation); pool builder with the added-arm
    fallback (Q1); frame features and cuts; F/S sampler; `alias-judge/3` and `parse_judgement_v3`
-   (JUDGE-3-PROMPT.md §2 and §4); C's graded majority and the K3 rule; KY; the model-gateway backend with
-   the per-class mismatch rules, the model-listing snapshot check and the canary cases (§4); panel
-   assignment (core, blocks, top-up, sessions);
+   (JUDGE-3-PROMPT.md §2 and §4); C's graded majority and the K3 rule; KY; the model-gateway client, the
+   one path for C, E, KX1 and the hosted candidates, with the per-class mismatch rules, the configuration
+   fingerprint read at batch start and end and compared per call, the per-call fingerprint record, and the
+   canary cases (§4); panel assignment (core, blocks, top-up, sessions);
    per-rater sheet writer and ingest; agreement statistics (α ordinal and nominal, weighted κ, AC2/AC1, the
    bootstrap, the published worked example as a test); a test that the sheet writer's rubric and examples
    blocks equal the prompt's (§2); judge-vs-panel scoring (§8.1); the candidate analysis (§8.2–8.4); the
@@ -842,7 +899,7 @@ criterion)"; v2 drops that sentence deliberately: §9.1 is a validity verdict pe
 says what it licenses. It is still not a pass or fail of the main run, whose flag stands.
 
 It reads no main-run label and writes no collection. v1 Q4 (schedule) was answered by events: the main
-run's judging ended on 2026-11-05 and nothing else runs on the judge endpoints.
+run's judging ended on 2026-11-05 and nothing else runs on the judge configurations.
 
 ## 13. Open questions for the owner (v2)
 
@@ -856,10 +913,11 @@ run's judging ended on 2026-11-05 and nothing else runs on the judge endpoints.
 | Q6 | Add reach-rechunk's adopted-chunking (S) collections as extra read-only cells? | yes, if still loaded; sizes amended before freeze |
 | Q7 | What is paper-b's scope under §9.2? | the panel licenses OA-1000 judged figures only; HR-dev remains the CDS blocker; re-scoping paper-b is the owner's decision |
 | Q8 | Set-level sufficiency? | a later plan |
-| Qa | May unpinned ALCF models be decision judges? | **answered** (Amendment 2): yes, with the backend header, the response `model` field and the date recorded per call, and a revision request to ALCF support |
-| Qb | Confirm the §4 panel (KX1 Qwen3.8-27B anchor; Opus as the existing reference; KX2 Mistral-Large-3-675B; KX3 Llama-3.1-70B; optional KX4 gpt-oss-120b) | confirm as proposed |
-| Qc | A gateway-side route lock (local route only) on the two pinned Qwen records? | optional; the per-call gate of §4 holds without it |
-| Qd | Confirm judge C's end date (§3) and the schedule that puts C's labelling first | the vllm session supplies the date before the freeze |
+| Qa | May unpinned ALCF models be decision judges? | **answered** (Amendment 2): yes, with the partial configuration fingerprint, the response `model` field and the date recorded per call (the instance privately; Amendment 4), and a revision request to ALCF support |
+| Qb | Confirm the §4 panel (KX1 Qwen3.8-27B anchor; Opus as the existing reference; KX2 Mistral-Large-3-675B; KX3 Llama-3.1-70B; optional KX4 gpt-oss-120b) | **answered** (Amendment 3): confirmed as proposed |
+| Qc | A gateway-side route lock on the two pinned configurations? | optional; under Amendment 4 the configuration fingerprint carries identity and a route lock adds none; left to the maintainer |
+| Qd | Confirm that C's and KX1's configurations stay available under their model ids for the study window (§3), and the schedule that puts C's labelling first | **answered in part** (Amendment 3, reworded under Amendment 4): the maintainer changes neither configuration without the owner's go; the owner gives the window guarantee at the freeze |
+| Qe | **Blocks the freeze.** The §4 identity gate reads a configuration record and fingerprint from the model gateway. As of 2026-11-11 the gateway reports model ids, instances and per-response instance names only: the serving instance, not the weights. The maintainer has put a configuration record (declared and observed, kept apart) and a fingerprint (a hash over both, excluding start time and instance; available per model on an authenticated endpoint and on every forwarded response; partial for hosted ids) to the owner: about a day of work after the owner's go, plus one brief gateway restart. **The freeze waits for the gateway's configuration record and fingerprint (owner's go to the maintainer), or the owner accepts the interim gate (instance name + response `model` field + canaries) as a declared limitation** | **wait for it**: about a day, and the alternative would record where a judge ran rather than what it was, which is the thing Amendment 4 says does not identify a judge. If the owner chooses the interim, every output of this study carries "judge identity by instance, not configuration" beside its first judged figure, and a later fingerprint cannot be back-filled for calls already made |
 
 ## 14. v1 questions: answers and where they are folded in
 
@@ -904,6 +962,8 @@ Owner decision, recorded verbatim:
 It answers §13 Qa: unpinned ALCF-hosted models may be decision judges (§3's definition), with the
 per-call backend header value, the response `model` field and the date recorded, and a revision request to
 ALCF support. The proposed panel of §4 stays the recommendation; the owner confirms it as §13 Qb.
+(Amendment 4 replaces the per-call backend value with the configuration fingerprint the gateway reports;
+the backend or instance is still recorded, privately, for tracing.)
 
 ### Amendment 3 (2026-11-11): owner answers to §13
 
@@ -929,14 +989,61 @@ The raters' names are held in the private study record, not in this public file.
   step 3 say), about 40 calls, not 200; every budget total above therefore overstates by about 160 calls,
   left as a conservative margin.
 
-- **Qd, judge C (facts from the model-gateway maintainer, 2026-11-11).** C is Qwen3.6-35B-A3B on the
-  pinned local server (snapshot `995ad96e…`, vLLM 0.31.0), with `alias-judge/2` and thinking on, as in
-  JUDGE-CALIBRATION.md. It is not the Scout-named alias of the same weights, so that alias's 2026-11-30 end
-  does not bind C. C's server has no end date but is marked not permanent, and an open GPU proposal could
-  stop it. The maintainer promises to change neither C's server nor KX1's without the owner's explicit
-  go-ahead, and to notify this study first; a guarantee for the study window is the owner's to give at
-  the freeze. The §3 fallback (C labelled first; a re-served same snapshot counts as C; anything else is
-  KC′ and K0 cannot be claimed) stands.
+- **Qd, judge C (facts from the model-gateway maintainer, 2026-11-11; reworded in configuration terms
+  under Amendment 4).** C is the configuration Qwen3.6-35B-A3B, snapshot `995ad96e…`, served by vLLM
+  0.31.0 with the main run's flags, called with `alias-judge/2` and thinking on, as in
+  JUDGE-CALIBRATION.md. It is not the Scout-named alias of the same weights, so that alias's 2026-11-30
+  end does not bind C. C's configuration has no end date but is marked not permanent, and an open GPU
+  proposal could stop its serving. The promise that matters is about configurations, not servers: the
+  maintainer changes neither C's configuration nor KX1's (their fingerprints, §4) without the owner's
+  explicit go-ahead, notifies this study first, and keeps both available under their model ids; where and
+  on what they run may change. A guarantee for the study window is the owner's to give at the freeze. The
+  §3 fallback (C labelled first; a re-served identical configuration counts as C; anything else is KC′
+  and K0 cannot be claimed) stands.
+
+### Amendment 4 (2026-11-11): judges are configurations reached through the model gateway
+
+Owner decision, recorded verbatim:
+
+> We should not use the ports but reach the models through the frontdoor/model-gateway This allows us to
+> move the models or restart if necessary. The config is important and not the port or direct url. The
+> frontdoor should return model/setup information.
+
+What this changes, and where:
+
+- **Path.** C, E, KX1 and the hosted candidates are reached only through the model gateway, by model id
+  (§3, §4, §10, §11 step 2). No direct address or port of any model appears in this plan, in
+  JUDGE-3-PROMPT.md or in any study config; the private config holds the two gateway addresses and
+  nothing else. Opus, Argon and Sol keep their existing path through the study gateway, by model name,
+  with v1's served-model check; the plan never routed them through the model gateway and does not now.
+- **Identity = configuration, not location** (§4). The backend-name gates (the per-class table keyed on
+  the expected backend, "a missing header is a mismatch", the start-and-end model-listing check) are
+  replaced by a configuration-fingerprint gate: the fingerprint covers the model repository or id, the
+  snapshot or revision, the quantisation, the serving engine and version, and the serving flags (context
+  length, default chat-template arguments including the default thinking setting, the reasoning parser),
+  and is read from the gateway. A call served by a different configuration is void under the existing
+  per-class rule (pinned configuration: the batch stops; hosted: the candidate is reported to its last
+  passing batch). A move or restart with an identical configuration is not a mismatch. Every row records
+  the fingerprint the gateway reports, the response `model` field and the date; the backend or instance is
+  recorded privately.
+- **Pins** (§3, §4). C's and KX1's pins are configuration pins: snapshot plus flags, as one fingerprint
+  each, recorded in the freeze commit. The §3 fallback for C stays: a re-served identical configuration
+  counts as C; anything else is KC′.
+- **Hosted ids** (§4). The gateway reports a partial fingerprint (id, cluster, framework; no revision).
+  The canary rule stays the change detector for hosted ids, and the partial fingerprint used is stated
+  per row and in the freeze commit.
+- **Dependency** (§13 Qe, blocks the freeze). The gateway today reports the serving instance, not the
+  weights. The maintainer has proposed a configuration record (declared from the gateway's own record,
+  and observed from the running engine, kept apart and compared) and a fingerprint over both that
+  excludes start time and instance, on an authenticated endpoint and on every forwarded response, partial
+  for hosted ids; about a day of work after the owner's go and one brief gateway restart. The snapshot
+  hash cannot be observed through the engine and is declared only. Until it exists the freeze cannot
+  happen, or the owner accepts the interim gate (instance name + response `model` field + canaries) as a
+  declared limitation. Recommendation: wait for it.
+- **Housekeeping.** §13 Qc (route lock) is now optional without bearing on identity; Qd and Amendment
+  3's Qd bullet are reworded in configuration terms; the freeze conditions gain item (d); C's and E's
+  calls now pass through the model gateway and are not counted against the 20,000 ceiling, which Amendment
+  1 (3) set over v1's table without them (§10).
 
 The plan is not frozen; it freezes only on the owner's word "freeze".
 

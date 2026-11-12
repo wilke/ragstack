@@ -82,7 +82,8 @@ call: about 0.93k input tokens for Argon at the harness's calibrated 4.26 charac
 for a Claude model at 2.81, and about 1.2k at the flat 3.4 used for every other model. The call count does
 not change. The size notice computes the exact figure from the registry text: the gateway-judge path already
 passes `JUDGE_SYSTEMS[judge_version]` to `gateway_est_input_tokens`, and the Opus path passes `JUDGE_SYSTEM`
-because Opus runs `/1`; keep that split when adding the model-gateway backend.
+because Opus runs `/1`; keep that split when adding the model-gateway client (the one path for C, E, KX1
+and the hosted candidates, by model id; plan §4, Amendment 4).
 
 ### 1.3 User message (`judge_prompt_v3`)
 
@@ -154,12 +155,15 @@ def parse_judgement_v3(text: str) -> tuple[str | None, str]:
 * **Echoed examples cannot parse.** The prompt's examples use arrow notation, not JSON. A model that echoes
   one produces no object with an `answers` key.
 * **An invalid reply, per role** (plan §3, §6.1). On a gateway it is re-issued once (prereg R4); if still
-  invalid, the pair has no label from that judge, and the count is printed. For local Qwen, the invalid
-  sample is left out of the vote and counted.
+  invalid, the pair has no label from that judge, and the count is printed. For C and E (Qwen, n > 1),
+  the invalid sample is left out of the vote and counted.
 * **Stored per label.** `grade` (`full` / `partial` / `none` / null), `reason`, `judge_version`
-  (`alias-judge/3`), `system_sha256`, `prompt_sha256`, the served model id, the serving backend where the
-  gateway reports it (plan §4; a missing backend value is a mismatch there), the call date, and the
-  thinking flag and reasoning tokens where the backend reports them.
+  (`alias-judge/3`), `system_sha256`, `prompt_sha256`, the response `model` field, the configuration
+  fingerprint the gateway reports for the call (plan §4, Amendment 4: full for a pinned configuration,
+  partial for a hosted id; a missing or non-matching fingerprint is a mismatch there, and the serving
+  instance is recorded privately and is not part of identity), the call date, and the thinking flag and
+  reasoning tokens where the gateway reports them. Every judge is reached by model id through its
+  gateway; no label stores an address.
 
 ### 2.1 Binary readings (derived, never asked)
 
@@ -272,5 +276,5 @@ Plan v1 had left these to the plan; v2 settles them:
 * **Raters** (plan §2, §6.3): the rater sheet reproduces this prompt's *Parts and conditions*, *Labels*,
   *Deciding* and *Examples* blocks verbatim and shows the same fields as the judge, so that humans and
   judges rate one construct and no rater sees less than the owner, who approved the examples. Per decision (1), more raters with fewer pairs each; agreement by Krippendorff's α (plan §7).
-* **The candidate judges** (plan §4): each runs both `/2` and `/3`; the panel and its per-call gate are in
-  the plan, not here.
+* **The candidate judges** (plan §4): each runs both `/2` and `/3`; the panel and its per-call gate (the
+  configuration fingerprint, Amendment 4) are in the plan, not here.
