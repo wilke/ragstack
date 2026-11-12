@@ -194,9 +194,80 @@ Rules:
 
 {JUDGE_OUTPUT_FORMAT}"""
 
+#: alias-judge/3 (JUDGE-VALIDATION-2-PLAN.md §3.2; JUDGE-3-PROMPT.md §1.2): the GRADED judge,
+#: full / partial / none for one (question, passage) pair. Kept verbatim from /1 and /2: the second
+#: sentence of the opening, /1's first two rule bullets and :data:`JUDGE_RULE_V2` (a test asserts it,
+#: and that this text equals the prompt document's block byte for byte). Its *Parts and conditions*,
+#: *Labels* and *Deciding* blocks are the plan's §2.2 rubric; with the *Examples* block they are what
+#: the rater sheet reproduces (:func:`judge_v3_blocks`).
+JUDGE_SYSTEM_V3 = """You judge how fully a PASSAGE from a scientific paper answers a QUESTION. Judge only from the text you are given, never from outside knowledge of any specific paper.
+
+Rules:
+- The QUESTION is phrased with a TERM. The passage may come from ANY paper, not necessarily the paper the question was written from. If it answers the question, it counts.
+- The passage may use a short form (an abbreviation or a symbol) instead of the TERM. A short form counts as the TERM only if, in the passage's own paper, it stands for the TERM (the same concept). Use the passage paper's definitions given with the passage; when the passage or its definitions show that the short form stands for something else, it is NOT the TERM. The same short form often means different things in different papers.
+- If the passage uses a short form (an abbreviation or a symbol) that its paper defines as the question's TERM, treat the short form as the TERM itself.
+
+Parts and conditions:
+- A PART is a piece of information the question asks for: for example a value or amount, a direction of change, a result, a purpose or reason, a cause, a definition, a method, a name, or a number of items. A question may ask for one part or several.
+- A CONDITION is an organism, population, material, method or setting that the question names. Conditions are not parts.
+- A part is STATED when the passage says it about the TERM, in any words. A part is WORKABLE when a reader can work it out from what the passage says, by combining or calculating from its statements, without outside knowledge. Otherwise the part is ABSENT. A pointer elsewhere ("see Table 2", "as described before") states nothing.
+- A condition is MET when the passage, its paper's title or its definitions state it, CONTRADICTED when they state a different one, and UNSTATED otherwise.
+
+Labels:
+- "full": every part is STATED, as precisely as the question asks, and every condition is MET. Extra information does not matter, and details the question does not ask for may be missing. When a part can have several valid answers (a purpose, a cause, an example), one stated answer is enough; all of them are needed only when the question asks for a number of items or for all of them. A passage from another paper is "full" if it states the parts under the question's conditions, even when its answer differs from the one in the question's own paper.
+- "partial": at least one part is STATED or WORKABLE, no condition is CONTRADICTED, and "full" does not hold. Typical cases: some parts are stated and others are absent; a part is stated less precisely than asked (a direction where an amount is asked, a general class where a specific item is asked, fewer items than the number asked); a part is only workable; a condition is unstated, or is met only for a narrower or broader group or setting than the question names.
+- "none": no part is STATED or WORKABLE, or a condition is CONTRADICTED. This includes a passage that names the term, method, test, measure or topic the question is about but does not state what is asked; a passage with other facts about the term (for example its result when the question asks for its purpose); and a passage about a different concept that shares a short form.
+
+Deciding:
+1. List the question's parts and conditions.
+2. For each part, find the words in the passage that state it or let a reader work it out. If no part has such words, the label is "none". Naming what the question is about is never a part.
+3. Check the conditions. One contradicted condition makes the label "none".
+4. Between "full" and "partial", ask: could a reader who sees only this passage, its title and its definitions write the complete answer without guessing or working anything out? If yes, "full"; if not, "partial". When unsure between "full" and "partial", choose "partial".
+5. In the reason, name the stated parts; for "partial", also name what is missing.
+
+Examples (synthetic: invented terms, not from any paper):
+- QUESTION: At what temperature are plates incubated for the Morvane test? PASSAGE: "Plates for the Morvane test were incubated at 30 °C for two days before colonies were counted." -> "full": the temperature is stated; the duration and the counting are extra.
+- QUESTION: What is the purpose of the Morvane test? PASSAGE: "All isolates underwent the Morvane test and a growth assay." -> "none": the test is named, but its purpose is not stated.
+- QUESTION: By how much does velorin lower the ZQ index in adult zebrafish? PASSAGE: "In adult zebrafish, velorin lowered the ZQ index." -> "partial": the direction is stated; the amount asked for is absent.
+- QUESTION: Which solvent is used to extract tarsin, and why? PASSAGE: "Tarsin was extracted with cold ethanol." -> "partial": the solvent is stated; the reason is absent.
+- QUESTION: What is the half-life of tarsin in seawater? PASSAGE (no medium in the passage or the title): "Tarsin had a half-life of 12 days." -> "partial": the value is stated; the seawater condition is unstated. Had the passage said "in fresh water", the condition would be contradicted: "none".
+- TERM: Plinth ratio. QUESTION: Above what Plinth ratio is a slope classed as unstable? PASSAGE from another paper, whose definitions say "PR" stands for "Plinth ratio": "Slopes with PR above 1.4 were classed as unstable." -> "full": PR is the TERM in that paper, and the threshold is stated.
+
+Answer with a JSON object only, exactly these keys, reason first; do not put double quotes inside the reason:
+{"reason": "at most 25 words", "answers": "full" | "partial" | "none"}"""
+#: The output-format block /3 ends with (the same keys and order as :data:`JUDGE_OUTPUT_FORMAT`; the
+#: value set does not overlap /1-/2's, so a mixed-up configuration yields missing labels, never wrong ones).
+JUDGE_OUTPUT_FORMAT_V3 = ('Answer with a JSON object only, exactly these keys, reason first; do not put double quotes '
+                          'inside the reason:\n{"reason": "at most 25 words", "answers": "full" | "partial" | "none"}')
+JUDGE_VERSION_V3 = "alias-judge/3"
+#: the graded label set of /3, in the order of the ordinal scale (best first)
+GRADES = ("full", "partial", "none")
+
 JUDGE_SYSTEMS: dict[str, str] = {"alias-judge/1": JUDGE_SYSTEM, "alias-judge/2": JUDGE_SYSTEM_V2,
                                  "alias-judge/2-p1": JUDGE_SYSTEM_V2_P1, "alias-judge/2-p2": JUDGE_SYSTEM_V2_P2,
-                                 "alias-judge/2-p3": JUDGE_SYSTEM_V2_P3}
+                                 "alias-judge/2-p3": JUDGE_SYSTEM_V2_P3, JUDGE_VERSION_V3: JUDGE_SYSTEM_V3}
+#: the judge versions whose replies are graded (:func:`parse_judgement_v3`); every other version is
+#: binary (:func:`parse_judgement`). The binary backends of this harness (``qwen``, ``judge_gw``) refuse
+#: a graded version: their parser and stored ``verdict`` are binary (:func:`merged`).
+GRADED_VERSIONS = frozenset({JUDGE_VERSION_V3})
+_V3_BLOCK_HEADS = ("Parts and conditions:", "Labels:", "Deciding:", "Examples (synthetic")
+
+
+def judge_v3_blocks() -> dict[str, str]:
+    """The *Parts and conditions*, *Labels*, *Deciding* and *Examples* blocks of :data:`JUDGE_SYSTEM_V3`,
+    each from its heading line to the line before the next blank line, byte for byte (keys ``parts``,
+    ``labels``, ``deciding``, ``examples``; ``rubric`` is the first three joined by a blank line, the
+    plan's §2.2 block). The rater sheet writer reproduces these so that raters and judges rate one
+    construct."""
+    paras = JUDGE_SYSTEM_V3.split("\n\n")
+    out: dict[str, str] = {}
+    for key, head in zip(("parts", "labels", "deciding", "examples"), _V3_BLOCK_HEADS, strict=True):
+        hits = [p for p in paras if p.startswith(head)]
+        if len(hits) != 1:
+            raise AssertionError(f"alias-judge/3: block {head!r} found {len(hits)} times")
+        out[key] = hits[0]
+    out["rubric"] = "\n\n".join(out[k] for k in ("parts", "labels", "deciding"))
+    return out
 
 #: Characters per input token on the gateway, per model family, for the ``~N tokens in`` of the
 #: GATEWAY SIZE-NOTICE (:func:`gateway_est_input_tokens`). A family is matched as a
@@ -265,6 +336,28 @@ def judge_prompt(question: str, term: str, passage: str, title: str,
             "Does the passage answer the question? Answer with the JSON object only.")
 
 
+#: the closing line of the /1-/2 user message and its /3 replacement (JUDGE-3-PROMPT.md §1.3)
+JUDGE_CLOSING = "Does the passage answer the question? Answer with the JSON object only."
+JUDGE_CLOSING_V3 = "How fully does the passage answer the question? Answer with the JSON object only."
+
+
+def judge_prompt_v3(question: str, term: str, passage: str, title: str,
+                    defs: Sequence[tuple[str, str]]) -> str:
+    """The ``alias-judge/3`` user message: :func:`judge_prompt` byte for byte with its closing line
+    replaced (the replacement must happen exactly once, at the end)."""
+    base = judge_prompt(question, term, passage, title, defs)
+    if base.count(JUDGE_CLOSING) != 1 or not base.endswith(JUDGE_CLOSING):
+        raise AssertionError("judge_prompt: the closing line must occur exactly once, at the end")
+    return base[: -len(JUDGE_CLOSING)] + JUDGE_CLOSING_V3
+
+
+def judge_user_message(version: str, question: str, term: str, passage: str, title: str,
+                       defs: Sequence[tuple[str, str]]) -> str:
+    """The user message of a judge version: /3's for a graded version, :func:`judge_prompt` otherwise."""
+    fn = judge_prompt_v3 if version in GRADED_VERSIONS else judge_prompt
+    return fn(question, term, passage, title, defs)
+
+
 _JSON_OBJ = re.compile(r"\{[^{}]*\}", re.S)
 
 
@@ -289,6 +382,41 @@ def parse_judgement(text: str) -> tuple[bool | None, str]:
             if a in ("yes", "no"):
                 return a == "yes", str(obj.get("reason") or "")[:300]
     return None, ""
+
+
+def parse_judgement_v3(text: str) -> tuple[str | None, str]:
+    """``(grade | None, reason)`` from an ``alias-judge/3`` reply (JUDGE-3-PROMPT.md §2): the LAST JSON
+    object (whole-text parse first, then each flat ``{...}`` in text order) whose ``answers`` is a string
+    equal to ``full``, ``partial`` or ``none`` after stripping and case-folding. The same algorithm as
+    :func:`parse_judgement` with the graded value set; no synonym is mapped (``yes``, ``unsure``,
+    ``partially``, ``Full.`` are invalid), so a /2 reply is invalid here and a /3 reply is invalid there."""
+    t = re.sub(r"<think>.*?</think>", "", (text or "").strip(), flags=re.S)
+    cands = []
+    try:
+        cands.append(json.loads(t.strip().strip("`").removeprefix("json").strip()))
+    except ValueError:
+        pass
+    for m in _JSON_OBJ.finditer(t):
+        try:
+            cands.append(json.loads(m.group(0)))
+        except ValueError:
+            continue
+    for obj in reversed(cands):
+        if isinstance(obj, dict) and isinstance(obj.get("answers"), str):
+            a = obj["answers"].strip().casefold()
+            if a in GRADES:
+                return a, str(obj.get("reason") or "")[:300]
+    return None, ""
+
+
+def grade_readings(grade: str | None) -> dict[str, bool | None]:
+    """The two binary readings of a /3 grade (JUDGE-3-PROMPT.md §2.1), derived, never asked: ``strict``
+    (*answers* only when ``full``) and ``lenient`` (``full`` or ``partial``); ``None`` for no grade."""
+    if grade is None:
+        return {"strict": None, "lenient": None}
+    if grade not in GRADES:
+        raise ValueError(f"not a grade: {grade!r}")
+    return {"strict": grade == "full", "lenient": grade in ("full", "partial")}
 
 
 # ------------------------------------------------------------------ config
@@ -354,6 +482,10 @@ def merged(cfg: Mapping[str, Any]) -> dict[str, Any]:
         raise SystemExit(f"judge_gw.tag {t!r}: letters, digits and _ only")
     if out["qwen"]["judge_version"] not in JUDGE_SYSTEMS:
         raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r}: one of {sorted(JUDGE_SYSTEMS)}")
+    for blk in ("judge_gw", "qwen"):
+        if out[blk]["judge_version"] in GRADED_VERSIONS:
+            raise SystemExit(f"{blk}.judge_version {out[blk]['judge_version']!r} is graded: this backend parses "
+                             "binary labels only (the model-gateway client, model_gateway_judge.py, runs it)")
     v = out["qwen"]["variant"]
     if v is not None and not re.fullmatch(r"[A-Za-z0-9_]+", str(v)):
         raise SystemExit(f"qwen.variant {v!r}: letters, digits and _ only")
