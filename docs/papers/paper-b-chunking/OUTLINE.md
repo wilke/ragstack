@@ -30,7 +30,7 @@ capped semantic_pooled chunking scores −2.21 [−3.73, −0.69] below the sect
 descriptive, `oa-semantic-pooled-vs-sections-setting-a`), does not clear its frozen superiority test, and
 its realised chunk size was not measured. Exploratorily, hybrid fusion compresses the differences between
 chunkings and the reranker adds a near-uniform lift, and its further compression on hybrid is not
-significant (SD ratio 0.90 [0.68, 1.19]; `oa-c1-fusion-compresses`, `oa-c1-sd-ratio-hybrid`). Exploratory
+significant (SD ratio 0.90 [0.67, 1.19]; `oa-c1-fusion-compresses`, `oa-c1-sd-ratio-hybrid`). Exploratory
 and judge-dependent: when a
 boundary-respecting chunking makes a single-passage judge withdraw *answers*, another chunk answers for
 53 of 75 pairs and is in the top 10 for 35 of 53, the rate for unaffected pairs (178 of 276); 18 have no
@@ -139,7 +139,7 @@ context (not size-matched: S's top 10 carries 13 % less text). Capped semantic_p
 −2.21 [−3.73, −0.69] below the section-cut window (unadjusted, descriptive), fails its frozen superiority
 test, and its realised chunk size was not measured. Exploratorily, hybrid fusion compresses the differences
 between chunkings and the reranker adds a near-uniform lift whose further compression on hybrid is not
-significant (SD ratio 0.90 [0.68, 1.19]); about 2–6 points remain. Exploratory and
+significant (SD ratio 0.90 [0.67, 1.19]); about 2–6 points remain. Exploratory and
 judge-dependent: when a boundary-respecting chunking makes a single-passage judge withdraw *answers*,
 another chunk answers for 53 of 75 pairs and is retrieved for 35 of 53, the rate for unaffected pairs,
 while 18 pairs have no single answering chunk. All of this holds for one domain, embedder, reranker and
@@ -318,13 +318,17 @@ but not the pre-registered X_P of 0.05 (`rescore-overlap-512-unresolved`, `resco
 Never read either as a null.
 
 **5.4 What chunking does to hit@5 on 22,593 articles.** Judge-free, n = 2,035, half-width 1.22 points in
-the production setting, where the server default reaches 79.02 % (`oa-hit5-setting-a-baseline`). Its section,
-random-cut, overlap, semantic and C1/C2 figures are `MARKDOWN-ONLY`; a committed JSON aggregate is a precondition
-for drafting this section.
+the production setting, where the server default reaches 79.02 % (`oa-hit5-setting-a-baseline`). Every figure
+below resolves to the committed aggregate artifact (`../../plans/results/oa-chunking-eval-2026-10/artifacts/
+oa-eval-aggregates.json`, aggregates only, citable provenance), which labels each contrast confirmatory
+(the frozen six-arm run), Addendum C (pre-specified privately after the main run) or exploratory; the
+section's sentences carry those labels. Two numbers remain Markdown-only and are said to be: the article
+count (`oa-corpus-articles`) and the sentence and semantic arms' split-quote shares
+(`oa-split-quote-share-sent512`).
 - *Section cuts* (four contrasts pre-specified in the private Addendum C after the six-arm run, Holm; the
   paper labels them so): +3.49 [+2.11, +4.86] on the fixed window (`oa-sections-ft-setting-a`,
   re-measured by the head-to-head's drift gate), +2.51 on sentence chunks (`oa-sections-sent-setting-a`);
-  +7.96 and +6.09 under vector-only (`oa-sections-ft-vector-only`, `oa-sections-sent-vector-only`); −0.29
+  +7.91 and +6.09 under vector-only (`oa-sections-ft-vector-only`, `oa-sections-sent-vector-only`); −0.29
   [−1.72, +1.13] under BM25, unresolved at a 1.4-point half-width (`oa-sections-ft-bm25-null`). Against
   count-matched random cuts, a control that exists only on the sentence arm (sent512s − sent512rc; none
   for the fixed window): +4.82 under vector-only (`oa-sections-vs-random-cuts-vector`), +2.11 [+0.69,
@@ -336,7 +340,8 @@ for drafting this section.
 - *Overlap* (pre-specified whole-set contrast; mechanism post-hoc): +2.06 [+0.59, +3.49], all of it on
   the 119 questions a plain cut splits (`oa-overlap-setting-a`); chunks are not larger
   (`oa-overlap-chunk-size-unchanged`); 5.85 % of quotes split without overlap against 0.20 % under
-  sentence cuts (`oa-split-quote-share-ft512o0`); at the article level +0.64 [−0.39, +1.67]
+  sentence cuts (`oa-split-quote-share-ft512o0`, `oa-split-quote-share-sent512`); at the article level +0.64
+  [−0.39, +1.67]
   (`oa-overlap-article-level`). Exploratory label: hypotheses B and D.
 - *Size* (exploratory A, two sizes): −5.80 under vector-only (`oa-size-vector-only`), +5.31 under BM25
   (`oa-size-bm25-only`), −0.29 [−1.82, +1.23] in production, unresolved (`oa-size-setting-a`), −3.54
@@ -345,14 +350,14 @@ for drafting this section.
 - *Semantic chunking.* Capped semantic_pooled scores −2.21 [−3.73, −0.69] below the section-cut window
   in production (unadjusted, descriptive, `oa-semantic-pooled-vs-sections-setting-a`), 80.29 % against the
   server default's 79.02 % (`oa-sempool-hit5-setting-a`), and does not clear its frozen mid-class
-  superiority test; it is competitive without sections under vector-only, +7.76
-  (`oa-semantic-pooled-vs-baseline-vector-only`). There is no S − sempool512 contrast. The 4.5–7× embedding
+  superiority test; it is competitive without sections under vector-only, +7.76 [+5.80, +9.78], the frozen
+  run's secondary-setting report (`oa-semantic-pooled-vs-baseline-vector-only`). There is no S − sempool512 contrast. The 4.5–7× embedding
   cost is the *planned* cost of the legacy semantic arm, not semantic_pooled's
   (`oa-legacy-semantic-cost`). The semantic arms' realised chunk size was not measured, so by the paper's
   own rule these are unmatched comparisons.
 - *Fusion and reranking* (exploratory C1, C2): fusion halves the vector-only spread
   (`oa-c1-fusion-compresses`); the reranker adds +14.3 to +17.7 to every arm (`oa-c1-reranker-lift`) and
-  compresses hybrid spread by a ratio of 0.90 [0.68, 1.19], not significant (`oa-c1-sd-ratio-hybrid`);
+  compresses hybrid spread by a ratio of 0.90 [0.67, 1.19], not significant (`oa-c1-sd-ratio-hybrid`);
   on a single source it compresses to 0.75 [0.65, 0.88] (vector) and 0.60 [0.45, 0.81] (BM25) and keeps
   the order (`oa-c2-sd-ratio-vector`). After both, chunking matters by about 2–6 points
   (`oa-chunking-matters-under-reranker`).
@@ -482,9 +487,11 @@ Then, each named as a competing reading of the main result:
 - **Unadjusted intervals and many subgroup cells.** Every post-hoc interval in 5.4 (hypotheses A–D,
   settings (e) and (f), the semantic and random-cut contrasts) is an unadjusted paired bootstrap; the
   per-section and per-density cells are hints. The paper quotes them as exploratory in the sentence.
-- **Reproducibility of the deciding numbers.** The OA eval's per-arm, per-setting values and
-  pre-specified contrasts exist in the public record only as Markdown aggregates; the per-question files
-  and Addendum C are private. A committed JSON aggregate is a precondition, not a nicety.
+- **Reproducibility of the deciding numbers.** The OA eval's per-arm, per-setting values and every
+  contrast the paper cites are in a committed aggregate artifact with citable provenance and the sha256 of
+  each private source file; the per-question files, the main-run RESULTS and Addendum C itself remain
+  private, so a reader can verify the aggregates against their hashes but cannot recompute them. The
+  article count and the sentence and semantic arms' split-quote shares exist only in Markdown.
 
 ### 7. Reproducibility
 
@@ -505,18 +512,23 @@ access for the judge tiebreak, and the two-reader human read this record lacks.
 
 ## Working rules for this draft
 
-- Every number cites a claim id from `claims.json` (113 entries; every one resolves under
-  `../check_claims.py`, but 37 are tagged `MARKDOWN-ONLY` and resolve to a Markdown aggregate rather
-  than a committed JSON, among them the section-versus-random-cut, overlap, semantic and C1/C2 claims
-  the thesis leans on). Run `../check_claims.py` with `/rag/envs/ragstack/bin/python3` before any commit
-  that touches the draft.
-- Read the `note` field before writing the sentence. Three note tags change what may be said:
+- Every number cites a claim id from `claims.json` (114 entries; every one resolves under
+  `../check_claims.py`; 9 are tagged `MARKDOWN-ONLY` and resolve to a Markdown file rather than a
+  committed JSON: the OA article count and sentence-arm split share, the position oracle, the older
+  study's corpus size and power, the 7-way and SciFact reports, and the step-0b wall read; the section,
+  random-cut, overlap, size, semantic and C1/C2 claims the thesis leans on resolve to the OA aggregate
+  artifact). Run `../check_claims.py` with `/rag/envs/ragstack/bin/python3` before any commit that touches
+  the draft.
+- Read the `note` field before writing the sentence. Four note tags change what may be said:
   `JUDGE-DEPENDENT` (the validity flag goes in the sentence), `MARKDOWN-ONLY` (the number has no committed
-  JSON; the defect is fixed before the sentence is drafted; for §5.2, §5.4 and the thesis there is no
-  Markdown-aggregate exception), `SECONDARY` / `EXPLORATORY` (labelled in the sentence, not the caption).
+  JSON; the defect is fixed before the sentence is drafted; for §5.2 there is no Markdown-aggregate
+  exception), `ADDENDUM-C` (the sentence says "pre-specified privately after the main run"), `SECONDARY` /
+  `EXPLORATORY` (labelled in the sentence, not the caption).
 - No status, no dates, no roadmap; those live in the lab book.
-- Absent is not passed. Subgroup n for the OA eval's section-type cells is *absent*; the semantic arms'
-  realised chunk size is *absent*.
+- Absent is not passed. The semantic arms' realised chunk size is *absent*; the semantic_pooled embedding
+  cost on this corpus is *absent* (only the legacy arm's planned 4.5–7× exists); the sentence and semantic
+  arms' split-quote shares are Markdown-only. Subgroup n for the section-type cells is in the aggregate
+  (methods n = 368, `oa-size-methods-vector-only`).
 - Powered nulls and unresolved contrasts are never merged: the BM25 section contrast, the production size
   contrast, the random-cut contrast in the production setting, the h2h superiority and the Leg A overlap are
   unresolved; none is a null.

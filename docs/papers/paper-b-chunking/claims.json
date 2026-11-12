@@ -73,7 +73,7 @@
    "pointer": "Corpus: 22,593 PMC OA bacteria/virus articles. Each article is extracted once",
    "kind": "text",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. The h2h report carries the record count instead (241,930 article, table and figure records; `h2h-records-main`)."
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. The committed aggregate records this count as not derivable from the private files (question_sets.corpus_articles_indexed is null). The h2h report carries the record count instead (241,930 article, table and figure records; `h2h-records-main`)."
   },
   {
    "id": "h2h-records-main",
@@ -100,57 +100,86 @@
   {
    "id": "oa-passage-median-chars",
    "section": "4",
-   "statement": "Passages were grown from whole sentences inside one section to about 1,200 characters: median 1,242 (p10 979, p90 1,371).",
-   "value": 1242,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "Median length 1,242 characters (p10 979, p90 1,371).",
-   "kind": "text",
+   "statement": "Passages were grown from whole sentences inside one section to about 1,200 characters: median 1,242 (p10 979, p90 1,371), n = 2,592.",
+   "value": {
+    "median": 1242.0,
+    "p10": 979.0,
+    "p90": 1371.0,
+    "n": 2592
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.passage_chars",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). "
   },
   {
    "id": "oa-passage-section-types",
    "section": "4",
    "statement": "The 2,592 passages come from abstract 657, methods 482, results 471, introduction 467, discussion 430 and unheaded body 85.",
-   "value": 657,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "Section types: abstract 657, methods 482, results 471, introduction 467, discussion 430, body 85.",
-   "kind": "text",
+   "value": {
+    "abstract": 657,
+    "methods": 482,
+    "results": 471,
+    "introduction": 467,
+    "discussion": 430,
+    "body": 85
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.passage_section_type.counts",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Counts are over the 2,592 passages, not the 2,035 decision-set questions."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Counts over the 2,592 passages, not the 2,035 decision-set questions; the decision-set breakdown is construction.decision_set_section_type.counts (abstract 511, methods 368, results 374, introduction 379, discussion 336, body 67)."
   },
   {
    "id": "oa-quote-median-chars",
    "section": "4",
    "statement": "Gold quotes are short, sentence-shaped single spans: median 119 characters, p10 54, p90 214, capped at 300.",
-   "value": 119,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "The median is 119; p10 is 54 and p90 is",
-   "kind": "text",
+   "value": {
+    "median": 119.0,
+    "p10": 54.4,
+    "p90": 213.6,
+    "max": 300,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.gold_quote_chars",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. This is the construction fact behind the overlap and section results (hypothesis D)."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). This is the construction fact behind the overlap and section results (hypothesis D)."
   },
   {
    "id": "oa-no-quote-crosses-section",
    "section": "4",
    "statement": "No gold quote crosses a section boundary, 0 of 2,035, because every passage was sampled inside one section.",
-   "value": 0,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "crosses a section boundary (0 of 2,035)",
-   "kind": "text",
+   "value": {
+    "crossing": 0,
+    "n": 2035,
+    "share": 0.0
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.gold_quote_crosses_section_boundary",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. A design property, not a finding: the OA eval cannot see any cost of section cuts on answers that span sections."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). A design property, not a finding: the OA eval cannot see any cost of section cuts on answers that span sections."
   },
   {
    "id": "oa-margins-floor",
    "section": "3",
-   "statement": "The frozen non-inferiority and mid-class margins were 2.0 hit@5 points, the pre-set floor, because the noise run's paired CI half-widths were below it in every setting.",
-   "value": 2.0,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/PLAN-AND-PASS-RULE.md",
-   "pointer": "half-widths are below the 2.0 floor in every setting",
-   "kind": "text",
+   "statement": "The frozen non-inferiority and mid-class margins were 2.0 hit@5 points, the pre-set floor, and the expensive class 4.0, because the noise run's paired CI half-width (1.22 at n = 2,035 in the production setting) was below the floor in every setting.",
+   "value": {
+    "margins.M_ni": 2.0,
+    "margins.M_mid": 2.0,
+    "margins.M_high": 4.0,
+    "half_width_at_n2035_scaled.value": 1.22,
+    "floor": 2.0,
+    "n_subset": 300
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "noise_run.settings.a",
+   "kind": "json",
    "verified": true,
-   "note": "Addendum B (freeze). M_high = 4.0. Half-width at N = 2,035: 1.22 in setting (a), 1.79 in (b), 1.41 in (c)."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Addendum B freeze. The private RESULTS printed 1.15, the planned-n (2,260) half-width, under an n = 2,035 label (markdown_checks); 1.22 is the scaled value and the PLAN's Addendum B prints it."
   },
   {
    "id": "reach-units",
@@ -201,256 +230,366 @@
    "id": "oa-hit5-setting-a-baseline",
    "section": "5.4",
    "statement": "In the production setting (hybrid + reranker) the server default ft512o64 reaches hit@5 of 79.02 % on the decision set.",
-   "value": 79.0172,
-   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
-   "pointer": "settings.a.hit5.ft512o64",
+   "value": {
+    "hit@5": 79.0172,
+    "n": 2035,
+    "status": "confirmatory"
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "settings.a.arms.ft512o64",
    "kind": "json",
    "verified": true,
-   "note": "JUDGE-FREE. Re-retrieved in the h2h study on the OA eval's collections; equals the OA eval's 79.02 to the printed precision. hit@5 = the top-5 chunks from the gold article cover >= 90 % of the quote."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). JUDGE-FREE. hit@5 = the top-5 chunks from the gold article cover >= 90 % of the quote. The h2h re-retrieval gives the same value (settings.a.hit5.ft512o64 in h2h-report.json)."
   },
   {
    "id": "oa-sections-ft-setting-a",
    "section": "5.4",
-   "statement": "Section cuts on the server default (ft512o64s - ft512o64) gain +3.49 hit@5 points [+2.11, +4.86] in the production setting, the OA eval's frozen-rule winner.",
+   "statement": "Section cuts on the server default (ft512o64s - ft512o64) gain +3.49 hit@5 points [+2.11, +4.86] in the production setting, the OA eval's winner under its frozen rule plus Addendum C, pre-specified privately after the main run.",
    "value": {
     "point": 3.4889,
     "lo": 2.113,
     "hi": 4.8649,
-    "n": 2035
+    "n": 2035,
+    "passed": true,
+    "status": "addendum-C"
    },
-   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
-   "pointer": "settings.a.contrasts.C4",
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_step2_ft512o64s_minus_ft512o64",
    "kind": "json",
    "verified": true,
-   "note": "JUDGE-FREE. The h2h study's gate G1 re-found the OA eval's Addendum C figure (+3.49 [+2.11, +4.86], Holm k = 3 there) to the printed precision; this JSON is the re-measurement, the OA eval's own value exists only in POSTHOC Markdown. 140 questions for ft512o64s alone, 69 for ft512o64 alone."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. The Holm-adjusted Addendum C contrast C2 is contrasts.addC_a_C2 (+3.49 [+2.11, +4.86], p_holm 0.0008). The head-to-head's gate G1 re-found the same figure (h2h-report.json settings.a.contrasts.C4: 3.4889 [2.113, 4.8649]); that is a drift gate, not a test."
   },
   {
    "id": "oa-sections-ft-vector-only",
    "section": "5.4",
-   "statement": "Under vector-only retrieval the same section-cut contrast is +7.96 points [+5.95, +9.98].",
+   "statement": "Under vector-only retrieval the same section-cut contrast is +7.91 points [+5.90, +9.93].",
    "value": {
-    "point": 7.9607,
-    "lo": 5.9459,
-    "hi": 9.9754
+    "point": 7.91,
+    "lo": 5.9,
+    "hi": 9.93,
+    "holm_significant": true
    },
-   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
-   "pointer": "settings.b.contrasts.C4",
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_b_C2",
    "kind": "json",
    "verified": true,
-   "note": "JUDGE-FREE. h2h re-measurement; the OA eval's own figure is +7.91 [+5.90, +9.93] (Markdown)."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. The h2h re-retrieval gives +7.96 [+5.95, +9.98] (its settings.b.contrasts.C4); the OA eval's own figure is the one cited."
   },
   {
    "id": "oa-sections-ft-bm25-null",
    "section": "5.4",
    "statement": "Under BM25 alone section cuts do nothing: ft512o64s - ft512o64 = -0.29 [-1.72, +1.13].",
    "value": {
-    "point": -0.2948,
-    "lo": -1.7199,
-    "hi": 1.1302
+    "point": -0.29,
+    "lo": -1.72,
+    "hi": 1.13,
+    "holm_significant": false
    },
-   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
-   "pointer": "settings.c.contrasts.C4",
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_c_C2",
    "kind": "json",
    "verified": true,
-   "note": "JUDGE-FREE. Not a powered null in its own right: the half-width is about 1.4 points, so a gain or loss under about 1.4 points cannot be excluded."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. Not a powered null in its own right: the half-width is about 1.4 points, so a gain or loss under about 1.4 points cannot be excluded."
   },
   {
    "id": "oa-sections-sent-setting-a",
    "section": "5.4",
-   "statement": "Section cuts on sentence chunks (sent512s - sent512) gain +2.51 [+1.13, +3.88] in the production setting.",
-   "value": 2.51,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (a) | +2.51 [+1.13, +3.88] | +3.49 [+2.11, +4.86] |",
-   "kind": "text",
+   "statement": "Section cuts on sentence chunks (sent512s - sent512) gain +2.51 [+1.13, +3.88] in the production setting, Holm-significant across the four Addendum C contrasts.",
+   "value": {
+    "point": 2.51,
+    "lo": 1.13,
+    "hi": 3.88,
+    "holm_significant": true,
+    "p_holm": 0.0024
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_C1",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Holm-adjusted across the four pre-specified section contrasts."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE."
   },
   {
    "id": "oa-sections-sent-vector-only",
    "section": "5.4",
    "statement": "Under vector-only retrieval sent512s - sent512 is +6.09 [+4.18, +7.96].",
-   "value": 6.09,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (b) | +6.09 [+4.18, +7.96] | +7.91 [+5.90, +9.93] |",
-   "kind": "text",
+   "value": {
+    "point": 6.09,
+    "lo": 4.18,
+    "hi": 7.96,
+    "holm_significant": true
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_b_C1",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE."
   },
   {
    "id": "oa-sections-vs-random-cuts-vector",
    "section": "5.4",
-   "statement": "Real section boundaries beat count-matched random cuts under vector-only retrieval by +4.82 [+3.05, +6.58].",
-   "value": 4.82,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (b) | +4.82 [+3.05, +6.58] |",
-   "kind": "text",
+   "statement": "Real section boundaries beat count-matched random cuts on sentence chunks under vector-only retrieval by +4.82 [+3.05, +6.58], Holm-significant.",
+   "value": {
+    "point": 4.82,
+    "lo": 3.05,
+    "hi": 6.58,
+    "holm_significant": true
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_b_C4",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. sent512s - sent512rc; the control makes the same number of cuts at random positions."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. sent512s - sent512rc; the control makes the same number of cuts at random positions. The only count-matched random-cut control is on the sentence arm; none exists for the fixed window."
   },
   {
    "id": "oa-sections-vs-random-cuts-setting-a",
    "section": "5.4",
-   "statement": "With the reranker the structure-over-random gain is +0.84 [-0.39, +2.11], not significant: part of the section gain under the reranker comes from shorter, more numerous chunks wherever the cuts fall.",
-   "value": 0.84,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (a) | +0.84 [-0.39, +2.11], n.s. |",
-   "kind": "text",
+   "statement": "In the production setting, on sentence chunks, real section cuts are not shown to beat count-matched random cuts: +0.84 [-0.39, +2.11], not Holm-significant, against a section gain of +2.51.",
+   "value": {
+    "point": 0.84,
+    "lo": -0.39,
+    "hi": 2.11,
+    "holm_significant": false,
+    "p_holm": 0.41116
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_C4",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. This is the realised-size confound inside the section result. Unresolved, not a null: a true gain up to about 2 points is inside the interval."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. Unresolved, not a null: a true gain up to about 2 points is inside the interval, and no point-estimate reading is licensed. This is the realised-size confound inside the section result; no random-cut control exists for the fixed window."
   },
   {
    "id": "oa-overlap-setting-a",
    "section": "5.4",
-   "statement": "Overlap helps in the production setting: ft512o64 - ft512o0 = +2.06 [+0.59, +3.49]; on the 119 questions whose quote ft512o0 splits the gain is +34.5 [+25.2, +43.7] and on the other 1,916 it is +0.05 [-1.36, +1.46].",
-   "value": 2.06,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (a) | +2.06 [+0.59, +3.49] | +34.5 [+25.2, +43.7] | +0.05 [-1.36, +1.46] |",
-   "kind": "text",
+   "statement": "Overlap helps in the production setting: ft512o64 - ft512o0 = +2.06 [+0.59, +3.49]; on the 119 questions whose quote ft512o0 splits the gain is +34.45 [+25.21, +43.70] and on the other 1,916 it is +0.05 [-1.36, +1.46].",
+   "value": {
+    "ph_B_a_pooled.point": 2.06,
+    "ph_B_a_pooled.lo": 0.59,
+    "ph_B_a_pooled.hi": 3.49,
+    "ph_B_a_split_in_ft512o0.point": 34.45,
+    "ph_B_a_split_in_ft512o0.n": 119,
+    "ph_B_a_inside_one_ft512o0_chunk.point": 0.05,
+    "ph_B_a_inside_one_ft512o0_chunk.n": 1916
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. The whole-set contrast was pre-specified; the split-vs-unsplit decomposition is post-hoc (hypothesis B). Subgroup n = 119 and 1,916."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). JUDGE-FREE. The whole-set contrast is the sign-reversed confirmatory main_a_ft512o0_minus_ft512o64 (ft512o0 failed its cheap-class non-inferiority test at -2.06 [-3.49, -0.59]); the split-vs-unsplit decomposition is EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). (hypothesis B)."
   },
   {
    "id": "oa-overlap-chunk-size-unchanged",
    "section": "5.4",
-   "statement": "Overlap does not enlarge chunks: mean chunk length 1,771 characters without overlap and 1,781 with.",
-   "value": 1771,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| Mean chunk length (chars) | 1,771 | 1,781 | 3,451 |",
-   "kind": "text",
+   "statement": "Overlap does not enlarge chunks: mean chunk length 1,771 characters without overlap and 1,781 with; 1,024-token chunks average 3,451.",
+   "value": {
+    "ft512o0.mean_chars": 1771.2,
+    "ft512o64.mean_chars": 1781.3,
+    "ft1024o0.mean_chars": 3450.8,
+    "ft512o0.quote_in_one_chunk": 0.9415,
+    "ft512o64.quote_in_one_chunk": 0.9975
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.chunk_geometry_in_stores",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Hypothesis B rejected: the window keeps its 512 tokens and advances by 448. Measured in the stores over the articles behind the questions."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Hypothesis B rejected: the window keeps its 512 tokens and advances by 448. Measured in the stores over the gold records behind the decision-set questions."
   },
   {
    "id": "oa-split-quote-share-ft512o0",
    "section": "5.4",
-   "statement": "A plain 512-token window with no overlap splits 5.85 % of gold quotes across a chunk boundary; sentence chunking splits 0.20 % with no overlap at all.",
-   "value": 5.85,
+   "statement": "A plain 512-token window with no overlap splits 5.85 % of gold quotes across a chunk boundary; with a 64-token overlap 0.25 %, and at 1,024 tokens 2.70 %.",
+   "value": {
+    "ft512o0": 0.0585,
+    "ft512o64": 0.0025,
+    "ft1024o0": 0.027,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.gold_quote_split_by_boundary",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). ft512o64 and ft1024o0 are 1 - quote_in_one_chunk (derived). The shares for the sentence and semantic arms were measured against the live stores and exist only in Markdown (`oa-split-quote-share-sent512`)."
+  },
+  {
+   "id": "oa-split-quote-share-sent512",
+   "section": "5.4",
+   "statement": "Sentence chunking with no overlap splits 0.20 % of gold quotes: quotes are whole sentences, so sentence-aware cuts give the same protection as overlap.",
+   "value": 0.2,
    "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
    "pointer": "| 5.85% | 2.70% | 0.64% | 0.54% | 0.25% | 0.20% | 0.29% | 0.15% | 0.10% |",
    "kind": "text",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Order: ft512o0, ft1024o0, sem512, sempool512, ft512o64, sent512, sent512s, ft512o64s, sent512rc. Quotes are whole sentences, so sentence-aware cuts give the same protection as overlap."
+   "note": "MARKDOWN-ONLY: measured against the live stores and saved in no private file, so the committed aggregate does not carry it (its gold_quote_split_by_boundary.note says so). Order: ft512o0, ft1024o0, sem512, sempool512, ft512o64, sent512, sent512s, ft512o64s, sent512rc."
   },
   {
    "id": "oa-size-vector-only",
    "section": "5.4",
    "statement": "1,024-token chunks lose 5.80 hit@5 points [-7.67, -3.93] to 512-token chunks under vector-only retrieval.",
-   "value": -5.8,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (b) vector only | **-5.80** [-7.67, -3.93] |",
-   "kind": "text",
+   "value": {
+    "point": -5.8,
+    "lo": -7.67,
+    "hi": -3.93,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_b_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. ft1024o0 - ft512o0, both without overlap. Exploratory hypothesis A; only two sizes tested."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). ft1024o0 - ft512o0, both without overlap. Hypothesis A; only two sizes tested."
   },
   {
    "id": "oa-size-bm25-only",
    "section": "5.4",
    "statement": "Under BM25 alone the same 1,024-vs-512 contrast is +5.31 [+3.78, +6.83]: BM25 prefers large chunks.",
-   "value": 5.31,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (c) BM25 only | **+5.31** [+3.78, +6.83] |",
-   "kind": "text",
+   "value": {
+    "point": 5.31,
+    "lo": 3.78,
+    "hi": 6.83
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_c_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory (A)."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Hypothesis A."
   },
   {
    "id": "oa-size-setting-a",
    "section": "5.4",
    "statement": "In the production setting the size effect mostly disappears: -0.29 [-1.82, +1.23].",
-   "value": -0.29,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (a) hybrid + reranker | -0.29 [-1.82, +1.23] |",
-   "kind": "text",
+   "value": {
+    "point": -0.29,
+    "lo": -1.82,
+    "hi": 1.23
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_a_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Unresolved rather than a null: a true loss up to 1.8 points is inside the interval. A plausible but unverified mechanism is cross-encoder truncation of 1,024-token chunks."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Unresolved rather than a null: a true loss up to 1.8 points is inside the interval. A plausible but unverified mechanism is cross-encoder truncation of 1,024-token chunks."
   },
   {
    "id": "oa-size-methods-vector-only",
    "section": "5.4",
-   "statement": "Under vector-only retrieval, questions drawn from methods sections lose 13.9 points [-18.5, -9.5] at 1,024 tokens; abstract questions do not move (+0.8, n.s.).",
-   "value": -13.9,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| methods | -13.9 [-18.5, -9.5] |",
-   "kind": "text",
+   "statement": "Under vector-only retrieval, the 368 questions drawn from methods sections lose 13.86 points [-18.48, -9.51] at 1,024 tokens.",
+   "value": {
+    "point": -13.86,
+    "lo": -18.48,
+    "hi": -9.51,
+    "n": 368
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_A_b_section_type_methods",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Subgroup of hypothesis A; many subgroup cells were read, so a single cell is a hint. Subgroup n absent from the public record (DEFECT)."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Subgroup of hypothesis A; many subgroup cells were read, so a single cell is a hint. The abstract cell is ph_A_b_section_type_abstract."
   },
   {
    "id": "oa-semantic-pooled-vs-sections-setting-a",
    "section": "5.4",
-   "statement": "Capped semantic_pooled chunking is worse than fixed windows with section cuts in the production setting: sempool512 - ft512o64s = -2.21 [-3.73, -0.69].",
-   "value": -2.21,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| sempool512 - ft512o64s | -2.21 [-3.73, -0.69] |",
-   "kind": "text",
+   "statement": "Capped semantic_pooled chunking scores below fixed windows with section cuts in the production setting: sempool512 - ft512o64s = -2.21 [-3.73, -0.69], unadjusted, descriptive.",
+   "value": {
+    "point": -2.2113,
+    "lo": -3.7346,
+    "hi": -0.688,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.rc_a_sempool512_minus_ft512o64s",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. The legacy semantic arm is -3.34 [-4.91, -1.87] and costs about 4.5-7x the embedding tokens."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Recomputed from the per-question file; no frozen file holds it. The legacy semantic arm is -3.34 [-4.91, -1.87] (contrasts.rc_a_sem512_minus_ft512o64s). The semantic arms' realised chunk size was not measured."
   },
   {
    "id": "oa-semantic-pooled-vs-baseline-vector-only",
    "section": "5.4",
-   "statement": "Without section cuts, semantic chunking is competitive under vector-only retrieval: sempool512 - ft512o64 = +7.76.",
-   "value": 7.76,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "sempool512 - ft512o64 = +7.76",
-   "kind": "text",
+   "statement": "Without section cuts, semantic_pooled is competitive under vector-only retrieval: sempool512 - ft512o64 = +7.76 [+5.80, +9.78], the frozen main run's secondary-setting report.",
+   "value": {
+    "point": 7.7641,
+    "lo": 5.7973,
+    "hi": 9.7789,
+    "passed": true,
+    "decision_role": "secondary report"
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.main_b_sempool512_minus_ft512o64",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Interval absent in the public record. Under the reranker the lead shrinks to +1.3 (C1)."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Frozen main run, setting (b), which is a secondary report and not the decision; the mid-class superiority test passes there. In production (a) the same arm fails its class test at +1.28 [-0.20, +2.75] (`oa-sempool-hit5-setting-a`). Under the reranker its lead shrinks (C1)."
   },
   {
    "id": "oa-c1-sd-ratio-hybrid",
    "section": "5.4",
-   "statement": "In hybrid retrieval the reranker does not significantly compress the spread across the ten arms: SD ratio with/without reranker 0.90 [0.68, 1.19].",
-   "value": 0.9,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "the ratio is 0.90 [0.68, 1.19]",
-   "kind": "text",
+   "statement": "In hybrid retrieval the reranker does not significantly compress the spread across the ten arms: SD ratio with/without reranker 0.90 [0.67, 1.19].",
+   "value": {
+    "point": 0.9,
+    "lo": 0.67,
+    "hi": 1.19
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.pairs.C1_hybrid.sd_ratio_reranked_over_not",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C1. SD across arms 2.05 with the reranker, 2.29 without; best - worst 5.9 vs 7.4."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. The POSTHOC prose prints the lower bound as 0.68; the artifact's recomputation gives 0.67 (markdown_checks). SD across arms 2.05 with the reranker, 2.29 without; best - worst 5.85 vs 7.37. Not a null: up to about a third of compression is inside the interval."
   },
   {
    "id": "oa-c1-fusion-compresses",
    "section": "5.4",
-   "statement": "What compresses the arms is hybrid fusion itself: the SD across arms falls from 4.75 under vector-only retrieval to 2.29 under hybrid retrieval without a reranker.",
-   "value": 4.75,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "vector-only SD 4.75 becomes hybrid SD 2.29",
-   "kind": "text",
+   "statement": "What compresses the arms is hybrid fusion itself: the SD across arms falls from 4.75 under vector-only retrieval to 2.29 under hybrid retrieval without a reranker, and 2.05 with it.",
+   "value": {
+    "b.sd_across_arms": 4.75,
+    "d.sd_across_arms": 2.29,
+    "a.sd_across_arms": 2.05,
+    "c.sd_across_arms": 2.49
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.settings",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C1."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1."
   },
   {
    "id": "oa-c1-reranker-lift",
    "section": "5.4",
    "statement": "The reranker adds a near-uniform +14.3 to +17.7 hit@5 points to every arm in hybrid retrieval.",
-   "value": 14.3,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "The reranker adds +14.3 to +17.7 points to every arm",
-   "kind": "text",
+   "value": [
+    14.3,
+    17.74
+   ],
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.pairs.C1_hybrid.reranker_gain_range",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Smallest gain to ft1024o0. Exploratory C1."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. Smallest gain to ft1024o0; pairwise differences correlate 0.77 across (a) and (d) with slope 0.78."
   },
   {
    "id": "oa-c2-sd-ratio-vector",
    "section": "5.4",
    "statement": "On vector-only candidates the reranker narrows the spread across arms to 0.75 [0.65, 0.88] of its unreranked value; on BM25 candidates to 0.60 [0.45, 0.81].",
-   "value": 0.75,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "**0.75 [0.65, 0.88]**",
-   "kind": "text",
+   "value": {
+    "C2_vector.sd_ratio_reranked_over_not.point": 0.75,
+    "C2_vector.sd_ratio_reranked_over_not.lo": 0.65,
+    "C2_vector.sd_ratio_reranked_over_not.hi": 0.88,
+    "C2_bm25.sd_ratio_reranked_over_not.point": 0.6,
+    "C2_bm25.sd_ratio_reranked_over_not.lo": 0.45,
+    "C2_bm25.sd_ratio_reranked_over_not.hi": 0.81,
+    "C2_vector.rank_spearman": 0.95,
+    "C2_bm25.rank_spearman": 0.76
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.pairs",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C2; post-hoc settings (e) and (f). Rank correlation of arms 0.95 (vector) and 0.76 (BM25): the order is kept. Chunking matters by 4-11 points under a reranked single source."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2; post-hoc settings (e) and (f). The order of arms is kept (rank correlation 0.95 and 0.76). Chunking still separates arms by up to 11.0 points (e) and 4.3 (f) under a reranked single source."
   },
   {
    "id": "oa-ft512o64s-context-ratio",
    "section": "5.4",
-   "statement": "ft512o64s retrieves 0.86x the baseline's context at k = 5, 14 % less text.",
-   "value": 0.86,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "0.86x the baseline's context",
-   "kind": "text",
+   "statement": "ft512o64s retrieves 0.86x the baseline's context at k = 5, about 14 % less text.",
+   "value": 0.8634,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_step2_ft512o64s_minus_ft512o64.context_ratio",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. Context tokens at k = 5: 1,999.5 against 2,315.8 (posthoc_ctx_tokens@5.a)."
   },
   {
    "id": "h2h-hit5-s",
@@ -1230,56 +1369,81 @@
    "id": "oa-overlap-article-level",
    "section": "5.1",
    "statement": "At the article level (any top-5 chunk from the gold article) overlap moves hit@5 by only +0.64 [-0.39, +1.67] in the production setting, against +2.06 at the chunk level.",
-   "value": 0.64,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| (a) | +0.64 [-0.39, +1.67] |",
-   "kind": "text",
+   "value": {
+    "point": 0.64,
+    "lo": -0.39,
+    "hi": 1.67,
+    "arm_values.ft512o0": 85.9,
+    "arm_values.ft512o64": 86.54
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_D_a_article_hit5",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Hypothesis D item 5; unadjusted; the one in-record demonstration that a document-level metric misses a chunk-level effect on the OA eval. The only significant article-level gain is under BM25 on the split questions (+9.2 [+4.2, +15.1])."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Hypothesis D item 5; the one in-record demonstration that a document-level metric misses a chunk-level effect on the OA eval. On the 119 split questions the article-level gain is +5.04 [-1.68, +11.76] (ph_D_a_article_hit5_split_in_ft512o0)."
   },
   {
    "id": "oa-questions-passing",
    "section": "4",
-   "statement": "2,437 passages yielded a question and exact answer quote passing the programmatic checks in three attempts.",
-   "value": 2437,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| Questions | 2,437 |",
-   "kind": "text",
+   "statement": "2,437 passages yielded a question and exact answer quote passing the programmatic checks in three attempts; 155 passages failed every attempt.",
+   "value": {
+    "selected": 2437,
+    "passages_failed_all_attempts": 155,
+    "max_attempts": 3
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "question_sets.questions",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. 155 passages failed all three attempts."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). "
   },
   {
    "id": "oa-clean-set",
    "section": "4",
-   "statement": "The clean set holds 2,335 questions after removing 63 ambiguous-gold items and 66 within-record repeats.",
-   "value": 2335,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| Clean set | 2,335 |",
-   "kind": "text",
+   "statement": "The clean set holds 2,335 questions after removing 63 ambiguous-gold items and 66 within-record repeats (27 carried both flags).",
+   "value": {
+    "clean_set": 2335,
+    "audit.ambiguous_gold": 63,
+    "audit.within_record_repeat": 66,
+    "audit.both_flags": 27,
+    "decision_set": 2035,
+    "noise_subset": 300
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "question_sets",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Some items carried both flags."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). "
   },
   {
    "id": "oa-chunking-matters-under-reranker",
    "section": "5.4",
-   "statement": "Under the reranker in hybrid retrieval, chunking moves hit@5 by about 2-6 points across the ten arms.",
-   "value": 6,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "matters by about 2-6 points under the reranker",
-   "kind": "text",
+   "statement": "Under the reranker in hybrid retrieval the ten arms span 5.85 hit@5 points from best to worst (SD 2.05), the 'about 2-6 points' that remain after fusion and reranking.",
+   "value": {
+    "best_minus_worst": 5.85,
+    "sd_across_arms": 2.05,
+    "mean": 79.93
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.settings.a",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C1; best - worst across arms 5.9 in setting (a). The claim value is the upper end of the quoted range; 'about 2-6' is the artifact's own phrasing."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. 'About 2-6' is the POSTHOC phrasing; the artifact carries best - worst and the SD."
   },
   {
    "id": "oa-size-vector-reranker",
    "section": "5.4",
    "statement": "With the reranker on vector-only candidates, the 1,024-vs-512 size penalty shrinks from -5.80 to -3.54 [-5.21, -1.92] and stays significant.",
-   "value": -3.54,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "-5.80 → **-3.54** [-5.21, -1.92]",
-   "kind": "text",
+   "value": {
+    "point": -3.54,
+    "lo": -5.21,
+    "hi": -1.92
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_e_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C2, setting (e), unadjusted. The BM25 counterpart is +5.31 → +3.88 [+2.36, +5.45]."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2, setting (e). The BM25 counterpart is ph_C_f_size_ft1024o0_minus_ft512o0."
   },
   {
    "id": "oa-legacy-semantic-cost",
@@ -1295,13 +1459,19 @@
   {
    "id": "oa-sempool-hit5-setting-a",
    "section": "5.4",
-   "statement": "Capped semantic_pooled reaches 80.29 % hit@5 in the production setting, above the server default's 79.02 % and below the section-cut arms.",
-   "value": 80.29,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "| sempool512 | 80.29 | 64.67 | 56.95 | 51.74 |",
-   "kind": "text",
+   "statement": "Capped semantic_pooled reaches 80.29 % hit@5 in the production setting, above the server default's 79.02 % and below the section-cut arms, and fails its frozen mid-class superiority test (+1.28 [-0.20, +2.75] against a required lower bound of +2.0).",
+   "value": {
+    "settings.a.arms.sempool512.hit@5": 80.2948,
+    "contrasts.main_a_sempool512_minus_ft512o64.point": 1.2776,
+    "contrasts.main_a_sempool512_minus_ft512o64.lo": -0.1966,
+    "contrasts.main_a_sempool512_minus_ft512o64.hi": 2.7518,
+    "contrasts.main_a_sempool512_minus_ft512o64.passed": false
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "$",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Its mid-class superiority test (lower bound >= +2.0 over the baseline) did not clear: the point gain over ft512o64 is +1.27. Columns: (a), (d), (b), (c)."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Frozen main run, confirmatory family; the class test is the frozen rule's. The legacy semantic arm fails too (+0.15 [-1.38, +1.67], main_a_sem512_minus_ft512o64)."
   },
   {
    "id": "found10-all-lost-a-own",
@@ -1510,12 +1680,16 @@
    "id": "oa-sections-vs-random-cuts-vector-reranker",
    "section": "5.4",
    "statement": "With the reranker on vector-only candidates, real section boundaries beat count-matched random cuts on sentence chunks by +2.11 [+0.69, +3.54], down from +4.82 without the reranker.",
-   "value": 2.11,
-   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
-   "pointer": "+4.82 → **+2.11** [+0.69, +3.54]",
-   "kind": "text",
+   "value": {
+    "point": 2.11,
+    "lo": 0.69,
+    "hi": 3.54
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_e_structure_sent512s_minus_sent512rc",
+   "kind": "json",
    "verified": true,
-   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. Exploratory C2, setting (e), unadjusted; sent512s - sent512rc. The only count-matched random-cut control is on the sentence arm; none exists for the fixed window. Under BM25 + reranker the same contrast is +1.18 [-0.05, +2.41]."
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2, setting (e). The only count-matched random-cut control is on the sentence arm; none exists for the fixed window. Under BM25 + reranker the same contrast is +1.18 [-0.05, +2.41]."
   }
  ]
 }
