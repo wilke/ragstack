@@ -125,7 +125,7 @@ import glossbench_alias_draft as ad  # noqa: E402
 import glossbench_r2_draft as dr  # noqa: E402
 
 EXIT_OK, EXIT_HARD_STOP, EXIT_PAUSED, EXIT_BUDGET = 0, 1, 75, ad.EXIT_BUDGET
-BACKENDS = ("opus", "cli", "qwen", "gateway")
+BACKENDS = ("opus", "cli", "qwen", "gateway", "gateway-selfcheck")
 EMPTY = ("empty", "empty0")
 STRATA = ("gold", "lex_same", "lex_other", "coll_same", "coll_diff")
 CALIB_SCHEMA = "alias-judge-calib/1"
@@ -247,8 +247,9 @@ JUDGE_SYSTEMS: dict[str, str] = {"alias-judge/1": JUDGE_SYSTEM, "alias-judge/2":
                                  "alias-judge/2-p1": JUDGE_SYSTEM_V2_P1, "alias-judge/2-p2": JUDGE_SYSTEM_V2_P2,
                                  "alias-judge/2-p3": JUDGE_SYSTEM_V2_P3, JUDGE_VERSION_V3: JUDGE_SYSTEM_V3}
 #: the judge versions whose replies are graded (:func:`parse_judgement_v3`); every other version is
-#: binary (:func:`parse_judgement`). The binary backends of this harness (``qwen``, ``judge_gw``) refuse
-#: a graded version: their parser and stored ``verdict`` are binary (:func:`merged`).
+#: binary (:func:`parse_judgement`). The ``gateway`` backend (``judge_gw``: Argon, Sol on the study
+#: gateway) parses and stores a graded version's ``grade``; the ``qwen`` backend refuses one (its parser
+#: and stored ``verdicts`` are binary; C and E run /3 through ``model_gateway_judge.py``).
 GRADED_VERSIONS = frozenset({JUDGE_VERSION_V3})
 _V3_BLOCK_HEADS = ("Parts and conditions:", "Labels:", "Deciding:", "Examples (synthetic")
 
@@ -349,6 +350,16 @@ def judge_prompt_v3(question: str, term: str, passage: str, title: str,
     if base.count(JUDGE_CLOSING) != 1 or not base.endswith(JUDGE_CLOSING):
         raise AssertionError("judge_prompt: the closing line must occur exactly once, at the end")
     return base[: -len(JUDGE_CLOSING)] + JUDGE_CLOSING_V3
+
+
+def user_message_for(version: str, prompt: str) -> str:
+    """A binary user message (:func:`judge_prompt`, e.g. from :meth:`World.prompt`) as the given version
+    sends it: unchanged for a binary version, the closing line replaced for a graded one."""
+    if version not in GRADED_VERSIONS:
+        return prompt
+    if prompt.count(JUDGE_CLOSING) != 1 or not prompt.endswith(JUDGE_CLOSING):
+        raise AssertionError("user message: the closing line must occur exactly once, at the end")
+    return prompt[: -len(JUDGE_CLOSING)] + JUDGE_CLOSING_V3
 
 
 def judge_user_message(version: str, question: str, term: str, passage: str, title: str,
@@ -455,7 +466,11 @@ DEFAULTS: dict[str, Any] = {
     # of ``subset_file`` (one pair id per line, pinned by ``subset_sha256``) ``subset_reps`` times
     "judge_gw": {"base_url": None, "model": None, "tag": None, "served_models": None,
                  "judge_version": "alias-judge/2", "max_tokens": 4096, "temperature": None, "inflight": 4,
-                 "empty_retry_s": 2.0, "subset_file": None, "subset_sha256": None, "subset_reps": 3},
+                 "empty_retry_s": 2.0, "subset_file": None, "subset_sha256": None, "subset_reps": 3,
+                 # judge validation 2: the single /3 self-check run (backend ``gateway-selfcheck``) over the
+                 # cases of ``selfcheck_file`` (a JSON list, alias_judge3_selfcheck.py's shape; default: the
+                 # committed SELF_CHECK_CASES_V3); refused while any owner label is empty
+                 "selfcheck_file": None},
     # tiebreak-subset / analyse-tiebreaker (TIEBREAKER-PLAN.md)
     "tiebreak": {"subset_seed": "20261031|tiebreaker|selfcons", "subset_unanimous": 100, "labels": [],
                  "max_filtered_refusal": 0.05, "plan_commit": None},
@@ -482,10 +497,9 @@ def merged(cfg: Mapping[str, Any]) -> dict[str, Any]:
         raise SystemExit(f"judge_gw.tag {t!r}: letters, digits and _ only")
     if out["qwen"]["judge_version"] not in JUDGE_SYSTEMS:
         raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r}: one of {sorted(JUDGE_SYSTEMS)}")
-    for blk in ("judge_gw", "qwen"):
-        if out[blk]["judge_version"] in GRADED_VERSIONS:
-            raise SystemExit(f"{blk}.judge_version {out[blk]['judge_version']!r} is graded: this backend parses "
-                             "binary labels only (the model-gateway client, model_gateway_judge.py, runs it)")
+    if out["qwen"]["judge_version"] in GRADED_VERSIONS:
+        raise SystemExit(f"qwen.judge_version {out['qwen']['judge_version']!r} is graded: this backend parses "
+                         "binary labels only (the model-gateway client, model_gateway_judge.py, runs it)")
     v = out["qwen"]["variant"]
     if v is not None and not re.fullmatch(r"[A-Za-z0-9_]+", str(v)):
         raise SystemExit(f"qwen.variant {v!r}: letters, digits and _ only")
@@ -817,6 +831,8 @@ class Labeler:
 
     # -- plan / gate
     def plan(self, backend: str, reps: int) -> dict[str, Any]:
+        if backend == "gateway-selfcheck":
+            return self.selfcheck_plan()
         pairs = self.qwen_pairs() if backend == "qwen" else self.w.pairs()
         prompts = [self.w.prompt(p)[0] for p in pairs]
         chars = [len(x) + len(JUDGE_SYSTEM) for x in prompts]
@@ -844,6 +860,7 @@ class Labeler:
             reps_sub = int(jg["subset_reps"])
             calls = len(pairs) + len(sub) * (reps_sub - 1)
             system = JUDGE_SYSTEMS[jg["judge_version"]]
+            prompts = [user_message_for(jg["judge_version"], x) for x in prompts]
             in_sub = set(sub)
             est_gw = gateway_est_input_tokens(jg["model"], system, prompts,
                                               [reps_sub if p["pair_id"] in in_sub else 1 for p in pairs])
@@ -868,6 +885,32 @@ class Labeler:
             if q["subset_file"]:                # review follow-up: a pinned subset of the pairs
                 plan.update({"subset_file": str(q["subset_file"]), "subset_sha256": q["subset_sha256"]})
         return plan
+
+    def selfcheck_cases(self) -> list[dict[str, Any]]:
+        """The /3 self-check cases of ``judge_gw.selfcheck_file`` (or the committed list), refused
+        while any owner label is empty or the judge's version is not graded."""
+        import alias_judge3_selfcheck as sc
+
+        jg = self.cfg["judge_gw"]
+        if jg["judge_version"] not in GRADED_VERSIONS:
+            raise SystemExit("gateway-selfcheck: judge_gw.judge_version must be a graded version (alias-judge/3)")
+        cases = sc.load_cases(Path(jg["selfcheck_file"]) if jg["selfcheck_file"] else None)
+        sc.require_owner_labels(cases)
+        return cases
+
+    def selfcheck_plan(self) -> dict[str, Any]:
+        jg = self.cfg["judge_gw"]
+        cases = self.selfcheck_cases()
+        system = JUDGE_SYSTEMS[jg["judge_version"]]
+        prompts = [judge_prompt_v3(c["question"], c["term"], c["passage"], c["title"], c["defs"]) for c in cases]
+        return {"backend": "gateway-selfcheck", "pairs": len(cases), "reps": 1, "calls": len(cases),
+                "model": jg["model"], "tag": jg["tag"], "base_url": str(jg["base_url"]),
+                "served_models": self.gw_served(), "judge_version": jg["judge_version"],
+                "system_sha256": g.sha_text(system), "max_tokens": jg["max_tokens"],
+                "temperature": jg["temperature"], "inflight": jg["inflight"],
+                "cases_sha256": g.sha_text(json.dumps(cases, sort_keys=True, ensure_ascii=False)),
+                "est_input_tokens": gateway_est_input_tokens(jg["model"], system, prompts, [1] * len(prompts)),
+                "max_output_tokens": len(cases) * int(jg["max_tokens"])}
 
     def qwen_pairs(self) -> list[dict[str, Any]]:
         """The pairs the Qwen backend labels: every pair, or only those of ``qwen.subset_file``
@@ -894,11 +937,11 @@ class Labeler:
     def key(self, backend: str) -> str:
         """The file key of a backend: ``qwen-<variant>`` for a round-2 Qwen variant, ``gw-<tag>``
         for a gateway judge."""
-        if backend == "gateway":
+        if backend in ("gateway", "gateway-selfcheck"):
             tag = self.cfg["judge_gw"]["tag"]
             if not tag:
                 raise SystemExit("judge_gw.tag is required")
-            return f"gw-{tag}"
+            return f"gw-{tag}" + ("-selfcheck" if backend == "gateway-selfcheck" else "")
         v = self.cfg["qwen"]["variant"]
         return f"qwen-{v}" if backend == "qwen" and v is not None else backend
 
@@ -907,7 +950,8 @@ class Labeler:
         g.write_json_atomic(self.out / f"preflight-{self.key(backend)}.json",
                             {"plan": plan, "plan_sha256": self.plan_sha(plan), "t": g.now_iso(),
                              "provenance": self.provenance})
-        kind = {"opus": "GATEWAY SIZE", "cli": "CLI", "qwen": "QWEN", "gateway": "GATEWAY SIZE"}[backend]
+        kind = {"opus": "GATEWAY SIZE", "cli": "CLI", "qwen": "QWEN", "gateway": "GATEWAY SIZE",
+                "gateway-selfcheck": "GATEWAY SIZE"}[backend]
         msg = (f"label backend={backend} model={plan.get('model')}: {plan['calls']} calls "
                f"({plan['pairs']} pairs x {plan['reps']}), ~{plan['est_input_tokens']} tokens in")
         if backend == "opus":
@@ -919,6 +963,10 @@ class Labeler:
                    f"~{plan['est_input_tokens']} tokens in, max_tokens {plan['max_tokens']} (cap "
                    f"{plan['max_output_tokens']} out), <= {plan['inflight']} in flight, fallback_model \"\", "
                    f"prompt={plan['judge_version']}, served model in {plan['served_models']}")
+        if backend == "gateway-selfcheck":
+            msg = (f"label backend=gateway-selfcheck model={plan['model']}: {plan['calls']} calls ({plan['pairs']} "
+                   f"self-check cases x 1), ~{plan['est_input_tokens']} tokens in, max_tokens {plan['max_tokens']}, "
+                   f"fallback_model \"\", prompt={plan['judge_version']}, served model in {plan['served_models']}")
         if backend == "qwen":
             msg += f", n={plan['n']} samples/call at T={plan['temperature']}, thinking={plan['enable_thinking']}"
             if plan.get("variant") is not None:
@@ -1068,19 +1116,23 @@ class Labeler:
             raise SystemExit(f"{path.name}: duplicate pair ids or ids not in pairs.jsonl")
         return ids
 
-    def label_gw(self) -> int:
+    def label_gw(self, selfcheck: bool = False) -> int:
         """One gateway model as a judge: rep 1 on every pair, reps 2.. on the subset. An empty
         answer is re-issued once and then STORED (status ``empty``, no verdict): it is part of
         what is measured. A reply whose model id is not in :meth:`gw_served` stops the run and
-        is not stored."""
+        is not stored. A graded version (``alias-judge/3``) is parsed by :func:`parse_judgement_v3`
+        and stores ``grade`` (``verdict`` null). ``selfcheck``: the single self-check run, each case
+        once (backend ``gateway-selfcheck``, its own files and notice)."""
         jg, lim = self.cfg["judge_gw"], self.cfg["limits"]
         if not jg.get("base_url") or not jg.get("model"):
             raise SystemExit("judge_gw.base_url and judge_gw.model are required")
-        key = self.key("gateway")
+        backend = "gateway-selfcheck" if selfcheck else "gateway"
+        graded = jg["judge_version"] in GRADED_VERSIONS
+        key = self.key(backend)
         url = str(jg["base_url"]).rstrip("/").removesuffix("/v1")
         served = set(self.gw_served())
         system = JUDGE_SYSTEMS[jg["judge_version"]]
-        st = self.store("gateway")
+        st = self.store(backend)
         prev: Counter[str] = Counter()
         tp = self.out / f"totals-{key}.json"
         if tp.is_file():
@@ -1096,11 +1148,22 @@ class Labeler:
                 "temperature": jg.get("temperature")}
         ctl = Ctl(self.out, int(jg["inflight"]))
         seg: Counter[str] = Counter()
-        pairs = self.w.pairs()
-        by_id = {p["pair_id"]: p for p in pairs}
-        sub = self.gw_subset()
-        wanted = [(p["pair_id"], 1) for p in pairs] + [(pid, r) for r in range(2, int(jg["subset_reps"]) + 1)
-                                                        for pid in sub]
+        if selfcheck:
+            cases = self.selfcheck_cases()
+            by_id = {c["name"]: c for c in cases}
+            wanted = [(c["name"], 1) for c in cases]
+        else:
+            pairs = self.w.pairs()
+            by_id = {p["pair_id"]: p for p in pairs}
+            sub = self.gw_subset()
+            wanted = [(p["pair_id"], 1) for p in pairs] + [(pid, r) for r in range(2, int(jg["subset_reps"]) + 1)
+                                                            for pid in sub]
+
+        def user_message(p: Mapping[str, Any]) -> tuple[str, int]:
+            if selfcheck:
+                return judge_prompt_v3(p["question"], p["term"], p["passage"], p["title"], p["defs"]), 0
+            prompt, cut = self.w.prompt(p)
+            return user_message_for(jg["judge_version"], prompt), cut
 
         def todo() -> list[tuple[str, int]]:
             return [(pid, r) for pid, r in wanted if f"{key}|{pid}|r{r}" not in st]
@@ -1111,7 +1174,7 @@ class Labeler:
                     return
                 p = by_id[pid]
                 k = f"{key}|{pid}|r{r}"
-                prompt, cut = self.w.prompt(p)
+                prompt, cut = user_message(p)
                 msgs = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
                 res = None
                 t0 = time.time()
@@ -1139,9 +1202,18 @@ class Labeler:
                         ctl.stop(control.reason)
                     return
                 control.ok()
-                verdict, reason = parse_judgement(res.get("text") or "") if res["status"] == "ok" else (None, "")
-                st.put({"k": k, "pair_id": pid, "rep": r, "backend": "gateway", "status": res["status"],
-                        "verdict": verdict, "reason": reason, "text": res.get("text"), "model": res.get("model"),
+                text = (res.get("text") or "") if res["status"] == "ok" else ""
+                grade: dict[str, Any] = {}
+                if graded:
+                    gr, reason = parse_judgement_v3(text) if text else (None, "")
+                    verdict = None
+                    grade = {"grade": gr}
+                    if selfcheck:
+                        grade["expected_label"] = p["expected_label"]
+                else:
+                    verdict, reason = parse_judgement(text) if text else (None, "")
+                st.put({"k": k, "pair_id": pid, "rep": r, "backend": backend, "status": res["status"],
+                        "verdict": verdict, **grade, "reason": reason, "text": res.get("text"), "model": res.get("model"),
                         "requested_model": spec["model"], "pt": res.get("pt"), "ct": res.get("ct"),
                         "reasoning_tokens": res.get("rt"), "finish": res.get("finish"), "attempts": attempts,
                         "latency_s": round(time.time() - t0, 2), "defs_cut": cut,
@@ -1174,13 +1246,21 @@ class Labeler:
             g.write_json_atomic(self.out / f"budget-stop-{key}.json", ev)
             (self.out / "PAUSE").write_text(f"budget stop {ev['t']}: HTTP {ev['http_status']} ({ev['why']}); "
                                             "remove, preflight, then label --resume\n", encoding="utf-8")
-            self.write_totals("gateway", tot, f"budget_stop:{ev['why']}")
+            self.write_totals(backend, tot, f"budget_stop:{ev['why']}")
             notice_line("GATEWAY", f"label backend=gateway model={jg['model']} BUDGET STOP (HTTP "
                         f"{ev['http_status']}, {ev['why']}); totals {json.dumps(tot, sort_keys=True)}", self.log_path)
             return EXIT_BUDGET
         left = todo()
         status = f"paused:{stopped}" if stopped else ("done" if not left else f"paused:calls_failed:{len(left)}")
-        self.write_totals("gateway", tot, status)
+        self.write_totals(backend, tot, status)
+        if selfcheck:
+            rows = [st.get(f"{key}|{pid}|r1") or {} for pid, _ in wanted]
+            agree = sum(1 for x in rows if x.get("grade") is not None and x.get("grade") == x.get("expected_label"))
+            g.write_json_atomic(self.out / f"selfcheck-{key}.json", {
+                "cases": len(wanted), "graded": sum(1 for x in rows if x.get("grade") is not None),
+                "agree_with_owner": agree, "system_sha256": g.sha_text(system), "t": g.now_iso(),
+                "per_case": {pid: {"grade": x.get("grade"), "expected_label": x.get("expected_label")}
+                             for (pid, _), x in zip(wanted, rows, strict=True)}})
         notice_line("GATEWAY", f"label backend=gateway model={jg['model']} {status}: totals "
                     f"{json.dumps(tot, sort_keys=True)}; {len(st.rows)} labels stored", self.log_path)
         return EXIT_OK if status == "done" else (EXIT_HARD_STOP if str(stopped).startswith("served_model")
@@ -1743,6 +1823,44 @@ def gate_label(c_verdicts: Sequence[bool | int | None], e_verdicts: Sequence[boo
     return c if c is not None and c == e else None
 
 
+def graded_majority(grades: Sequence[str | None]) -> str | None:
+    """C's graded label (JUDGE-VALIDATION-2-PLAN.md §3, K3): the grade held by MORE THAN HALF of the
+    valid samples (``full`` / ``partial`` / ``none``); otherwise (no valid sample, or no grade above
+    half) no label. Invalid samples (``None``) are left out of the vote and counted by the caller."""
+    v = [x for x in grades if x in GRADES]
+    for grade in GRADES:
+        if 2 * v.count(grade) > len(v):
+            return grade
+    return None
+
+
+def k3_label(c_grades: Sequence[str | None], e_grades: Sequence[str | None], argon_grade: str | None,
+             c_n: int = 5) -> tuple[str | None, str]:
+    """The K3 rule (plan §3): C's graded majority of its first ``c_n`` samples and E's sample 0; equal
+    -> that grade (``agree``); otherwise (they differ, or either has no label) Argon ``/3``'s grade from
+    the KA3 run decides (``tiebreak``), and without one the pair has no label (``unjudged``, a
+    disagreement in every metric). The source is returned so the escalation rate can be reported."""
+    c = graded_majority(list(c_grades)[:c_n])
+    e0 = list(e_grades)[:1]
+    e = e0[0] if e0 and e0[0] in GRADES else None
+    if c is not None and c == e:
+        return c, "agree"
+    if argon_grade in GRADES:
+        return argon_grade, "tiebreak"
+    return None, "unjudged"
+
+
+def ky_label(c_verdicts: Sequence[bool | int | None], e_verdicts: Sequence[bool | int | None],
+             argon_verdict: bool | int | None, c_n: int = 5) -> tuple[int, bool]:
+    """KY (plan §3, Q7; binary, ``/2``): *answers* (1) only when C's majority of its first ``c_n``
+    samples, E's sample 0 and Argon all say yes; otherwise *not* (0). A missing label counts as *not*;
+    the second value says whether one was missing (it is counted)."""
+    c, e = majority(list(c_verdicts)[:c_n]), majority(list(e_verdicts)[:1])
+    a = None if argon_verdict is None else int(bool(argon_verdict))
+    missing = c is None or e is None or a is None
+    return int(c == 1 and e == 1 and a == 1), missing
+
+
 def wilson(k: int, n: int, z: float = 1.959964) -> list[float] | None:
     if not n:
         return None
@@ -2134,6 +2252,8 @@ def main(argv: Sequence[str] | None = None, *, http_factory: Callable[[], Any] |
             return lab.label_cli()
         if args.backend == "gateway":
             return lab.label_gw()
+        if args.backend == "gateway-selfcheck":
+            return lab.label_gw(selfcheck=True)
         return lab.label_qwen()
     except p4.HardStop as e:
         g.log(f"HARD STOP: {e.reason}")

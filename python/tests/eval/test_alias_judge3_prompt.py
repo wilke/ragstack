@@ -118,9 +118,10 @@ def test_grade_readings() -> None:
         jd.grade_readings("yes")
 
 
-@pytest.mark.parametrize("blk", ["qwen", "judge_gw"])
-def test_binary_backends_refuse_the_graded_version(blk: str) -> None:
-    # mutation: removing the merged() guard lets a binary backend store /3 replies as invalid verdicts
+def test_binary_qwen_backend_refuses_the_graded_version() -> None:
+    # mutation: removing the merged() guard lets the binary Qwen backend store /3 replies as invalid
+    # verdicts; the study-gateway backend (judge_gw) runs /3 with the graded parser (KA3, KS3)
     with pytest.raises(SystemExit, match="graded"):
-        jd.merged({blk: {"judge_version": "alias-judge/3"}})
-    jd.merged({blk: {"judge_version": "alias-judge/2"}})
+        jd.merged({"qwen": {"judge_version": "alias-judge/3"}})
+    jd.merged({"qwen": {"judge_version": "alias-judge/2"}})
+    jd.merged({"judge_gw": {"judge_version": "alias-judge/3"}})

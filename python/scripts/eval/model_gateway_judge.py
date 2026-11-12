@@ -21,10 +21,14 @@ No address, port, header name or key path is in this file, in the tests or in th
   sent on every request;
 * ``fingerprint_header`` -- the per-response configuration-fingerprint value;
 * optional: ``backend_header`` (the serving instance, recorded only in a row's ``private`` field),
-  ``outage_statuses`` (gateway-written errors counted as an outage, default ``[502, 503, 504]``),
-  ``timeout_s`` (600), and ``config_fields`` naming the configuration endpoint's JSON fields (defaults:
-  ``models`` holding a mapping from model id to an entry, or a list of entries with ``id``; per entry
-  ``declared``, ``observed``, ``mismatch`` (the contradiction list) and ``fingerprint``).
+  ``outage_statuses`` (gateway-written errors counted as an outage, default ``[502, 503, 504]``) and
+  ``timeout_s`` (600). The configuration endpoint's JSON shape is fixed in code (:func:`parse_config`).
+
+**Study config, per judge**: ``model``, ``class`` (local / hosted), ``pinned_fingerprint`` (local) or
+``freeze_set`` (hosted), ``sampling``, ``canary`` (``mode`` deterministic + ``temperature`` 0 + ``seed``,
+or batch), ``prompts``, ``h_reps``, ``optional``, ``max_in_flight`` (1 by default, at most 4); at the
+top level ``out_dir``, ``judges``, ``canary_cases`` (the 10 frozen names). The model gateway needs no
+size notice (no token cost to the study budget); the study-gateway judges keep theirs.
 
 **Sampling is pinned and sent on every request** (plan §3): for a local judge every one of thinking,
 ``max_tokens``, temperature, ``top_p``, ``top_k`` and ``n`` must be set in the study config (a config
@@ -43,7 +47,8 @@ accepted set on a reply is a mismatch at once; a forwarded reply WITHOUT a finge
 missing value on a stored reply). A hosted judge's value must be in its freeze-commit set; otherwise
 that candidate stops, its rows up to the stop kept. The configuration endpoint is read at the start and
 end of every batch (the same transient rule); a failed end read voids the rows since the last passing
-check.
+check. **A pause is not a void**: a paused batch keeps its rows and checkpoint and resumes under the same
+batch id (``label --resume``), also after a restart; only a void or a mismatch stop spends the id.
 
 **Canaries** (plan §4): every batch starts and ends with the 10 fixed canary cases, always on
 ``alias-judge/3``, under the judge's one canary setting (``deterministic``: temperature 0, the fixed
@@ -69,10 +74,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
@@ -89,10 +97,8 @@ import glossbench_alias_judge as jd  # noqa: E402
 PRIVATE_REQUIRED = ("base_url", "chat_path", "config_path", "key_file", "auth_header", "fallback_header",
                     "fallback_off_value", "fingerprint_header")
 PRIVATE_OPTIONAL: dict[str, Any] = {"auth_template": "{key}", "key_field": None, "backend_header": None,
-                                    "outage_statuses": [502, 503, 504], "timeout_s": 600.0, "config_fields": {}}
+                                    "outage_statuses": [502, 503, 504], "timeout_s": 600.0}
 PRIVATE_KEYS = (*PRIVATE_REQUIRED, *PRIVATE_OPTIONAL)
-CONFIG_FIELDS = {"models": "models", "id": "id", "declared": "declared", "observed": "observed",
-                 "mismatch": "mismatch", "fingerprint": "fingerprint"}
 #: a partial fingerprint is told from a full one by its prefix (plan §4: ``v1:...`` vs ``v1-partial:...``)
 PARTIAL_MARKER = "-partial:"
 REREAD_TRIES = 5
@@ -104,11 +110,12 @@ CANARY_VERSION = jd.JUDGE_VERSION_V3
 CAP_FACTOR = 1.1
 WARNING_LIMIT = 20_000
 MAX_OUTAGES_PER_ITEM = 3
+MAX_IN_FLIGHT = jd.MAX_INFLIGHT  # 4 (plan §4, §10)
 CLASSES = ("local", "hosted")
 LOCAL_SAMPLING = ("thinking", "max_tokens", "temperature", "top_p", "top_k", "n")
 SAMPLING_KEYS = LOCAL_SAMPLING
 JUDGE_KEYS = ("model", "class", "accepted_models", "pinned_fingerprint", "freeze_set", "sampling", "canary",
-              "prompts", "h_reps", "optional")
+              "prompts", "h_reps", "optional", "max_in_flight")
 STUDY_KEYS = ("out_dir", "judges", "canary_cases", "warning_limit", "cap_factor", "excluded_from_warning",
               "partial_marker")
 
@@ -136,10 +143,6 @@ def validate_private(raw: Mapping[str, Any]) -> dict[str, Any]:
     if unknown:
         raise SystemExit(f"private config: unknown keys {unknown}")
     out = {**PRIVATE_OPTIONAL, **raw}
-    bad = sorted(set(out["config_fields"]) - set(CONFIG_FIELDS))
-    if bad:
-        raise SystemExit(f"private config: config_fields unknown keys {bad}")
-    out["config_fields"] = {**CONFIG_FIELDS, **out["config_fields"]}
     out["outage_statuses"] = [int(s) for s in out["outage_statuses"]]
     return out
 
@@ -188,8 +191,10 @@ def validate_judge(jid: str, j: Mapping[str, Any], marker: str = PARTIAL_MARKER)
         raise SystemExit(f"judge {jid}: sampling keys are {SAMPLING_KEYS}")
     can = dict(j.get("canary") or {})
     out = {"accepted_models": [j["model"]], "pinned_fingerprint": None, "freeze_set": [],
-           "prompts": ["alias-judge/2", "alias-judge/3"], "h_reps": 0, "optional": False, **j,
-           "sampling": s, "canary": can}
+           "prompts": ["alias-judge/2", "alias-judge/3"], "h_reps": 0, "optional": False, "max_in_flight": 1,
+           **j, "sampling": s, "canary": can}
+    if not 1 <= int(out["max_in_flight"]) <= MAX_IN_FLIGHT:
+        raise SystemExit(f"judge {jid}: max_in_flight is 1..{MAX_IN_FLIGHT}")
     for v in out["prompts"]:
         if v not in jd.JUDGE_SYSTEMS:
             raise SystemExit(f"judge {jid}: prompt {v!r} not in the registry")
@@ -272,6 +277,7 @@ class Gateway:
         self.t = transport
         self.key = key if key is not None else load_key(priv)
         self.calls = 0
+        self.lock = threading.Lock()
 
     def headers(self) -> dict[str, str]:
         return {self.priv["auth_header"]: str(self.priv["auth_template"]).replace("{key}", self.key),
@@ -281,7 +287,8 @@ class Gateway:
         return str(self.priv["base_url"]).rstrip("/") + "/" + str(path).lstrip("/")
 
     def chat(self, body: Mapping[str, Any]) -> Raw:
-        self.calls += 1
+        with self.lock:
+            self.calls += 1
         try:
             r = self.t.post(self._url(self.priv["chat_path"]), headers=self.headers(), json=dict(body))
         except Exception as e:  # noqa: BLE001 - a connection error is an outage, never a reply
@@ -295,9 +302,8 @@ class Gateway:
                    backend=_header(r.headers, self.priv.get("backend_header")))
 
     def read_config(self, marker: str = PARTIAL_MARKER) -> dict[str, dict[str, Any]] | None:
-        """The configuration endpoint per model id: ``declared``, ``observed``, ``mismatch`` (the
-        contradiction list), ``fingerprint`` and ``fingerprint_kind`` (full / partial / None).
-        ``None`` when the endpoint could not be read (an outage)."""
+        """The configuration endpoint per model id (:func:`parse_config`); ``None`` when the endpoint
+        could not be read (an outage)."""
         try:
             r = self.t.get(self._url(self.priv["config_path"]), headers=self.headers())
             if int(r.status_code) != 200:
@@ -305,30 +311,49 @@ class Gateway:
             raw = r.json()
         except Exception:  # noqa: BLE001
             return None
-        return parse_config(raw, self.priv["config_fields"], marker)
+        return parse_config(raw, marker)
 
 
-def fingerprint_kind(fp: str | None, marker: str = PARTIAL_MARKER) -> str | None:
+def fingerprint_kind(fp: str | None, marker: str = PARTIAL_MARKER, partial: bool | None = None) -> str | None:
+    """``full`` / ``partial`` / None. The configuration endpoint's ``partial`` flag decides when given;
+    otherwise the value's prefix (``v1:`` full, ``v1-partial:`` partial)."""
     if not fp:
         return None
+    if partial is not None:
+        return "partial" if partial else "full"
     return "partial" if marker in fp else "full"
 
 
-def parse_config(raw: Any, fields: Mapping[str, str], marker: str = PARTIAL_MARKER) -> dict[str, dict[str, Any]]:
-    f = {**CONFIG_FIELDS, **fields}
-    models = raw.get(f["models"]) if isinstance(raw, dict) and f["models"] else raw
-    if isinstance(models, list):
-        models = {str(m.get(f["id"])): m for m in models if isinstance(m, dict)}
-    if not isinstance(models, dict):
-        raise ValueError("configuration endpoint: no model mapping")
-    out = {}
-    for mid, e in models.items():
-        e = e if isinstance(e, dict) else {}
-        fp = e.get(f["fingerprint"]) or None
-        out[str(mid)] = {"declared": e.get(f["declared"]), "observed": e.get(f["observed"]),
-                         "mismatch": list(e.get(f["mismatch"]) or []), "fingerprint": fp,
-                         "fingerprint_kind": fingerprint_kind(fp, marker)}
+def parse_config(raw: Any, marker: str = PARTIAL_MARKER) -> dict[str, dict[str, Any]]:
+    """The configuration endpoint (live since 2026-11-12): ``{"time", "models": [{"id", "declared",
+    "backends": [{"name", "route", "state", "config", "partial", "observed", "mismatch"}]}]}``. The
+    fingerprint (``config``) is per BACKEND and a model may have several (a hosted id on two clusters);
+    every backend is returned. Per model id: ``declared``, ``time`` and ``backends`` (each with
+    ``fingerprint``, ``fingerprint_kind``, ``observed`` (local backends only), ``mismatch`` (the
+    contradiction list, empty when absent), ``name``, ``route``, ``state``). The backend name is private
+    (tracing only); it plays no part in identity."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("models"), list):
+        raise ValueError("configuration endpoint: no models list")
+    out: dict[str, dict[str, Any]] = {}
+    for m in raw["models"]:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        bs = []
+        for b in m.get("backends") or []:
+            if not isinstance(b, dict):
+                continue
+            fp = b.get("config") or None
+            flag = b.get("partial")
+            bs.append({"name": b.get("name"), "route": b.get("route"), "state": b.get("state"),
+                       "fingerprint": fp,
+                       "fingerprint_kind": fingerprint_kind(fp, marker, flag if isinstance(flag, bool) else None),
+                       "observed": b.get("observed"), "mismatch": list(b.get("mismatch") or [])})
+        out[str(m["id"])] = {"declared": m.get("declared"), "time": raw.get("time"), "backends": bs}
     return out
+
+
+def entry_fingerprints(entry: Mapping[str, Any] | None) -> list[str]:
+    return [b["fingerprint"] for b in (entry or {}).get("backends") or [] if b.get("fingerprint")]
 
 
 # ------------------------------------------------------------------ the identity gate
@@ -362,22 +387,27 @@ def classify_reply(judge: Mapping[str, Any], raw: Raw, priv: Mapping[str, Any], 
 
 
 def check_config_read(judge: Mapping[str, Any], entries: Mapping[str, Any] | None) -> tuple[str, str]:
-    """One configuration-endpoint read against a judge: ``pass``, ``transient`` (unreadable, or a
-    partial value on a local judge) or ``mismatch`` (a different full value or a contradiction).
-    A hosted judge's read is recorded, not gated (``pass`` when it holds a value; its per-call gate
-    compares the value with the freeze-commit set)."""
+    """One configuration-endpoint read against a judge, over every backend of its model: ``pass``,
+    ``transient`` (unreadable, or only partial values on a local judge) or ``mismatch`` (a non-empty
+    contradiction list on any backend of a local judge, or any full value other than the pin). A hosted
+    judge's read is recorded, not gated (``pass`` when it holds a value; its per-call gate compares the
+    per-response value with the freeze-commit set)."""
     e = (entries or {}).get(judge["model"]) if entries is not None else None
-    if not e or not e.get("fingerprint"):
+    bs = [b for b in (e or {}).get("backends") or [] if b.get("fingerprint")]
+    if not bs:
         return "transient", "unread"
     if judge["class"] == "hosted":
         return "pass", ""
-    if e["fingerprint_kind"] == "partial":
-        return "transient", "fingerprint_partial"
-    if e["fingerprint"] != judge["pinned_fingerprint"]:
-        return "mismatch", f"fingerprint_different:{e['fingerprint']}"
-    if e.get("mismatch"):
-        return "mismatch", f"contradictions:{','.join(map(str, e['mismatch']))}"
-    return "pass", ""
+    for b in bs:
+        if b["mismatch"]:
+            return "mismatch", f"contradictions:{','.join(map(str, b['mismatch']))}"
+    fulls = [b["fingerprint"] for b in bs if b["fingerprint_kind"] == "full"]
+    other = [f for f in fulls if f != judge["pinned_fingerprint"]]
+    if other:
+        return "mismatch", f"fingerprint_different:{other[0]}"
+    if fulls:
+        return "pass", ""
+    return "transient", "fingerprint_partial"
 
 
 def reread(gw: Gateway, judge: Mapping[str, Any], sleep: Callable[[float], None], log: Callable[[dict], None],
@@ -405,13 +435,13 @@ def config_check(gw: Gateway, judge: Mapping[str, Any], sleep: Callable[[float],
     a hosted judge per call against its freeze-commit set."""
     entries = gw.read_config(marker)
     res, reason = check_config_read(judge, entries)
-    e = (entries or {}).get(judge["model"]) or {}
-    log({"event": f"config_{at}", "result": res, "reason": reason, "fingerprint": e.get("fingerprint")})
+    fps = entry_fingerprints((entries or {}).get(judge["model"]))
+    log({"event": f"config_{at}", "result": res, "reason": reason, "fingerprints": fps})
     if judge["class"] == "hosted":
-        return {"result": "recorded", "reason": reason, "fingerprint": e.get("fingerprint")}
+        return {"result": "recorded", "reason": reason, "fingerprints": fps}
     if res == "transient":
         res, reason = reread(gw, judge, sleep, log, marker, why=f"config_{at}")
-    return {"result": res, "reason": reason, "fingerprint": e.get("fingerprint")}
+    return {"result": res, "reason": reason, "fingerprints": fps}
 
 
 # ------------------------------------------------------------------ one gated call
@@ -434,10 +464,17 @@ class Ctx:
     marker: str
     sleep: Callable[[float], None]
     log: Callable[[dict], None]
-    cap: int | None = None
+    cap: int | None = None          # answered calls (HTTP 200) allowed in this batch, re-issues included
+    answered: int = 0
     counts: Counter = field(default_factory=Counter)
     observed: set = field(default_factory=set)
     last_check_rows: int = 0
+    lock: Any = field(default_factory=threading.Lock)        # counters
+    pause_lock: Any = field(default_factory=threading.Lock)  # one pause (re-read sequence) at a time
+
+    def count(self, key: str, n: int = 1) -> None:
+        with self.lock:
+            self.counts[key] += n
 
 
 def gated_call(ctx: Ctx, judge: Mapping[str, Any], version: str, item: Mapping[str, Any], *, canary: bool,
@@ -449,18 +486,22 @@ def gated_call(ctx: Ctx, judge: Mapping[str, Any], version: str, item: Mapping[s
     body, sent, user = build_body(judge, version, item, canary)
     outages = invalid_reissues = 0
     while True:
-        if ctx.cap is not None and ctx.gw.calls >= ctx.cap:
+        if ctx.cap is not None and ctx.answered >= ctx.cap:
             raise Stop("cap", f"call_cap:{ctx.cap}")
         raw = ctx.gw.chat(body)
-        ctx.counts["calls"] += 1
+        ctx.count("calls")
+        if raw.status == 200:  # an outage or an error returns no answer and does not use up the cap
+            with ctx.lock:
+                ctx.answered += 1
         kind, reason = classify_reply(judge, raw, ctx.priv, observe_hosted=observe_hosted, marker=ctx.marker)
         if kind == "outage":
             outages += 1
-            ctx.counts["pauses"] += 1
+            ctx.count("pauses")
             ctx.log({"event": "pause", "item": item.get("item_id") or item.get("name"), "reason": reason})
-            if outages > MAX_OUTAGES_PER_ITEM:
+            if outages > MAX_OUTAGES_PER_ITEM:  # a pause of the batch (resumable), never a void
                 raise Stop("outage", f"outages_per_item:{reason}")
-            res, why = reread(ctx.gw, judge, ctx.sleep, ctx.log, ctx.marker, why=reason)
+            with ctx.pause_lock:
+                res, why = reread(ctx.gw, judge, ctx.sleep, ctx.log, ctx.marker, why=reason)
             ctx.log({"event": "pause_outcome", "result": res, "reason": why})
             if res == "pass":
                 ctx.last_check_rows = n_rows()
@@ -475,7 +516,7 @@ def gated_call(ctx: Ctx, judge: Mapping[str, Any], version: str, item: Mapping[s
         labels = [p[0] for p in parsed]
         if len(ch) == 1 and labels[0] is None and invalid_reissues == 0:
             invalid_reissues += 1
-            ctx.counts["invalid_reissues"] += 1
+            ctx.count("invalid_reissues")
             continue
         break
     msgs = [x.get("message") or {} for x in ch]
@@ -614,12 +655,22 @@ def canary_cases(cfg: Mapping[str, Any], cases: Sequence[Mapping[str, Any]]) -> 
 
 def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version: str,
               items: Sequence[Mapping[str, Any]], cases: Sequence[Mapping[str, Any]], *,
-              sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
-    """One batch (one judge x one prompt over the items): start read, start canary, the items,
-    end canary, end read; the void and epoch rules; a summary row in ``batches-mg-<judge>.jsonl``."""
+              sleep: Callable[[float], None] = time.sleep, resume: bool = False) -> dict[str, Any]:
+    """One batch (one judge x one prompt over the items): a configuration read, the start canary,
+    the items, the end canary, the end read; the void and epoch rules.
+
+    **A pause is not a void.** An outage that does not recover on a hosted judge, more than
+    :data:`MAX_OUTAGES_PER_ITEM` outages on one item, another HTTP error or the call cap PAUSE the batch:
+    its checkpoint (``checkpoint-mg-<judge>-<batch>.json``) keeps the phase, the canary labels so far, the
+    epoch and the counters, the stored rows stay, and ``resume=True`` continues it under the same batch
+    id after a configuration re-read (a passing check), with only the unanswered canary cases and items
+    -- also after a process restart. Only a final outcome (done, a void, a mismatch stop) is written to
+    ``batches-mg-<judge>.jsonl`` and spends the batch id."""
     judge = cfg["judges"][jid]
     out = Path(cfg["out_dir"])
     p = paths(out, jid)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", batch):
+        raise SystemExit(f"batch id {batch!r}: letters, digits, _ and - only")
     if version not in judge["prompts"]:
         raise SystemExit(f"judge {jid}: prompt {version} is not one of its batches {judge['prompts']}")
     if p["stopped"].exists():
@@ -630,39 +681,63 @@ def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version
         raise SystemExit(f"judge {jid} (hosted): no freeze_set (recorded in the freeze commit)")
     canaries = canary_cases(cfg, cases)
     expected = {c["name"]: c["expected_label"] for c in canaries}
+    ck_path = out / f"checkpoint-mg-{jid}-{batch}.json"
+    others = [x.name for x in out.glob(f"checkpoint-mg-{jid}-*.json") if x != ck_path] if out.exists() else []
+    if others:
+        raise SystemExit(f"judge {jid}: another batch is paused ({others}); resume or close it first")
+    items_sha = g.sha_text(json.dumps([dict(i) for i in items], sort_keys=True, ensure_ascii=False))
     state: dict[str, Any] = (json.loads(p["state"].read_text()) if p["state"].exists()
                              else {"epoch": 0, "last_end_canary": None})
-    seq0 = len(_rows(p["labels"]))
-    stored: list[dict[str, Any]] = []
+    labels_now = len(_rows(p["labels"]))
+    if ck_path.exists():
+        if not resume:
+            raise SystemExit(f"judge {jid}: batch {batch!r} is paused; pass --resume to continue it")
+        ck = json.loads(ck_path.read_text())
+        if (ck["version"], ck["items_sha256"], ck["canaries"]) != (version, items_sha, list(expected)):
+            raise SystemExit(f"judge {jid}: batch {batch!r} resumed with other items, prompt or canaries")
+        ck["resumes"] += 1
+    else:
+        if resume:
+            raise SystemExit(f"judge {jid}: batch {batch!r} has no paused checkpoint to resume")
+        ck = {"batch": batch, "judge": jid, "version": version, "items_sha256": items_sha,
+              "canaries": list(expected), "phase": "start", "start_canary": {}, "end_canary": {},
+              "epoch": state["epoch"], "epoch_boundary": None, "differ_from_previous_end": None,
+              "seq0": labels_now, "last_check_seq": labels_now, "calls": 0, "pauses": 0, "invalid_reissues": 0,
+              "resumes": 0, "started": g.now_iso(), "config_reads": []}
+    done_ids = {r["item_id"] for r in _rows(p["labels"]) if r["batch"] == batch}
+    session_rows: list[dict[str, Any]] = []
     planned = len(items) + 2 * N_CANARIES
     ctx = Ctx(gw=gw, priv=gw.priv, marker=cfg["partial_marker"], sleep=sleep,
               log=lambda e: _append(p["events"], {"judge": jid, "batch": batch, "t": g.now_iso(), **e}),
-              cap=gw.calls + math.floor(planned * float(cfg["cap_factor"])))
-    ctx.last_check_rows = seq0
+              cap=math.floor(planned * float(cfg["cap_factor"])), answered=int(ck.get("answered", 0)))
 
     def n_rows() -> int:
-        return seq0 + len(stored)
+        return labels_now + len(session_rows)
 
-    det = judge["canary"]["mode"] == "deterministic"
-    summary: dict[str, Any] = {"batch": batch, "judge": jid, "judge_version": version, "items": len(items),
-                               "planned_calls": planned, "void": False, "epoch": state["epoch"],
-                               "canary_setting": sampling_sent(judge, canary=True), "started": g.now_iso()}
+    def save() -> None:
+        ck.update({"calls": ck["calls"] + ctx.counts["calls"], "pauses": ck["pauses"] + ctx.counts["pauses"],
+                   "invalid_reissues": ck["invalid_reissues"] + ctx.counts["invalid_reissues"],
+                   "last_check_seq": max(int(ck["last_check_seq"]), ctx.last_check_rows),
+                   "answered": ctx.answered})
+        ctx.counts.clear()
+        g.write_json_atomic(ck_path, ck)
 
-    def canary(at: str) -> dict[str, Any]:
-        labels = {}
-        for c in canaries:
-            row = gated_call(ctx, judge, CANARY_VERSION, c, canary=True, n_rows=n_rows)
-            row.update({"judge": jid, "batch": batch, "kind": f"canary_{at}", "epoch": state["epoch"]})
-            _append(p["canary"], row)
-            labels[c["name"]] = _label_of(row)
-        return labels
+    def summary(status: str, **extra: Any) -> dict[str, Any]:
+        stored = sum(1 for r in _rows(p["labels"]) if r["batch"] == batch)
+        return {"batch": batch, "judge": jid, "judge_version": version, "items": len(items),
+                "planned_calls": planned, "void": False, "epoch": ck["epoch"],
+                "epoch_boundary": ck["epoch_boundary"], "differ_from_previous_end": ck["differ_from_previous_end"],
+                "canary_setting": sampling_sent(judge, canary=True), "started": ck["started"], "status": status,
+                "stored": stored, "calls": ck["calls"], "pauses": ck["pauses"],
+                "invalid_reissues": ck["invalid_reissues"], "resumes": ck["resumes"],
+                "config_reads": ck["config_reads"], "ended": g.now_iso(), **extra}
 
     def finish(status: str, **extra: Any) -> dict[str, Any]:
-        summary.update({"status": status, "stored": len(stored), "calls": ctx.counts["calls"],
-                        "pauses": ctx.counts["pauses"], "invalid_reissues": ctx.counts["invalid_reissues"],
-                        "ended": g.now_iso(), **extra})
-        _append(p["batches"], summary)
-        return summary
+        save()
+        row = summary(status, **extra)
+        _append(p["batches"], row)
+        ck_path.unlink(missing_ok=True)
+        return row
 
     def stop(e: Stop, at: str) -> dict[str, Any]:
         if e.kind == "mismatch":
@@ -670,46 +745,82 @@ def run_batch(cfg: Mapping[str, Any], gw: Gateway, jid: str, batch: str, version
             local = judge["class"] == "local"
             p["stopped"].write_text(f"{batch}:{at}:{e.reason}\n")
             return finish(f"stopped:mismatch:{e.reason}", void=local,
-                          void_from_seq=seq0 if local else None, stopped_at=at)
-        return finish(f"paused:{e.kind}:{e.reason}", stopped_at=at)
+                          void_from_seq=ck["seq0"] if local else None, stopped_at=at)
+        # a pause: resumable under the same batch id
+        ck["paused"] = {"kind": e.kind, "reason": e.reason, "at": at, "t": g.now_iso()}
+        save()
+        ctx.log({"event": "batch_paused", "kind": e.kind, "reason": e.reason, "at": at})
+        return summary(f"paused:{e.kind}:{e.reason}", stopped_at=at)
 
-    start = config_check(gw, judge, sleep, ctx.log, ctx.marker, "start")
-    summary["config_start"] = start
-    if start["result"] not in ("pass", "recorded"):
-        return stop(Stop("mismatch" if start["result"] == "mismatch" else "outage", start["reason"]), "config_start")
+    def canary(at: str) -> None:
+        got = ck[f"{at}_canary"]
+        for c in canaries:
+            if c["name"] in got:
+                continue
+            row = gated_call(ctx, judge, CANARY_VERSION, c, canary=True, n_rows=n_rows)
+            row.update({"judge": jid, "batch": batch, "kind": f"canary_{at}", "epoch": ck["epoch"]})
+            _append(p["canary"], row)
+            got[c["name"]] = _label_of(row)
+            save()
+
+    det = judge["canary"]["mode"] == "deterministic"
+    at = "start" if not ck["resumes"] else f"resume{ck['resumes']}"
+    ck.pop("paused", None)
+    read = config_check(gw, judge, sleep, ctx.log, ctx.marker, at)
+    ck["config_reads"].append({"at": at, **read})
+    if read["result"] not in ("pass", "recorded"):
+        return stop(Stop("mismatch" if read["result"] == "mismatch" else "outage", read["reason"]), f"config_{at}")
+    ctx.last_check_rows = n_rows()  # a passing check: the rows before it are vouched for
     try:
-        start_c = canary("start")
+        if ck["phase"] == "start":
+            canary("start")
+            boundary, d_prev = epoch_boundary(state["last_end_canary"], ck["start_canary"])
+            ck.update({"epoch": state["epoch"] + (1 if boundary else 0), "epoch_boundary": boundary,
+                       "differ_from_previous_end": d_prev, "phase": "labels"})
+            save()
+        if ck["phase"] == "labels":
+            todo = [it for it in items if it["item_id"] not in done_ids]
+            k = int(judge["max_in_flight"])
+            with ThreadPoolExecutor(max_workers=k) as pool:
+                for w in range(0, len(todo), k):
+                    wave = todo[w:w + k]
+                    futs = [pool.submit(gated_call, ctx, judge, version, it, canary=False, n_rows=n_rows)
+                            for it in wave]
+                    first: Stop | None = None
+                    for f in futs:
+                        try:
+                            row = f.result()
+                        except Stop as e:
+                            first = first or e
+                            continue
+                        row.update({"judge": jid, "batch": batch, "kind": "label", "epoch": ck["epoch"],
+                                    "seq": n_rows(), "k": f"{jid}|{batch}|{row['item_id']}"})
+                        _append(p["labels"], row)
+                        session_rows.append(row)
+                    save()
+                    if first is not None:
+                        raise first
+            ck["phase"] = "end"
+            save()
+        canary("end")
     except Stop as e:
-        return stop(e, "canary_start")
-    boundary, d_prev = epoch_boundary(state["last_end_canary"], start_c)
-    if boundary:
-        state["epoch"] += 1
-    summary.update({"epoch": state["epoch"], "epoch_boundary": boundary, "differ_from_previous_end": d_prev})
-    try:
-        for it in items:
-            row = gated_call(ctx, judge, version, it, canary=False, n_rows=n_rows)
-            row.update({"judge": jid, "batch": batch, "kind": "label", "epoch": state["epoch"],
-                        "seq": seq0 + len(stored), "k": f"{jid}|{batch}|{row['item_id']}"})
-            _append(p["labels"], row)
-            stored.append(row)
-        end_c = canary("end")
-    except Stop as e:
-        return stop(e, "labels")
-    cmp = compare_canaries(start_c, end_c, expected, det)
-    summary["canary"] = cmp
+        return stop(e, ck["phase"])
+    cmp = compare_canaries(ck["start_canary"], ck["end_canary"], expected, det)
     end = config_check(gw, judge, sleep, ctx.log, ctx.marker, "end")
-    summary["config_end"] = end
-    state["last_end_canary"] = end_c
+    ck["config_reads"].append({"at": "end", **end})
+    state.update({"epoch": ck["epoch"], "last_end_canary": ck["end_canary"]})
     p["state"].write_text(json.dumps(state, sort_keys=True))
     if end["result"] not in ("pass", "recorded"):
         p["stopped"].write_text(f"{batch}:config_end:{end['reason']}\n")
-        return finish(f"void:config_end:{end['reason']}", void=True, void_from_seq=ctx.last_check_rows)
+        save()
+        return finish(f"void:config_end:{end['reason']}", canary=cmp, void=True,
+                      void_from_seq=int(ck["last_check_seq"]))
     if cmp["void"]:
         drift = judge["class"] == "local"  # the fingerprint matched at the end read
         p["stopped"].write_text(f"{batch}:canary:{','.join(cmp['reasons'])}\n")
-        return finish("void:canary", void=True, void_from_seq=seq0,
+        return finish("void:canary", canary=cmp, void=True, void_from_seq=ck["seq0"],
                       drift_report="template_parser_or_default_drift" if drift else None)
-    return finish("done")
+    return finish("done", canary=cmp)
 
 
 # ------------------------------------------------------------------ self-check and selection
@@ -865,6 +976,7 @@ def main(argv: Sequence[str] | None = None, *, transport: Any = None, sleep: Cal
     lb.add_argument("--version", required=True)
     lb.add_argument("--items", type=Path, required=True)
     lb.add_argument("--cases", type=Path)
+    lb.add_argument("--resume", action="store_true", help="continue a paused batch under the same id")
     a = ap.parse_args(argv)
     cfg = load_study_config(a.config)
     if a.cmd == "dry-run":
@@ -899,7 +1011,8 @@ def main(argv: Sequence[str] | None = None, *, transport: Any = None, sleep: Cal
         g.write_json_atomic(out / "selfcheck-mg.json", res)
         echo(json.dumps({k: res[k] for k in ("selection", "selection_judges")}, sort_keys=True))
         return 0
-    res = run_batch(cfg, gw, a.judge, a.batch, a.version, _items(a.items), sc.load_cases(a.cases), sleep=sleep)
+    res = run_batch(cfg, gw, a.judge, a.batch, a.version, _items(a.items), sc.load_cases(a.cases), sleep=sleep,
+                    resume=a.resume)
     echo(json.dumps({k: res.get(k) for k in ("status", "stored", "void", "epoch", "calls")}, sort_keys=True))
     return 0 if res["status"] == "done" else 1
 
