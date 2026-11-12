@@ -1,0 +1,1712 @@
+{
+ "paper": "How should a retrieval index chunk full-length scientific articles?",
+ "generated_utc": "2026-11-11T00:00:00Z",
+ "checker": "docs/papers/check_claims.py",
+ "population_note": "Unless a claim says otherwise: open-access PMC full-text articles on bacteria and viruses, Salesforce/SFR-Embedding-Mistral embeddings (4096-d), hybrid BM25 + dense retrieval with reciprocal-rank fusion and the BAAI/bge-reranker-v2-m3 cross-encoder over the top 50, top 5 or top 10 read. OA-eval figures (section 5.4, 5.5) are over the 2,035-question decision set, one LLM-written question with an exact answer quote per article, quotes inside one section. Reach and single-passage figures (5.6, 5.7) are over the alias study's 1,091 term questions on 408 papers in four corpus collections. Older-study figures (5.1, 5.3) are over TREC CDS topics or Leg-B known-item queries on a 32,663-document PMC corpus. Every token count is in the SFR-Embedding-Mistral tokenizer unless marked chars/4. No two-reader human read has been performed anywhere in this record; the single-reader judge-validity figure is 0.872.",
+ "claims": [
+  {
+   "id": "rescore-gap-k1-tok512-n1",
+   "section": "1",
+   "statement": "At a corpus of one document, where the document-level hit is 1.000 by arithmetic, the top-ranked 512-token chunk lands in the section the query was written from on only 0.6308 of queries: a document-to-passage gap of 0.3692 at k = 1, resolved against a power floor of 0.084.",
+   "value": {
+    "mean": 0.36923076923076925,
+    "DH": 1.0,
+    "PH": 0.6307692307692307,
+    "n": 260,
+    "delta80": 0.08402382374784613,
+    "verdict": "RESOLVED"
+   },
+   "source": "docs/plans/results/rescore/report-rescore.json",
+   "pointer": "R1_gap[\"fixed_tok512_ov0pct|topical|N1|k1\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE: PH@k is chunk overlap with the gold section's byte offsets, no model label. n = 260 known-item queries (Leg B x0), one per document, each written from a deep section (0 of 260 from the abstract). Pre-registered family R1 (PREREG-rescore.md); 15 of 15 readings resolved. The gap vanishes at k = 10 (|Gap@10| <= 0.023): it is a top-1 precision phenomenon, and the two pre-registered k = 10 predictions failed and are reported as failures. Commit d225cea."
+  },
+  {
+   "id": "rescore-gap-k1-tok512-n100",
+   "section": "1",
+   "statement": "At 100 documents the same gap is 0.3385 at k = 1 (document hit 0.9462, passage hit 0.6077), resolved.",
+   "value": {
+    "mean": 0.3384615384615385,
+    "DH": 0.9461538461538461,
+    "PH": 0.6076923076923076,
+    "verdict": "RESOLVED"
+   },
+   "source": "docs/plans/results/rescore/report-rescore.json",
+   "pointer": "R1_gap[\"fixed_tok512_ov0pct|topical|N100|k1\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE, n = 260, topical neighbours. Same family as `rescore-gap-k1-tok512-n1`."
+  },
+  {
+   "id": "rescore-trivial-passage-n1",
+   "section": "1",
+   "statement": "At one document the passage-level task is NOT TRIVIAL (worst arm PH@1 0.55) while the document-level task is TRIVIAL (every arm DH@10 = 1.0).",
+   "value": {
+    "worst": 0.55,
+    "verdict": "NOT TRIVIAL",
+    "spread": 0.09615384615384615
+   },
+   "source": "docs/plans/results/rescore/report-rescore.json",
+   "pointer": "R4_trivial[\"passage|PH@1|topical|N1\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE. The paired document-level cell is R4_trivial[\"document|DH@10|topical|N1\"] with verdict TRIVIAL and spread 0.0. Pre-registered family R4; `powered` is false for the passage cell, so the spread is reported descriptively."
+  },
+  {
+   "id": "position-oracle-past-1024",
+   "section": "1",
+   "statement": "On 90 TREC CDS topics, 55.4 % of judged (topic, document) pairs have their best-supporting section starting past token 1,024, and 11.9 % have it in the abstract or introduction.",
+   "value": 55.4,
+   "source": "docs/plans/results/pilots/RESULTS-legBC-pilots.md",
+   "pointer": "| argmax **starts** past token 1,024 | 1,197 | **55.4%** |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY and JUDGE-DEPENDENT: the oracle's per-section support scores come from an LLM judge (stage-0 instrument, one reading per pair) over 2,161 pairs on 90 topics; the committed artifact is `pilots/oracle_results.jsonl` per the design notes but no committed JSON aggregate was found. Row 2 of the same table gives 11.9 % (258 pairs) in abstract+intro. Tokens: SFR-Embedding-Mistral."
+  },
+  {
+   "id": "oa-corpus-articles",
+   "section": "4",
+   "statement": "The OA chunking eval indexed 22,593 open-access PMC articles on bacteria and viruses in every arm.",
+   "value": 22593,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "Corpus: 22,593 PMC OA bacteria/virus articles. Each article is extracted once",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the OA eval's main-run and Addendum C RESULTS files and every per-question file are in the private experiments repository; the committed public record is the aggregate table in POSTHOC-HYPOTHESES-2026-11-06.md. Defect to fix before drafting: commit an aggregate JSON (per-arm hit@k by setting, pre-specified contrasts with CIs) so this claim resolves to JSON. The committed aggregate records this count as not derivable from the private files (question_sets.corpus_articles_indexed is null). The h2h report carries the record count instead (241,930 article, table and figure records; `h2h-records-main`)."
+  },
+  {
+   "id": "h2h-records-main",
+   "section": "4",
+   "statement": "The same extraction yields 241,930 records (articles, tables, figures), identical in every arm.",
+   "value": 241930,
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "files.arms.S.census.n_docs_main",
+   "kind": "json",
+   "verified": true,
+   "note": "Records, not articles: tables and figures are separate records. 16 main shards plus a 40-record sentinel."
+  },
+  {
+   "id": "oa-decision-set-n",
+   "section": "4",
+   "statement": "The OA eval's decision set holds 2,035 questions, one per article, after excluding ambiguous-gold items, within-record repeats and the 300-question noise subset that set the margins.",
+   "value": 2035,
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.n_decision",
+   "kind": "json",
+   "verified": true,
+   "note": "The h2h re-run uses the OA eval's frozen decision set by count and id hash (gate). The sensitivity set with the noise subset kept is 2,335 (`settings.a.n_sensitivity`)."
+  },
+  {
+   "id": "oa-passage-median-chars",
+   "section": "4",
+   "statement": "Passages were grown from whole sentences inside one section to about 1,200 characters: median 1,242 (p10 979, p90 1,371), n = 2,592.",
+   "value": {
+    "median": 1242.0,
+    "p10": 979.0,
+    "p90": 1371.0,
+    "n": 2592
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.passage_chars",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). "
+  },
+  {
+   "id": "oa-passage-section-types",
+   "section": "4",
+   "statement": "The 2,592 passages come from abstract 657, methods 482, results 471, introduction 467, discussion 430 and unheaded body 85.",
+   "value": {
+    "abstract": 657,
+    "methods": 482,
+    "results": 471,
+    "introduction": 467,
+    "discussion": 430,
+    "body": 85
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.passage_section_type.counts",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Counts over the 2,592 passages, not the 2,035 decision-set questions; the decision-set breakdown is construction.decision_set_section_type.counts (abstract 511, methods 368, results 374, introduction 379, discussion 336, body 67)."
+  },
+  {
+   "id": "oa-quote-median-chars",
+   "section": "4",
+   "statement": "Gold quotes are short, sentence-shaped single spans: median 119 characters, p10 54, p90 214, capped at 300.",
+   "value": {
+    "median": 119.0,
+    "p10": 54.4,
+    "p90": 213.6,
+    "max": 300,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.gold_quote_chars",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). This is the construction fact behind the overlap and section results (hypothesis D)."
+  },
+  {
+   "id": "oa-no-quote-crosses-section",
+   "section": "4",
+   "statement": "No gold quote crosses a section boundary, 0 of 2,035, because every passage was sampled inside one section.",
+   "value": {
+    "crossing": 0,
+    "n": 2035,
+    "share": 0.0
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.gold_quote_crosses_section_boundary",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). A design property, not a finding: the OA eval cannot see any cost of section cuts on answers that span sections."
+  },
+  {
+   "id": "oa-margins-floor",
+   "section": "3",
+   "statement": "The frozen non-inferiority and mid-class margins were 2.0 hit@5 points, the pre-set floor, and the expensive class 4.0, because the noise run's paired CI half-width (1.22 at n = 2,035 in the production setting) was below the floor in every setting.",
+   "value": {
+    "margins.M_ni": 2.0,
+    "margins.M_mid": 2.0,
+    "margins.M_high": 4.0,
+    "half_width_at_n2035_scaled.value": 1.22,
+    "floor": 2.0,
+    "n_subset": 300
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "noise_run.settings.a",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Addendum B freeze. The private RESULTS printed 1.15, the planned-n (2,260) half-width, under an n = 2,035 label (markdown_checks); 1.22 is the scaled value and the PLAN's Addendum B prints it."
+  },
+  {
+   "id": "reach-units",
+   "section": "4",
+   "statement": "The reach test analysed 4,356 paired units: 1,089 Q-eligible questions in 4 corpus collections, clustered in 408 papers.",
+   "value": {
+    "units": 4356,
+    "records": 1089,
+    "papers": 408
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "families.Q.counts",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE (quote@10). The alias study's 1,091 accepted questions; 2 are not verbatim in their W window after whitespace normalisation and are excluded from Q."
+  },
+  {
+   "id": "reach-s-chunks-total",
+   "section": "4",
+   "statement": "The four adopted-spec collections hold 38,548 / 141,592 / 136,402 / 136,187 chunks.",
+   "value": {
+    "base.chunks": 38548,
+    "neighbour.chunks": 141592,
+    "random1.chunks": 136402,
+    "random2.chunks": 136187
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "census",
+   "kind": "json",
+   "verified": true,
+   "note": "452,729 in all; census equal to the build record before and after the run."
+  },
+  {
+   "id": "confirm-pairs",
+   "section": "4",
+   "statement": "The boundary-confirmation test judged 351 fresh pairs from 218 questions, drawn by a frozen seeded rule.",
+   "value": {
+    "n": 351,
+    "records": 218
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "primary",
+   "kind": "json",
+   "verified": true,
+   "note": "117 pairs per corpus arm; at most one pair per question per arm and one per window."
+  },
+  {
+   "id": "oa-hit5-setting-a-baseline",
+   "section": "5.4",
+   "statement": "In the production setting (hybrid + reranker) the server default ft512o64 reaches hit@5 of 79.02 % on the decision set.",
+   "value": {
+    "hit@5": 79.0172,
+    "n": 2035,
+    "status": "confirmatory"
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "settings.a.arms.ft512o64",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). JUDGE-FREE. hit@5 = the top-5 chunks from the gold article cover >= 90 % of the quote. The h2h re-retrieval gives the same value (settings.a.hit5.ft512o64 in h2h-report.json)."
+  },
+  {
+   "id": "oa-sections-ft-setting-a",
+   "section": "5.4",
+   "statement": "Section cuts on the server default (ft512o64s - ft512o64) gain +3.49 hit@5 points [+2.11, +4.86] in the production setting, the OA eval's winner under its frozen rule plus Addendum C, pre-specified privately after the main run.",
+   "value": {
+    "point": 3.4889,
+    "lo": 2.113,
+    "hi": 4.8649,
+    "n": 2035,
+    "passed": true,
+    "status": "addendum-C"
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_step2_ft512o64s_minus_ft512o64",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. The Holm-adjusted Addendum C contrast C2 is contrasts.addC_a_C2 (+3.49 [+2.11, +4.86], p_holm 0.0008). The head-to-head's gate G1 re-found the same figure (h2h-report.json settings.a.contrasts.C4: 3.4889 [2.113, 4.8649]); that is a drift gate, not a test."
+  },
+  {
+   "id": "oa-sections-ft-vector-only",
+   "section": "5.4",
+   "statement": "Under vector-only retrieval the same section-cut contrast is +7.91 points [+5.90, +9.93].",
+   "value": {
+    "point": 7.91,
+    "lo": 5.9,
+    "hi": 9.93,
+    "holm_significant": true
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_b_C2",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. The h2h re-retrieval gives +7.96 [+5.95, +9.98] (its settings.b.contrasts.C4); the OA eval's own figure is the one cited."
+  },
+  {
+   "id": "oa-sections-ft-bm25-null",
+   "section": "5.4",
+   "statement": "Under BM25 alone section cuts do nothing: ft512o64s - ft512o64 = -0.29 [-1.72, +1.13].",
+   "value": {
+    "point": -0.29,
+    "lo": -1.72,
+    "hi": 1.13,
+    "holm_significant": false
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_c_C2",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. Not a powered null in its own right: the half-width is about 1.4 points, so a gain or loss under about 1.4 points cannot be excluded."
+  },
+  {
+   "id": "oa-sections-sent-setting-a",
+   "section": "5.4",
+   "statement": "Section cuts on sentence chunks (sent512s - sent512) gain +2.51 [+1.13, +3.88] in the production setting, Holm-significant across the four Addendum C contrasts.",
+   "value": {
+    "point": 2.51,
+    "lo": 1.13,
+    "hi": 3.88,
+    "holm_significant": true,
+    "p_holm": 0.0024
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_C1",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE."
+  },
+  {
+   "id": "oa-sections-sent-vector-only",
+   "section": "5.4",
+   "statement": "Under vector-only retrieval sent512s - sent512 is +6.09 [+4.18, +7.96].",
+   "value": {
+    "point": 6.09,
+    "lo": 4.18,
+    "hi": 7.96,
+    "holm_significant": true
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_b_C1",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE."
+  },
+  {
+   "id": "oa-sections-vs-random-cuts-vector",
+   "section": "5.4",
+   "statement": "Real section boundaries beat count-matched random cuts on sentence chunks under vector-only retrieval by +4.82 [+3.05, +6.58], Holm-significant.",
+   "value": {
+    "point": 4.82,
+    "lo": 3.05,
+    "hi": 6.58,
+    "holm_significant": true
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_b_C4",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. sent512s - sent512rc; the control makes the same number of cuts at random positions. The only count-matched random-cut control is on the sentence arm; none exists for the fixed window."
+  },
+  {
+   "id": "oa-sections-vs-random-cuts-setting-a",
+   "section": "5.4",
+   "statement": "In the production setting, on sentence chunks, real section cuts are not shown to beat count-matched random cuts: +0.84 [-0.39, +2.11], not Holm-significant, against a section gain of +2.51.",
+   "value": {
+    "point": 0.84,
+    "lo": -0.39,
+    "hi": 2.11,
+    "holm_significant": false,
+    "p_holm": 0.41116
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_C4",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. JUDGE-FREE. Unresolved, not a null: a true gain up to about 2 points is inside the interval, and no point-estimate reading is licensed. This is the realised-size confound inside the section result; no random-cut control exists for the fixed window."
+  },
+  {
+   "id": "oa-overlap-setting-a",
+   "section": "5.4",
+   "statement": "Overlap helps in the production setting: ft512o64 - ft512o0 = +2.06 [+0.59, +3.49]; on the 119 questions whose quote ft512o0 splits the gain is +34.45 [+25.21, +43.70] and on the other 1,916 it is +0.05 [-1.36, +1.46].",
+   "value": {
+    "ph_B_a_pooled.point": 2.06,
+    "ph_B_a_pooled.lo": 0.59,
+    "ph_B_a_pooled.hi": 3.49,
+    "ph_B_a_split_in_ft512o0.point": 34.45,
+    "ph_B_a_split_in_ft512o0.n": 119,
+    "ph_B_a_inside_one_ft512o0_chunk.point": 0.05,
+    "ph_B_a_inside_one_ft512o0_chunk.n": 1916
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). JUDGE-FREE. The whole-set contrast is the sign-reversed confirmatory main_a_ft512o0_minus_ft512o64 (ft512o0 failed its cheap-class non-inferiority test at -2.06 [-3.49, -0.59]); the split-vs-unsplit decomposition is EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). (hypothesis B)."
+  },
+  {
+   "id": "oa-overlap-chunk-size-unchanged",
+   "section": "5.4",
+   "statement": "Overlap does not enlarge chunks: mean chunk length 1,771 characters without overlap and 1,781 with; 1,024-token chunks average 3,451.",
+   "value": {
+    "ft512o0.mean_chars": 1771.2,
+    "ft512o64.mean_chars": 1781.3,
+    "ft1024o0.mean_chars": 3450.8,
+    "ft512o0.quote_in_one_chunk": 0.9415,
+    "ft512o64.quote_in_one_chunk": 0.9975
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.chunk_geometry_in_stores",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Hypothesis B rejected: the window keeps its 512 tokens and advances by 448. Measured in the stores over the gold records behind the decision-set questions."
+  },
+  {
+   "id": "oa-split-quote-share-ft512o0",
+   "section": "5.4",
+   "statement": "A plain 512-token window with no overlap splits 5.85 % of gold quotes across a chunk boundary; with a 64-token overlap 0.25 %, and at 1,024 tokens 2.70 %.",
+   "value": {
+    "ft512o0": 0.0585,
+    "ft512o64": 0.0025,
+    "ft1024o0": 0.027,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "construction.gold_quote_split_by_boundary",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). ft512o64 and ft1024o0 are 1 - quote_in_one_chunk (derived). The shares for the sentence and semantic arms were measured against the live stores and exist only in Markdown (`oa-split-quote-share-sent512`)."
+  },
+  {
+   "id": "oa-split-quote-share-sent512",
+   "section": "5.4",
+   "statement": "Sentence chunking with no overlap splits 0.20 % of gold quotes: quotes are whole sentences, so sentence-aware cuts give the same protection as overlap.",
+   "value": 0.2,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "| 5.85% | 2.70% | 0.64% | 0.54% | 0.25% | 0.20% | 0.29% | 0.15% | 0.10% |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: measured against the live stores and saved in no private file, so the committed aggregate does not carry it (its gold_quote_split_by_boundary.note says so). Order: ft512o0, ft1024o0, sem512, sempool512, ft512o64, sent512, sent512s, ft512o64s, sent512rc."
+  },
+  {
+   "id": "oa-size-vector-only",
+   "section": "5.4",
+   "statement": "1,024-token chunks lose 5.80 hit@5 points [-7.67, -3.93] to 512-token chunks under vector-only retrieval.",
+   "value": {
+    "point": -5.8,
+    "lo": -7.67,
+    "hi": -3.93,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_b_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). ft1024o0 - ft512o0, both without overlap. Hypothesis A; only two sizes tested."
+  },
+  {
+   "id": "oa-size-bm25-only",
+   "section": "5.4",
+   "statement": "Under BM25 alone the same 1,024-vs-512 contrast is +5.31 [+3.78, +6.83]: BM25 prefers large chunks.",
+   "value": {
+    "point": 5.31,
+    "lo": 3.78,
+    "hi": 6.83
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_c_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Hypothesis A."
+  },
+  {
+   "id": "oa-size-setting-a",
+   "section": "5.4",
+   "statement": "In the production setting the size effect mostly disappears: -0.29 [-1.82, +1.23].",
+   "value": {
+    "point": -0.29,
+    "lo": -1.82,
+    "hi": 1.23
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_a_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Unresolved rather than a null: a true loss up to 1.8 points is inside the interval. A plausible but unverified mechanism is cross-encoder truncation of 1,024-token chunks."
+  },
+  {
+   "id": "oa-size-methods-vector-only",
+   "section": "5.4",
+   "statement": "Under vector-only retrieval, the 368 questions drawn from methods sections lose 13.86 points [-18.48, -9.51] at 1,024 tokens.",
+   "value": {
+    "point": -13.86,
+    "lo": -18.48,
+    "hi": -9.51,
+    "n": 368
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_A_b_section_type_methods",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Subgroup of hypothesis A; many subgroup cells were read, so a single cell is a hint. The abstract cell is ph_A_b_section_type_abstract."
+  },
+  {
+   "id": "oa-semantic-pooled-vs-sections-setting-a",
+   "section": "5.4",
+   "statement": "Capped semantic_pooled chunking scores below fixed windows with section cuts in the production setting: sempool512 - ft512o64s = -2.21 [-3.73, -0.69], recomputed post hoc from the per-question file, unadjusted, descriptive.",
+   "value": {
+    "point": -2.2113,
+    "lo": -3.7346,
+    "hi": -0.688,
+    "n": 2035
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.rc_a_sempool512_minus_ft512o64s",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Recomputed from the per-question file; no frozen file holds it. The legacy semantic arm is -3.34 [-4.91, -1.87] (contrasts.rc_a_sem512_minus_ft512o64s). The semantic arms' realised chunk size was not measured."
+  },
+  {
+   "id": "oa-semantic-pooled-vs-baseline-vector-only",
+   "section": "5.4",
+   "statement": "Without section cuts, semantic_pooled is competitive under vector-only retrieval: sempool512 - ft512o64 = +7.76 [+5.80, +9.78], the frozen main run's secondary-setting report.",
+   "value": {
+    "point": 7.7641,
+    "lo": 5.7973,
+    "hi": 9.7789,
+    "passed": true,
+    "decision_role": "secondary report"
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.main_b_sempool512_minus_ft512o64",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Frozen main run, setting (b), which is a secondary report and not the decision; the mid-class superiority test passes there. In production (a) the same arm fails its class test at +1.28 [-0.20, +2.75] (`oa-sempool-hit5-setting-a`). Under the reranker its lead shrinks (C1)."
+  },
+  {
+   "id": "oa-c1-sd-ratio-hybrid",
+   "section": "5.4",
+   "statement": "In hybrid retrieval the reranker does not significantly compress the spread across the ten arms: SD ratio with/without reranker 0.90 [0.67, 1.19].",
+   "value": {
+    "point": 0.9,
+    "lo": 0.67,
+    "hi": 1.19
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.pairs.C1_hybrid.sd_ratio_reranked_over_not",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. The POSTHOC prose prints the lower bound as 0.68; the value in rerank_spread.json and in POSTHOC's own C2 table is 0.67, which the aggregate carries (markdown_checks). SD across arms 2.05 with the reranker, 2.29 without; best - worst 5.85 vs 7.37. Not a null: up to about a third of compression is inside the interval."
+  },
+  {
+   "id": "oa-c1-fusion-compresses",
+   "section": "5.4",
+   "statement": "What compresses the arms is hybrid fusion itself: the SD across arms falls from 4.75 under vector-only retrieval to 2.29 under hybrid retrieval without a reranker, and 2.05 with it.",
+   "value": {
+    "b.sd_across_arms": 4.75,
+    "d.sd_across_arms": 2.29,
+    "a.sd_across_arms": 2.05,
+    "c.sd_across_arms": 2.49
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.settings",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1."
+  },
+  {
+   "id": "oa-c1-reranker-lift",
+   "section": "5.4",
+   "statement": "The reranker adds a near-uniform +14.3 to +17.7 hit@5 points to every arm in hybrid retrieval.",
+   "value": [
+    14.3,
+    17.74
+   ],
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.pairs.C1_hybrid.reranker_gain_range",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. Smallest gain to ft1024o0; pairwise differences correlate 0.77 across (a) and (d) with slope 0.78."
+  },
+  {
+   "id": "oa-c2-sd-ratio-vector",
+   "section": "5.4",
+   "statement": "On vector-only candidates the reranker narrows the spread across arms to 0.75 [0.65, 0.88] of its unreranked value; on BM25 candidates to 0.60 [0.45, 0.81].",
+   "value": {
+    "C2_vector.sd_ratio_reranked_over_not.point": 0.75,
+    "C2_vector.sd_ratio_reranked_over_not.lo": 0.65,
+    "C2_vector.sd_ratio_reranked_over_not.hi": 0.88,
+    "C2_bm25.sd_ratio_reranked_over_not.point": 0.6,
+    "C2_bm25.sd_ratio_reranked_over_not.lo": 0.45,
+    "C2_bm25.sd_ratio_reranked_over_not.hi": 0.81,
+    "C2_vector.rank_spearman": 0.95,
+    "C2_bm25.rank_spearman": 0.76
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.pairs",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2; post-hoc settings (e) and (f). The order of arms is kept (rank correlation 0.95 and 0.76). Chunking still separates arms by up to 11.0 points (e) and 4.3 (f) under a reranked single source."
+  },
+  {
+   "id": "oa-ft512o64s-context-ratio",
+   "section": "5.4",
+   "statement": "ft512o64s retrieves 0.86x the baseline's context at k = 5, about 14 % less text.",
+   "value": 0.8634,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.addC_a_step2_ft512o64s_minus_ft512o64.context_ratio",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). ADDENDUM-C: pre-specified privately after the six-arm main run, before any retrieval on these arms; the committed aggregate records the family and status. Context tokens at k = 5: 1,999.5 against 2,315.8 (posthoc_ctx_tokens@5.a)."
+  },
+  {
+   "id": "h2h-hit5-s",
+   "section": "5.5",
+   "statement": "In the production setting the adopted spec S reaches hit@5 of 82.85 % against 82.51 % for ft512o64s.",
+   "value": {
+    "S": 82.8501,
+    "ft512o64s": 82.5061,
+    "ft512o64": 79.0172
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.hit5",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE. n = 2,035. S = sentence/512 tokens, tolerance 0.25 (ceiling 640), min_piece 128, section cuts, no overlap."
+  },
+  {
+   "id": "h2h-s-minus-ft512o64s",
+   "section": "5.5",
+   "statement": "S - ft512o64s = +0.34 hit@5 points [-0.64, +1.33]: non-inferior at the 2.0-point margin, not shown superior.",
+   "value": {
+    "point": 0.344,
+    "lo": -0.6388,
+    "hi": 1.3268,
+    "n": 2035
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.D",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE, CONFIRMATORY (pre-registered H1 then H2, hierarchical). 107 discordant questions: 57 S alone, 50 ft512o64s alone; one point is about 20 questions. The reverse contrast ft512o64s - S is -0.34 [-1.38, +0.64] (`settings.a.E`): neither arm is shown superior."
+  },
+  {
+   "id": "h2h-discordance",
+   "section": "5.5",
+   "statement": "S and ft512o64s differ on 5.3 % of decision-set questions.",
+   "value": 0.05258,
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.discordance_S_vs_ft512o64s",
+   "kind": "json",
+   "verified": true,
+   "note": "Planned discordance was 0.05."
+  },
+  {
+   "id": "h2h-power-ni-at-equality",
+   "section": "5.5",
+   "statement": "The non-inferiority test at a 2.0-point margin had power 0.981 if S truly equals ft512o64s and 0.524 if S is truly 1 point worse, at discordance 0.05 and n = 2,035.",
+   "value": {
+    "[\"+0.0\"]": 0.981,
+    "[\"-1.0\"]": 0.524,
+    "[\"-2.0\"]": 0.025
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/power.json",
+   "pointer": "power[0].powers",
+   "kind": "json",
+   "verified": true,
+   "note": "Normal approximation, paired binary. A true loss of 2.0 points fails H1 with probability 0.975."
+  },
+  {
+   "id": "h2h-mde-superiority",
+   "section": "5.5",
+   "statement": "The smallest superiority detectable with power 0.80 at discordance 0.05 is 1.39 points; the observed +0.34 is below it, so superiority is unresolved, not null.",
+   "value": 1.39,
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/power.json",
+   "pointer": "minimal_detectable_superiority[\"0.05\"][\"0.80\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "1.61 at power 0.90."
+  },
+  {
+   "id": "h2h-stratum-guard-k",
+   "section": "5.5",
+   "statement": "The Bonferroni stratum guard tested 11 strata (8 journal families, 3 length bands) and none failed.",
+   "value": 11,
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.stratum_guard.k",
+   "kind": "json",
+   "verified": true,
+   "note": "`settings.a.stratum_guard.failed` is an empty list; level 0.995455 per stratum."
+  },
+  {
+   "id": "h2h-decision-and-other-order",
+   "section": "5.5",
+   "statement": "The tie was decided by the cost order fixed before the run: under order B (stored chunks and ingest compute) S deploys; under order A the decision would have been ft512o64s.",
+   "value": {
+    "decision": "S",
+    "frozen_order": "B",
+    "other_order.decision": "ft512o64s"
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "$",
+   "kind": "json",
+   "verified": true,
+   "note": "This is a cost judgement, not a retrieval result, and the paper says so wherever it quotes the decision."
+  },
+  {
+   "id": "h2h-s-minus-sent512s",
+   "section": "5.5",
+   "statement": "What the tolerance and the small-piece merge add jointly over plain sentence chunks with section cuts: S - sent512s = +0.79 [+0.10, +1.47], Holm p = 0.027, a secondary contrast.",
+   "value": {
+    "point": 0.7862,
+    "lo": 0.0983,
+    "hi": 1.4742,
+    "p_holm": 0.027197
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.contrasts.C1",
+   "kind": "json",
+   "verified": true,
+   "note": "SECONDARY, decides nothing; the two knobs are not separated."
+  },
+  {
+   "id": "h2h-s-minus-ft512o64",
+   "section": "5.5",
+   "statement": "S against the server default: +3.83 [+2.46, +5.26], Holm p = 0.0004.",
+   "value": {
+    "point": 3.8329,
+    "lo": 2.457,
+    "hi": 5.258
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.contrasts.C2",
+   "kind": "json",
+   "verified": true,
+   "note": "SECONDARY."
+  },
+  {
+   "id": "h2h-s-minus-ft512o64s-vector-only",
+   "section": "5.5",
+   "statement": "Without the reranker S's lead over ft512o64s grows: +2.06 [+0.59, +3.49] under vector-only retrieval and +1.67 [+0.44, +2.95] under hybrid retrieval without the reranker; both clear superiority but neither is the decision setting.",
+   "value": {
+    "point": 2.0639,
+    "lo": 0.5897,
+    "hi": 3.4889
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.b.D",
+   "kind": "json",
+   "verified": true,
+   "note": "SECONDARY. The (d) cell is `settings.d.D` (point 1.6708, lo 0.441, hi 2.9484). BM25-only: +0.93 [-0.10, +1.97] (`settings.c.D`)."
+  },
+  {
+   "id": "h2h-regex-minus-punkt",
+   "section": "5.5",
+   "statement": "The regex sentence segmenter changes almost nothing on this corpus: S-regex - S = -0.15 [-0.49, +0.20], with 99.2 % of chunk ids identical.",
+   "value": {
+    "point": -0.1474,
+    "lo": -0.4914,
+    "hi": 0.1966
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.D3",
+   "kind": "json",
+   "verified": true,
+   "note": "H3. The overlap, not the margin, is the finding: at discordance 0.0064 the arms could not differ by more than 0.64 points, so the 2.0 margin could not fail. 13 questions change hit status."
+  },
+  {
+   "id": "h2h-chunk-id-overlap",
+   "section": "5.5",
+   "statement": "761,915 chunk ids are shared between the Punkt and regex builds, 99.2 % of S's 767,984.",
+   "value": {
+    "shared": 761915,
+    "share_of_S": 0.992097,
+    "n_S": 767984
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "files.chunk_id_overlap",
+   "kind": "json",
+   "verified": true,
+   "note": ""
+  },
+  {
+   "id": "h2h-stored-chunks-s",
+   "section": "5.5",
+   "statement": "S stores 767,984 chunks against 859,280 for ft512o64s and 705,204 for the server default.",
+   "value": 767984,
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "files.arms.S.census.distinct_chunk_ids",
+   "kind": "json",
+   "verified": true,
+   "note": "ft512o64s: `files.reused_census.frozen.ft512o64s.qdrant` = 859280; ft512o64: `files.reused_census.frozen.ft512o64.qdrant` = 705204. S stores 10.6 % fewer than ft512o64s."
+  },
+  {
+   "id": "h2h-ctx5",
+   "section": "5.5",
+   "statement": "Context at k = 5 (chars/4, estimated) is 2,016 tokens under S, 2,000 under ft512o64s and 2,316 under the server default.",
+   "value": {
+    "S": 2015.7,
+    "ft512o64s": 1999.52,
+    "ft512o64": 2315.78
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.ctx5",
+   "kind": "json",
+   "verified": true,
+   "note": "ESTIMATED by chars/4 (`settings.a.tokens_estimated` true), not a tokenizer count."
+  },
+  {
+   "id": "h2h-sensitivity-set",
+   "section": "5.5",
+   "statement": "On the sensitivity set with the noise subset kept (n = 2,335), S - ft512o64s = +0.51 [-0.43, +1.41].",
+   "value": {
+    "point": 0.5139,
+    "lo": -0.4283,
+    "hi": 1.4133,
+    "n": 2335
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "settings.a.sensitivity.D",
+   "kind": "json",
+   "verified": true,
+   "note": "Labelled by the artifact as not the decision."
+  },
+  {
+   "id": "reach-quote10-rates",
+   "section": "5.6",
+   "statement": "Under the default retriever, pooled over four corpus collections, the adopted spec reaches the gold quote in the top 10 on 91.48 % of 4,356 units against 90.34 % under fixed 512-token windows: +1.15 points, 112 units S alone and 62 W alone.",
+   "value": {
+    "S.rate": 0.9148,
+    "W.rate": 0.9034,
+    "D_pts": 1.148,
+    "S_only": 112,
+    "W_only": 62,
+    "discordance": 0.0399
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "families.Q.counts",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE (quote@10: the top-10 chunks together cover >= 90 % of the quote's characters). One point is about 44 units. CONFIRMATORY: non-inferiority at delta = 3 then superiority, hierarchical."
+  },
+  {
+   "id": "reach-outcome",
+   "section": "5.6",
+   "statement": "The pre-registered reach test's outcome is 'superior'.",
+   "value": "superior",
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "families.Q.outcome",
+   "kind": "json",
+   "verified": true,
+   "note": "Non-inferiority p printed as 0.0 (below 5e-7); superiority p = 0.007889 (`reach-superiority-p`). No validity gate fired (`families.Q.gates` empty)."
+  },
+  {
+   "id": "reach-superiority-p",
+   "section": "5.6",
+   "statement": "Superiority of S over W holds with p = 0.0079 (exact one-sided sign-flip over 408 papers).",
+   "value": {
+    "superiority.p": 0.007889,
+    "ni.p": 0.0,
+    "delta_pts": 3,
+    "clusters": 408
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "families.Q.test",
+   "kind": "json",
+   "verified": true,
+   "note": "At the observed 4.0 % discordance the test's size is only asymptotically alpha: simulated size 0.0545 at 10 % discordance and up to 0.0766 at 5 %; below 5 % it was not simulated (`families.Q.caveats`)."
+  },
+  {
+   "id": "reach-power",
+   "section": "5.6",
+   "statement": "At the sizing case (discordance 10 %) non-inferiority at delta = 3 had power 0.966; at 5 % discordance 0.949 for delta = 2 and higher for 3.",
+   "value": {
+    "power_at_sizing_case.3": 0.9661,
+    "power_at_sizing_case.2": 0.7581,
+    "recommended_delta_pts": 3
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/power.json",
+   "pointer": "recommendation",
+   "kind": "json",
+   "verified": true,
+   "note": "The observed discordance was 4.0 %, below the grid. Size at the sizing case 0.0545 for delta = 3."
+  },
+  {
+   "id": "reach-secondary-norerank",
+   "section": "5.6",
+   "statement": "Without the reranker S reaches the quote on 81.89 % of units against 79.61 %: +2.27 points, secondary and untested.",
+   "value": {
+    "S.rate": 0.8189,
+    "W.rate": 0.7961,
+    "D_pts": 2.273
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "families.Q.secondary.by_retriever_pooled.norerank",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE. SECONDARY, not tested."
+  },
+  {
+   "id": "reach-secondary-bm25",
+   "section": "5.6",
+   "statement": "Under BM25 alone S reaches the quote on 79.71 % against 77.59 %: +2.11 points, secondary and untested.",
+   "value": {
+    "S.rate": 0.7971,
+    "W.rate": 0.7759,
+    "D_pts": 2.112
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "families.Q.secondary.by_retriever_pooled.bm25",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE. SECONDARY, not tested."
+  },
+  {
+   "id": "reach-context-tokens",
+   "section": "5.6",
+   "statement": "The top 10 hold 4,141.8 tokens on average under S against 4,777.4 under W (SFR-Embedding-Mistral tokenizer): about 13 % less text.",
+   "value": {
+    "S.by_retriever_pooled.default.mean": 4141.8,
+    "W.by_retriever_pooled.default.mean": 4777.4,
+    "tokenizer": "Salesforce/SFR-Embedding-Mistral"
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "context_tokens",
+   "kind": "json",
+   "verified": true,
+   "note": "Descriptive; a real tokenizer count, unlike the h2h ctx@5 estimate."
+  },
+  {
+   "id": "reach-s-only-low-coverage",
+   "section": "5.6",
+   "statement": "Where the best-overlapping S chunk holds less than half of the W gold window, S alone reached the quote on 27 units and W alone on 1.",
+   "value": {
+    "S_only[\"<0.5\"]": 27,
+    "W_only[\"<0.5\"]": 1
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "discordant_by_gold_window_coverage_under_S",
+   "kind": "json",
+   "verified": true,
+   "note": "Descriptive. The direction is against the construction bias (every quote was drawn from inside one W window)."
+  },
+  {
+   "id": "reach-j-rates",
+   "section": "5.6",
+   "statement": "Judged found@10 is saturated near 98 % on both sides: 98.12 % under S against 98.03 % under W, +0.09 points, descriptive and untested.",
+   "value": {
+    "S.rate": 0.9812,
+    "W.rate": 0.9803,
+    "D_pts": 0.092,
+    "units": 4364
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "descriptive.J.counts",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. 71 orphan S pairs could not be judged and count as not answering; the favourable bound is +0.28 points. Made descriptive before any S outcome existed."
+  },
+  {
+   "id": "reach-drift-check",
+   "section": "5.6",
+   "statement": "Re-judging a 5 % sample of W's labels agreed with the originals on 0.971 overall and 0.933 on the *answers* labels, above the 0.90 drift threshold.",
+   "value": {
+    "agreement": 0.9712,
+    "agreement_on_answers": 0.9327,
+    "rejudged": 555
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "drift_check",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. Measures the judge's stability over time, not its validity."
+  },
+  {
+   "id": "reach-provenance-citable",
+   "section": "5.6",
+   "statement": "The reach report was produced from a clean tree at the frozen commit.",
+   "value": {
+    "citable": true,
+    "dirty": false,
+    "commit": "f78af6ee46e5d7f3604c10b1d14a77a7caa47b7d"
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "provenance",
+   "kind": "json",
+   "verified": true,
+   "note": "PREREG sha256 verified (`prereg.verified` true); signed tag prereg-reach-rechunk-2026-11."
+  },
+  {
+   "id": "confirm-control-not-rate",
+   "section": "5.7",
+   "statement": "Re-chunked at sentence and section boundaries, the frozen judge withdrew *answers* from the largest-overlap new chunk on 75 of 351 pairs (21.4 %) that it had confidently accepted on the 512-token window.",
+   "value": {
+    "k": 75,
+    "n": 351,
+    "rate": 0.2137
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "primary.rates.control_not",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. CONFIRMATORY, pre-registered (PREREG v3.2, signed tag at 016fb61). Wilson 95 % 17.4-26.0."
+  },
+  {
+   "id": "confirm-retest-not-rate",
+   "section": "5.7",
+   "statement": "Re-reading the identical window, the same judge withdrew *answers* on 16 of 351 (4.6 %): its own test-retest noise.",
+   "value": {
+    "k": 16,
+    "n": 351,
+    "rate": 0.0456
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "primary.rates.retest_not",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so."
+  },
+  {
+   "id": "confirm-excess-d",
+   "section": "5.7",
+   "statement": "The excess loss is 16.8 points (90 % question-cluster bootstrap 12.9-20.8).",
+   "value": {
+    "d": 0.168091,
+    "b": 68,
+    "c": 9
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "primary",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. d = (68 - 9) / 351; the bootstrap interval is `primary.bootstrap.ci` [0.1295, 0.2085]; Tango 13.1-20.8."
+  },
+  {
+   "id": "confirm-sign-flip-p",
+   "section": "5.7",
+   "statement": "Exact one-sided sign-flip over 218 questions: p = 1.2e-11.",
+   "value": 1.1702780780880261e-11,
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "primary.primary.p",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. Exact McNemar sensitivity p = 1.2e-12 (`primary.mcnemar_sensitivity.p`)."
+  },
+  {
+   "id": "confirm-power-and-mde",
+   "section": "5.7",
+   "statement": "Simulated power at the realised 351 pairs was 0.81 for the planning effect; the minimum detectable excess at 80 % power is 7.5 points.",
+   "value": {
+    "power_at_realised_n.power": 0.8147,
+    "design_mde_points": 7.5
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "primary",
+   "kind": "json",
+   "verified": true,
+   "note": "Planning effect 13 % vs 6 % (assumed). All six validity gates passed (`primary.gates_failed` empty)."
+  },
+  {
+   "id": "confirm-coverage-band-high",
+   "section": "5.7",
+   "statement": "Where the new chunk keeps at least 80 % of the window's text, loss is at noise: 4.8 % against 4.1 % (145 pairs); under 50 % it is 50.0 % against 0 % (24 pairs).",
+   "value": {
+    "control_not.rate": 0.0483,
+    "retest_not.rate": 0.0414,
+    "n": 145
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "descriptives.boundary.by_coverage_band[\">=0.8\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. Descriptive, not tested. The <0.5 band is `descriptives.boundary.by_coverage_band[\"<0.5\"]`."
+  },
+  {
+   "id": "confirm-one-untitled-section",
+   "section": "5.7",
+   "statement": "In documents with one untitled section, where section cuts cannot move a boundary, 0 of 67 new chunks lost the label (re-read: 2 of 67).",
+   "value": {
+    "control_not.k": 0,
+    "control_not.n": 67,
+    "retest_not.k": 2
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "descriptives.boundary.by_section_structure.one_untitled_section",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. Descriptive."
+  },
+  {
+   "id": "confirm-realised-chunk-tokens",
+   "section": "5.7",
+   "statement": "The adopted-spec chunks judged in the confirmation test are shorter than the windows they replace: median 453 tokens (mean 412.4, max 640) against a window median of 512 (mean 466.9).",
+   "value": {
+    "p50": 453,
+    "mean": 412.42,
+    "max": 640,
+    "n": 351
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "descriptives.boundary.control_tokens",
+   "kind": "json",
+   "verified": true,
+   "note": "SFR-Embedding-Mistral tokens. Windows: `descriptives.boundary.window_tokens` p50 512, mean 466.91. This is the realised-size difference the single-passage result bundles with cut position."
+  },
+  {
+   "id": "confirm-cover-any",
+   "section": "5.7",
+   "statement": "Of the 75 lost pairs, another new chunk overlapping the window answers on 53 (70.7 %); on 18 (24 %) no overlapping chunk answers on its own; on 4 the loss was judge noise.",
+   "value": {
+    "other_only": 53,
+    "none": 18,
+    "primary_only": 4,
+    "n": 75,
+    "recovered_by_other_chunk.rate": 0.7067
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "cover_any.split.answers_to_not",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. Descriptive step 7, same judge, single-chunk prompt."
+  },
+  {
+   "id": "found10-recovered-a-own",
+   "section": "5.7",
+   "statement": "For the 53 pairs whose answer moved to a neighbouring chunk, that chunk is in production retrieval's top 10 for 35 (66.0 %, Wilson 52.6-77.3).",
+   "value": {
+    "k": 35,
+    "n": 53,
+    "rate": 0.6604
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q1_lost_pairs.recovered.by_retriever.default.A_own",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY, no test, 49 questions. Among windows stage A had retrieved: 32 of 40 (`...A_own_window_retained`)."
+  },
+  {
+   "id": "found10-reference-a-own",
+   "section": "5.7",
+   "statement": "The reference rate for pairs whose new chunk kept *answers* is 178 of 276 (64.5 %).",
+   "value": {
+    "k": 178,
+    "n": 276,
+    "rate": 0.6449
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q2_all_pairs.control_answers_pairs.all.by_retriever.default.A_own",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY. Among retained windows 172 of 217 (79.3 %)."
+  },
+  {
+   "id": "found10-any-answers-after-1b",
+   "section": "5.7",
+   "statement": "Once every top-10 chunk of the 75 lost pairs was judged, some top-10 chunk answers for all 75; the stage-1 lower bound was 42.",
+   "value": {
+    "k": 75,
+    "n": 75,
+    "rate": 1.0
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q1_lost_pairs.all_lost.by_retriever.default.A",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. Stage 1 value: `q1_lost_pairs.all_lost.by_retriever.default.A.k` = 42 in stage1.json. 'Any chunk answers' saturates on alias questions and cannot separate chunkings."
+  },
+  {
+   "id": "found10-split-own",
+   "section": "5.7",
+   "statement": "The 18 split pairs are credited by none of their own chunks by construction; their split chunk is retrieved for 5 of 18.",
+   "value": {
+    "A_own.k": 0,
+    "A_own.n": 18,
+    "M.k": 5
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q1_lost_pairs.others.by_retriever.default",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY. This is the loss that remains real under per-pair single-chunk evaluation."
+  },
+  {
+   "id": "split-neighbour-recovery",
+   "section": "5.7",
+   "statement": "Handing the judge the chunk with one neighbour on each side recovers 8 of the 18 split pairs (44 %, Wilson 25-66).",
+   "value": {
+    "k": 8,
+    "n": 18,
+    "rate": 0.4444
+   },
+   "source": "docs/plans/results/split-answer-2026-11/artifacts/neighbour-report.json",
+   "pointer": "by_group.split.context_window_1.all.answers_rate_unjudged_as_not",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY, no test. Two windows needing two neighbours each side: 0 of 2."
+  },
+  {
+   "id": "split-negative-control",
+   "section": "5.7",
+   "statement": "The same neighbour passage turns 35 of 150 pairs the judge had said do not answer into *answers* (23 %, Wilson 17-31): the recovery interval overlaps the leniency floor.",
+   "value": {
+    "k": 35,
+    "n": 150,
+    "rate": 0.2333
+   },
+   "source": "docs/plans/results/split-answer-2026-11/artifacts/neighbour-report.json",
+   "pointer": "by_group.negative.context_window_1.all.answers_rate_unjudged_as_not",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. Not split into same-paper and other-paper pairs, so 23 % may overstate leniency."
+  },
+  {
+   "id": "split-kept-pairs",
+   "section": "5.7",
+   "statement": "Neighbours cost few answers: 215 of 219 kept pairs stay *answers* (98 %).",
+   "value": {
+    "k": 215,
+    "n": 219,
+    "rate": 0.9817
+   },
+   "source": "docs/plans/results/split-answer-2026-11/artifacts/neighbour-report.json",
+   "pointer": "by_group.kept_changed.context_window_1.all.answers_rate_unjudged_as_not",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so."
+  },
+  {
+   "id": "s0bprime-reach-containment-256",
+   "section": "5.3",
+   "statement": "At a 16,384-token delivered budget on the development topics, 256-token chunks reach 0.277 of a topic's evidence-bearing documents and fully contain 0.188 of a reached document's evidence units.",
+   "value": {
+    "ERET": 0.276848,
+    "EPACK_a": 0.188317
+   },
+   "source": "docs/plans/results/stage0/artifacts/stage0b-prime/stats.json",
+   "pointer": "levels.cds[\"16384\"][\"fixed_tok256_ov0pct|hybrid|on\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT (stage-0 LLM judge labels, dev set) and n = 10 development topics: a calibration reading, DESCRIPTIVE. The confirmatory run on 80 topics was never run (gate failed on power, joint 0.37-0.56). Hybrid retrieval, reranker on. Pre-2026-10-06 provenance block."
+  },
+  {
+   "id": "s0bprime-reach-containment-2048",
+   "section": "5.3",
+   "statement": "At the same budget 2,048-token chunks reach 0.112 and contain 0.696: reach and containment trade against each other with chunk size.",
+   "value": {
+    "ERET": 0.111512,
+    "EPACK_a": 0.695686
+   },
+   "source": "docs/plans/results/stage0/artifacts/stage0b-prime/stats.json",
+   "pointer": "levels.cds[\"16384\"][\"fixed_tok2048_ov0pct|hybrid|on\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "Same caveats as `s0bprime-reach-containment-256`. At the 4,096 budget the pair is 0.139/0.193 vs 0.026/0.666; at 32,768 it is 0.277/0.188 vs 0.176/0.671."
+  },
+  {
+   "id": "lega-overlap-unresolved",
+   "section": "5.3",
+   "statement": "On the chunking study's Leg A, overlap 25 % - 0 % was -0.027 [-0.070, +0.022] on 10 topics: unresolved (power floor 0.077), not a null.",
+   "value": {
+    "mean": -0.027300678174698625,
+    "n": 10,
+    "resolved": false,
+    "delta80": 0.0765319526700502
+   },
+   "source": "docs/plans/results/stage1/report1.json",
+   "pointer": "family_primary[\"3_overlap_25_minus_0\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "Document-level metric; n = 10 development topics; the leg has a known bias toward coarse configs. The Markdown RESULTS file quotes a 12.5 % - 0 % contrast (-0.0210) that exists only there (DEFECT)."
+  },
+  {
+   "id": "rescore-overlap-512-unresolved",
+   "section": "5.3",
+   "statement": "At the passage level, 12.5 % overlap at 512 tokens raises top-1 gold-section coverage by +0.025 [0.011, 0.040]; that exceeds the 0.021 power floor (delta80) but not the pre-registered smallest effect of interest X_P = 0.05, so the contrast is unresolved under the rule's second condition.",
+   "value": {
+    "mean": 0.02528108323313352,
+    "delta80": 0.020692601566934175,
+    "verdict": "UNRESOLVED (|mean| 0.0253 < delta80 0.0207)"
+   },
+   "source": "docs/plans/results/rescore/report-rescore.json",
+   "pointer": "R6_overlap[\"512\"][\"cov1|12.5%-0%\"]",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-FREE, n = 260. The artifact's own verdict string misprints the inequality: 0.0253 is GREATER than 0.0207. The rule (PREREG-rescore) resolves only when |mean| >= delta80 AND |mean| >= X_P (0.05, `rescore-x-p`) AND the CI excludes 0; the X_P condition fails. The RESULTS file reads it as 'does not translate into a resolved passage-retrieval gain'. Do not quote the verdict string's inequality."
+  },
+  {
+   "id": "rescore-x-p",
+   "section": "5.3",
+   "statement": "The re-score's pre-registered smallest passage-level effect of interest X_P is 0.05.",
+   "value": 0.05,
+   "source": "docs/plans/results/rescore/report-rescore.json",
+   "pointer": "bars.X_P",
+   "kind": "json",
+   "verified": true,
+   "note": "X_B (document level) is 0.01."
+  },
+  {
+   "id": "sevenway-fixed-tok512-rerank-mrr",
+   "section": "5.8",
+   "statement": "On 300 title-known-item queries over 300 article records, fixed_tok512 reaches reranked MRR@10 of 0.904 and no configuration separates from it.",
+   "value": 0.904,
+   "source": "python/scripts/eval/chunking_compare_7way_report.md",
+   "pointer": "| `fixed_tok512` | 0.900 [0.865, 0.932] | 0.913 [0.880, 0.943] | 0.903 [0.869, 0.935] | 0.904 [0.869, 0.935] |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY (no committed JSON for this run; DEFECT). Document-level, title queries, one relevant document per query. Unresolved contrasts, not nulls: no power analysis."
+  },
+  {
+   "id": "scifact-tok256-delta",
+   "section": "5.8",
+   "statement": "On SciFact (5,183 abstracts, 300 claim queries), fixed_tok256 is +0.023 nDCG@10 [0.006, 0.040] over fixed_tok512, Holm p = 0.077: the largest difference and not Holm-significant.",
+   "value": 0.023,
+   "source": "python/scripts/eval/scifact_chunk_eval_report.md",
+   "pointer": "0.023 [0.006, 0.040] | 0.077 | no |",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY (DEFECT). Document-level; abstracts give 1.18 chunks per document at 512 tokens, so this benchmark cannot test chunking of full-length articles."
+  },
+  {
+   "id": "judge-validity-reweighted",
+   "section": "6",
+   "statement": "The owner's 100-pair spot check agreed with the frozen judge's final label on 0.872 re-weighted to the stage-A label shares, below the pre-registered 0.90 threshold.",
+   "value": {
+    "reweighted_agreement": 0.8724891436007518,
+    "below_threshold": true,
+    "n": 100
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "spot_checks.judge_validity",
+   "kind": "json",
+   "verified": true,
+   "note": "Single human reader who also designed the study; the two-reader read has not happened. Applies to every judged figure in sections 5.3, 5.6 (J only) and 5.7. Sections 5.1, 5.4, 5.5, 5.6 (Q) and 5.8 are judge-free."
+  },
+  {
+   "id": "judge-validity-answers-stratum",
+   "section": "6",
+   "statement": "On the *answers* stratum the agreement was 0.82 (41 of 50).",
+   "value": {
+    "rate": 0.82,
+    "agree": 41,
+    "n": 50
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "spot_checks.judge_validity.strata.answers",
+   "kind": "json",
+   "verified": true,
+   "note": "The stratum that every 'lost *answers*' figure in 5.7 depends on."
+  },
+  {
+   "id": "judge-validity-kappa",
+   "section": "6",
+   "statement": "Cohen's kappa between the human reader and the judge is 0.615 (precision 0.783, recall 0.887).",
+   "value": {
+    "kappa": 0.6153846153846155,
+    "precision": 0.7833333333333333,
+    "recall": 0.8867924528301887
+   },
+   "source": "docs/plans/results/alias-study-2026-11/artifacts/results-stage-A2.public.json",
+   "pointer": "spot_checks.judge_validity.metrics",
+   "kind": "json",
+   "verified": true,
+   "note": "Unweighted 100-pair sample; the re-weighted figure is the gate. The single rater also designed the study. Precision 0.783 means the human rejected about one in five of the judge's *answers* labels (13 fp of 60), which bears on every lost/recovered count in 5.7 and on the 75-of-75 saturation."
+  },
+  {
+   "id": "s0-joint-power-at-80",
+   "section": "3",
+   "statement": "The older study's confirmation run did not proceed because its joint bootstrap power at the planned 80 topics was 0.37-0.56 on five of six contrasts, and TREC CDS has only 90 topics in total.",
+   "value": 0.37,
+   "source": "docs/plans/results/RUN-PACKAGE.md",
+   "pointer": "joint power 0.37–0.56 at n = 80",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY (RUN-PACKAGE.md restates stage0b-prime's gate). The gate failed on power, not on levels; the 80 confirmation topics remain quarantined in code (`QuarantineViolation`)."
+  },
+  {
+   "id": "s0-corpus-documents",
+   "section": "3",
+   "statement": "The older study's shared corpus is 32,663 PMC Open Access documents.",
+   "value": 32663,
+   "source": "docs/plans/results/RUN-PACKAGE.md",
+   "pointer": "32,663-document PMC Open Access corpus",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY; the corpus plan artifact is stage0/artifacts/corpus_plan.json (not inspected here)."
+  },
+  {
+   "id": "oa-overlap-article-level",
+   "section": "5.1",
+   "statement": "At the article level (any top-5 chunk from the gold article) overlap moves hit@5 by only +0.64 [-0.39, +1.67] in the production setting, against +2.06 at the chunk level.",
+   "value": {
+    "point": 0.64,
+    "lo": -0.39,
+    "hi": 1.67,
+    "arm_values.ft512o0": 85.9,
+    "arm_values.ft512o64": 86.54
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_D_a_article_hit5",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). Hypothesis D item 5; the one in-record demonstration that a document-level metric misses a chunk-level effect on the OA eval. On the 119 split questions the article-level gain is +5.04 [-1.68, +11.76] (ph_D_a_article_hit5_split_in_ft512o0)."
+  },
+  {
+   "id": "oa-questions-passing",
+   "section": "4",
+   "statement": "2,437 passages yielded a question and exact answer quote passing the programmatic checks in three attempts; 155 passages failed every attempt.",
+   "value": {
+    "selected": 2437,
+    "passages_failed_all_attempts": 155,
+    "max_attempts": 3
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "question_sets.questions",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). "
+  },
+  {
+   "id": "oa-clean-set",
+   "section": "4",
+   "statement": "The clean set holds 2,335 questions after removing 63 ambiguous-gold items and 66 within-record repeats (27 carried both flags).",
+   "value": {
+    "clean_set": 2335,
+    "audit.ambiguous_gold": 63,
+    "audit.within_record_repeat": 66,
+    "audit.both_flags": 27,
+    "decision_set": 2035,
+    "noise_subset": 300
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "question_sets",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). "
+  },
+  {
+   "id": "oa-chunking-matters-under-reranker",
+   "section": "5.4",
+   "statement": "Under the reranker in hybrid retrieval the ten arms span 5.85 hit@5 points from best to worst (SD 2.05), the 'about 2-6 points' that remain after fusion and reranking.",
+   "value": {
+    "best_minus_worst": 5.85,
+    "sd_across_arms": 2.05,
+    "mean": 79.93
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "spread.settings.a",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C1. 'About 2-6' is the POSTHOC phrasing; the artifact carries best - worst and the SD."
+  },
+  {
+   "id": "oa-size-vector-reranker",
+   "section": "5.4",
+   "statement": "With the reranker on vector-only candidates, the 1,024-vs-512 size penalty shrinks from -5.80 to -3.54 [-5.21, -1.92] and stays significant.",
+   "value": {
+    "point": -3.54,
+    "lo": -5.21,
+    "hi": -1.92
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_e_size_ft1024o0_minus_ft512o0",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2, setting (e). The BM25 counterpart is ph_C_f_size_ft1024o0_minus_ft512o0."
+  },
+  {
+   "id": "oa-legacy-semantic-cost",
+   "section": "5.4",
+   "statement": "The legacy semantic chunker costs about 4.5-7x the embedding tokens of a fixed window; this is the planned cost of the legacy arm, not a measurement of semantic_pooled.",
+   "value": 4.5,
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md",
+   "pointer": "The legacy semantic chunker also costs ~4.5-7x",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY: the committed aggregate does not carry it (a planned figure, not a measurement). The plan (PLAN-AND-PASS-RULE.md arm 6) carries the same planned figure. semantic_pooled's cost ratio on this corpus is absent from the public record."
+  },
+  {
+   "id": "oa-sempool-hit5-setting-a",
+   "section": "5.4",
+   "statement": "Capped semantic_pooled reaches 80.29 % hit@5 in the production setting, above the server default's 79.02 % and below the section-cut arms, and fails its frozen mid-class superiority test (+1.28 [-0.20, +2.75] against a required lower bound of +2.0).",
+   "value": {
+    "settings.a.arms.sempool512.hit@5": 80.2948,
+    "contrasts.main_a_sempool512_minus_ft512o64.point": 1.2776,
+    "contrasts.main_a_sempool512_minus_ft512o64.lo": -0.1966,
+    "contrasts.main_a_sempool512_minus_ft512o64.hi": 2.7518,
+    "contrasts.main_a_sempool512_minus_ft512o64.passed": false
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "$",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). Frozen main run, confirmatory family; the class test is the frozen rule's. The legacy semantic arm fails too (+0.15 [-1.38, +1.67], main_a_sem512_minus_ft512o64)."
+  },
+  {
+   "id": "found10-all-lost-a-own",
+   "section": "5.7",
+   "statement": "For all 75 lost pairs, the pair's own answering chunk is in production retrieval's top 10 for 39 (52 %).",
+   "value": {
+    "k": 39,
+    "n": 75,
+    "rate": 0.52
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q1_lost_pairs.all_lost.by_retriever.default.A_own",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY, no test; the 18 split pairs count 0 by construction. Reference: 178 of 276 (`found10-reference-a-own`)."
+  },
+  {
+   "id": "found10-a-own-by-corpus",
+   "section": "5.7",
+   "statement": "Retrieval of the pair's own answering chunk falls with collection size: 73.5 % on the base corpus, 53.8 %, 54.7 % and 62.3 % on the neighbour and two random expansions.",
+   "value": {
+    "base.by_retriever.default.A_own.rate": 0.735,
+    "neighbour.by_retriever.default.A_own.rate": 0.5385,
+    "random1.by_retriever.default.A_own.rate": 0.5469,
+    "random2.by_retriever.default.A_own.rate": 0.6226
+   },
+   "source": "docs/plans/results/rechunk-found10-2026-11/artifacts/stage1b-report.json",
+   "pointer": "q2_all_pairs.all_pairs.by_corpus_arm",
+   "kind": "json",
+   "verified": true,
+   "note": "JUDGE-DEPENDENT: the label is the alias study's frozen LLM judge (two Qwen models, a Gemini tiebreak, an Opus drift reference). Owner-judge agreement on the 100-pair spot check was 0.872 re-weighted against a frozen 0.90 threshold (`judge-validity-reweighted`); the two-reader human read has not been performed. Every sentence quoting this claim says so. EXPLORATORY, all 351 pairs, default retriever; n per arm 117 / 117 / 64 / 53."
+  },
+  {
+   "id": "split-wall-read-one-side",
+   "section": "5.7",
+   "statement": "In an offline read of the 10 wall-crossing split windows, one reader judged 9 answerable from one side of the section wall alone, none needing both sides, one unclear.",
+   "value": 9,
+   "source": "docs/plans/results/split-answer-2026-11/REPORT.md",
+   "pointer": "In 9 of the 10 wall-crossing split windows",
+   "kind": "text",
+   "verified": true,
+   "note": "MARKDOWN-ONLY and NOT A JUDGE LABEL: a private operator read that set no label. The counts artifact artifacts/wall-read-counts.json carries provenance.citable false (an operator read, not a harness run), so it is not cited; REPORT.md is a reader-facing file revised in place. Defect: the record file (RESULTS.md) does not carry this count. n = 10."
+  },
+  {
+   "id": "chunker-window-budget",
+   "section": "3",
+   "statement": "Every chunk is bounded by the embedder's 4,096-token window less a 16-token reserve: a 4,080-token budget.",
+   "value": {
+    "window_budget": 4080,
+    "model_window": 4096
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "chunker",
+   "kind": "json",
+   "verified": true,
+   "note": "SFR-Embedding-Mistral. Recorded by the confirmation test's chunker block; the same budget applies to every arm in every study here."
+  },
+  {
+   "id": "reach-prereg-sha",
+   "section": "7",
+   "statement": "The reach test's pre-registration (sha256 1e3791ed…4458) was verified against the frozen file by the report.",
+   "value": {
+    "sha256": "1e3791ede2b7252cf43b940fd24f99a40a4126cabfc3a698f9f3a3ba3ade4458",
+    "verified": true
+   },
+   "source": "docs/plans/results/reach-rechunk-2026-11/artifacts/reach-report.json",
+   "pointer": "prereg",
+   "kind": "json",
+   "verified": true,
+   "note": "Signed tag prereg-reach-rechunk-2026-11."
+  },
+  {
+   "id": "h2h-prereg-sha",
+   "section": "7",
+   "statement": "The head-to-head's pre-registration (sha256 31687ee4…6f82) was checked by the report.",
+   "value": {
+    "prereg_sha256": "31687ee41b036010a49975a1a4b215841e67aa5e5c6e5a979feb91c0160f6f82",
+    "checked": true
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "prereg",
+   "kind": "json",
+   "verified": true,
+   "note": "Signed tag prereg-adopted-spec-h2h-2026-11."
+  },
+  {
+   "id": "confirm-prereg-sha",
+   "section": "7",
+   "statement": "The boundary-confirmation test's pre-registration has sha256 b3a2d9e6…9b0e.",
+   "value": "b3a2d9e61f42675d9dccdd84bc449a0e7507e4b9c9d15bf957b6a3613e589b0e",
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "confirmatory.prereg_sha256",
+   "kind": "json",
+   "verified": true,
+   "note": "PREREG v3.2; signed tag prereg-alias-boundary-confirm-2026-11."
+  },
+  {
+   "id": "h2h-harness-provenance",
+   "section": "7",
+   "statement": "The head-to-head report was produced from a clean tree at commit f4d4ef9a with citable provenance.",
+   "value": {
+    "commit": "f4d4ef9a0b3b33116744488766f4e28d51aa51b3",
+    "citable": true,
+    "dirty": false,
+    "untracked": 0
+   },
+   "source": "docs/plans/results/adopted-spec-h2h-2026-11/artifacts/h2h-report.json",
+   "pointer": "files.harness_provenance",
+   "kind": "json",
+   "verified": true,
+   "note": ""
+  },
+  {
+   "id": "confirm-provenance",
+   "section": "7",
+   "statement": "The boundary-confirmation report was produced from a clean tree at commit 016fb61 with citable provenance.",
+   "value": {
+    "commit": "016fb61d03784e6505b43275e4ee7536a2fddec7",
+    "citable": true,
+    "dirty": false
+   },
+   "source": "docs/plans/results/alias-boundary-confirm-2026-11/artifacts/confirm-report.json",
+   "pointer": "provenance",
+   "kind": "json",
+   "verified": true,
+   "note": ""
+  },
+  {
+   "id": "qasper-multi-paragraph",
+   "section": "2",
+   "statement": "Re-measured from the released QASPER v0.3 annotations, 31.4 % of answerable text-evidence answers (1,043 of 3,321) have evidence in more than one paragraph.",
+   "value": {
+    "p": 0.3141,
+    "k": 1043,
+    "n": 3321,
+    "lo": 0.2985,
+    "hi": 0.3301
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.text_only.all.multi_paragraph",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable."
+  },
+  {
+   "id": "qasper-multi-section-full-path",
+   "section": "2",
+   "statement": "14.2 % (470 of 3,321) have evidence in more than one section by full section path.",
+   "value": {
+    "p": 0.1415,
+    "k": 470,
+    "n": 3321
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.text_only.all.multi_section_full_path",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable."
+  },
+  {
+   "id": "qasper-multi-section-top-level",
+   "section": "2",
+   "statement": "10.1 % (337 of 3,321) have evidence in more than one top-level section.",
+   "value": {
+    "p": 0.1015,
+    "k": 337,
+    "n": 3321
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.text_only.all.multi_section_top_level",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable. The first published section-level dispersion figure for a scientific-paper QA set, to the project's knowledge; evidence found in more than one section resolves to the earliest."
+  },
+  {
+   "id": "qasper-kappa-top-level",
+   "section": "2",
+   "statement": "Annotators agree on the single-versus-multi top-level-section label with Fleiss kappa 0.22; 0.33 at the full-path level and 0.43 at the paragraph level.",
+   "value": {
+    "multi_section_top_level.all_multi_annotated.kappa": 0.2187,
+    "multi_section_full_path.all_multi_annotated.kappa": 0.3287,
+    "multi_paragraph.all_multi_annotated.kappa": 0.4307
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.agreement",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable. Raw agreement on the top-level label is 85.3 % of 559 multi-annotated questions; the label is rare, so most agreement is expected by chance."
+  },
+  {
+   "id": "qasper-55-5-not-reproduced",
+   "section": "2",
+   "statement": "The paper's 55.5 % multi-paragraph figure does not reproduce from the released data: under its stated definition the dev split gives 30.1 % (403 of 1,340).",
+   "value": {
+    "p": 0.3007,
+    "k": 403,
+    "n": 1340
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "reproduction_55_5[\"v0.3\"].dev.share_text_only_multi_paragraph",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable. Every released version (v0.1, v0.3) and split gives 30-32 % under the paper's definition; the gap is unexplained in the record. Cite the paper's figure as what it published, beside this."
+  },
+  {
+   "id": "oa-sections-vs-random-cuts-vector-reranker",
+   "section": "5.4",
+   "statement": "With the reranker on vector-only candidates, real section boundaries beat count-matched random cuts on sentence chunks by +2.11 [+0.69, +3.54], down from +4.82 without the reranker.",
+   "value": {
+    "point": 2.11,
+    "lo": 0.69,
+    "hi": 3.54
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_e_structure_sent512s_minus_sent512rc",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2, setting (e). The only count-matched random-cut control is on the sentence arm; none exists for the fixed window. Under BM25 + reranker the same contrast is +1.18 [-0.05, +2.41]."
+  },
+  {
+   "id": "oa-sections-sent-vector-reranker",
+   "section": "5.4",
+   "statement": "With the reranker on vector-only candidates, section cuts on sentence chunks (sent512s - sent512) gain +3.24 [+1.67, +4.82].",
+   "value": {
+    "point": 3.24,
+    "lo": 1.67,
+    "hi": 4.82,
+    "n": 2035,
+    "status": "exploratory"
+   },
+   "source": "docs/plans/results/oa-chunking-eval-2026-10/artifacts/oa-eval-aggregates.json",
+   "pointer": "contrasts.ph_C_e_sections_sent512s_minus_sent512",
+   "kind": "json",
+   "verified": true,
+   "note": "Source: the committed OA aggregate artifact (aggregates only, provenance citable at f1cbbabd). EXPLORATORY (post hoc, unadjusted paired bootstrap unless the artifact says Holm). C2, setting (e). The section gain against which the structure-over-random contrast +2.11 [+0.69, +3.54] (`oa-sections-vs-random-cuts-vector-reranker`) is read; both are unadjusted."
+  }
+ ]
+}
