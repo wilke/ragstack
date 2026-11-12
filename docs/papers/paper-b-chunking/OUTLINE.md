@@ -76,7 +76,7 @@ that have not been promoted to `../bibliography.md`; they must be before the sen
 | that answer quality against delivered context is an inverted U, so retrieval quality is an upper bound | `jin-2025` (*inbox*) |
 | the powered-null rule and equivalence testing | `webber-2008` (*inbox*), `lakens-2017` (*inbox*), `fuhr-2017` with `sakai-2020` (*inbox*) |
 | that judges can be reliable without being valid | `norman-2026` (*inbox*) |
-| that evidence for ordinary questions about papers often spans several paragraphs or locations | `dasigi-2021-qasper` (55.5 % multi-paragraph among text-evidence answerable questions as published; the project's re-measurement from the released data gives about 31 %, pending #1008, §2), `baumgartner-2025-peerqa` (30 % non-consecutive) |
+| that evidence for ordinary questions about papers often spans several paragraphs or locations | `dasigi-2021-qasper` (55.5 % multi-paragraph among text-evidence answerable questions as published; re-measured from the released data, 31.4 %, `qasper-multi-paragraph`), `baumgartner-2025-peerqa` (30 % non-consecutive) |
 | that cross-section questions over IMRaD articles are a setting | `mortezaagha-2026-gralc`, synthetic template questions |
 
 **The claim that survives.** The field controls *nominal* chunk size, bounds or reports *realised* size,
@@ -182,7 +182,7 @@ say what population of questions that excludes.
 
 | key | weight | role here |
 |---|---|---|
-| `dasigi-2021-qasper` | mention until the re-measurement is on `main`; then **support** for the re-measured figures | The paper reports 55.5 % multi-paragraph evidence among text-evidence answerable questions; the unit is the paragraph and part of the spread is redundant, and no multi-*section* share is published. The project's re-measurement from the released annotations does not reproduce the 55.5 %: about 31 % multi-paragraph, 14.2 % multi full-path section, 10.1 % multi top-level section, Fleiss κ 0.22–0.33 between annotators (artifact `docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json`, pending #1008; claims to add on merge, none pointed at it here). Cite the re-measured figures, with the paper's figure as what it published. |
+| `dasigi-2021-qasper` | **support** for the re-measured figures (exploratory, descriptive); mention for the published one | The paper reports 55.5 % multi-paragraph evidence among text-evidence answerable questions; the unit is the paragraph, part of the spread is redundant, and no multi-*section* share is published. The project's re-measurement from the released v0.3 annotations does not reproduce the 55.5 % (30.1 % on the dev split under the paper's definition, `qasper-55-5-not-reproduced`): pooled train+dev, 31.4 % of answers have multi-paragraph evidence (`qasper-multi-paragraph`), 14.2 % multi-section by full path (`qasper-multi-section-full-path`), 10.1 % by top-level section (`qasper-multi-section-top-level`), with Fleiss κ 0.22 / 0.33 / 0.43 between annotators at the three levels (`qasper-kappa-top-level`). Cite the re-measured figures, labelled exploratory, with the paper's figure as what it published. |
 | `baumgartner-2025-peerqa` | **support** (base rate), mention (difficulty null) | 30 % non-consecutive evidence; no consistent difficulty difference reported, unpowered |
 | `qin-2026-lurch` | mention | the vocabulary: evidence scope, dispersion, reasoning depth as separate axes |
 | `buchmann-2024-attribute` | mention | multi-evidence questions are enumeration or aggregation, an assertion at dataset level |
@@ -209,7 +209,7 @@ before drafting; each needs a verified entry, not a recalled one):
    segmentation of JATS or PDF: no entry.
 6. LLM question-writing for retrieval evaluation and the "echo" selection rule: no entry; the
    question-writer threat (§6) cannot be placed.
-7. The QASPER re-measurement (above) and its bibliography note, on merge of #1008.
+7. A bibliography note under `dasigi-2021-qasper` recording the re-measurement and its artifact.
 
 ### 3. Design and what was frozen
 
@@ -422,9 +422,11 @@ Then, each named as a competing reading of the main result:
   answer" for overlap and sentence cuts (hypothesis D). How common such answers are is not settled:
   `dasigi-2021-qasper` publishes 55.5 % multi-paragraph evidence among text-evidence answerable questions,
   at the paragraph unit and with redundant spread included, and no multi-section share; the project's
-  re-measurement from the released data gives about 31 % multi-paragraph and 14.2 % / 10.1 % multi-section
-  by full path / top level with Fleiss κ 0.22–0.33 (pending #1008, cited on merge). `baumgartner-2025-peerqa`
-  gives 30 % non-consecutive at the location unit.
+  exploratory re-measurement from the released data gives 31.4 % multi-paragraph (`qasper-multi-paragraph`;
+  the published figure does not reproduce, `qasper-55-5-not-reproduced`) and 14.2 % / 10.1 % multi-section by
+  full path / top level (`qasper-multi-section-full-path`, `qasper-multi-section-top-level`), with Fleiss κ
+  0.22 at the top level (`qasper-kappa-top-level`): about one answer in ten crosses a top-level section.
+  `baumgartner-2025-peerqa` gives 30 % non-consecutive at the location unit.
 - **Single domain, embedder, reranker, question writer.** Bacteria/virus PMC OA only; one embedder
   (SFR-Embedding-Mistral); one cross-encoder (bge-reranker-v2-m3) over 50 candidates; one question-writing
   model and selection rule (lowest echo) for the OA eval, and term questions only for the alias set. The
@@ -484,7 +486,7 @@ access for the judge tiebreak, and the two-reader human read this record lacks.
 
 ## Working rules for this draft
 
-- Every number cites a claim id from `claims.json` (107 entries; every one resolves under
+- Every number cites a claim id from `claims.json` (112 entries; every one resolves under
   `../check_claims.py`, but 36 are tagged `MARKDOWN-ONLY` and resolve to a Markdown aggregate rather
   than a committed JSON, among them the section-versus-random-cut, overlap, semantic and C1/C2 claims
   the thesis leans on). Run `../check_claims.py` with `/rag/envs/ragstack/bin/python3` before any commit

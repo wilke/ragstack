@@ -1428,6 +1428,83 @@
    "kind": "json",
    "verified": true,
    "note": ""
+  },
+  {
+   "id": "qasper-multi-paragraph",
+   "section": "2",
+   "statement": "Re-measured from the released QASPER v0.3 annotations, 31.4 % of answerable text-evidence answers (1,043 of 3,321) have evidence in more than one paragraph.",
+   "value": {
+    "p": 0.3141,
+    "k": 1043,
+    "n": 3321,
+    "lo": 0.2985,
+    "hi": 0.3301
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.text_only.all.multi_paragraph",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable."
+  },
+  {
+   "id": "qasper-multi-section-full-path",
+   "section": "2",
+   "statement": "14.2 % (470 of 3,321) have evidence in more than one section by full section path.",
+   "value": {
+    "p": 0.1415,
+    "k": 470,
+    "n": 3321
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.text_only.all.multi_section_full_path",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable."
+  },
+  {
+   "id": "qasper-multi-section-top-level",
+   "section": "2",
+   "statement": "10.1 % (337 of 3,321) have evidence in more than one top-level section.",
+   "value": {
+    "p": 0.1015,
+    "k": 337,
+    "n": 3321
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.text_only.all.multi_section_top_level",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable. The first published section-level dispersion figure for a scientific-paper QA set, to the project's knowledge; evidence found in more than one section resolves to the earliest."
+  },
+  {
+   "id": "qasper-kappa-top-level",
+   "section": "2",
+   "statement": "Annotators agree on the single-versus-multi top-level-section label with Fleiss kappa 0.22; 0.33 at the full-path level and 0.43 at the paragraph level.",
+   "value": {
+    "multi_section_top_level.all_multi_annotated.kappa": 0.2187,
+    "multi_section_full_path.all_multi_annotated.kappa": 0.3287,
+    "multi_paragraph.all_multi_annotated.kappa": 0.4307
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "splits.pooled.agreement",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable. Raw agreement on the top-level label is 85.3 % of 559 multi-annotated questions; the label is rare, so most agreement is expected by chance."
+  },
+  {
+   "id": "qasper-55-5-not-reproduced",
+   "section": "2",
+   "statement": "The paper's 55.5 % multi-paragraph figure does not reproduce from the released data: under its stated definition the dev split gives 30.1 % (403 of 1,340).",
+   "value": {
+    "p": 0.3007,
+    "k": 403,
+    "n": 1340
+   },
+   "source": "docs/plans/results/qasper-dispersion-2026-11/artifacts/qasper-dispersion.json",
+   "pointer": "reproduction_55_5[\"v0.3\"].dev.share_text_only_multi_paragraph",
+   "kind": "json",
+   "verified": true,
+   "note": "EXPLORATORY, descriptive, not pre-registered (the artifact says so). Pool = QASPER v0.3 train+dev, n = 3,321 answerable answers with text-only evidence; unit = answer annotation, not question. Wilson 95 % interval; a paper-clustered bootstrap is beside it in the artifact. Provenance citable. Every released version (v0.1, v0.3) and split gives 30-32 % under the paper's definition; the gap is unexplained in the record. Cite the paper's figure as what it published, beside this."
   }
  ]
 }
