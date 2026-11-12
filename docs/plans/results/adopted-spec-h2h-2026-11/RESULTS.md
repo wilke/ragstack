@@ -290,9 +290,14 @@ From `ingest-summary` unless marked otherwise.
 2. **Exposure log** (PREREG §6, *Operator exposure*). Before the report wrote its output, no S or S-regex
    per-question file was read. The harness's own `score` step prints the pooled hit@5 per arm on the decision set to
    its log at the end of each setting's run (00:29–00:31Z†; the four `score-*.log` files hold those lines), and
-   `decide` prints its choice; those lines existed four minutes before the report. Whether the operator read them
-   in that interval is not recorded. Nothing was changed between `score` and `report`: the rule, the configs (sha256
-   gated), the margins and the order were frozen, and the script's output is the decision.
+   `decide` prints its choice; those lines existed four minutes before the report. The operator's account of the
+   interval, from the session transcript (not machine-verifiable): the only reads of `score-*.log` and
+   `decide-*.log` before the report were (a) the exit codes and (b) one grep for `refus|error|warn|Traceback`
+   piped through `grep -v -i -E 'hit@|hit5'`, which returned only the four `decide` warnings about
+   `noise.json selected_ids_sha256` (note 3); no pooled hit@5 line was displayed. Of the retrieval ledgers, the
+   operator read only row counts, `status` and `server_version` before the report: no hits, no scores. Nothing was
+   changed between `score` and `report`: the rule, the configs (sha256 gated), the margins and the order were
+   frozen, and the script's output is the decision.
 3. **`decide`'s warning**, printed in all four settings: *cannot check that score excluded the noise run's subset
    (missing noise.json selected_ids_sha256)*. The frozen `noise.json` (sha256 pinned per setting) carries no
    `selected_ids_sha256`, so `decide`'s own preflight could not confirm the exclusion. The exclusion is established
