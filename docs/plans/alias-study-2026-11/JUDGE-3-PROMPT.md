@@ -27,7 +27,7 @@ decision Q9) goes through the binary readings of §2.1 (plan §2.4).
 | piece | `/1`, `/2` (code: `glossbench_alias_judge.py`) | `/3` (this draft) |
 |---|---|---|
 | system | `JUDGE_SYSTEM`; `/2` = `/1` + `JUDGE_RULE_V2`, inserted before the *yes* bullet | `JUDGE_SYSTEM_V3` (§1.2) |
-| user message | `judge_prompt(question, term, passage, title, defs)`, the same for every backend | the same context block, with a new closing line (§1.3) |
+| user message | `judge_prompt(question, term, passage, title, defs)`, the same for every judge | the same context block, with a new closing line (§1.3) |
 | output | `{"reason": "at most 25 words", "answers": "yes" \| "no"}`, reason first | the same keys and order; values `full` / `partial` / `none` (§1.2, last block) |
 | parser | `parse_judgement`: the last JSON object with a valid `answers` value | `parse_judgement_v3`, the same algorithm with the new value set (§2) |
 | registry | `JUDGE_SYSTEMS["alias-judge/1" \| "/2"]` | `JUDGE_SYSTEMS["alias-judge/3"]` |
@@ -247,22 +247,23 @@ with K0 and with Opus `/1`, with lenient beside it (plan §8.3).
 * Tests:
   * `/3` contains `/1`'s first two rule bullets and `JUDGE_RULE_V2` verbatim;
   * `judge_prompt_v3` differs from `judge_prompt` in the last line only;
-  * the same user message goes to every backend;
+  * the same user message goes to every judge, on either gateway;
   * the plan's §2.2 rubric equals the *Parts and conditions*, *Labels* and *Deciding* blocks of
     `JUDGE_SYSTEM_V3`, and the rater sheet writer's rubric **and examples** blocks equal the same blocks of
     `JUDGE_SYSTEM_V3` byte for byte (so the rater sheet and the judge rate one construct);
   * parser cases for every bullet of §2, including the cross-version fail-closed property.
 * Self-check: a separate set of synthetic cases, not the prompt's examples, at least one per rule, with
   **expected labels set by the owner**. They follow the pattern of `VERIFY_CASES` in
-  `test_glossbench_alias.py`. They are run live before any validation-2 record is drafted: once on each
+  `test_glossbench_alias.py`. They are run live **before the freeze** (plan §11, step 3): once on each
   study-gateway `/3` judge, and **5 times per case on each hosted candidate** under its batch settings, so
-  that the plan's canary selection rule can measure each case's flip rate. The counts go into the plan
-  amendment that records the system sha (plan §11, step 3). Ten of them, chosen by that rule (identical
-  label in all 5 runs on every hosted candidate, committed case order) and fixed before the freeze, are the
-  canary cases that open and close every hosted candidate's batch (plan §4): always sent with `/3`, at
-  temperature 0 and a fixed seed where the backend accepts them, with the plan's 3-of-10 tolerance and its
-  stated false-void rate otherwise. A voided batch is not re-issued (plan §4).
-* The system sha256 is recorded in that amendment in the same commit.
+  that the plan's canary selection rule can measure each case's flip rate and each hosted candidate's
+  partial fingerprint is recorded. The counts go into the plan's freeze commit beside the system sha
+  (plan §11, step 4). Ten of them, chosen by that rule (identical label in all 5 runs on every hosted
+  candidate, committed case order) and fixed in the freeze commit, are the canary cases that open and
+  close every hosted candidate's batch (plan §4): always sent with `/3`, at temperature 0 and a fixed seed
+  where the serving configuration accepts them, with the plan's 3-of-10 tolerance and its stated
+  false-void rate otherwise. A voided batch is not re-issued (plan §4).
+* The system sha256 is recorded in the freeze commit, in the same commit as those counts.
 
 ## 5. What the plan decided about this prompt (v2)
 

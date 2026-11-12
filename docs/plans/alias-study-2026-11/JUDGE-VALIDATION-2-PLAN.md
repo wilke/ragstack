@@ -7,8 +7,9 @@ v1 said the plan would freeze once the owner answered its questions. That has ch
 commit that records four things: (a) the owner approves this text and the prompt in
 [JUDGE-3-PROMPT.md](JUDGE-3-PROMPT.md), (b) the owner answers §13, (c) §4's panel is confirmed
 (§13 Qb), and (d) the model gateway exposes the configuration information that the §4 identity gate
-reads, or the owner accepts the interim gate as a declared limitation (§13 Qe, Amendment 4). Every output
-records the sha of that commit. Any change after it is a dated amendment at the end of the v2 text
+reads, or the owner accepts the interim gate as a declared limitation (§13 Qe, Amendment 4). It also
+records the pre-freeze results that §11 step 4 lists (the `/3` system sha, the self-check counts, the
+canaries, the pinned and hosted fingerprints). Every output records the sha of that commit. Any change after it is a dated amendment at the end of the v2 text
 (before the appendix).
 
 Owner rule (Amendment 1 (6)): plans are made or checked with Fable and always reviewed. This draft was
@@ -30,7 +31,7 @@ corrections is in the PR that merged it.
 | alias-judge/3 | "/2 with sharper *not* criteria", drafted from 12 pilot pairs | a graded prompt drafted by the agent from public repository text only; owner approves it ([JUDGE-3-PROMPT.md](JUDGE-3-PROMPT.md)) | Amendment 1 (4) |
 | candidates | K0, K3, KA, KS, KY, KO | adds graded KA3 and KS3, and a candidate panel from the model gateway (§4) | Amendment 1 (3), (4); Amendment 2 |
 | frames | near-miss / partial / clear answer / clear non-answer | near-miss / mid-coverage / high-coverage / off-topic. Only the names change | "partial" is now a label |
-| budget | about 5,000 calls | about 7,600 calls on the study gateway plus about 6,600–8,800 on the model gateway at 850 pairs; the ceiling is 20,000 in all, held by a pre-specified drop order (§10) | Amendment 1 (3) |
+| budget | about 5,000 calls | about 7,600 calls on the study gateway plus about 6,600–8,800 on the model gateway at 850 pairs; the ceiling is 20,000 in all, C and E excluded (§10, §13 Q5), held by a pre-specified drop order (§10) | Amendment 1 (3) |
 | v1 questions Q1–Q11 | open | answered and folded in (§14) | Amendment 1 (5) |
 
 Background: [JUDGE-VALIDATION-PLAN.md](JUDGE-VALIDATION-PLAN.md) (the first validation),
@@ -200,7 +201,7 @@ later plan (§13 Q8).
   permanently served, and a local id that runs the same model ends on 2026-11-30 (that id is not C,
   Amendment 3). C's availability is confirmed by the model-gateway maintainer before the freeze and
   recorded in the freeze commit (§13 Qd). K0, K3, KY and KC3 all need C. Therefore C's `/2` and `/3`
-  labelling of the frozen pair file runs **first**, before any other judge (§11, step 6), and the schedule
+  labelling of the frozen pair file runs **first**, before any other judge (§11, step 7), and the schedule
   is set so that it completes while C's configuration is available. **C is a configuration, not a
   location** (Amendment 4): its pin is the configuration fingerprint of §4 (model repository or id,
   weights snapshot or revision, quantisation, serving engine and version, and the serving flags). If C's
@@ -232,7 +233,7 @@ The prompt, its parsing contract and its rationale are in [JUDGE-3-PROMPT.md](JU
 this plan fixes about it:
 
 * It is committed in the harness (`JUDGE_SYSTEMS["alias-judge/3"]`), with its system-prompt sha recorded in
-  an amendment here, **before any record of set W is drafted**.
+  the freeze commit (§11 step 4), **before the freeze and before any record of set W is drafted**.
 * **Changed from v1:** its inputs were public repository text only (the pilot's description, the spot
   check's counts and tags, the `/1` and `/2` specifications). It read no pair, question or passage, not the
   pilot's 12 owner-labelled pairs and not the 19 spot-check disagreements. v1 had named the 12 pairs as its
@@ -247,9 +248,9 @@ this plan fixes about it:
 * Known bias: the rubric and the examples encode one reading of completeness, written by the agent and
   approved by the owner, who is also rater r1. Figures without the owner (§7.1) show how much this matters.
 * `/3` gets no paraphrase check (the `/2` check is in JUDGE-CALIBRATION.md). That is a limitation.
-* Before any set-W record is drafted, the live self-check of JUDGE-3-PROMPT.md §4 (synthetic cases with
-  owner-set expected labels) runs once per `/3` judge, and its counts go into the amendment that records
-  the system sha.
+* Before the freeze (§11 step 3), the live self-check of JUDGE-3-PROMPT.md §4 (synthetic cases with
+  owner-set expected labels) runs once per `/3` judge (5 times per case on each hosted candidate, for the
+  canary selection), and its counts go into the freeze commit beside the system sha.
 
 ## 4. Candidate judges (from the model gateway inventory, 2026-11-11)
 
@@ -295,16 +296,22 @@ inventory note and plays no part in the gate.
 
 **Mismatch rules, one per judge class** (code item, §11). A *mismatch* is: the response `model` field not
 in the accepted set for that judge, or the configuration fingerprint reported for the call absent or not
-equal to the fingerprint pinned for that judge (the partial fingerprint, for a hosted id). **A missing
-fingerprint is a mismatch** once the gateway reports one; under the interim gate of §13 Qe, if the owner
-accepts it, the instance name stands in and the rule is the same with the instance in the fingerprint's
-place, declared as a limitation.
+equal to the fingerprint pinned for that judge (for a hosted id, not in that candidate's recorded set of
+partial fingerprints). **A missing fingerprint is a mismatch** after the freeze. **A serving outage is not
+a mismatch**: an error with fallback off returns no reply, nothing is stored, and labelling resumes when
+the configuration is served again, under the §3 re-serve rule (the same fingerprint continues the batch;
+anything else is a different judge). **Interim gate** (§13 Qe, only if the owner accepts it): the instance
+name stands in for the fingerprint, with one allowance so that the gate does not defeat Amendment 4: a
+move of the same configuration to a different instance that the maintainer has confirmed in writing
+before the first call on the new instance is not a mismatch; the confirmation is recorded privately and
+every row carries the instance it ran on. An unconfirmed instance change is a mismatch. This is the
+declared limitation of the interim: it records where a judge ran and trusts the maintainer for what it was.
 
 | judge class | judges | accepted `model` | identity gate | on a mismatch |
 |---|---|---|---|---|
 | study gateway | Opus, Argon, Sol | the requested name and its versioned id (TIEBREAKER-PLAN.md §1) | the served-model check only (no configuration record exists there) | the run **stops** and the reply is not stored (prereg §6.3, v1 §6) |
-| model gateway, pinned configuration | C, E, KX1 (and any local candidate) | the pinned id | the full configuration fingerprint equals the pin | the reply is not stored and the **batch stops**; the owner decides the remedy, recorded as a deviation |
-| model gateway, hosted (ALCF) | KX2–KX4 | the requested id (no revision pin exists) | the partial fingerprint (id, cluster, framework) equals the one recorded at the candidate's first call; a model served on two clusters is two fingerprints, and the cluster is recorded per row | the reply is not stored and **that candidate stops**; its rows up to the last passing check are kept and dated; the other judges continue |
+| model gateway, pinned configuration | C, E, KX1 (and any local candidate) | the pinned id | the full configuration fingerprint equals the pin | the reply is not stored and the **batch stops**; the only remedy is a dated amendment with its own budget line and the owner's approval (no re-issue within this plan, see below); the void is counted |
+| model gateway, hosted (ALCF) | KX2–KX4 | the requested id (no revision pin exists) | the partial fingerprint (id, cluster, framework) is in the **set recorded for that candidate in the freeze commit** from the pre-freeze self-check (§11 step 3); a model served on two clusters has both fingerprints in the set only if both were seen then, and the cluster is recorded per row | the reply is not stored and **that candidate stops** (a cluster outside the set is a mismatch); its rows up to the last passing check are kept and dated; the other judges continue |
 
 **Per call, every row records:** the configuration fingerprint the gateway reports (full or partial), the
 response `model` field, the call date, and (private, never in a public file) the instance or backend that
@@ -805,8 +812,8 @@ measured.
 | KX1–KX3 | ~6,600 | ~10.8M |
 | KX1–KX4 (with the optional gpt-oss-120b) | ~8,800 | ~14.4M |
 
-**Totals and the ceiling.** Counted together against the 20,000 ceiling, whichever budget pays (study
-gateway at 1,000 pairs: 270 + 3,470 + 4,000 + 680 + 80 + 200 = 8,700; per candidate 2,500):
+**Totals and the ceiling.** Counted together against the 20,000 ceiling, whichever budget pays, C and E
+excluded (see below and §13 Q5) (study gateway at 1,000 pairs: 270 + 3,470 + 4,000 + 680 + 80 + 200 = 8,700; per candidate 2,500):
 
 | pairs | study gateway | + 3 candidates | + 4 candidates | with the 110 % caps (4 candidates) |
 |---|---|---|---|---|
@@ -831,9 +838,13 @@ cells); C and E on `/2` and `/3`, now called through the model gateway by model 
 token cost (at the first validation's 1.85 s and 0.74 s per pair: about 37 min per prompt for 850 pairs,
 about 75 min in all, more for `/3`'s longer input). C's and E's calls (about 1,700 requests each at 850
 pairs, one request per pair and prompt, C at n = 5 and E at n = 3) are logged and gated by the gateway
-like every other call, but they are **not counted against the 20,000 ceiling**: Amendment 1 (3) set that
-ceiling at 4 × v1's ~5,000 drafted gateway calls, and v1's table never included C and E, which it listed
-off the gateway. Only the path changed, not the count.
+like every other call. This plan's **recommendation** is that they are **not counted against the 20,000
+ceiling**: Amendment 1 (3) set that ceiling at 4 × v1's ~5,000 drafted gateway calls, and v1's table
+never included C and E, which it listed off the gateway; only the path changed, not the count. Amendment
+1 (3) said "gateway budget" when there was one gateway, and there are now two, so this is an
+interpretation of an owner decision, put to the owner as §13 Q5. If the owner counts them in, the capped
+total at 850 pairs with four candidates rises by about 3,400 to about 21,400 and the §10 drop order
+applies.
 
 **Human time:** 400 grades at R = 5 (320 at R = 4), about 1.5–2 h per rater, plus at most 10 % in top-ups
 (§6.3).
@@ -847,9 +858,9 @@ gateway it stops the run and stores nothing, as in v1).
 
 ## 11. Order of work, freezing, outputs
 
-1. This text and JUDGE-3-PROMPT.md approved, §13 answered, the §4 panel confirmed, the gateway's
-   configuration record and fingerprint in place or the interim gate accepted (§13 Qe). The freeze commit,
-   which records the two pinned fingerprints.
+1. This text and JUDGE-3-PROMPT.md approved by the owner, §13 answered, the §4 panel confirmed, the
+   gateway's configuration record and fingerprint in place or the interim gate accepted (§13 Qe). Nothing
+   is frozen yet: steps 2 and 3 run first, because the freeze commit records their results.
 2. Code, with tests: exclusion builder (as in the first validation); pool builder with the added-arm
    fallback (Q1); frame features and cuts; F/S sampler; `alias-judge/3` and `parse_judgement_v3`
    (JUDGE-3-PROMPT.md §2 and §4); C's graded majority and the K3 rule; KY; the model-gateway client, the
@@ -860,16 +871,22 @@ gateway it stops the run and stores nothing, as in v1).
    bootstrap, the published worked example as a test); a test that the sheet writer's rubric and examples
    blocks equal the prompt's (§2); judge-vs-panel scoring (§8.1); the candidate analysis (§8.2–8.4); the
    power script with the panel simulation.
-3. The `/3` live self-check (JUDGE-3-PROMPT.md §4) on every `/3` judge, 5 runs per case on each hosted
-   candidate for the canary selection (§4); the system sha, the counts, the chosen canaries and their
-   measured flip rates go into an amendment here. Raters confirmed, rubric read, familiarisation done.
-4. Exclusions, config and `run-waves` with the size notice; the ALCF revision request filed (§4).
-5. Retrieval, pool, frames; the pair file frozen; A drawn, assigned and the sheets written.
-6. Labelling, in this order: **C on `/2` and `/3` first** (§3, the end-date rule), then E; Opus ×3; Argon
+3. **Before the freeze:** the `/3` live self-check (JUDGE-3-PROMPT.md §4) on every `/3` judge, 5 runs per
+   case on each hosted candidate for the canary selection (§4); the partial fingerprint of every hosted
+   candidate observed during those runs, which becomes that candidate's recorded set (§4); the two pinned
+   fingerprints confirmed with the maintainer; the ALCF revision request filed (§4). Raters confirmed,
+   rubric read, familiarisation done.
+4. **The freeze commit.** It records the owner's approvals, the §13 answers, the panel, the Qe state (the
+   fingerprint in place, or the interim accepted), the `/3` system sha, the self-check counts, the chosen
+   canaries with their measured flip rates, the two pinned fingerprints and each hosted candidate's
+   partial-fingerprint set. Every output records this commit's sha.
+5. Exclusions, config and `run-waves` with the size notice.
+6. Retrieval, pool, frames; the pair file frozen; A drawn, assigned and the sheets written.
+7. Labelling, in this order: **C on `/2` and `/3` first** (§3, the end-date rule), then E; Opus ×3; Argon
    and Sol on `/2` and `/3`; the panel candidates on `/2` and `/3`; repetitions 2–3 on A's items of H. The
    raters grade A blind meanwhile and their ingests are committed; top-up. Then B is drawn (it needs the
    model labels), assigned, graded and ingested; the repetitions on B's items run after B is drawn.
-7. Analysis. Anything outside §7–9 is labelled exploratory.
+8. Analysis. Anything outside §7–9 is labelled exploratory.
 
 **Freezing.** Every output records this plan's commit sha in `provenance.json`. An amendment written after
 any label exists states which labels had been seen.
@@ -909,7 +926,7 @@ run's judging ended on 2026-11-05 and nothing else runs on the judge configurati
 | Q2 | Are the thresholds and margins right? | α cut-offs 0.800 / 0.667; Δ margins −0.05 (point) and −0.10 (lower bound) |
 | Q3 | Does §8.3 (c), the panel in the owner's place, fit the accepted Q8 "owner condition"? | yes; the owner-alone figure is printed beside it either way |
 | Q4 | Confirm `/3`'s six synthetic examples and its rule that naming the topic is *none*, not *partial* (JUDGE-3-PROMPT.md §3, item 3) | yes to both; the lenient collapse would otherwise readmit the pilot's false yeses |
-| Q5 | Which budget pays for the panel candidates? | the model gateway's own key; both counted against the 20,000 ceiling in §10 either way |
+| Q5 | Which budget pays for the panel candidates? And, now that C's and E's calls pass through the model gateway too (Amendment 4): are they inside or outside the 20,000 ceiling? Amendment 1 (3) said "gateway budget" when there was one gateway | the model gateway's own key; both paid budgets counted against the 20,000 ceiling in §10 either way; **C and E outside the ceiling** (v1's ~5,000, which the ceiling is 4× of, never included them; only their path changed). **Owner to confirm**; if they count, the capped total at 850 pairs with four candidates is about 21,400 and the drop order applies (§10) |
 | Q6 | Add reach-rechunk's adopted-chunking (S) collections as extra read-only cells? | yes, if still loaded; sizes amended before freeze |
 | Q7 | What is paper-b's scope under §9.2? | the panel licenses OA-1000 judged figures only; HR-dev remains the CDS blocker; re-scoping paper-b is the owner's decision |
 | Q8 | Set-level sufficiency? | a later plan |
@@ -917,7 +934,7 @@ run's judging ended on 2026-11-05 and nothing else runs on the judge configurati
 | Qb | Confirm the §4 panel (KX1 Qwen3.8-27B anchor; Opus as the existing reference; KX2 Mistral-Large-3-675B; KX3 Llama-3.1-70B; optional KX4 gpt-oss-120b) | **answered** (Amendment 3): confirmed as proposed |
 | Qc | A gateway-side route lock on the two pinned configurations? | optional; under Amendment 4 the configuration fingerprint carries identity and a route lock adds none; left to the maintainer |
 | Qd | Confirm that C's and KX1's configurations stay available under their model ids for the study window (§3), and the schedule that puts C's labelling first | **answered in part** (Amendment 3, reworded under Amendment 4): the maintainer changes neither configuration without the owner's go; the owner gives the window guarantee at the freeze |
-| Qe | **Blocks the freeze.** The §4 identity gate reads a configuration record and fingerprint from the model gateway. As of 2026-11-11 the gateway reports model ids, instances and per-response instance names only: the serving instance, not the weights. The maintainer has put a configuration record (declared and observed, kept apart) and a fingerprint (a hash over both, excluding start time and instance; available per model on an authenticated endpoint and on every forwarded response; partial for hosted ids) to the owner: about a day of work after the owner's go, plus one brief gateway restart. **The freeze waits for the gateway's configuration record and fingerprint (owner's go to the maintainer), or the owner accepts the interim gate (instance name + response `model` field + canaries) as a declared limitation** | **wait for it**: about a day, and the alternative would record where a judge ran rather than what it was, which is the thing Amendment 4 says does not identify a judge. If the owner chooses the interim, every output of this study carries "judge identity by instance, not configuration" beside its first judged figure, and a later fingerprint cannot be back-filled for calls already made |
+| Qe | **Blocks the freeze.** The §4 identity gate reads a configuration record and fingerprint from the model gateway. As of 2026-11-11 the gateway reports model ids, instances and per-response instance names only: the serving instance, not the weights. The maintainer has put a configuration record (declared and observed, kept apart) and a fingerprint (a hash over both, excluding start time and instance; available per model on an authenticated endpoint and on every forwarded response; partial for hosted ids) to the owner: about a day of work after the owner's go, plus one brief gateway restart. **The freeze waits for the gateway's configuration record and fingerprint (owner's go to the maintainer), or the owner accepts the interim gate (instance name + response `model` field + canaries) as a declared limitation** | **wait for it**: about a day, and the alternative would record where a judge ran rather than what it was, which is the thing Amendment 4 says does not identify a judge. If the owner chooses the interim: the instance name is the gate, so a same-configuration move to another instance stops the batch **unless the maintainer confirms the move in writing before the first call on the new instance** (then it is recorded per row and is not a mismatch, §4); every output of this study carries "judge identity by instance, not configuration" beside its first judged figure; and a later fingerprint cannot be back-filled for calls already made |
 
 ## 14. v1 questions: answers and where they are folded in
 
@@ -1039,11 +1056,16 @@ What this changes, and where:
   for hosted ids; about a day of work after the owner's go and one brief gateway restart. The snapshot
   hash cannot be observed through the engine and is declared only. Until it exists the freeze cannot
   happen, or the owner accepts the interim gate (instance name + response `model` field + canaries) as a
-  declared limitation. Recommendation: wait for it.
+  declared limitation, under which a same-configuration move to another instance is a mismatch unless the
+  maintainer confirms it beforehand and it is recorded per row (§4). Recommendation: wait for it.
+- **Order of work** (§11). The live self-check, the canary selection and the recording of the pinned and
+  hosted fingerprints now run before the freeze commit (step 3), and the freeze commit (step 4) records
+  them; the `/3` system sha goes into the freeze commit rather than a later amendment (§3.2). A serving
+  outage is not a mismatch; the pinned-configuration remedy is a dated amendment only (§4).
 - **Housekeeping.** §13 Qc (route lock) is now optional without bearing on identity; Qd and Amendment
-  3's Qd bullet are reworded in configuration terms; the freeze conditions gain item (d); C's and E's
-  calls now pass through the model gateway and are not counted against the 20,000 ceiling, which Amendment
-  1 (3) set over v1's table without them (§10).
+  3's Qd bullet are reworded in configuration terms; the freeze conditions gain item (d). C's and E's
+  calls now pass through the model gateway; whether they count against the 20,000 ceiling is put to the
+  owner as §13 Q5, with the recommendation that they do not (§10).
 
 The plan is not frozen; it freezes only on the owner's word "freeze".
 
