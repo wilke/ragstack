@@ -10412,10 +10412,11 @@
     "printed": "850,119"
    },
    {
-    "artifact_value": 1.1537,
+    "artifact_value": 1.22,
+    "explanation": "RESULTS prints the planned-n (2,260) half-width under an \"n = 2,035\" label; at n = 2,035 the figure is the scaled value here (the PLAN's Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.",
     "markdown": "main-run-2026-11/RESULTS.md (private)",
-    "match": true,
-    "pointer": "noise_run.settings.a.half_width_at_planned_n",
+    "match": false,
+    "pointer": "noise_run.settings.a.half_width_at_n2035_scaled.value",
     "printed": "1.15"
    },
    {
@@ -10426,17 +10427,19 @@
     "printed": "1.66"
    },
    {
-    "artifact_value": 1.7003,
+    "artifact_value": 1.79,
+    "explanation": "RESULTS prints the planned-n (2,260) half-width under an \"n = 2,035\" label; at n = 2,035 the figure is the scaled value here (the PLAN's Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.",
     "markdown": "main-run-2026-11/RESULTS.md (private)",
-    "match": true,
-    "pointer": "noise_run.settings.b.half_width_at_planned_n",
+    "match": false,
+    "pointer": "noise_run.settings.b.half_width_at_n2035_scaled.value",
     "printed": "1.70"
    },
    {
-    "artifact_value": 1.3359,
+    "artifact_value": 1.41,
+    "explanation": "RESULTS prints the planned-n (2,260) half-width under an \"n = 2,035\" label; at n = 2,035 the figure is the scaled value here (the PLAN's Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.",
     "markdown": "main-run-2026-11/RESULTS.md (private)",
-    "match": true,
-    "pointer": "noise_run.settings.c.half_width_at_planned_n",
+    "match": false,
+    "pointer": "noise_run.settings.c.half_width_at_n2035_scaled.value",
     "printed": "1.34"
    },
    {
@@ -11103,6 +11106,30 @@
     "printed": "-1.08"
    },
    {
+    "artifact_value": 1.22,
+    "explanation": "RESULTS prints the planned-n (2,260) half-width under an \"n = 2,035\" label; at n = 2,035 the figure is the scaled value here (the PLAN's Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.",
+    "markdown": "main-run-2026-11/RESULTS.md (private)",
+    "match": false,
+    "pointer": "noise_run.settings.a.half_width_at_n2035_scaled.value",
+    "printed": "1.15"
+   },
+   {
+    "artifact_value": 1.79,
+    "explanation": "RESULTS prints the planned-n (2,260) half-width under an \"n = 2,035\" label; at n = 2,035 the figure is the scaled value here (the PLAN's Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.",
+    "markdown": "main-run-2026-11/RESULTS.md (private)",
+    "match": false,
+    "pointer": "noise_run.settings.b.half_width_at_n2035_scaled.value",
+    "printed": "1.70"
+   },
+   {
+    "artifact_value": 1.41,
+    "explanation": "RESULTS prints the planned-n (2,260) half-width under an \"n = 2,035\" label; at n = 2,035 the figure is the scaled value here (the PLAN's Addendum B item 3 prints it correctly). Setting (d) is right as printed: its noise.json has planned_n 2,035.",
+    "markdown": "main-run-2026-11/RESULTS.md (private)",
+    "match": false,
+    "pointer": "noise_run.settings.c.half_width_at_n2035_scaled.value",
+    "printed": "1.34"
+   },
+   {
     "artifact_value": 0.67,
     "explanation": "POSTHOC's C1 prose prints 0.68; rerank_spread.json and POSTHOC's own C2 table give 0.67. The prose figure is a transcription error.",
     "markdown": "docs/plans/results/oa-chunking-eval-2026-10/POSTHOC-HYPOTHESES-2026-11-06.md (C1 prose)",
@@ -11112,7 +11139,7 @@
    }
   ],
   "n_checked": 341,
-  "n_mismatch": 3
+  "n_mismatch": 6
  },
  "metric": "hit@5: the top-5 chunks from the gold article cover >= 90% of the gold quote's characters; points = percentage points",
  "noise_run": {
@@ -11258,14 +11285,14 @@
  },
  "provenance": {
   "citable": true,
-  "commit": "bd6b8c0917c69c1e834c058b9ea8b7da08862979",
-  "describe": "v1.6.26-81-gbd6b8c09",
+  "commit": "f1cbbabd92e4e5aa83501e6a819ebadfea9c07ce",
+  "describe": "v1.6.26-83-gf1cbbabd",
   "dirty": false,
   "image": null,
   "in_image": false,
   "installed_distribution": null,
   "python": "3.12.13",
-  "recorded_at": "2026-11-12T03:43:25Z",
+  "recorded_at": "2026-11-12T03:52:51Z",
   "schema": 1,
   "segmentation": [
    {
@@ -11283,7 +11310,7 @@
   ],
   "source": "git",
   "untracked": 0,
-  "version": "v1.6.26+bd6b8c09",
+  "version": "v1.6.26+f1cbbabd",
   "warnings": [
    "not in an image"
   ]
@@ -11397,7 +11424,8 @@
      "n": 2035,
      "sensitivity_hit@5": 76.7024,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "confirmatory"
     },
     "ft512o0": {
      "ctx_tokens@5": 2299.94,
@@ -11411,7 +11439,8 @@
      "n": 2035,
      "sensitivity_hit@5": 77.1734,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "confirmatory"
     },
     "ft512o64": {
      "ctx_tokens@5": 2315.78,
@@ -11425,7 +11454,8 @@
      "n": 2035,
      "sensitivity_hit@5": 79.2719,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "confirmatory"
     },
     "ft512o64s": {
      "ctx_tokens@5": 1999.52,
@@ -11439,7 +11469,8 @@
      "n": 2035,
      "sensitivity_hit@5": 82.3126,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "addendum-C"
     },
     "sem512": {
      "ctx_tokens@5": 1761.89,
@@ -11453,7 +11484,8 @@
      "n": 2035,
      "sensitivity_hit@5": 78.9722,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "confirmatory"
     },
     "sempool512": {
      "ctx_tokens@5": 1842.63,
@@ -11467,7 +11499,8 @@
      "n": 2035,
      "sensitivity_hit@5": 80.1285,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "confirmatory"
     },
     "sent512": {
      "ctx_tokens@5": 2181.85,
@@ -11481,7 +11514,8 @@
      "n": 2035,
      "sensitivity_hit@5": 80.2141,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "main-run-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "confirmatory"
     },
     "sent512rc": {
      "ctx_tokens@5": 1920.22,
@@ -11495,7 +11529,8 @@
      "n": 2035,
      "sensitivity_hit@5": 81.3276,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "addendum-C"
     },
     "sent512s": {
      "ctx_tokens@5": 1906.3,
@@ -11509,7 +11544,8 @@
      "n": 2035,
      "sensitivity_hit@5": 82.0557,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "addendum-C"
     },
     "sent512sh": {
      "ctx_tokens@5": 1908.06,
@@ -11523,7 +11559,8 @@
      "n": 2035,
      "sensitivity_hit@5": 81.8844,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json"
+     "source": "sections-2026-11/settings/a-hybrid-rerank/score.json",
+     "status": "addendum-C"
     }
    },
    "bootstrap": {
@@ -11532,7 +11569,8 @@
    },
    "context_tokens_estimated": "chars/4",
    "label": "hybrid (BM25 + dense, RRF) + cross-encoder reranker over the top 50; production; PRIMARY decision",
-   "status": "confirmatory"
+   "status": "per arm (arms.<arm>.status)",
+   "status_note": "settings a-d: the six main-run arms are confirmatory (frozen rule); the four section arms are addendum-C. Settings e-f are post hoc: every arm is exploratory."
   },
   "b": {
    "arms": {
@@ -11548,7 +11586,8 @@
      "n": 2035,
      "sensitivity_hit@5": 44.8822,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/b-vector/score.json"
+     "source": "main-run-2026-11/settings/b-vector/score.json",
+     "status": "confirmatory"
     },
     "ft512o0": {
      "ctx_tokens@5": 1879.93,
@@ -11562,7 +11601,8 @@
      "n": 2035,
      "sensitivity_hit@5": 50.2784,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/b-vector/score.json"
+     "source": "main-run-2026-11/settings/b-vector/score.json",
+     "status": "confirmatory"
     },
     "ft512o64": {
      "ctx_tokens@5": 1919.96,
@@ -11576,7 +11616,8 @@
      "n": 2035,
      "sensitivity_hit@5": 49.0792,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/b-vector/score.json"
+     "source": "main-run-2026-11/settings/b-vector/score.json",
+     "status": "confirmatory"
     },
     "ft512o64s": {
      "ctx_tokens@5": 1548.63,
@@ -11590,7 +11631,8 @@
      "n": 2035,
      "sensitivity_hit@5": 57.4304,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/b-vector/score.json"
+     "source": "sections-2026-11/settings/b-vector/score.json",
+     "status": "addendum-C"
     },
     "sem512": {
      "ctx_tokens@5": 1441.76,
@@ -11604,7 +11646,8 @@
      "n": 2035,
      "sensitivity_hit@5": 57.0878,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/b-vector/score.json"
+     "source": "main-run-2026-11/settings/b-vector/score.json",
+     "status": "confirmatory"
     },
     "sempool512": {
      "ctx_tokens@5": 1512.33,
@@ -11618,7 +11661,8 @@
      "n": 2035,
      "sensitivity_hit@5": 57.1734,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/b-vector/score.json"
+     "source": "main-run-2026-11/settings/b-vector/score.json",
+     "status": "confirmatory"
     },
     "sent512": {
      "ctx_tokens@5": 1882.11,
@@ -11632,7 +11676,8 @@
      "n": 2035,
      "sensitivity_hit@5": 53.1906,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/b-vector/score.json"
+     "source": "main-run-2026-11/settings/b-vector/score.json",
+     "status": "confirmatory"
     },
     "sent512rc": {
      "ctx_tokens@5": 1455.0,
@@ -11646,7 +11691,8 @@
      "n": 2035,
      "sensitivity_hit@5": 54.5182,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/b-vector/score.json"
+     "source": "sections-2026-11/settings/b-vector/score.json",
+     "status": "addendum-C"
     },
     "sent512s": {
      "ctx_tokens@5": 1528.16,
@@ -11660,7 +11706,8 @@
      "n": 2035,
      "sensitivity_hit@5": 59.1435,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/b-vector/score.json"
+     "source": "sections-2026-11/settings/b-vector/score.json",
+     "status": "addendum-C"
     },
     "sent512sh": {
      "ctx_tokens@5": 1519.42,
@@ -11674,7 +11721,8 @@
      "n": 2035,
      "sensitivity_hit@5": 59.743,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/b-vector/score.json"
+     "source": "sections-2026-11/settings/b-vector/score.json",
+     "status": "addendum-C"
     }
    },
    "bootstrap": {
@@ -11683,7 +11731,8 @@
    },
    "context_tokens_estimated": "chars/4",
    "label": "dense vector only, no reranker; secondary report",
-   "status": "confirmatory"
+   "status": "per arm (arms.<arm>.status)",
+   "status_note": "settings a-d: the six main-run arms are confirmatory (frozen rule); the four section arms are addendum-C. Settings e-f are post hoc: every arm is exploratory."
   },
   "c": {
    "arms": {
@@ -11699,7 +11748,8 @@
      "n": 2035,
      "sensitivity_hit@5": 58.2013,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/c-bm25/score.json"
+     "source": "main-run-2026-11/settings/c-bm25/score.json",
+     "status": "confirmatory"
     },
     "ft512o0": {
      "ctx_tokens@5": 2255.05,
@@ -11713,7 +11763,8 @@
      "n": 2035,
      "sensitivity_hit@5": 53.3619,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/c-bm25/score.json"
+     "source": "main-run-2026-11/settings/c-bm25/score.json",
+     "status": "confirmatory"
     },
     "ft512o64": {
      "ctx_tokens@5": 2269.21,
@@ -11727,7 +11778,8 @@
      "n": 2035,
      "sensitivity_hit@5": 55.1606,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/c-bm25/score.json"
+     "source": "main-run-2026-11/settings/c-bm25/score.json",
+     "status": "confirmatory"
     },
     "ft512o64s": {
      "ctx_tokens@5": 1915.49,
@@ -11741,7 +11793,8 @@
      "n": 2035,
      "sensitivity_hit@5": 55.0321,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/c-bm25/score.json"
+     "source": "sections-2026-11/settings/c-bm25/score.json",
+     "status": "addendum-C"
     },
     "sem512": {
      "ctx_tokens@5": 1730.47,
@@ -11755,7 +11808,8 @@
      "n": 2035,
      "sensitivity_hit@5": 48.4797,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/c-bm25/score.json"
+     "source": "main-run-2026-11/settings/c-bm25/score.json",
+     "status": "confirmatory"
     },
     "sempool512": {
      "ctx_tokens@5": 1784.75,
@@ -11769,7 +11823,8 @@
      "n": 2035,
      "sensitivity_hit@5": 51.4775,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/c-bm25/score.json"
+     "source": "main-run-2026-11/settings/c-bm25/score.json",
+     "status": "confirmatory"
     },
     "sent512": {
      "ctx_tokens@5": 2127.01,
@@ -11783,7 +11838,8 @@
      "n": 2035,
      "sensitivity_hit@5": 54.1756,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/c-bm25/score.json"
+     "source": "main-run-2026-11/settings/c-bm25/score.json",
+     "status": "confirmatory"
     },
     "sent512rc": {
      "ctx_tokens@5": 1833.77,
@@ -11797,7 +11853,8 @@
      "n": 2035,
      "sensitivity_hit@5": 53.8758,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/c-bm25/score.json"
+     "source": "sections-2026-11/settings/c-bm25/score.json",
+     "status": "addendum-C"
     },
     "sent512s": {
      "ctx_tokens@5": 1823.83,
@@ -11811,7 +11868,8 @@
      "n": 2035,
      "sensitivity_hit@5": 54.818,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/c-bm25/score.json"
+     "source": "sections-2026-11/settings/c-bm25/score.json",
+     "status": "addendum-C"
     },
     "sent512sh": {
      "ctx_tokens@5": 1823.83,
@@ -11825,7 +11883,8 @@
      "n": 2035,
      "sensitivity_hit@5": 54.818,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/c-bm25/score.json"
+     "source": "sections-2026-11/settings/c-bm25/score.json",
+     "status": "addendum-C"
     }
    },
    "bootstrap": {
@@ -11834,7 +11893,8 @@
    },
    "context_tokens_estimated": "chars/4",
    "label": "BM25 only, no reranker; secondary report",
-   "status": "confirmatory"
+   "status": "per arm (arms.<arm>.status)",
+   "status_note": "settings a-d: the six main-run arms are confirmatory (frozen rule); the four section arms are addendum-C. Settings e-f are post hoc: every arm is exploratory."
   },
   "d": {
    "arms": {
@@ -11850,7 +11910,8 @@
      "n": 2035,
      "sensitivity_hit@5": 62.1413,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json"
+     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json",
+     "status": "confirmatory"
     },
     "ft512o0": {
      "ctx_tokens@5": 2073.31,
@@ -11864,7 +11925,8 @@
      "n": 2035,
      "sensitivity_hit@5": 60.0857,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json"
+     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json",
+     "status": "confirmatory"
     },
     "ft512o64": {
      "ctx_tokens@5": 2103.56,
@@ -11878,7 +11940,8 @@
      "n": 2035,
      "sensitivity_hit@5": 61.4561,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json"
+     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json",
+     "status": "confirmatory"
     },
     "ft512o64s": {
      "ctx_tokens@5": 1745.19,
@@ -11892,7 +11955,8 @@
      "n": 2035,
      "sensitivity_hit@5": 65.7388,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/d-hybrid/score.json"
+     "source": "sections-2026-11/settings/d-hybrid/score.json",
+     "status": "addendum-C"
     },
     "sem512": {
      "ctx_tokens@5": 1583.12,
@@ -11906,7 +11970,8 @@
      "n": 2035,
      "sensitivity_hit@5": 62.3983,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json"
+     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json",
+     "status": "confirmatory"
     },
     "sempool512": {
      "ctx_tokens@5": 1651.61,
@@ -11920,7 +11985,8 @@
      "n": 2035,
      "sensitivity_hit@5": 64.4968,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json"
+     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json",
+     "status": "confirmatory"
     },
     "sent512": {
      "ctx_tokens@5": 2005.24,
@@ -11934,7 +12000,8 @@
      "n": 2035,
      "sensitivity_hit@5": 64.0685,
      "sensitivity_n": 2335,
-     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json"
+     "source": "main-run-2026-11/settings/d-hybrid-norerank/score.json",
+     "status": "confirmatory"
     },
     "sent512rc": {
      "ctx_tokens@5": 1664.74,
@@ -11948,7 +12015,8 @@
      "n": 2035,
      "sensitivity_hit@5": 64.1542,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/d-hybrid/score.json"
+     "source": "sections-2026-11/settings/d-hybrid/score.json",
+     "status": "addendum-C"
     },
     "sent512s": {
      "ctx_tokens@5": 1685.77,
@@ -11962,7 +12030,8 @@
      "n": 2035,
      "sensitivity_hit@5": 66.5953,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/d-hybrid/score.json"
+     "source": "sections-2026-11/settings/d-hybrid/score.json",
+     "status": "addendum-C"
     },
     "sent512sh": {
      "ctx_tokens@5": 1688.59,
@@ -11976,7 +12045,8 @@
      "n": 2035,
      "sensitivity_hit@5": 67.4518,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/d-hybrid/score.json"
+     "source": "sections-2026-11/settings/d-hybrid/score.json",
+     "status": "addendum-C"
     }
    },
    "bootstrap": {
@@ -11985,7 +12055,8 @@
    },
    "context_tokens_estimated": "chars/4",
    "label": "hybrid (BM25 + dense, RRF), no reranker; secondary report (Amendment B.1, before retrieval)",
-   "status": "confirmatory"
+   "status": "per arm (arms.<arm>.status)",
+   "status_note": "settings a-d: the six main-run arms are confirmatory (frozen rule); the four section arms are addendum-C. Settings e-f are post hoc: every arm is exploratory."
   },
   "e": {
    "arms": {
@@ -12001,7 +12072,8 @@
      "n": 2035,
      "sensitivity_hit@5": 66.8094,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "ft512o0": {
      "ctx_tokens@5": 2233.38,
@@ -12015,7 +12087,8 @@
      "n": 2035,
      "sensitivity_hit@5": 70.0642,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "ft512o64": {
      "ctx_tokens@5": 2258.28,
@@ -12029,7 +12102,8 @@
      "n": 2035,
      "sensitivity_hit@5": 71.1777,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "ft512o64s": {
      "ctx_tokens@5": 1920.12,
@@ -12043,7 +12117,8 @@
      "n": 2035,
      "sensitivity_hit@5": 76.06,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "sem512": {
      "ctx_tokens@5": 1696.9,
@@ -12057,7 +12132,8 @@
      "n": 2035,
      "sensitivity_hit@5": 74.8608,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "sempool512": {
      "ctx_tokens@5": 1778.97,
@@ -12071,7 +12147,8 @@
      "n": 2035,
      "sensitivity_hit@5": 75.0749,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "sent512": {
      "ctx_tokens@5": 2131.5,
@@ -12085,7 +12162,8 @@
      "n": 2035,
      "sensitivity_hit@5": 74.4325,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "sent512rc": {
      "ctx_tokens@5": 1836.75,
@@ -12099,7 +12177,8 @@
      "n": 2035,
      "sensitivity_hit@5": 74.9465,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "sent512s": {
      "ctx_tokens@5": 1831.64,
@@ -12113,7 +12192,8 @@
      "n": 2035,
      "sensitivity_hit@5": 76.788,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     },
     "sent512sh": {
      "ctx_tokens@5": 1839.39,
@@ -12127,7 +12207,8 @@
      "n": 2035,
      "sensitivity_hit@5": 77.1306,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-vector/score.json"
+     "source": "sections-2026-11/settings/rr-vector/score.json",
+     "status": "exploratory"
     }
    },
    "bootstrap": {
@@ -12136,7 +12217,8 @@
    },
    "context_tokens_estimated": "chars/4",
    "label": "dense vector only + reranker; post hoc (hypothesis C2), server v1.6.25",
-   "status": "exploratory"
+   "status": "per arm (arms.<arm>.status)",
+   "status_note": "settings a-d: the six main-run arms are confirmatory (frozen rule); the four section arms are addendum-C. Settings e-f are post hoc: every arm is exploratory."
   },
   "f": {
    "arms": {
@@ -12152,7 +12234,8 @@
      "n": 2035,
      "sensitivity_hit@5": 73.4047,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "ft512o0": {
      "ctx_tokens@5": 2334.06,
@@ -12166,7 +12249,8 @@
      "n": 2035,
      "sensitivity_hit@5": 69.6788,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "ft512o64": {
      "ctx_tokens@5": 2339.34,
@@ -12180,7 +12264,8 @@
      "n": 2035,
      "sensitivity_hit@5": 72.0771,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "ft512o64s": {
      "ctx_tokens@5": 2044.21,
@@ -12194,7 +12279,8 @@
      "n": 2035,
      "sensitivity_hit@5": 72.848,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "sem512": {
      "ctx_tokens@5": 1811.76,
@@ -12208,7 +12294,8 @@
      "n": 2035,
      "sensitivity_hit@5": 68.6938,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "sempool512": {
      "ctx_tokens@5": 1888.43,
@@ -12222,7 +12309,8 @@
      "n": 2035,
      "sensitivity_hit@5": 70.7066,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "sent512": {
      "ctx_tokens@5": 2207.33,
@@ -12236,7 +12324,8 @@
      "n": 2035,
      "sensitivity_hit@5": 71.9914,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "sent512rc": {
      "ctx_tokens@5": 1970.54,
@@ -12250,7 +12339,8 @@
      "n": 2035,
      "sensitivity_hit@5": 71.9914,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "sent512s": {
      "ctx_tokens@5": 1947.27,
@@ -12264,7 +12354,8 @@
      "n": 2035,
      "sensitivity_hit@5": 73.0621,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     },
     "sent512sh": {
      "ctx_tokens@5": 1947.27,
@@ -12278,7 +12369,8 @@
      "n": 2035,
      "sensitivity_hit@5": 73.0621,
      "sensitivity_n": 2335,
-     "source": "sections-2026-11/settings/rr-bm25/score.json"
+     "source": "sections-2026-11/settings/rr-bm25/score.json",
+     "status": "exploratory"
     }
    },
    "bootstrap": {
@@ -12287,7 +12379,8 @@
    },
    "context_tokens_estimated": "chars/4",
    "label": "BM25 only + reranker; post hoc (hypothesis C2), server v1.6.25",
-   "status": "exploratory"
+   "status": "per arm (arms.<arm>.status)",
+   "status_note": "settings a-d: the six main-run arms are confirmatory (frozen rule); the four section arms are addendum-C. Settings e-f are post hoc: every arm is exploratory."
   }
  },
  "settings_legend": {
