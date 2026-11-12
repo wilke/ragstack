@@ -126,7 +126,7 @@ is tested here against the committed record, and the thesis is restated afterwar
 **Revised thesis.** Chunking full-length scientific articles should be decided at the passage level,
 because at top-1 a document-level metric cannot see which chunk was retrieved, and at matched realised
 chunk length and delivered context, because an unmatched comparison can mix size with method: in the
-production setting most of the sentence-chunk section gain is reproduced by count-matched random cuts,
+production setting the sentence-chunk section gain is not separated from count-matched random cuts,
 while under vector-only most of it is position. On 22,593 PMC articles and 2,035 short single-section
 quotes under hybrid retrieval with a cross-encoder reranker, a 512/64 window cut at section boundaries
 beats the unsectioned window by +3.49 hit@5 points [+2.11, +4.86]; on the sentence arm, the only one with
@@ -318,7 +318,9 @@ but not the pre-registered X_P of 0.05 (`rescore-overlap-512-unresolved`, `resco
 Never read either as a null.
 
 **5.4 What chunking does to hit@5 on 22,593 articles.** Judge-free, n = 2,035, half-width 1.22 points in
-the production setting, where the server default reaches 79.02 % (`oa-hit5-setting-a-baseline`).
+the production setting, where the server default reaches 79.02 % (`oa-hit5-setting-a-baseline`). Its section,
+random-cut, overlap, semantic and C1/C2 figures are `MARKDOWN-ONLY`; a committed JSON aggregate is a precondition
+for drafting this section.
 - *Section cuts* (four contrasts pre-specified in the private Addendum C after the six-arm run, Holm; the
   paper labels them so): +3.49 [+2.11, +4.86] on the fixed window (`oa-sections-ft-setting-a`,
   re-measured by the head-to-head's drift gate), +2.51 on sentence chunks (`oa-sections-sent-setting-a`);
@@ -510,13 +512,13 @@ access for the judge tiebreak, and the two-reader human read this record lacks.
   that touches the draft.
 - Read the `note` field before writing the sentence. Three note tags change what may be said:
   `JUDGE-DEPENDENT` (the validity flag goes in the sentence), `MARKDOWN-ONLY` (the number has no committed
-  JSON; the defect is fixed before the sentence is drafted, or the sentence says the record is a
-  Markdown aggregate), `SECONDARY` / `EXPLORATORY` (labelled in the sentence, not the caption).
+  JSON; the defect is fixed before the sentence is drafted; for §5.2, §5.4 and the thesis there is no
+  Markdown-aggregate exception), `SECONDARY` / `EXPLORATORY` (labelled in the sentence, not the caption).
 - No status, no dates, no roadmap; those live in the lab book.
 - Absent is not passed. Subgroup n for the OA eval's section-type cells is *absent*; the semantic arms'
   realised chunk size is *absent*.
 - Powered nulls and unresolved contrasts are never merged: the BM25 section contrast, the production size
-  contrast, the random-cut contrast under the reranker, the h2h superiority and the Leg A overlap are
+  contrast, the random-cut contrast in the production setting, the h2h superiority and the Leg A overlap are
   unresolved; none is a null.
 - A tie decided by cost order is reported as a tie, with the other order's decision beside it.
 - Name the tokenizer for every token count; h2h ctx@5 is chars/4 and says so.
