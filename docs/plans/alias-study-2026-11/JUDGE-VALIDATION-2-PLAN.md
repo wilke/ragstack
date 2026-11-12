@@ -1214,6 +1214,29 @@ What this settles:
 
 The plan is not frozen; it freezes only on the owner's word "freeze".
 
+
+### Amendment 6 (2026-11-12): owner answers to Q5 and the raters
+
+Owner decision, recorded verbatim (rater identifiers replaced by their study ids; the mapping is held in
+the private study record):
+
+> 1. They don't count and the budget is a warning limit not a hard stop
+> 2. RA1=[owner], RA2=[rater], RA3=[rater], RA4=[rater], RA5=[rater]
+
+What this settles:
+
+- **Q5 answered:** C's and E's model-gateway calls are outside the 20,000 figure.
+- **The 20,000 figure is a warning limit, not a hard stop.** §10's totals and the pre-specified drop order
+  stay as written, but they become what the operator does *at* the warning: when a projected total would
+  pass 20,000, the operator stops before the candidate calls, reports the projection and the drop order's
+  proposed cuts to the owner, and proceeds as the owner directs, recording the choice as a deviation. No
+  cut is made silently, and none is made automatically.
+- **Raters (Q1):** R = 5, study ids RA1 (the owner, r1) to RA5. Block assignment uses the study ids.
+- **Not yet frozen.** The freeze commit (§11 step 4) records the outputs of §11 steps 2–3: the `/3` system
+  and model-gateway client code, the owner-labelled self-check cases, the 5-run canary selection on every
+  model-gateway judge, the hosted fingerprint sets, and the re-read and confirmed pinned fingerprints.
+  None of these exists yet, so the plan freezes after they do, on the owner's word.
+
 ---
 
 # Appendix: DRAFT v1 (2026-11-04), superseded by v2 above
