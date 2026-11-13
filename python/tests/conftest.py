@@ -58,6 +58,19 @@ touch a real database by default again:
 - ``RAGSTACK_TEST_PG_DSN`` must still name a SCRATCH server/database you own
   — the schema isolation here is defence in depth, not a substitute for
   pointing this at something other than shared/production infra.
+- A second line of defence refuses (``pytest.fail``, not skip — the opt-in is
+  *claimed*, and it names a database no test may touch) a DSN whose database
+  is a deployment's. The rule, exactly: the effective database name (the URL
+  path; else a ``dbname``/``database`` query key; else ``PGDATABASE``; else the
+  user name, which is what libpq and asyncpg fall back to) is compared,
+  case-insensitively and whole-name, against ``_PG_DENY_BUILTIN`` plus the
+  comma-separated ``RAGSTACK_TEST_PG_DENY``. A match fails. Nothing else is
+  inferred: ``ragstack_test`` passes because it is not on the list, not
+  because it contains "test". The built-in list cannot know per-tenant
+  databases — ``apptainer/new-tenant.sh --postgres`` names each after its
+  tenant — so a host that has those exports them in ``RAGSTACK_TEST_PG_DENY``.
+  The refusal names the database and a password-redacted DSN, never the
+  password.
 """
 from __future__ import annotations
 
@@ -87,6 +100,16 @@ os.environ["DOI_ENRICHMENT_ENABLED"] = "false"
 # too. Tests of the durable path monkeypatch it back on; the shipped default is
 # asserted against ``Settings.model_fields`` (tests/unit/test_deps.py).
 os.environ["REQUIRE_DURABLE_BACKENDS"] = "false"
+
+# ``postgres_dsn`` defaults to ``postgresql+asyncpg://ragstack:ragstack@localhost/ragstack``
+# — verbatim the DSN that migrated a production ``jobs`` table in #369. Child
+# processes are pinned off it by ``tests/pinned_env_support.py``; this pins the
+# pytest process itself, so an in-process ``settings`` with a postgres backend
+# (an ambient ``JOB_STORE_BACKEND=postgres``, a future test that forgets its
+# DSN) reaches a dead port instead of the shared instance. Unconditional, so an
+# exported deployment ``POSTGRES_DSN`` is overridden too. The only sanctioned
+# Postgres a test may open is ``pg_test_dsn`` below.
+os.environ["POSTGRES_DSN"] = "postgresql+asyncpg://ragstack:ragstack@127.0.0.1:1/ragstack"
 
 #: The tree under test:``python/``, the directory holding ``ragstack/`` and
 #: ``tests/``. Resolved, so worktrees and symlinked checkouts compare equal.
@@ -185,6 +208,94 @@ def _doi_enrichment_off(monkeypatch):
         monkeypatch.setattr(settings, "doi_enrichment_enabled", False)
 
 
+#: Database names a deployment uses, which ``pg_test_dsn`` refuses outright:
+#: ``ragstack`` is ``POSTGRES_DB`` in ``deploy/docker-compose.infra.yml`` and
+#: ``apptainer/up.sh`` and the database in ``config.py``'s ``postgres_dsn``
+#: default — the one #369's migration landed in; ``postgres`` is the server's
+#: maintenance database (and ``new-tenant.sh``'s example admin DSN); the
+#: templates are cloned into every new database. Per-tenant databases are named
+#: after the tenant and so cannot be listed here — see ``RAGSTACK_TEST_PG_DENY``.
+_PG_DENY_BUILTIN = frozenset({"ragstack", "postgres", "template0", "template1"})
+
+
+def _redact_dsn(dsn: str) -> str:
+    """``dsn`` with any password replaced by ``***`` — safe to print."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(dsn)
+    except ValueError:
+        return "<unparseable DSN>"
+    userinfo, at, hostinfo = parts.netloc.rpartition("@")
+    if at and ":" in userinfo:
+        userinfo = userinfo.split(":", 1)[0] + ":***"
+    netloc = f"{userinfo}{at}{hostinfo}"
+    pairs = []
+    for kv in filter(None, parts.query.split("&")):
+        key = kv.split("=", 1)[0]
+        pairs.append(f"{key}=***" if key.lower() == "password" else kv)
+    query = "&".join(pairs)
+    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+
+
+def _pg_effective_database(dsn: str, env) -> str:
+    """The database a connection from ``dsn`` would open, resolved the way
+    asyncpg does: URL path, else ``dbname``/``database`` query key, else
+    ``PGDATABASE``, else the user (URL, then ``PGUSER``, then the OS user)."""
+    import getpass
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    parts = urlsplit(dsn)
+    name = unquote(parts.path.lstrip("/"))
+    if not name:
+        query = parse_qs(parts.query)
+        name = (query.get("dbname") or query.get("database") or [""])[0]
+    if not name:
+        name = env.get("PGDATABASE", "")
+    if not name:
+        userinfo, at, _ = parts.netloc.rpartition("@")
+        name = unquote(userinfo.split(":", 1)[0]) if at else ""
+    if not name:
+        name = env.get("PGUSER", "") or getpass.getuser()
+    return name
+
+
+def _pg_test_dsn_problem(dsn: str, env) -> str | None:
+    """Why ``dsn`` must not be used as ``RAGSTACK_TEST_PG_DSN``, or ``None``.
+
+    Pure — opens no connection — so ``tests/unit/test_pg_test_dsn_guard.py``
+    exercises it with fake DSNs. See the module docstring for the rule.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        scheme = urlsplit(dsn).scheme.lower()
+    except ValueError:
+        scheme = ""
+    if scheme not in {"postgres", "postgresql"}:
+        # Not echoed at all: a key=value DSN has no URL shape to redact.
+        return (
+            "RAGSTACK_TEST_PG_DSN is not a postgresql:// URL; the deployment-database "
+            "guard cannot read its database name, so it refuses."
+        )
+    redacted = _redact_dsn(dsn)
+    database = _pg_effective_database(dsn, env)
+    extra = {
+        n.strip().lower() for n in env.get("RAGSTACK_TEST_PG_DENY", "").split(",") if n.strip()
+    }
+    denied = _PG_DENY_BUILTIN | extra
+    if database.lower() in denied:
+        source = "built-in" if database.lower() in _PG_DENY_BUILTIN else "RAGSTACK_TEST_PG_DENY"
+        return (
+            f"RAGSTACK_TEST_PG_DSN names database {database!r} ({redacted}), which is "
+            f"on the {source} denylist of deployment databases (#369). Postgres tests "
+            "create and drop schemas there. Point RAGSTACK_TEST_PG_DSN at a scratch "
+            "database whose name is not on the list, e.g. 'ragstack_test'. Denied: "
+            f"{', '.join(sorted(denied))}."
+        )
+    return None
+
+
 @pytest_asyncio.fixture
 async def pg_test_dsn():
     """Yield a Postgres DSN scoped to a fresh, per-test throwaway schema.
@@ -195,6 +306,9 @@ async def pg_test_dsn():
     base_dsn = os.environ.get("RAGSTACK_TEST_PG_DSN")
     if not base_dsn:
         pytest.skip("set RAGSTACK_TEST_PG_DSN to a SCRATCH database to run Postgres tests")
+    problem = _pg_test_dsn_problem(base_dsn, os.environ)
+    if problem is not None:
+        pytest.fail(problem, pytrace=False)
 
     asyncpg = pytest.importorskip("asyncpg")
 

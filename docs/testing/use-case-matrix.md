@@ -212,8 +212,29 @@ precondition that is claimed but false *fails*, loudly, naming both sides:
 | import-origin guard: `ragstack.__file__` must be under the rootdir, else `pytest.UsageError` naming both paths (escape hatch `RAGSTACK_TEST_ALLOW_FOREIGN_IMPORT=1` warns) | `python/tests/conftest.py` |
 | meta-tests proving the guard fails *loudly* — subprocess, exit code **and** message text | `python/tests/unit/test_harness_guard.py` |
 | ES is opt-in via `RAGSTACK_TEST_ES_URL`; unset skips, and the old `TEST_ES_URL` name is not honoured so a stale export cannot re-arm it | `python/tests/integration/test_elasticsearch.py` |
+| Postgres is opt-in via `RAGSTACK_TEST_PG_DSN` (old `TEST_PG_DSN` inert); unset skips, a DSN naming a deployment database (`ragstack`, `postgres`, the templates, plus `RAGSTACK_TEST_PG_DENY`) *fails*, and each test runs in a throwaway schema | `pg_test_dsn` in `python/tests/conftest.py`; `python/tests/unit/test_pg_test_dsn_guard.py` |
 | dead-port environment for every child process that can reach a `config.py` URL default | `python/tests/pinned_env_support.py` |
 | `PYTHONPATH` pin, pre-boot import-origin assertion, and dead-port pins for the self-booted conformance servers | `conformance/boot_env.sh` |
+
+**Running the Postgres tests.** Point `RAGSTACK_TEST_PG_DSN` at a scratch
+server and a database you created for the purpose, and run from `python/`:
+
+```bash
+RAGSTACK_TEST_PG_DSN=postgresql://USER:PASS@HOST:PORT/ragstack_test \
+  pytest -q $(grep -rl pg_test_dsn tests/unit tests/integration)
+```
+
+(The Postgres tests are exactly those that take the `pg_test_dsn` fixture; the
+whole suite with the variable set runs them too.)
+
+The database name is checked, case-insensitively and as a whole name, against
+the built-in denylist (`ragstack`, `postgres`, `template0`, `template1`) and
+the comma-separated `RAGSTACK_TEST_PG_DENY`; a match fails the test before any
+connection. Per-tenant databases are named after their tenant, so a host that
+has any lists them in `RAGSTACK_TEST_PG_DENY`. The guard is a second line of
+defence — the server should still be one you own. CI's integration job points
+it at its own `postgres:16` service (`ragstack_test`). The older store tests
+gated on `RAGSTACK_TEST_POSTGRES_DSN` do not go through this fixture.
 
 Residual, deliberately: the guard covers pytest-mediated runs only — `python
 scripts/…` outside `python/` can still import the wrong tree, which is why the

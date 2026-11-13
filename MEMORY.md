@@ -120,7 +120,7 @@ Every one of these was a live-store default that fired unattended (#363, #369, #
 | variable | gates | renamed from |
 |---|---|---|
 | `RAGSTACK_TEST_ES_URL` | `python/tests/integration/test_elasticsearch.py` — creates and deletes indices on the **cluster** it names; the old default was the production ES holding the open-access index | `TEST_ES_URL` (#432) |
-| `RAGSTACK_TEST_PG_DSN` | `pg_test_dsn` in `python/tests/conftest.py` | `TEST_PG_DSN` (#369) |
+| `RAGSTACK_TEST_PG_DSN` | `pg_test_dsn` in `python/tests/conftest.py` — and it *fails* on a DSN whose database is `ragstack`/`postgres`/a template or listed in `RAGSTACK_TEST_PG_DENY` (add per-tenant database names there); CI points it at its own service's `ragstack_test` | `TEST_PG_DSN` (#369) |
 | `RAGSTACK_TEST_POSTGRES_DSN` | the Postgres store tests — a second, coexisting name; both skip on unset so both are safe, but they are worth unifying | — |
 
 Tests that hand work to a child process build the child's environment from `python/tests/pinned_env_support.py`, which pins every store and model URL to `127.0.0.1:1`. A child otherwise inherits `ragstack.config`'s defaults, and on this host those name live services — a scratch run once reached the real cross-encoder sidecar on `:50052`. The conformance runner scripts pin the same set (plus `PYTHONPATH`) via `conformance/boot_env.sh` — enforced by `test_the_conformance_runners_pin_the_same_set_as_the_python_tests`, which *runs* the shell function and compares, because the two files drifted the first time a comment was all that held them together.
