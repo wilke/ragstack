@@ -129,7 +129,7 @@ from ragstack.provenance import add_provenance_arguments, provenance_from_args
 from ragstack.stores.backpressure import BackpressuredVectorStore
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
-from ragstack.stores.qdrant import QdrantVectorStore
+from ragstack.stores.qdrant import UPSERT_MAX_BYTES_DEFAULT, QdrantVectorStore
 
 
 # Placeholder embedder/chunker: the load stage never embeds or chunks. A stub
@@ -193,7 +193,8 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         vstore = QdrantVectorStore(url=target.qdrant_url, collection=target.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout,
                                    upsert_batch_size=args.upsert_batch_size,
-                                   upsert_concurrency=args.upsert_concurrency)
+                                   upsert_concurrency=args.upsert_concurrency,
+                                   upsert_max_bytes=args.upsert_max_bytes)
         await vstore.ensure_collection()
         if args.backpressure:
             # #141: hold each upsert until the collection is green, so a bulk load
@@ -528,6 +529,11 @@ def parse_args(argv=None):
     p.add_argument("--qdrant-timeout", type=int, default=120)
     p.add_argument("--upsert-batch-size", type=int, default=256,
                    help="points per Qdrant upsert request (bounds payload size)")
+    p.add_argument("--upsert-max-bytes", type=int, default=UPSERT_MAX_BYTES_DEFAULT,
+                   help="estimated-bytes cap per Qdrant upsert request (#177); a "
+                        "batch closes early rather than exceed it, so a few "
+                        "metadata-heavy chunks cannot push a request over Qdrant's "
+                        "max_request_size_mb (32 MiB default). Default 28 MiB")
     p.add_argument("--upsert-concurrency", type=int, default=4,
                    help="concurrent upsert batches (pipelines the load; default 4). "
                         "1 = serial, safest under a capped/optimizing collection")

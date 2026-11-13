@@ -211,6 +211,7 @@ def _build_vector_store():
             timeout=settings.qdrant_timeout,
             upsert_batch_size=settings.qdrant_upsert_batch_size,
             upsert_concurrency=settings.qdrant_upsert_concurrency,
+            upsert_max_bytes=settings.qdrant_upsert_max_bytes,
             postmortem_probe=settings.qdrant_postmortem_probe,
         )
 
