@@ -208,17 +208,25 @@ Another reason not to reach for it.
 the serial run with both enabled is stable and materially faster than the
 unflagged path. Only file concurrency is held back.
 
-### Stopping a load: use SIGINT, never SIGTERM
+### Stopping a load: SIGINT or one SIGTERM, never SIGKILL
 
-`bulk_refresh` parks the text index's refresh interval and restores it in a
-`finally`. **`finally` does not run on SIGTERM**, so a `kill` (or `pkill`) leaves
-the index with `refresh_interval: -1` — it silently stops refreshing, and every
-count-based check reads stale from then on.
+`bulk_refresh` parks the text index's refresh interval and restores it on the
+way out. Since #341 that restore runs on **SIGINT and on SIGTERM** (a plain
+`kill <pid>`, a container or supervisor teardown, an engine cancellation): while
+the interval is parked, the loader catches the first SIGTERM, cancels the load,
+restores the interval, forces one refresh, prints `refresh_interval restored`
+and exits **143**. Before #341 a SIGTERM skipped the restore and left the index
+at `refresh_interval: -1`, silently not refreshing, with every count-based check
+reading stale from then on.
 
-Use `kill -INT` so the restore runs. If a load was killed any other way, or
-crashed, set it back by hand and force one refresh before trusting any count.
-Verify with the index settings endpoint; the value should read as the default,
-not `-1`.
+Send the signal **once**, to the recorded pid, and wait. A **second** SIGTERM,
+like SIGKILL (`kill -9`) or a crash, kills the process without restoring — the
+escape hatch for a restore that hangs. If that happens, or the restore request
+itself failed (the loader logs `FAILED to restore refresh_interval`), set it
+back by hand and force one refresh before trusting any count. The loader's
+`refresh_interval parked (was …)` line records the value to restore. Verify
+with the index settings endpoint; the value should read as the default (or that
+recorded value), not `-1`.
 
 `no_delete_prior` deserves the emphasis. It is safe precisely when chunk ids
 cannot have moved — the load reads ids *from* the embedding file rather than
