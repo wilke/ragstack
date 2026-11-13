@@ -35,15 +35,21 @@ collection is dropped in a ``finally:`` block unless ``--keep`` is passed;
 
 Examples
 --------
+Both URLs are REQUIRED, with no default (#454): the conventional
+``localhost:6333`` is the PRODUCTION Qdrant on the deployment host, and this
+script creates (and drops) a collection on ``--target-url``.
+
   # tiny smoke run
-  python scripts/bench_filter_truncation.py --points 2000 --queries 2
+  python scripts/bench_filter_truncation.py --source-url <QDRANT_URL> \
+      --target-url <SCRATCH_QDRANT_URL> --points 2000 --queries 2
 
   # the real sweep
-  python scripts/bench_filter_truncation.py --points 200000 \
-      --json-out /tmp/g2.json
+  python scripts/bench_filter_truncation.py --source-url <QDRANT_URL> \
+      --target-url <SCRATCH_QDRANT_URL> --points 200000 --json-out /tmp/g2.json
 
-  # emergency broom
-  python scripts/bench_filter_truncation.py --cleanup-only
+  # emergency broom (reads nothing, so needs no --source-url)
+  python scripts/bench_filter_truncation.py --target-url <SCRATCH_QDRANT_URL> \
+      --cleanup-only
 """
 from __future__ import annotations
 
@@ -743,11 +749,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--source-url", default="http://localhost:6333",
-                   help="Qdrant to READ real vectors from (never written to).")
-    p.add_argument("--target-url", default=None,
-                   help="Qdrant to create the g2bench_* scratch collection on "
-                        "(default: --source-url).")
+    p.add_argument("--source-url", default="",
+                   help="Qdrant to READ real vectors from (never written to). "
+                        "REQUIRED unless --cleanup-only, no default (#454): the "
+                        "conventional localhost:6333 is the PRODUCTION instance "
+                        "on the deployment host.")
+    p.add_argument("--target-url", required=True,
+                   help="Qdrant to create the g2bench_* scratch collection on. "
+                        "REQUIRED, no default and no fallback to --source-url "
+                        "(#454): this is a write path, and the conventional "
+                        "localhost:6333 is the PRODUCTION instance on the "
+                        "deployment host. Pass the source URL again to reuse it.")
     p.add_argument("--api-key", default=None)
     p.add_argument("--prefer-grpc", action="store_true", default=True,
                    help="Use gRPC (default on; 4096-d over REST JSON is slow).")
@@ -812,7 +824,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    help="DEBUG ONLY: do not drop the scratch collection at the end.")
     p.add_argument("--cleanup-only", action="store_true",
                    help=f"Drop every {SCRATCH_PREFIX}* collection and exit.")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if not args.cleanup_only and not args.source_url:
+        p.error("--source-url is required (unless --cleanup-only): there is no "
+                "default, because the conventional localhost:6333 is the "
+                "PRODUCTION Qdrant on the deployment host (#454).")
+    return args
 
 
 def make_client(url: str, args: argparse.Namespace) -> QdrantClient:
@@ -835,7 +852,7 @@ def _csv_floats(s: str) -> list[float]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    target_url = args.target_url or args.source_url
+    target_url = args.target_url
     scratch = guard_scratch(f"{SCRATCH_PREFIX}{args.collection_suffix}")
 
     target = make_client(target_url, args)

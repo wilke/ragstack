@@ -45,8 +45,8 @@ Two things pick the path:
 chunks (a JSON array of documents, each with its `chunks`) into **Qdrant only**. It
 resolves its target through the registry (`ingest_target.resolve_or_exit`) and runs
 `validate_chunks`. It does not do DOI enrichment, boilerplate handling, the chunk cap,
-or Elasticsearch. Like D, its `--qdrant-url` still defaults to `http://localhost:6333`
-(#454).
+or Elasticsearch. Like D, it refuses to run without an explicit Qdrant URL — a
+route, `--qdrant-url`, or an explicitly configured `QDRANT_URL` (#454).
 
 ---
 
@@ -251,8 +251,11 @@ python scripts/ingest_shard.py shard.jsonl \
   the flag, or an *explicitly configured* `QDRANT_URL` / `ELASTICSEARCH_URL`. It is
   never the code default, because localhost is production on `coconut`.
   `ingest_shard.py` makes `--qdrant-url` / `--es-url` required arguments.
-  `ingest_jsonl.py` and `ingest_chunks.py` **do not** check. They still default to
-  `localhost` (#454, open).
+  `ingest_jsonl.py` and `ingest_chunks.py` call `require_store_urls` too (#454) —
+  `ingest_jsonl.py` asks for the text leg only with `--text-backend elasticsearch`,
+  `ingest_chunks.py` (Qdrant only) never. The two registry-less scripts,
+  `backfill_es_from_qdrant.py` and `bench_filter_truncation.py`, make their URL
+  flags required arguments.
 
 Wired to the registry: `ingest_jsonl.py`, `ingest_shard.py`, `ingest_chunks.py`,
 `load_embeddings.py`, `load_graph.py`. Depth:
@@ -945,8 +948,8 @@ What does **not** work today, or works differently from what you might assume:
   archive).
 - **`ingest_jsonl.py` is retired on paper only.** ADR-0006 (Proposed) retires it, but
   the script carries no deprecation notice. It does not use the shared pipeline. It
-  does no DOI lookup and has no chunk cap. Its `--qdrant-url` / `--es-url` default to
-  localhost, which is production on `coconut` (#454).
+  does no DOI lookup and has no chunk cap. Its `--qdrant-url` / `--es-url` no longer
+  default to localhost (production on `coconut`); they are required per leg (#454).
 - **Eval harnesses still mint unclaimed stores.** `scripts/eval/*` call
   `ensure_collection()` with a name of their own choosing (`chunkcmp_*`,
   `oa_smoke_*`). They are deliberately throwaway, so forcing each comparison arm

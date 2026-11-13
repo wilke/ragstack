@@ -39,8 +39,8 @@ For an existing deployment rather than one you stand up, start at the
 > On a laptop with nothing else running, the standard ports are fine. On a
 > shared host, they are not — pick ports you own, and check with
 > `ss -ltn` before you bind. The same applies to any `python/scripts/` CLI:
-> pass `--qdrant-url` / `--es-url` explicitly, never rely on their defaults
-> (#454).
+> pass `--qdrant-url` / `--es-url` explicitly. The write scripts have no
+> default and refuse to run without one (#454).
 
 ## 0. Prerequisites
 

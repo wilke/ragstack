@@ -21,7 +21,7 @@ three; for those three a plain `git checkout` + restart is sufficient (no config
 |---|---|
 | **#422 PR-4 (W12–W14)** | `NOT STARTED`. |
 | **#415 W4–W10** | `NOT STARTED`. A wedged job row still has no self-service recovery — no cancel endpoint, and the admin exemption cannot work on the gowe path (it needs a BV-BRC bearer). |
-| **#454** | `OPEN`. Five write-path CLI scripts still default their store URLs to production. |
+| **#454** | `CLOSED` by the PR that fixes it: every write-path CLI script now requires its store URLs (`ingest_shard.py` #470, `load_embeddings.py` #636, the remaining four in #454). Read-only `search.py` still defaults. |
 
 **Shipped in `v1.5.2` and live on all four tenants:** #452 (the P2 conformance persona), #447 and
 #453 (the documents read paths and the writable-set ingest picker).

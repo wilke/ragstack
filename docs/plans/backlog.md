@@ -14,7 +14,7 @@ evidence base for anything else.
 
 | # | What | Status |
 |---|---|---|
-| **#454** | Seven `python/scripts/` CLIs default `--qdrant-url`/`--es-url` to `:6333`/`:9200` — production on this host. **Five are write paths.** #407 set the no-default-on-a-write-target principle for the CWL half; the CLI half was never swept | `OPEN` — the live one |
+| **#454** | Seven `python/scripts/` CLIs default `--qdrant-url`/`--es-url` to `:6333`/`:9200` — production on this host. **Five are write paths.** #407 set the no-default-on-a-write-target principle for the CWL half; the CLI half was never swept | `CLOSED` — every write-path CLI now requires its store URLs; read-only `search.py` still defaults |
 | #392 | `build_collection_entry` constructs a real Qdrant store for every configured spec, with no `vector_backend` branch. Rediscovered as #451 (closed as duplicate); #444's dead-port pinning hides the symptom without fixing it | `OPEN` |
 | #369 | The Postgres test DSN defaults to the shared instance backing a production job store | `OPEN` |
 | #432 | `pytest` imported **production code** unless `PYTHONPATH` was pinned, and the ES integration test defaulted to the **production cluster** | `CLOSED` by #444 (guard + opt-in `RAGSTACK_TEST_ES_URL`) and #452 |

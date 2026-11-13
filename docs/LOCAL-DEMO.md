@@ -99,8 +99,8 @@ cd ..
 
 ```bash
 docker compose -f deploy/docker-compose.local.yml up -d --build embedding-sidecar
-# --qdrant-url is NOT optional here: it defaults to :6333, which is PRODUCTION on the
-# deployment host, and this writes (#454).
+# --qdrant-url is required (no default, #454): the conventional :6333 is PRODUCTION
+# on the deployment host, and this writes. Point it at a Qdrant you started.
 cd python && .venv/bin/python scripts/ingest_jsonl.py ../.localdata/scifact_ingest.jsonl \
   --qdrant-url "${SCRATCH_QDRANT:?set it — see the warning at the top}" \
   --tenant public --embedding-api sidecar --embedding-url http://localhost:50053 \
@@ -118,7 +118,7 @@ ssh -N -L 9001:localhost:9001 -L 9002:localhost:9002 \
        -L 9003:localhost:9003 -L 9004:localhost:9004 USER@your-gpu-host
 # verify: curl http://localhost:9001/v1/models
 
-# Same hazard as 3A: --qdrant-url defaults to :6333 = PRODUCTION here (#454), and
+# Same rule as 3A: --qdrant-url is required, because :6333 = PRODUCTION here (#454), and
 # this path builds the SFR-Mistral-4096 collection whose name can collide with a
 # production corpus on the same spec — see the warning at the top.
 cd python && .venv/bin/python scripts/ingest_jsonl.py ../.localdata/scifact_ingest.jsonl \
@@ -140,7 +140,8 @@ The ingest above wrote vectors to Qdrant. BM25 only needs the text, so backfill 
 Qdrant (no second embedding pass). Use the collection name the ingester printed:
 
 ```bash
-# Both URLs default to production (:6333 / :9200) and this writes an index (#454).
+# Both URLs are required (no default, #454): :6333 / :9200 are production on the
+# deployment host, and this writes an index.
 cd python && .venv/bin/python scripts/backfill_es_from_qdrant.py \
   --qdrant-url "${SCRATCH_QDRANT:?}" --es-url "${SCRATCH_ES:?}" \
   --collection ragstack_salesforce_sfr_embedding_mistral_4096_<hash> && cd ..
