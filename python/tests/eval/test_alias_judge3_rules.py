@@ -207,7 +207,7 @@ def test_rater_sheet_rubric_and_examples_equal_the_prompt(tmp_path: Path) -> Non
 
 # ------------------------------------------------------------------ (d) the committed self-check draft
 
-#: the owner's labels, set 2026-11-13 -- a change to any committed label must fail here
+#: the owner's labels, set 2026-11-13 (UTC) -- a change to any committed label must fail here
 OWNER_LABELS = {
     "full_all_items_listed": "full", "full_boundary_overnight": "full",
     "full_condition_met_by_definitions": "full", "full_condition_met_by_title": "full",

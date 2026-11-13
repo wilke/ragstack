@@ -17,7 +17,7 @@ a paper. One dict per case:
   and :func:`require_owner_labels` refuses to run a self-check, a canary selection or a canary while any
   case's label is empty.
 
-The 23 cases below are the 2026-11-12 draft. The owner set every ``expected_label`` on 2026-11-13.
+The 23 cases below are the 2026-11-12 draft. The owner set every ``expected_label`` on 2026-11-13 (UTC).
 Case names record the drafting intent, not the label: ``partial_vague_magnitude_for_fold`` is labelled
 ``none`` (the passage gives only a qualitative statement, no number). The owner marked three cases as
 borderline: ``none_condition_contradicted_by_title`` (a transfer of the property is suggested by the
