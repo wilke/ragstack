@@ -150,6 +150,18 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         # A zero/negative poll would busy-loop get_collection at full request rate
         # while the collection is not green — throttle, don't hammer.
         raise SystemExit("--backpressure-poll must be > 0")
+    # Replay does its own per-version delete-prior (a document's chunks may
+    # span two upsert batches, and index_chunks' per-batch delete would remove
+    # the first batch's rows) — see run_replay.
+    replay = bool(getattr(args, "replay", None))
+    # The graph leg rides along ONLY for replay (#380): a tombstone version
+    # must drop its documents' triples too, scoped to THIS collection — the
+    # stamp `collection=` is what keeps `delete_by_doc` from crossing into
+    # another collection's copy of the same doc id (#209). The load path
+    # deliberately gets none: it never wrote triples, so it has none to drop.
+    # Built FIRST, so a missing graph URI is refused before any store is
+    # opened or created (#454).
+    graph_store = _graph_store_for_replay() if replay and target is not None else None
     if args.vector_backend == "memory":
         vstore = InMemoryVectorStore()
         tindex = InMemoryTextIndex()
@@ -211,16 +223,6 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         tindex = ElasticsearchTextIndex(url=es_url, index=es_index,
                                         refresh_on_write=not args.bulk_refresh)
         await tindex.ensure_index()
-    # Replay does its own per-version delete-prior (a document's chunks may
-    # span two upsert batches, and index_chunks' per-batch delete would remove
-    # the first batch's rows) — see run_replay.
-    replay = bool(getattr(args, "replay", None))
-    # The graph leg rides along ONLY for replay (#380): a tombstone version
-    # must drop its documents' triples too, scoped to THIS collection — the
-    # stamp `collection=` is what keeps `delete_by_doc` from crossing into
-    # another collection's copy of the same doc id (#209). The load path
-    # deliberately gets none: it never wrote triples, so it has none to drop.
-    graph_store = _graph_store_for_replay() if replay and target is not None else None
     return IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(),
                              embedder=_NoEmbed(), vector_store=vstore, text_index=tindex,
                              graph_store=graph_store,
@@ -229,19 +231,30 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
                              delete_prior=not (args.no_delete_prior or replay))
 
 
-def _graph_store_for_replay():
+def _graph_store_for_replay(settings=None):
     """The durable graph backend the API writes triples to, built from the
     same settings (``GRAPH_BACKEND`` / ``NEO4J_*``) — or ``None``. Only
     ``neo4j`` counts: an in-memory graph is process-local, so a worker's copy
     would hold nothing to delete. Constructed directly rather than through
-    ``api.deps`` so the worker stays free of the FastAPI app."""
-    from ragstack.config import settings
+    ``api.deps`` so the worker stays free of the FastAPI app.
+
+    ``NEO4J_URI`` must be explicitly configured and non-empty (#454): its code
+    default, ``bolt://localhost:7687``, is the PRODUCTION graph on the
+    deployment host, and replay deletes triples. Otherwise: exit 2."""
+    if settings is None:
+        from ragstack.config import settings
 
     if settings.graph_backend != "neo4j":
         return None
+    uri = (getattr(settings, "neo4j_uri", "") or "").strip()
+    if not (uri and ingest_target.configured_explicitly(settings, "neo4j_uri")):
+        _refuse("NEO4J_URI is required with GRAPH_BACKEND=neo4j: it is not configured "
+                "(or is empty), and replay writes the graph leg — there is no "
+                "default, because the conventional bolt://localhost:7687 is the "
+                "PRODUCTION graph on the deployment host (#454).")
     from ragstack.stores.neo4j import Neo4jGraphStore
 
-    return Neo4jGraphStore(uri=settings.neo4j_uri, user=settings.neo4j_user,
+    return Neo4jGraphStore(uri=uri, user=settings.neo4j_user,
                            password=settings.neo4j_password,
                            database=settings.neo4j_database or None)
 

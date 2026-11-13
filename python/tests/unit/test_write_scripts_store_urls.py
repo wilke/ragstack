@@ -362,3 +362,77 @@ def test_graph_extract_cwl_still_requires_and_binds_the_uri():
     tool_in = load["run"]["inputs"]["neo4j_uri"]
     assert tool_in["type"] == "string" and "default" not in tool_in
     assert tool_in["inputBinding"]["prefix"] == "--neo4j-uri"
+
+
+# --------------------------------------------------------------------------- #
+# load_embeddings.py --replay — the graph leg (GRAPH_BACKEND=neo4j)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def replay_graph(monkeypatch):
+    """``load_embeddings`` with a fake ``ragstack.stores.neo4j`` that records
+    the URI it would connect to, so nothing needs the driver or a server."""
+    mod = _load("load_embeddings", monkeypatch)
+    built: list[str] = []
+
+    class FakeNeo4j:
+        def __init__(self, *, uri, **_kw):
+            built.append(uri)
+
+    monkeypatch.setitem(sys.modules, "ragstack.stores.neo4j",
+                        SimpleNamespace(Neo4jGraphStore=FakeNeo4j))
+    return mod, built
+
+
+def _neo4j_settings(explicit=(), **over):
+    base = {"graph_backend": "neo4j", "neo4j_uri": "bolt://localhost:7687",
+            "neo4j_user": "u", "neo4j_password": "p", "neo4j_database": "",
+            "model_fields_set": set(explicit)}
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize("settings", [
+    _neo4j_settings(),  # the code default: localhost = production
+    _neo4j_settings(explicit={"neo4j_uri"}, neo4j_uri=""),  # NEO4J_URI= exported
+    _neo4j_settings(explicit={"neo4j_uri"}, neo4j_uri="  "),
+], ids=["unconfigured", "empty", "blank"])
+def test_replay_graph_refuses_an_unconfigured_neo4j_uri(replay_graph, capsys, settings):
+    mod, built = replay_graph
+    with pytest.raises(SystemExit) as e:
+        mod._graph_store_for_replay(settings)
+    assert e.value.code == 2 and built == []
+    err = capsys.readouterr().err
+    assert "NEO4J_URI is required" in err and "PRODUCTION" in err and "#454" in err
+
+
+def test_replay_graph_uses_an_explicitly_configured_uri(replay_graph):
+    mod, built = replay_graph
+    mod._graph_store_for_replay(_neo4j_settings(explicit={"neo4j_uri"}, neo4j_uri=BOLT_DEAD))
+    assert built == [BOLT_DEAD]
+
+
+def test_replay_graph_other_backends_need_no_uri(replay_graph):
+    mod, built = replay_graph
+    assert mod._graph_store_for_replay(_neo4j_settings(graph_backend="memory")) is None
+    assert built == []
+
+
+def test_replay_graph_refusal_comes_before_any_store_is_opened(replay_graph, monkeypatch):
+    """The refusal is the FIRST thing ``_build_pipeline`` does on a replay, so
+    no Qdrant/ES store is constructed (let alone created) first."""
+    import asyncio
+
+    import ragstack.config
+
+    mod, built = replay_graph
+    monkeypatch.setattr(ragstack.config, "settings", _neo4j_settings())
+    opened: list[str] = []
+    monkeypatch.setattr(mod, "QdrantVectorStore", lambda *a, **k: opened.append("qdrant"))
+    monkeypatch.setattr(mod, "ElasticsearchTextIndex", lambda *a, **k: opened.append("es"))
+    args = SimpleNamespace(vector_backend="qdrant", text_backend="elasticsearch",
+                           backpressure=False, backpressure_poll=2.0, replay=["v1"])
+    with pytest.raises(SystemExit) as e:
+        asyncio.run(mod._build_pipeline(args, target=SimpleNamespace(collection="store_a")))
+    assert e.value.code == 2 and opened == [] and built == []
