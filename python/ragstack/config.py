@@ -1284,10 +1284,11 @@ class Settings(BaseSettings):
     # to this package (a source checkout); set it explicitly in a container.
     collection_restore_cwl: str = ""
     collection_restore_workflow_name: str = "ragstack-restore-collection"
-    # Extra/overriding static inputs for the restore workflow as a JSON object
-    # — typically `qdrant_url` / `es_url` AS SEEN FROM THE WORKER, when those
-    # differ from this API's own `qdrant_url` / `elasticsearch_url` (the
-    # defaults). The worker group comes from `gowe_worker_group`.
+    # Extra static inputs for the restore workflow as a JSON object (other
+    # worker-side knobs, e.g. `backpressure`). It may NOT set `qdrant_url` /
+    # `es_url`: those are resolved per collection through the store routes,
+    # as for ingest, and the API refuses to boot if this names either (#442).
+    # The worker group comes from `gowe_worker_group`.
     collection_restore_inputs_json: str = "{}"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

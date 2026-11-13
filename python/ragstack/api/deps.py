@@ -2006,6 +2006,18 @@ def _validate_production_settings() -> None:
             )
 
 
+def _restore_store_urls(rec: Any) -> dict[str, str]:
+    """Where a restore of ``rec`` writes, on both legs (#442): the instances the
+    API itself reads that collection from. Keyed exactly as the ingest path
+    keys them (``documents._gowe_inputs``) — the physical Qdrant collection and
+    the physical ES index, never the registry id. Reads ``settings`` at call
+    time, so a route is honoured as configured when the restore is submitted."""
+    return {
+        "qdrant_url": _qdrant_url_for(rec.spec.collection),
+        "es_url": _es_url_for(rec.spec.es_index()),
+    }
+
+
 def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> LifecycleGate:
     """The collection lifecycle gate (#358): registry-state enforcement on the
     resolution path, the batched last-accessed tracker, and the restorer.
@@ -2015,12 +2027,13 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     per call (no server identity, no token retained — the #203 ingest shape),
     and the owner's version directories listed through the Workspace client
     with the same token.
-    Extra static workflow inputs (worker-side store URLs) come from
-    ``collection_restore_inputs_json``.
+    The store URLs are resolved per record (:func:`_restore_store_urls`,
+    #442); other extra static workflow inputs come from
+    ``collection_restore_inputs_json``, which may not set the store URLs.
     """
     from ragstack.collection_store import AccessTracker
     from ragstack.ingestion.gowe_client import GoWeClient
-    from ragstack.restore import CollectionRestorer
+    from ragstack.restore import STORE_URL_INPUTS, CollectionRestorer
     from ragstack.workspace import WorkspaceClient
 
     try:
@@ -2030,21 +2043,24 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     except ValueError as e:
         log.warning("collection_restore_inputs_json is invalid (%s); ignoring", e)
         extra = {}
-    # Deployment-wide defaults, not per-collection targets: this gate is built
-    # once at startup, before any record exists, and `inputs_for` adds only the
-    # record's identity. So NEITHER leg is routed here — `qdrant_url` has never
-    # honoured `qdrant_collection_routes` on this path and `es_url` does not
-    # honour `es_collection_routes` either. Restoring a ROUTED collection
-    # therefore still aims the worker at the default instances; fixing it means
-    # resolving the URLs from the record inside `CollectionRestorer.inputs_for`,
-    # for both legs at once, and is deliberately left out of the ES-routing
-    # change rather than fixed for one leg only. `COLLECTION_RESTORE_INPUTS_JSON`
-    # is the operator override in the meantime (it wins the merge below).
-    static_inputs: dict[str, Any] = {
-        "qdrant_url": settings.qdrant_url,
-        "es_url": settings.elasticsearch_url,
-        **extra,
-    }
+    # #442: the store targets are per COLLECTION, not per deployment. They are
+    # resolved for each record inside `CollectionRestorer.inputs_for` through
+    # the same `store_routing` functions the ingest path uses (so
+    # `qdrant_collection_routes` / `es_collection_routes` are honoured on both
+    # legs) and applied over these static inputs. A blob key could therefore
+    # never steer a write — refuse it at boot rather than leave inert config an
+    # operator believes is live (the GOWE_WORKFLOW_INPUTS_JSON rule, #407).
+    reserved = sorted(k for k in STORE_URL_INPUTS if k in extra)
+    if reserved:
+        raise ValueError(
+            f"collection_restore_inputs_json may not set {', '.join(reserved)}: restore "
+            "store targets are resolved per collection from the QDRANT_URL / "
+            "ELASTICSEARCH_URL settings (and QDRANT_COLLECTION_ROUTES / "
+            "ES_COLLECTION_ROUTES), exactly as for ingest. Remove them from "
+            "COLLECTION_RESTORE_INPUTS_JSON; the blob remains for other worker-side "
+            "inputs."
+        )
+    static_inputs: dict[str, Any] = dict(extra)
     # Which registry the replay resolves `collection_id` against (#563). Same
     # reasoning as the ingest path: a NAME, never coordinates, and only when
     # this deployment has adopted the convention.
@@ -2068,6 +2084,7 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
         cwl_path=settings.collection_restore_cwl,
         workflow_name=settings.collection_restore_workflow_name,
         static_inputs=static_inputs,
+        store_urls=_restore_store_urls,
         worker_group=settings.gowe_worker_group,
         poll_interval=settings.collection_restore_poll_interval,
         timeout=settings.collection_restore_timeout,

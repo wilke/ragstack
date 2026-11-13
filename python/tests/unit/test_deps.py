@@ -632,3 +632,99 @@ def test_no_submission_path_seeds_a_registry_credential(
     blob = json.dumps(static_inputs_for(monkeypatch), default=str)
     assert "hackathon" in blob
     assert "hunter2" not in blob and dsn not in blob
+
+
+# --------------------------------------------------------------------------- #
+# #442 — restore resolves the store targets per collection, like ingest does
+# --------------------------------------------------------------------------- #
+# The restore gate is built once at startup, so it used to seed the bare
+# QDRANT_URL / ELASTICSEARCH_URL for every restore: a ROUTED collection was
+# replayed into a second copy on the default instances while the API kept
+# reading the (stale) routed one. These mirror the routed-ingest tests in
+# tests/api/test_ingest_gowe_path.py, one level down: the inputs object the
+# restorer would submit for a given record.
+
+_R_QDRANT = "http://qdrant-default.invalid:1"
+_R_ES = "http://es-default.invalid:1"
+_R_QDRANT_ROUTED = "http://qdrant-routed.invalid:1"
+_R_ES_ROUTED = "http://es-routed.invalid:1"
+_VERSIONS = [(1, "ws:///u/home/.ragstack/collections/lib1/versions/1")]
+
+
+def _restore_record():
+    from ragstack.collection_store import CollectionRecord, CollectionSpec
+
+    # Distinct id / collection / text_index, so each leg's key is pinned: the
+    # vector route keys on the physical collection, the text route on the
+    # physical index — never the registry id.
+    return CollectionRecord(
+        spec=CollectionSpec(id="lib1", owner="u", collection="lib1_phys",
+                            text_index="lib1_text", embedding_model_dim=4),
+        spec_hash="abcd1234",
+    )
+
+
+def _restore_inputs(monkeypatch, *, blob="", qroutes=None, eroutes=None):
+    import httpx
+
+    from ragstack.collection_store import InMemoryCollectionStore
+
+    monkeypatch.setattr(deps.settings, "qdrant_url", _R_QDRANT)
+    monkeypatch.setattr(deps.settings, "elasticsearch_url", _R_ES)
+    monkeypatch.setattr(deps.settings, "qdrant_collection_routes", qroutes or {})
+    monkeypatch.setattr(deps.settings, "es_collection_routes", eroutes or {})
+    monkeypatch.setattr(deps.settings, "collection_restore_inputs_json", blob)
+    http = httpx.AsyncClient(base_url="http://127.0.0.1:1")
+    gate = deps._build_lifecycle_gate(InMemoryCollectionStore(), http)
+    return gate.restorer.inputs_for(_restore_record(), _VERSIONS)
+
+
+def test_restore_of_an_unrouted_collection_uses_the_default_stores(monkeypatch):
+    inputs = _restore_inputs(monkeypatch)
+    assert inputs["qdrant_url"] == _R_QDRANT
+    assert inputs["es_url"] == _R_ES
+
+
+def test_restore_of_a_routed_collection_writes_to_its_routed_instances(monkeypatch):
+    """Both legs routed: the replay must land where the API reads the
+    collection (ADR-0002 — the physical store is the collection's identity)."""
+    inputs = _restore_inputs(monkeypatch,
+                             qroutes={"lib1_phys": _R_QDRANT_ROUTED},
+                             eroutes={"lib1_text": _R_ES_ROUTED})
+    assert inputs["qdrant_url"] == _R_QDRANT_ROUTED
+    assert inputs["es_url"] == _R_ES_ROUTED
+
+
+def test_restore_routes_each_leg_independently(monkeypatch):
+    """One leg routed, the other not; and a route keyed by the registry id (or
+    by the other leg's name) routes nothing."""
+    inputs = _restore_inputs(monkeypatch,
+                             qroutes={"lib1_phys": _R_QDRANT_ROUTED},
+                             eroutes={"lib1": _R_ES_ROUTED, "lib1_phys": _R_ES_ROUTED})
+    assert inputs["qdrant_url"] == _R_QDRANT_ROUTED
+    assert inputs["es_url"] == _R_ES
+    inputs = _restore_inputs(monkeypatch, eroutes={"lib1_text": _R_ES_ROUTED},
+                             qroutes={"lib1": _R_QDRANT_ROUTED})
+    assert inputs["qdrant_url"] == _R_QDRANT
+    assert inputs["es_url"] == _R_ES_ROUTED
+
+
+@pytest.mark.parametrize("key", ["qdrant_url", "es_url"])
+def test_the_restore_inputs_blob_may_not_set_store_urls(monkeypatch, key):
+    """The blob is deployment-wide; the store targets are per collection. A key
+    there would either redirect a routed collection (the old merge order) or be
+    silently inert (the new one), so it is refused at boot — the
+    GOWE_WORKFLOW_INPUTS_JSON rule (#407)."""
+    with pytest.raises(ValueError, match=key):
+        _restore_inputs(monkeypatch, blob=json.dumps({key: "http://elsewhere.invalid:1"}))
+
+
+def test_the_restore_inputs_blob_still_carries_other_worker_inputs(monkeypatch):
+    """Other keys keep working, but cannot displace the record's identity."""
+    inputs = _restore_inputs(
+        monkeypatch, qroutes={"lib1_phys": _R_QDRANT_ROUTED},
+        blob=json.dumps({"backpressure": True, "collection_id": "other",
+                         "spec_hash": "ffff"}))
+    assert inputs["backpressure"] is True
+    assert inputs["collection_id"] == "lib1" and inputs["spec_hash"] == "abcd1234"
+    assert inputs["qdrant_url"] == _R_QDRANT_ROUTED

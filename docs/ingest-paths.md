@@ -278,10 +278,11 @@ config:
   `store_routing.es_url_for(es_index, settings)` (keyed by the physical index,
   so `ES_COLLECTION_ROUTES` is honoured). One implementation per leg, because a
   second copy that forgot a routing table is exactly how a write lands on the
-  wrong instance. **The restore path does NOT route** — its gate is built once
-  at startup, before any record exists, so it seeds the bare `QDRANT_URL` /
-  `ELASTICSEARCH_URL` for both legs; `COLLECTION_RESTORE_INPUTS_JSON` is the
-  override until both are resolved per record.
+  wrong instance. **The restore path routes the same way** (#442):
+  `CollectionRestorer.inputs_for` resolves both URLs per record through the same
+  two functions (`deps._restore_store_urls`), keyed by the record's physical
+  collection and index, so a routed collection is replayed onto the instances
+  the API reads it from.
 - **The CWL inputs are REQUIRED, with no default.** `cwl/pdf-ingest-scatter.cwl`,
   `cwl/restore-collection.cwl` and `cwl/load-embeddings.cwl` all declare
   `qdrant_url` / `es_url` as `type: string` with the default deliberately
@@ -307,11 +308,21 @@ config:
   `ELASTICSEARCH_URL` instead — the step-by-step is
   [`docs/runbooks/upgrade-407-remove-gowe-store-urls.md`](runbooks/upgrade-407-remove-gowe-store-urls.md).
 
-The same reasoning applies to `collection_restore_inputs_json` in the restore
-table below, with one difference: that setting is **override-only, not required**
-(the API already seeds both keys), so it is not refused — it is merged *over* the
-seeded values, for the case where the worker reaches the stores at a different
-address than the API does.
+The same rule applies to `collection_restore_inputs_json` in the restore table
+below (#442): the per-record store URLs win over the blob, so a `qdrant_url` or
+`es_url` there would be inert, and the API refuses to boot with it:
+
+```
+collection_restore_inputs_json may not set qdrant_url, es_url: restore store
+targets are resolved per collection from the QDRANT_URL / ELASTICSEARCH_URL
+settings (and QDRANT_COLLECTION_ROUTES / ES_COLLECTION_ROUTES), exactly as for
+ingest.
+```
+
+Before #442 that blob was merged *over* the seeded values, so it could aim every
+restore — routed collections included — at one instance. A worker that reaches
+the stores at a different address than the API does is not supported on either
+path.
 
 ---
 
@@ -619,7 +630,7 @@ and the worker has a graph store (#350). The API-side settings, all at the end o
 | `collection_restore_poll_interval` | `5` | Seconds between submission polls. |
 | `collection_restore_cwl` | `""` | Absolute path to `restore-collection.cwl`; empty = the repo copy next to the package. |
 | `collection_restore_workflow_name` | `ragstack-restore-collection` | Name the workflow is registered under. |
-| `collection_restore_inputs_json` | `{}` | Extra/**overriding** static inputs. Not required: the API already seeds `qdrant_url` (= `QDRANT_URL`) and `es_url` (= `ELASTICSEARCH_URL`) into every restore submission (#407). Set them here **only** when the worker reaches those stores at a different address than the API does — the values here are merged over the seeded ones. Worker group comes from `gowe_worker_group`. |
+| `collection_restore_inputs_json` | `{}` | Extra static inputs for other worker-side knobs (e.g. `backpressure`). It may **not** set `qdrant_url` / `es_url`: the API resolves both per collection, honouring `QDRANT_COLLECTION_ROUTES` / `ES_COLLECTION_ROUTES` exactly as ingest does, and refuses to boot if the blob names either (#442). It cannot displace the record's identity (`collection_id`, `spec_hash`, `versions`) or `registry` either. Worker group comes from `gowe_worker_group`. |
 
 ---
 
