@@ -130,6 +130,22 @@ def test_env_configured_qdrant_url_is_honoured(script):
     assert target.qdrant_url == DEAD
 
 
+def test_an_empty_env_configured_qdrant_url_is_refused(script, capsys):
+    """``QDRANT_URL=`` exported is "set" to pydantic, but ``QdrantClient(url="")``
+    falls back to localhost — production. Empty is not a decision."""
+    _, run = script
+    rc, reached = run(_BUILD, settings=_settings(explicit={"qdrant_url"}, qdrant_url=""))
+    assert rc == 2 and reached is None
+    err = capsys.readouterr().err
+    assert "--qdrant-url is required" in err and "EMPTY" in err and "#454" in err
+
+
+def test_a_whitespace_flag_is_refused(script, capsys):
+    _, run = script
+    rc, reached = run([*_BUILD, "--qdrant-url", "  "], settings=_settings())
+    assert rc == 2 and reached is None
+
+
 def test_a_routed_collection_needs_no_flag(script):
     _, run = script
     rc, target = run(_BUILD, settings=_settings(qdrant_collection_routes={"store_a": DEAD}))
@@ -174,6 +190,14 @@ def test_jsonl_text_backend_env_configured_es_url_is_honoured(jsonl):
     rc, target = jsonl([*_BUILD, "--qdrant-url", DEAD, "--text-backend", "elasticsearch"],
                        settings=s)
     assert rc == 0 and target.es_url == DEAD
+
+
+def test_jsonl_text_backend_empty_env_es_url_is_refused(jsonl, capsys):
+    s = _settings(explicit={"elasticsearch_url"}, elasticsearch_url="")
+    rc, reached = jsonl([*_BUILD, "--qdrant-url", DEAD, "--text-backend", "elasticsearch"],
+                        settings=s)
+    assert rc == 2 and reached is None
+    assert "--es-url is required" in capsys.readouterr().err
 
 
 def test_jsonl_no_text_backend_needs_no_es_url(jsonl):
@@ -247,3 +271,94 @@ def test_bench_requires_source_url_unless_cleanup_only(bench, capsys):
     assert "--source-url is required" in err and "PRODUCTION" in err
     # the broom reads nothing, so it needs only the target
     assert bench.parse_args(["--target-url", DEAD, "--cleanup-only"]).target_url == DEAD
+
+
+# --------------------------------------------------------------------------- #
+# load_graph.py — the graph leg (NEO4J_URI defaults to bolt://localhost:7687)
+# --------------------------------------------------------------------------- #
+
+BOLT_DEAD = "bolt://127.0.0.1:1"
+
+
+def _graph_settings(explicit=(), **over):
+    base = {"graph_backend": "neo4j", "neo4j_uri": "bolt://localhost:7687",
+            "model_fields_set": set(explicit)}
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+@pytest.fixture
+def graph(monkeypatch, tmp_path):
+    """Drive ``load_graph.main``; ``_verify`` (the first thing after the URI
+    decision) is a spy that stops the run, so nothing is read or connected."""
+    mod = _load("load_graph", monkeypatch)
+    reached: list = []
+
+    def spy(args):
+        reached.append(args.neo4j_uri)
+        return None  # -> REFUSED_EXIT_CODE, before any store
+
+    monkeypatch.setattr(mod, "_verify", spy)
+
+    def _run(argv, *, settings):
+        try:
+            rc = mod.main(["--version-dir", str(tmp_path), *argv], settings=settings)
+        except SystemExit as e:
+            rc = e.code
+        return rc, (reached[0] if reached else None)
+
+    return mod, _run
+
+
+def test_graph_bare_run_exits_2_naming_neo4j_uri(graph, capsys):
+    _, run = graph
+    rc, reached = run([], settings=_graph_settings())
+    assert rc == 2 and reached is None
+    err = capsys.readouterr().err
+    assert "--neo4j-uri is required" in err and "PRODUCTION" in err
+
+
+def test_graph_explicit_flag_is_used(graph):
+    mod, run = graph
+    rc, reached = run(["--neo4j-uri", BOLT_DEAD], settings=_graph_settings())
+    assert rc == mod.REFUSED_EXIT_CODE and reached == BOLT_DEAD
+
+
+def test_graph_env_configured_uri_is_honoured(graph):
+    mod, run = graph
+    rc, reached = run([], settings=_graph_settings(explicit={"neo4j_uri"},
+                                                   neo4j_uri=BOLT_DEAD))
+    assert rc == mod.REFUSED_EXIT_CODE and reached == BOLT_DEAD
+
+
+def test_graph_empty_env_configured_uri_is_refused(graph):
+    _, run = graph
+    rc, reached = run([], settings=_graph_settings(explicit={"neo4j_uri"}, neo4j_uri=""))
+    assert rc == 2 and reached is None
+
+
+def test_graph_memory_backend_needs_no_uri(graph):
+    mod, run = graph
+    rc, _ = run(["--graph-backend", "memory"], settings=_graph_settings())
+    assert rc == mod.REFUSED_EXIT_CODE
+
+
+def test_graph_store_never_falls_back_to_the_setting(graph):
+    """Belt and braces: ``_build_store`` no longer reads ``settings.neo4j_uri``."""
+    mod, _ = graph
+    args = SimpleNamespace(graph_backend="neo4j", neo4j_uri="")
+    with pytest.raises(SystemExit):
+        mod._build_store(args, _graph_settings(explicit={"neo4j_uri"}))
+
+
+def test_graph_extract_cwl_still_requires_and_binds_the_uri():
+    yaml = pytest.importorskip("yaml")
+    wf = yaml.safe_load((SCRIPTS.parents[1] / "cwl" / "graph-extract.cwl")
+                        .read_text(encoding="utf-8"))
+    assert wf["inputs"]["neo4j_uri"]["type"] == "string"
+    assert "default" not in wf["inputs"]["neo4j_uri"]
+    load = wf["steps"]["load"]
+    assert load["in"]["neo4j_uri"] == "neo4j_uri"
+    tool_in = load["run"]["inputs"]["neo4j_uri"]
+    assert tool_in["type"] == "string" and "default" not in tool_in
+    assert tool_in["inputBinding"]["prefix"] == "--neo4j-uri"

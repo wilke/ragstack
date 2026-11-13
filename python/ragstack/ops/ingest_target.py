@@ -556,29 +556,45 @@ def require_store_urls(
     Per leg, the URL may come from — in the order :func:`_qdrant_url_for` and
     :func:`_es_url_for` already apply — the collection's ROUTE in the registry
     settings, the explicit flag, or the settings' URL **only if that setting
-    was explicitly configured** (:func:`configured_explicitly`). If none
-    applies, the resolver would have fallen through to ``localhost``, which on
+    was explicitly configured** (:func:`configured_explicitly`) — and in every
+    case the resolved URL must be non-empty: an exported but empty
+    ``QDRANT_URL=`` is "configured" to pydantic yet means localhost to the
+    client (#454). If none applies, the resolver would have fallen through to ``localhost``, which on
     the deployment host is production, so this raises instead of guessing.
 
     Call it with the same settings the target was resolved with (``None`` =
     the process settings, which is what ``resolve_or_exit`` uses by default)."""
     s = settings or _settings()
     missing: list[str] = []
-    for leg, wanted, override, name in (
-        ("vector", vector, qdrant_url, target.collection),
-        ("text", text, es_url, target.es_index),
+    for leg, wanted, override, name, resolved in (
+        ("vector", vector, qdrant_url, target.collection, target.qdrant_url),
+        ("text", text, es_url, target.es_index, target.es_url),
     ):
         if not wanted:
             continue
         flag, field, routes_field, env, what = _STORE_LEGS[leg]
         routes = getattr(s, routes_field, None) or {}
-        if name in routes or override or configured_explicitly(s, field):
+        decided = name in routes or override or configured_explicitly(s, field)
+        # An EMPTY value is not a decision: ``QDRANT_URL=`` exported is "set"
+        # to pydantic, and ``QdrantClient(url="")`` falls back to localhost —
+        # production on the deployment host (#454).
+        if decided and (resolved or "").strip():
+            continue
+        if decided:
+            missing.append(
+                f"{flag} is required: collection {target.collection_id!r} "
+                f"({name!r}) resolved to an EMPTY {what} URL (an empty {env} or "
+                f"route counts as unset), and an empty URL falls back to the "
+                f"conventional localhost one — the PRODUCTION store on the "
+                f"deployment host (#454, #636)."
+            )
             continue
         missing.append(
             f"{flag} is required: collection {target.collection_id!r} "
             f"({name!r}) is not routed and {env} is not configured, so pass the "
             f"{what} to write to — there is no default, because the conventional "
-            f"localhost one is the PRODUCTION store on the deployment host (#636)."
+            f"localhost one is the PRODUCTION store on the deployment host "
+            f"(#454, #636)."
         )
     if missing:
         raise TargetError("\n".join(missing))

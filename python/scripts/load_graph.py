@@ -13,7 +13,9 @@ refuses the whole load with exit 4 and nothing written. Otherwise the triples
 are upserted in batches (idempotent — both stores MERGE on the triple's key).
 
 Graph store: ``--graph-backend neo4j`` (the default) connects with
-``--neo4j-uri`` (default: the ``NEO4J_URI`` setting) and the ``NEO4J_USER`` /
+``--neo4j-uri`` — REQUIRED unless ``NEO4J_URI`` is explicitly configured (and
+non-empty); never the code default ``bolt://localhost:7687``, which is the
+PRODUCTION graph on the deployment host (#454) — and the ``NEO4J_USER`` /
 ``NEO4J_PASSWORD`` settings from the task's environment — credentials are
 never workflow inputs. ``memory`` is the process-local dev/test store; with it
 the collection name may be given directly (``--stamp-collection``) since there
@@ -21,7 +23,8 @@ is nothing durable to protect.
 
 Exit codes: 0 loaded; 3 the leg was refused (``ArchiveCorrupt:``, permanent);
 4 the budget (``graph_cap_exceeded: live=L incoming=I cap=C would_fit=W``);
-2 the registry could not resolve the collection; 1 a store failure mid-load.
+2 no graph store URI (neo4j backend), or the registry could not resolve the
+collection; 1 a store failure mid-load.
 
 Usage::
 
@@ -55,7 +58,10 @@ def parse_args(argv=None):
     p.add_argument("--graph-backend", choices=["neo4j", "memory"], default=None,
                    help="graph store (default: the GRAPH_BACKEND setting, else neo4j)")
     p.add_argument("--neo4j-uri", default="",
-                   help="bolt URI (default: the NEO4J_URI setting). User/password come from "
+                   help="bolt URI of the graph to WRITE to. NO default (#454): required "
+                        "with the neo4j backend unless NEO4J_URI is explicitly configured "
+                        "(and non-empty) — the code default bolt://localhost:7687 is the "
+                        "PRODUCTION graph on the deployment host. User/password come from "
                         "the NEO4J_USER / NEO4J_PASSWORD settings, never the command line")
     p.add_argument("--stamp-collection", default="",
                    help="memory backend only: the collection name to stamp (no registry)")
@@ -67,19 +73,45 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def _build_store(args):
-    from ragstack.config import settings
+def _backend(args, settings) -> str:
+    return args.graph_backend or (settings.graph_backend if settings.graph_backend in
+                                  ("neo4j", "memory") else "neo4j")
 
-    backend = args.graph_backend or (settings.graph_backend if settings.graph_backend in
-                                     ("neo4j", "memory") else "neo4j")
+
+def _require_neo4j_uri(args, settings) -> None:
+    """Decide the graph URI before anything is read or written (#454): the flag,
+    else ``NEO4J_URI`` ONLY IF explicitly configured — never the code default,
+    which is localhost and therefore the PRODUCTION graph on the deployment
+    host. An empty value is not a decision. Exit 2 otherwise."""
+    if _backend(args, settings) != "neo4j":
+        return
+    uri = (args.neo4j_uri or "").strip()
+    if not uri and ingest_target.configured_explicitly(settings, "neo4j_uri"):
+        uri = (getattr(settings, "neo4j_uri", "") or "").strip()
+    if not uri:
+        print("error: --neo4j-uri is required: NEO4J_URI is not configured (or is "
+              "empty), so pass the graph to write to — there is no default, because "
+              "the conventional bolt://localhost:7687 is the PRODUCTION graph on the "
+              "deployment host (#454).", file=sys.stderr, flush=True)
+        raise SystemExit(2)
+    args.neo4j_uri = uri
+
+
+def _build_store(args, settings=None):
+    if settings is None:
+        from ragstack.config import settings
+
+    backend = _backend(args, settings)
     if backend == "memory":
         from ragstack.stores.memory import InMemoryGraphStore
 
         return InMemoryGraphStore()
     from ragstack.stores.neo4j import Neo4jGraphStore  # lazy: the driver is optional
 
+    if not (args.neo4j_uri or "").strip():  # main() decided it; never fall back
+        raise SystemExit("load-graph: no --neo4j-uri (refusing localhost, #454)")
     return Neo4jGraphStore(
-        uri=args.neo4j_uri or settings.neo4j_uri, user=settings.neo4j_user,
+        uri=args.neo4j_uri, user=settings.neo4j_user,
         password=settings.neo4j_password, database=settings.neo4j_database or None,
     )
 
@@ -148,10 +180,13 @@ async def amain(args, manifest: dict, collection: str) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, settings=None) -> int:
     args = parse_args(argv)
     if args.batch < 1:
         raise SystemExit("--batch must be >= 1")
+    if settings is None:
+        from ragstack.config import settings
+    _require_neo4j_uri(args, settings)
     manifest = _verify(args)
     if manifest is None:
         return REFUSED_EXIT_CODE
