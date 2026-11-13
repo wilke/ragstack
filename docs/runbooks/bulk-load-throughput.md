@@ -219,7 +219,11 @@ and exits **143**. Before #341 a SIGTERM skipped the restore and left the index
 at `refresh_interval: -1`, silently not refreshing, with every count-based check
 reading stale from then on.
 
-Send the signal **once**, to the recorded pid, and wait. A **second** SIGTERM,
+Send the signal **once**, to the recorded pid, and wait. The signal must reach
+the **Python process** itself: signalling a wrapper (`apptainer exec`,
+`cwltool`, a shell) only helps if that wrapper forwards SIGTERM to its child,
+so target the loader's own pid and check its output for `refresh_interval
+restored`. A **second** SIGTERM,
 like SIGKILL (`kill -9`) or a crash, kills the process without restoring — the
 escape hatch for a restore that hangs. If that happens, or the restore request
 itself failed (the loader logs `FAILED to restore refresh_interval`), set it

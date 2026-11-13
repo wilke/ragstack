@@ -41,6 +41,7 @@ DRIVER = textwrap.dedent('''
 
     log_path, ready, mode, slow_restore = (Path(sys.argv[2]), Path(sys.argv[3]),
                                            sys.argv[4], sys.argv[5] == "1")
+    failing_refresh = sys.argv[6] == "1"
 
     def note(line):
         with log_path.open("a") as fh:
@@ -57,6 +58,9 @@ DRIVER = textwrap.dedent('''
                 await asyncio.sleep(60)
             note(f"restored:{prior}")
         async def refresh(self):
+            if failing_refresh:
+                note("refresh-failed")
+                raise ConnectionError("es unreachable")
             note("refreshed")
 
     async def block(*a, **k):
@@ -79,7 +83,8 @@ DRIVER = textwrap.dedent('''
 ''')
 
 
-def _start(tmp_path: Path, mode: str, *, slow_restore: bool = False):
+def _start(tmp_path: Path, mode: str, *, slow_restore: bool = False,
+           failing_refresh: bool = False):
     driver = tmp_path / "driver.py"
     driver.write_text(DRIVER)
     log = tmp_path / "calls.log"
@@ -89,7 +94,7 @@ def _start(tmp_path: Path, mode: str, *, slow_restore: bool = False):
            "QDRANT_URL": "http://127.0.0.1:1", "ELASTICSEARCH_URL": "http://127.0.0.1:1"}
     proc = subprocess.Popen(
         [sys.executable, str(driver), str(SCRIPTS), str(log), str(ready), mode,
-         "1" if slow_restore else "0"],
+         "1" if slow_restore else "0", "1" if failing_refresh else "0"],
         cwd=tmp_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     return proc, log, ready
@@ -122,6 +127,24 @@ def test_sigterm_mid_load_restores_refresh_and_exits_143(tmp_path, mode):
     assert proc.returncode == 143, (proc.returncode, out, err)
     assert "terminated by SIGTERM" in err
     assert "refresh_interval restored" in out
+
+
+def test_failed_forced_refresh_on_sigterm_still_exits_143(tmp_path):
+    """The interval was restored, so the index refreshes on its own; a failing
+    forced refresh must not turn the stop into exit 1 with a traceback."""
+    proc, log, ready = _start(tmp_path, "load", failing_refresh=True)
+    try:
+        _wait_for(ready, proc)
+        proc.send_signal(signal.SIGTERM)
+        out, err = proc.communicate(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    calls = log.read_text().splitlines()
+    assert calls == ["parked", "restoring:30s", "restored:30s", "refresh-failed"], (calls, err)
+    assert proc.returncode == 143, (proc.returncode, out, err)
+    assert "Traceback" not in err
+    assert "forced refresh failed" in err
 
 
 def test_second_sigterm_still_kills(tmp_path):

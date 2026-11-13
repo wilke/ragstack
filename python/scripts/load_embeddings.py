@@ -42,6 +42,10 @@ disagreement between this worker and the API exits **2**; a mid-stream failure
 exits **1** (both leave it ``dormant``, retried). Chunk versions replace their
 documents and upsert both legs; tombstone versions delete by doc id.
 
+**SIGTERM** (#341, either mode): while ``--bulk-refresh`` has the refresh
+interval parked, a SIGTERM restores it and exits **143**, which ``restore.py``'s
+``classify_failure`` treats like any non-3 code: ``dormant``, retried.
+
 **Store URLs have no default** (#636, the #454 rule): on the deployment host
 ``localhost:6333`` / ``:9200`` are the PRODUCTION stores. Per leg the URL comes
 from the collection's route (``QDRANT_COLLECTION_ROUTES`` /
@@ -319,8 +323,18 @@ async def parked_refresh(tindex, enabled: bool):
         finally:
             term["armed"] = False
             await tindex.restore_refresh(prior)
-            await tindex.refresh()
-            print("refresh_interval restored + index refreshed", flush=True)
+            try:
+                await tindex.refresh()
+            except Exception as e:
+                if not term["seen"]:
+                    raise  # a normal exit must not report a stale index as fresh
+                # Stopping on SIGTERM: the interval is restored, so the index
+                # refreshes on its own; a failed forced refresh must not turn
+                # the 143 into a traceback and exit 1.
+                print(f"refresh_interval restored; forced refresh failed: {e!r}",
+                      file=sys.stderr, flush=True)
+            else:
+                print("refresh_interval restored + index refreshed", flush=True)
         if term["seen"]:
             # Landed during the restore itself: the load finished, but the
             # stop was asked for — exit as terminated, not as success.
