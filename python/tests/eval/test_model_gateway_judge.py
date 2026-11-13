@@ -511,8 +511,10 @@ def test_selfcheck_refuses_while_any_label_is_empty(tmp_path: Path) -> None:
     t = FakeTransport(LOCAL["model"], PIN_C)
     with pytest.raises(SystemExit, match="owner-set"):
         mg.run_selfcheck(cfg, gw(tmp_path, t), [{**CASES[0], "expected_label": ""}], sleep=Sleeper())
-    with pytest.raises(SystemExit, match="owner-set"):  # the committed draft: 23 cases, labels not yet set
-        mg.run_selfcheck(cfg, gw(tmp_path, t), sc.load_cases(), sleep=Sleeper())
+    committed = sc.load_cases()  # the committed set with one label blanked
+    with pytest.raises(SystemExit, match="owner-set"):
+        mg.run_selfcheck(cfg, gw(tmp_path, t), [*committed[:-1], {**committed[-1], "expected_label": ""}],
+                         sleep=Sleeper())
     with pytest.raises(SystemExit, match="no cases"):
         mg.run_selfcheck(cfg, gw(tmp_path, t), [], sleep=Sleeper())
     assert t.posts == []

@@ -131,8 +131,9 @@ def test_study_gateway_selfcheck_runs_each_case_once(world: Path, tmp_path: Path
 
 def test_study_gateway_selfcheck_guards(world: Path, tmp_path: Path) -> None:
     # mutation: running the self-check with empty owner labels, or on a binary prompt, fails this
+    unl = gw3(world, selfcheck_file=str(_cases_file(tmp_path, labels=False)))
     with pytest.raises(SystemExit, match="owner-set"):
-        jd.main(["--config", str(gw3(world)), "preflight", "--backend", "gateway-selfcheck"], prov=tgj.PROV)
+        jd.main(["--config", str(unl), "preflight", "--backend", "gateway-selfcheck"], prov=tgj.PROV)
     cfg2 = tgj.gw_cfg(world, tag="argon2", model="Fake Argon", base_url=None,
                       private_config=str(private_gw(world)), selfcheck_file=str(_cases_file(tmp_path)))
     with pytest.raises(SystemExit, match="graded"):
@@ -206,17 +207,35 @@ def test_rater_sheet_rubric_and_examples_equal_the_prompt(tmp_path: Path) -> Non
 
 # ------------------------------------------------------------------ (d) the committed self-check draft
 
-def test_committed_selfcheck_draft_is_unlabelled_and_valid() -> None:
-    # mutation: copying `suggested` into expected_label, or dropping a case, fails this
+#: the owner's labels, set 2026-11-13 -- a change to any committed label must fail here
+OWNER_LABELS = {
+    "full_all_items_listed": "full", "full_boundary_overnight": "full",
+    "full_condition_met_by_definitions": "full", "full_condition_met_by_title": "full",
+    "full_extra_detail": "full", "full_one_of_several_valid_answers": "full",
+    "full_other_paper_own_threshold": "full", "full_short_form_defined_as_term": "full",
+    "full_two_parts_paraphrased": "full", "none_condition_contradicted_by_title": "none",
+    "none_condition_contradicted_in_passage": "none", "none_result_when_purpose_asked": "none",
+    "none_shared_short_form_other_concept": "none", "none_topic_named_with_pointer": "none",
+    "partial_approximate_value": "partial", "partial_condition_broader_group": "partial",
+    "partial_condition_narrower_group": "partial", "partial_condition_unstated": "partial",
+    "partial_fewer_items_than_asked": "partial", "partial_general_class_for_specific": "partial",
+    "partial_one_of_two_parts": "partial", "partial_vague_magnitude_for_fold": "none",
+    "partial_workable_by_calculation": "partial",
+}
+
+
+def test_committed_selfcheck_cases_carry_the_owner_labels_and_are_valid() -> None:
+    # mutation: copying `suggested` into expected_label, changing a label, or dropping a case fails this
     cases = sc.load_cases()
     assert len(cases) == 23 and len({c["name"] for c in cases}) == 23
-    assert all(c["expected_label"] == "" for c in cases)
+    assert {c["name"]: c["expected_label"] for c in cases} == OWNER_LABELS
+    # the owner differs from the draft's suggestion on at least one case, so `suggested` was not copied
+    assert any(c["suggested"] != c["expected_label"] for c in cases)
     assert all(c["suggested"] in sc.GRADES for c in cases)  # metadata only, never read as expected
     for c in cases:
         jd.judge_prompt_v3(c["question"], c["term"], c["passage"], c["title"], c["defs"])
         for a, _p in c["defs"]:
             assert re.search(re.escape(a), c["passage"]), (c["name"], a)
-    with pytest.raises(SystemExit, match="owner-set"):
-        sc.require_owner_labels(cases)
-    # labels set by the owner (here: arbitrary valid values) lift the guard; `suggested` plays no part
-    sc.require_owner_labels([{**c, "expected_label": "none", "suggested": ""} for c in cases])
+    sc.require_owner_labels(cases)  # the committed set passes the guard
+    with pytest.raises(SystemExit, match="owner-set"):  # one empty label is enough to refuse
+        sc.require_owner_labels([{**cases[0], "expected_label": ""}, *cases[1:]])
