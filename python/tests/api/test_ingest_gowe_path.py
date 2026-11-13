@@ -388,7 +388,7 @@ async def test_upload_failed_is_output_staging_failed(client, gowe):
     assert poll.json()["items"] == {"total": 2, "completed": 0, "failed": 0, "pending": 2}
     # #358: the registry row says the archive is missing — the reserved
     # version is NOT recorded (restore must not replay a folder that does not
-    # exist) and archive_pending blocks eviction until #353's retry re-archives.
+    # exist) and archive_pending blocks eviction (nothing clears it: #632).
     row = await gowe["store"]._inner.get("lib1")
     assert row.versions == [] and row.archive_pending is True
     assert gowe["store"].calls.get("append_version", 0) == 0

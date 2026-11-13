@@ -127,7 +127,8 @@ class OutputStagingFailed(GoWeError):
     ``output_destination`` (``output_state == upload_failed``, or the
     submission FAILED with ``OUTPUT_STAGING_FAILED``): the data was loaded but
     no archive exists in the Workspace. The job is labelled
-    :data:`OUTPUT_STAGING_FAILED` so #353's ``archive_pending`` retry can find it."""
+    :data:`OUTPUT_STAGING_FAILED`, and the API flags the registry row
+    ``archive_pending`` (no automatic re-archive exists yet, #353)."""
 
 
 def _receipt_status_to_job(status: str) -> str:
@@ -148,6 +149,33 @@ class GoWeRun:
     #: The glossary step's record summed over the readable receipts
     #: (:func:`glossary_summary_of`), or ``None`` when no receipt carries one.
     glossary: dict[str, Any] | None = None
+    #: True when the run delivered NO archive but its tasks may have upserted
+    #: chunks: a non-COMPLETED submission other than the nothing-to-archive
+    #: case (#768, where no document was ingested). The API flags the registry
+    #: row ``archive_pending`` on it — the stores may be ahead of the archive
+    #: (#632).
+    may_have_written: bool = False
+
+
+#: Attribute :meth:`GoWeBackend.run_submission` sets on an exception raised once
+#: the submission may have been accepted by the engine (#632).
+_MAY_HAVE_WRITTEN_ATTR = "ragstack_may_have_written"
+
+
+def _mark_may_have_written(exc: BaseException) -> None:
+    try:
+        setattr(exc, _MAY_HAVE_WRITTEN_ATTR, True)
+    except (AttributeError, TypeError):  # pragma: no cover — a slotted exception
+        pass
+
+
+def may_have_written(exc: BaseException) -> bool:
+    """Was ``exc`` raised by :meth:`GoWeBackend.run_submission` AFTER the
+    submission may have been accepted — so the engine's tasks may have written
+    to the stores without an archive being recorded? ``False`` for a failure
+    before submit (duplicate names, workflow registration) and for any
+    exception not raised from there (#632)."""
+    return bool(getattr(exc, _MAY_HAVE_WRITTEN_ATTR, False))
 
 
 class GoWeBackend:
@@ -287,9 +315,33 @@ class GoWeBackend:
         # is submitted exactly as before.
         job.update(provenance_inputs(self.workflow_cwl, self.cwl_path, wf_id))
         labels = {"worker_group": self.worker_group} if self.worker_group else None
-        sub = await self.client.submit(
-            wf_id, job, labels=labels, output_destination=output_destination, token=token
-        )
+        try:
+            # From here on the engine may have accepted the submission (a submit
+            # that times out may still have been taken) and its tasks may have
+            # upserted chunks: any exception carries the mark (#632).
+            sub = await self.client.submit(
+                wf_id, job, labels=labels, output_destination=output_destination, token=token
+            )
+            return await self._collect(items, job, sub, wf_id, token=token,
+                                       output_destination=output_destination,
+                                       workspace=workspace)
+        except Exception as e:
+            _mark_may_have_written(e)
+            raise
+
+    async def _collect(
+        self,
+        items: list[WorkItem],
+        job: dict[str, Any],
+        sub: dict[str, Any],
+        wf_id: str,
+        *,
+        token: str | None,
+        output_destination: str | None,
+        workspace: WorkspaceClient | None,
+    ) -> GoWeRun:
+        """Wait for an accepted submission (and its delivery) and map its
+        receipts — the post-submit half of :meth:`run_submission`."""
         sub_id = str(sub.get("id", ""))
         log.info("gowe: submitted %s (%d item(s)) as workflow %s", sub_id, len(items), wf_id)
         final = await self.client.wait(
@@ -331,9 +383,13 @@ class GoWeBackend:
                     ],
                     submission_id=sub_id, state=state,
                 )
+            # Any other failure — a cap refusal in one batch, a batch that
+            # failed after its retries, a cancelled run — may come after
+            # sibling batches already upserted their chunks; `pack` never ran,
+            # so the stores may be ahead of the archive (#632).
             return GoWeRun(
                 results=[self._failed(wi, reason) for wi in items],
-                submission_id=sub_id, state=state,
+                submission_id=sub_id, state=state, may_have_written=True,
             )
         if output_destination:
             archive_ref = self._archive_ref(output_destination, job.get("version"))
