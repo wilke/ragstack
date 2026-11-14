@@ -24,7 +24,7 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 | [0011](0011-provenance-records.md) | Provenance records: one record format (`ragstack.provenance/1`, fingerprinted core), one ambient API, written into the artifact it describes; Workflow Run RO-Crate for interchange | Accepted |
 | [0012](0012-document-chunk-registry.md) | A document and chunk registry is the system of record; the stores are projections of it | Proposed |
 | [0013](0013-collection-owns-its-data.md) | A collection owns its data: chunk visibility follows the collection, the per-chunk stamp is provenance | Proposed |
-| [0014](0014-backups-and-eviction.md) | Backups belong to the owner; eviction needs a current backup, deletion does not | Proposed |
+| [0014](0014-backups-and-eviction.md) | Collection backups belong to the owner; eviction needs a current backup, deletion does not | Proposed |
 
 ## Conventions
 

@@ -268,24 +268,24 @@ provenance only.
 
 **Naming trap:** the per-chunk stamp is called `tenant_id`, and `Principal.tenant` holds
 the caller's subject (`bvbrc:<user>` for a BV-BRC user). Neither is a **tenant** in the
-sense above, which is a deployment. ADR-0013 decision 7 renames them `writer_id` and
-`subject`.
+sense above, which is a deployment. The stamp keeps its name and means the writer;
+`Principal.tenant` becomes `subject` (ADR-0013 decision 4).
 
 ## Backup, snapshot, eviction, deletion
 
-Per [ADR-0014](adr/0014-backups-and-eviction.md) (Proposed):
+Per [ADR-0014](adr/0014-backups-and-eviction.md) (Proposed), for one collection. A whole
+tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.md)).
 
-- **User backup:** started by the owner, written to the owner's target (for BV-BRC users,
-  their Workspace, driven by the BV-BRC layer above the API).
-- **System backup:** started by an admin or by maintenance, for one collection, a tenant,
-  or all tenants, on operator storage. It carries the access rows, so a replay keeps
-  ownership.
+- **User backup:** started by the owner (for BV-BRC users, written to their Workspace by
+  the BV-BRC layer above the API).
+- **System backup:** started by an admin or by maintenance, on operator storage. Both kinds
+  carry the access rows, so a replay keeps ownership.
 - **Current:** no write of any kind since the backup completed (`archive_pending` is the
   "written since" flag).
 - **Snapshot:** a previous owner's backup after a transfer. It stays with them and is never
   a restore source for the new owner.
 - **Eviction:** drops a collection's stores to free a slot and keeps the row `dormant` for
-  reload on demand. It **requires a current backup**.
+  reload on demand. It **requires a current backup the server can read**.
 - **Deletion:** removes the collection. It needs no backup.
 
 ---
