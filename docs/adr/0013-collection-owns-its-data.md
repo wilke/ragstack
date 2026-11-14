@@ -4,27 +4,29 @@
 - **Date:** 2026-11-13
 - **Deciders:** @wilke
 - **Amends:**
-  - [ADR-0003](0003-access-control.md) decision 1. The per-chunk stamp stops naming a user;
-    the planned `owner_id` rename is dropped.
+  - [ADR-0003](0003-access-control.md) decisions 1 and 2. The per-chunk stamp stays as a
+    store-side filter but names the collection, not a user. The planned `owner_id` rename
+    is dropped.
   - ADR-0003 decision 2b and [ADR-0002](0002-collection-identity.md) decision 5: the shared
-    corpus's read-to-write exemption ends.
+    corpus's read-to-ingest exemption ends.
 - **Related:** [#558](https://github.com/wilke/ragstack/issues/558),
   [ADR-0004](0004-users-groups-shares.md), [ADR-0014](0014-backups-and-eviction.md)
 
 ## Context
 
 ADR-0003 put access control at the collection and demoted the per-chunk `tenant_id` to
-provenance. The demotion never shipped, and the stamp, which holds the writer's subject,
-still does five jobs:
+provenance. The demotion never shipped. The stamp, which holds the writer's subject, still
+does five jobs:
 
-1. **Read filter:** reads see `{caller, public}` only (`tenancy.py` `scope_filters`).
+1. **Read filter:** a read sees `{caller, public}`. `api/scope.py` `shared_scope` adds the
+   owner's stamp for a grantee (`tenancy.py` `scope_filters`).
 2. **Chunk identity:** `stores/qdrant.py` `_point_id` = uuid5(`{stamp}:{chunk_id}`), and
    `stores/elasticsearch.py` `_es_id` follows the same pattern.
 3. **Replace, delete and duplicate scope:** these act only on the writer's own chunks
    (`ingestion/pipeline.py`; `DELETE /v1/documents` in `api/routers/documents.py`).
-4. **Separation on shared stores:** a routed store may be read by several tenants
+4. **Separation on shared stores:** a routed store may hold more than one deployment's data
    (`collections.py` `_routed_store_legs`). A second registry entry on one store can still
-   appear after startup (`ops/evict.py`; the purge guard in `collections.py`).
+   appear after startup (`ops/evict.py`).
 5. **Hiding leftovers:** a purge removes the access and registry rows before the stores. If
    it fails part-way, a recreated id gets the same deterministic store name (ADR-0002).
 
@@ -38,57 +40,67 @@ not the reader:
 
 **1. A collection's data belongs to the collection.** Whoever passes the collection's access
 check sees all of its chunks: the owner, grantees including `public`, and admins
-(ADR-0003 decisions 2 and 5, ADR-0004). `shared_scope` goes away.
+(ADR-0003 decisions 2 and 5, ADR-0004).
 
-**2. Every chunk is stamped with its collection's instance key, not its writer.**
-- The key is the collection id plus a value unique to that creation, recorded on the
-  registry record. A recreated id therefore never matches old chunks.
-- The key does all five jobs above: reads filter on it, chunk ids derive from it, and
-  replace, delete and the duplicate check are scoped by it.
-- This keeps a store-side second layer of defence. It also keeps collections apart on
-  shared or routed stores, and hides leftovers.
+**2. New collections stamp every chunk with the collection's instance key.**
+- **What the key is:** the collection id plus a value unique to that creation, recorded on
+  the registry record. It sits in a reserved namespace that no subject and not `public` can
+  occupy, so a recreated id never matches old chunks.
+- **What it does:** reads filter on it, chunk ids derive from it, and replace, delete and
+  the duplicate check are scoped by it.
+- **Graph:** Neo4j triples carry the key too, and graph reads scope by collection.
+- **Where it comes from:** the key always comes from the **target** registry record, never
+  from a file header, an archive or a source payload. Every path that loads, copies or
+  rebuilds chunks stamps from the target record. Every path that recreates a record (seed,
+  replay, tenant restore) keeps its key.
+- **The writer** is recorded as a separate provenance field, never filtered on.
 
-**3. The writer is recorded as provenance.** It is a separate field on the chunk, never
-filtered on.
-
-**4. Who may write is unchanged:** the owner, a `write` grantee, or an admin. Whoever
+**3. Who may write is unchanged:** the owner, a `write` grantee, or an admin. Whoever
 writes, the data belongs to the collection and to its current owner, i.e. the active owner
 row (ADR-0004), not `spec.owner`, which records the creator. A transfer moves only that row.
 
+**4. Existing collections stay on the writer stamp until rebuilt.**
+- They keep their filter, and `shared_scope` stays for them. #558 persists there until they
+  move.
+- A collection moves only by building a **new instance** to completion with the collection
+  stamp, then switching to it in one registry write, then purging the old chunks.
+  Re-ingesting single documents never switches the scheme.
+- There is no bulk rewrite. `shared_scope` goes when the last writer-stamped collection
+  does.
+
 **5. The legacy shared corpus gets a service-account owner and stops taking other people's
 ingests.**
-- An ADR-0004 decision-7 service account becomes its owner.
-- Ingest needs `write`.
-- It keeps its writer-stamp filter until it is retired, because chunks users ingested
-  there were written as private to them. Until then, users can still delete their own
-  chunks there.
-- It is deprecated in favour of new `oa` and `asm` collections. At retirement its remaining
+- An ADR-0004 decision-7 service account becomes its owner. Ingest needs `write` and is
+  stamped `public`.
+- It keeps its writer stamps and filter until it is retired, because chunks users ingested
+  there were written as private to them.
+- Users can still delete their own chunks there. The owner's and admins' deletes span all
+  stamps.
+- It is deprecated in favour of new `oa` and `asm` collections. At retirement, its remaining
   user chunks are deleted with it, after notice.
-
-**6. Migration: new collections only.**
-- Collections created or re-ingested after this lands use the collection stamp.
-- Existing collections keep the writer stamp and its filter until they are re-ingested,
-  rebuilt from a backup, or retired. Their records say which scheme they use.
-- There is no bulk rewrite.
 
 ## Consequences
 
-**Gained:**
-- Transfer, admin ingest and grantee ingest work on new collections.
-- One copy per document per collection.
-- The owner can delete and replace anything in their collection.
-- Isolation on shared stores does not depend on the registry being perfect.
+**Gained:** on collection-stamped collections:
+- transfer, admin ingest and grantee ingest work;
+- there is one copy per document;
+- the owner can delete and replace anything;
+- isolation on a shared store does not depend on the registry being perfect.
 
 **Accepted:**
-- **Two stamp schemes run side by side** until the existing collections are migrated.
-- **A `write` grant on a public collection publishes at once.** Whatever the grantee
-  ingests is visible to everyone.
-- **The graph needs a collection scope.** Neo4j entity identity and graph reads key on the
-  writer stamp (`stores/neo4j.py`), and the graph endpoints take no collection. That is an
-  API contract change.
-- **`/v1/stats/tenants` reports per-stamp counts.** For new collections the stamp is a
-  collection key, which changes what that endpoint means. Python and Go must change in
-  step.
+- **Two stamp schemes run side by side.** Multi-collection search and the graph must handle
+  both.
+- **Rebuilding exposes hidden chunks.** Rebuilding an existing collection makes the chunks
+  that grantees and admins wrote visible to all of its readers.
+- **A `write` grant on a public collection publishes at once.**
+- **Some row-level separations end for new collections.**
+  - Two deployments routed to one store cannot read each other's new collections. That is
+    consistent with "no cross-tenant sharing".
+  - `TENANT_COLLECTIONS` still limits which collections a key may reach, but it no longer
+    separates rows inside a new collection. Orgs that need separation use separate
+    collections or tenants.
+- **API contract changes.** The graph endpoints gain a collection scope, and
+  `/v1/stats/tenants` changes meaning for new collections. Python and Go change in step.
 - **Users cannot ingest into the shared corpus** until `oa` and `asm` exist.
 
 ## Alternatives considered

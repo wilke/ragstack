@@ -249,8 +249,8 @@ isolates writers) keys on the entry's `is_shared_surface` **flag** — never on
 what `default` points at. Keyed on the pointer, aiming `default` at an owned
 collection would let any *reader* of it ingest into somebody else's corpus just
 by omitting `collection`. ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed,
-ends this exemption: the shared corpus gets a service-account owner and ingest needs
-`write`.)
+ends this exemption for ingest: the shared corpus gets a service-account owner and
+ingest needs `write`. Users keep deleting their own chunks there until it is retired.)
 
 ## Caller, owner, writer
 
@@ -266,11 +266,13 @@ ownership bug so far lived where they are not.
 They differ when an admin or a grantee with `write` ingests, and after a transfer. Per
 [ADR-0013](adr/0013-collection-owns-its-data.md) (Proposed), a collection owns its data:
 new collections stamp every chunk with the collection's instance key, and the writer
-becomes an unfiltered provenance field.
+becomes an unfiltered provenance field. Existing collections keep the writer stamp until
+they are rebuilt as a new instance.
 
 **Naming trap:** the per-chunk stamp is called `tenant_id`, and `Principal.tenant` holds
-the caller's subject (`bvbrc:<user>` for a BV-BRC user) or an API key's configured label.
-Neither is a **tenant** in the sense above, which is a deployment.
+the caller's full `issuer:subject` (`bvbrc:<user>` for a BV-BRC user) or an API key's
+configured label. `Principal.subject` is the bare subject. Neither is a **tenant** in the
+sense above, which is a deployment.
 
 ## Backup, snapshot, eviction, deletion
 
@@ -280,14 +282,16 @@ tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.
 - **User backup:** started by the owner (for BV-BRC users, written to their Workspace by
   the BV-BRC layer above the API).
 - **System backup:** started by an admin or by maintenance, on operator storage.
-- **Current:** the collection's write counter has not moved since the backup. Every write,
-  deletes included, advances it.
+- **Current:** the collection's write counter still equals the value read when the backup
+  started. Every committed write, deletes included, advances it.
 - **Reload vs replay:** a reload after eviction keeps the live owner and grants. Only an
   admin replay into an empty collection or tenant applies the backup's access rows.
-- **Snapshot:** a previous owner's backup after a transfer. It stays with them and is never
-  a reload source.
+- **Snapshot:** a previous owner's user backup after a transfer. It stays with them and is
+  never a reload source. System backups survive a transfer.
 - **Eviction:** drops a collection's stores to free a slot and keeps the row `dormant` for
-  reload on demand. It **requires a current backup**.
+  reload on demand. It **requires a current backup**: a system backup, or an owner-only
+  backup while the collection is private. Sharing or transferring a dormant collection
+  requires reloading it first.
 - **Deletion:** removes the collection. It needs no backup.
 
 ---
