@@ -173,12 +173,8 @@ async def test_postgres_store_shares_the_sqlite_schema():
     assert isinstance(PostgresCollectionStore("postgresql://x/y"), object)
 
 
-@pytest.mark.skipif(
-    not os.environ.get("RAGSTACK_TEST_POSTGRES_DSN"),
-    reason="set RAGSTACK_TEST_POSTGRES_DSN to exercise the postgres backend",
-)
-async def test_postgres_round_trip():
-    store = PostgresCollectionStore(os.environ["RAGSTACK_TEST_POSTGRES_DSN"])
+async def test_postgres_round_trip(pg_test_dsn):
+    store = PostgresCollectionStore(pg_test_dsn)
     try:
         await store.put(_spec("pgspec"))
         rec = await store.get("pgspec")
@@ -389,11 +385,7 @@ async def test_sqlite_cap_holds_under_thread_contention(tmp_path):
     assert len(await store.list_specs()) == limit
 
 
-@pytest.mark.skipif(
-    not os.environ.get("RAGSTACK_TEST_POSTGRES_DSN"),
-    reason="set RAGSTACK_TEST_POSTGRES_DSN to exercise the postgres backend",
-)
-async def test_postgres_cap_holds_under_concurrent_creates():
+async def test_postgres_cap_holds_under_concurrent_creates(pg_test_dsn):
     """K concurrent creates with ONE slot left → exactly one CREATED.
 
     The test that fails without ``pg_advisory_xact_lock``: at READ COMMITTED each
@@ -403,7 +395,7 @@ async def test_postgres_cap_holds_under_concurrent_creates():
     """
     import asyncio
 
-    store = PostgresCollectionStore(os.environ["RAGSTACK_TEST_POSTGRES_DSN"])
+    store = PostgresCollectionStore(pg_test_dsn)
     k = 8
     ids = [f"pgcap_{i}" for i in range(k)]
     try:

@@ -15,13 +15,13 @@ The order rule is tested against a literal expectation and against
 must agree on byte-for-byte for a reader to keep their place when a read moves
 from the readsheets to the UI.
 
-Postgres is skipped unless ``RAGSTACK_TEST_POSTGRES_DSN`` names a database: this
-suite must never reach for a default DSN, which on the dev host resolves to
-production (#363/#369/#392).
+Postgres runs only through the shared ``pg_test_dsn`` fixture (tests/conftest.py):
+skipped unless ``RAGSTACK_TEST_PG_DSN`` is set, refused for a deployment
+database, and confined to a throwaway schema. This suite must never reach for a
+default DSN, which on the dev host resolves to production (#363/#369/#392).
 """
 from __future__ import annotations
 
-import os
 import random
 
 import pytest
@@ -59,27 +59,24 @@ from ragstack.grading.store import (
 READER_A = "conf-a"
 READER_B = "conf-b"
 
-_PG_DSN = os.environ.get("RAGSTACK_TEST_POSTGRES_DSN", "")
-
-
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
-async def store(request, tmp_path):
+def _store_unopened(request, tmp_path):
+    """Build one store per backend. Sync on purpose: pulling the (async)
+    ``pg_test_dsn`` fixture via ``getfixturevalue`` only works from outside the
+    running loop. The postgres row skips unless ``RAGSTACK_TEST_PG_DSN`` is set."""
     if request.param == "postgres":
-        if not _PG_DSN:
-            pytest.skip(
-                "set RAGSTACK_TEST_POSTGRES_DSN to exercise the postgres grading "
-                "store; there is deliberately no default DSN (the host default "
-                "resolves to production)"
-            )
-        s = PostgresGradingStore(_PG_DSN)
-    elif request.param == "sqlite":
-        s = SqliteGradingStore(str(tmp_path / "grading.db"))
-    else:
-        s = InMemoryGradingStore()
+        return PostgresGradingStore(request.getfixturevalue("pg_test_dsn"))
+    if request.param == "sqlite":
+        return SqliteGradingStore(str(tmp_path / "grading.db"))
+    return InMemoryGradingStore()
+
+
+@pytest.fixture
+async def store(_store_unopened):
     try:
-        yield s
+        yield _store_unopened
     finally:
-        await s.close()
+        await _store_unopened.close()
 
 
 def _batch(**over) -> GradingBatchRecord:

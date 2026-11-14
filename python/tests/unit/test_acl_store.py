@@ -8,7 +8,6 @@ stopping where a grantee retains access through an independent share.
 """
 from __future__ import annotations
 
-import os
 import sqlite3
 from types import SimpleNamespace
 
@@ -413,12 +412,8 @@ async def test_postgres_store_shares_the_sqlite_schema():
     assert isinstance(PostgresAclStore("postgresql://x/y"), object)
 
 
-@pytest.mark.skipif(
-    not os.environ.get("RAGSTACK_TEST_POSTGRES_DSN"),
-    reason="set RAGSTACK_TEST_POSTGRES_DSN to exercise the postgres backend",
-)
-async def test_postgres_round_trip():
-    store = PostgresAclStore(os.environ["RAGSTACK_TEST_POSTGRES_DSN"])
+async def test_postgres_round_trip(pg_test_dsn):
+    store = PostgresAclStore(pg_test_dsn)
     coll = "col-pg-roundtrip"
     try:
         owner_row = await store.grant(coll, "user", OWNER, "owner", granted_by="")
