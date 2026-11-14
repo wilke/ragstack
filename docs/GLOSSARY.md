@@ -250,6 +250,44 @@ what `default` points at. Keyed on the pointer, aiming `default` at an owned
 collection would let any *reader* of it ingest into somebody else's corpus just
 by omitting `collection`.
 
+## Caller, owner, writer
+
+Three identities can touch one collection. They are often the same person, and every
+ownership bug so far lived where they are not.
+
+| | What it is | Where it is recorded |
+|---|---|---|
+| **caller** | the authenticated principal making *this* request (whose token or key is on it) | nowhere durable; the request's `Principal` |
+| **owner** | the one subject the collection belongs to; it changes on transfer | the active `owner` row in `shares` (ADR-0004 decision 5) |
+| **writer** | the subject that ingested a given chunk; it never changes | the per-chunk stamp |
+
+They differ when an admin or a grantee with `write` ingests, and after a transfer. Per
+[ADR-0013](adr/0013-collection-owns-its-data.md) (Proposed), data and backups belong to the
+**owner**, visibility follows the collection's access rows, and the writer stamp is
+provenance only.
+
+**Naming trap:** the per-chunk stamp is called `tenant_id`, and `Principal.tenant` holds
+the caller's subject (`bvbrc:<user>` for a BV-BRC user). Neither is a **tenant** in the
+sense above, which is a deployment. ADR-0013 decision 7 renames them `writer_id` and
+`subject`.
+
+## Backup, snapshot, eviction, deletion
+
+Per [ADR-0014](adr/0014-backups-and-eviction.md) (Proposed):
+
+- **User backup:** started by the owner, written to the owner's target (for BV-BRC users,
+  their Workspace, driven by the BV-BRC layer above the API).
+- **System backup:** started by an admin or by maintenance, for one collection, a tenant,
+  or all tenants, on operator storage. It carries the access rows, so a replay keeps
+  ownership.
+- **Current:** no write of any kind since the backup completed (`archive_pending` is the
+  "written since" flag).
+- **Snapshot:** a previous owner's backup after a transfer. It stays with them and is never
+  a restore source for the new owner.
+- **Eviction:** drops a collection's stores to free a slot and keeps the row `dormant` for
+  reload on demand. It **requires a current backup**.
+- **Deletion:** removes the collection. It needs no backup.
+
 ---
 
 ## Known gap in this model
