@@ -404,9 +404,11 @@ This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work
 . /rag/bin/activate
 # now: python, pip, ragstack package, env vars, conda env all set
 cd $RAG_REPO/python
-# --qdrant-url defaults to :6333 — PRODUCTION on this host, and this writes (#454).
-# The :? guard matters: `. /rag/bin/activate` does NOT export QDRANT_URL, and an
-# EMPTY --qdrant-url resolves right back to localhost:6333 inside the client.
+# --qdrant-url is required (no default, #454): :6333 is PRODUCTION on this host,
+# and this writes. An EMPTY value would resolve right back to localhost:6333
+# inside the client, so the script now refuses one (an empty --qdrant-url or an
+# exported-but-empty QDRANT_URL exits 2). The :? guard still helps:
+# `. /rag/bin/activate` does NOT export QDRANT_URL, and it names the right port.
 python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpus \
   --qdrant-url "${QDRANT_URL:?point at a scratch or dev-tenant Qdrant (dev is :24041) — :6333 is production}"
 
@@ -459,8 +461,9 @@ on this host.
 5. **Smoke-test the Qdrant pipeline**
    ```bash
    cd python
-   # Both default to :6333 — PRODUCTION on the deployment host (#454). An EMPTY value
-# resolves back to :6333 inside the client, so the :? guard is what actually pins it.
+   # Neither has a default (#454): :6333 is PRODUCTION on the deployment host. An
+# EMPTY value would resolve back to :6333 inside the client; ingest_chunks.py
+# refuses one (exit 2), and the :? guard fails an unset QDRANT_URL even earlier.
 python scripts/ingest_chunks.py scripts/example_chunks.json --collection demo \
   --qdrant-url "${QDRANT_URL:?set a scratch Qdrant — :6333 is production}"
    python scripts/search.py "what is HNSW" --collection demo --qdrant-url "${QDRANT_URL:?}"

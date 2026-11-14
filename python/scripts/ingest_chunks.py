@@ -239,12 +239,15 @@ async def run(args: argparse.Namespace, target: ingest_target.IngestTarget) -> N
     print("done", file=sys.stderr)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None, *, settings: Any | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("input", type=Path, help="JSON file with documents+chunks")
-    p.add_argument("--qdrant-url", default="http://localhost:6333",
-                   help="ignored when the registry entry routes its store to a "
-                        "specific instance; kept for the store-name migration path")
+    p.add_argument("--qdrant-url", default="",
+                   help="Qdrant instance to WRITE to. NO default (#454): the "
+                        "conventional localhost:6333 is the PRODUCTION instance on "
+                        "the deployment host, and this is a write path. Required "
+                        "unless the collection is routed (QDRANT_COLLECTION_ROUTES, "
+                        "which always wins) or QDRANT_URL is explicitly configured")
     p.add_argument("--collection", default="",
                    help="DEPRECATED — the PHYSICAL store name. Accepted only when "
                         "a registry entry already claims it; prefer --collection-id")
@@ -299,17 +302,29 @@ def main() -> None:
         default="",
         help="write a provenance manifest here (defaults to $COLLECTION_MANIFEST_DIR; skipped if neither is set)",
     )
-    args = p.parse_args()
+    args = p.parse_args(argv)
     # Resolve (and if asked, create) the registry entry BEFORE reading, embedding
     # or connecting to anything — a refusal discovered after a 500k-row embed is
     # a refusal that costs GPU hours.
     target = ingest_target.resolve_or_exit(
         args,
+        settings=settings,
         model=args.embedding_model,
         chunk_method=args.chunk_method or None,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
     )
+    # Then decide WHERE, with no guessing (#454): a route, the flag, or an
+    # explicitly configured QDRANT_URL — never the code default, which is
+    # localhost and therefore production on the deployment host. This tool
+    # writes Qdrant only, so the text leg is not asked for.
+    try:
+        ingest_target.require_store_urls(
+            target, qdrant_url=args.qdrant_url, settings=settings, text=False,
+        )
+    except ingest_target.TargetError as e:
+        print(f"error: {e}", file=sys.stderr, flush=True)
+        raise SystemExit(2) from None
     refuse_marked_entry(target)
     asyncio.run(run(args, target))
 

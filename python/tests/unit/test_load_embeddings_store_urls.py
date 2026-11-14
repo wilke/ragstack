@@ -173,6 +173,20 @@ def test_an_explicitly_configured_setting_is_honoured(run):
     assert (target.qdrant_url, target.es_url) == (DEAD, DEAD)
 
 
+@pytest.mark.parametrize("field,flag", [
+    ("qdrant_url", "--qdrant-url"), ("elasticsearch_url", "--es-url"),
+])
+def test_an_empty_explicitly_configured_setting_is_refused(run, capsys, field, flag):
+    """``QDRANT_URL=`` exported is in ``model_fields_set`` but names nothing, and
+    an empty URL falls back to localhost in the client — production (#454)."""
+    urls = {"qdrant_url": DEAD, "elasticsearch_url": DEAD, field: ""}
+    s = _settings(explicit={"qdrant_url", "elasticsearch_url"}, **urls)
+    rc, reached = run(["--collection-id", "corpus"], settings=s)
+    assert rc == 2 and reached is None
+    err = capsys.readouterr().err
+    assert f"{flag} is required" in err and "EMPTY" in err
+
+
 def test_a_settings_object_that_records_nothing_counts_as_not_configured(run, capsys):
     """No ``model_fields_set`` at all (an older double) is the unsafe unknown:
     treat it as the code default and refuse."""

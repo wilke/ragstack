@@ -1460,7 +1460,7 @@ def _semantic_cap_kwargs(args: argparse.Namespace, target: Any) -> dict[str, Any
 _refuse_size_unit_mismatch = ingest_target.refuse_size_unit_mismatch
 
 
-def main() -> None:
+def main(argv: list[str] | None = None, *, settings: Any | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("input", type=Path, help="JSONL file (one {text,path,metadata} per line)")
     p.add_argument("--tenant", default="public",
@@ -1506,7 +1506,12 @@ def main() -> None:
     p.add_argument("--no-index", action="store_true",
                    help="skip embedding/upsert; only build the catalog")
     # vector store
-    p.add_argument("--qdrant-url", default="http://localhost:6333")
+    p.add_argument("--qdrant-url", default="",
+                   help="Qdrant instance to WRITE to. NO default (#454): the "
+                        "conventional localhost:6333 is the PRODUCTION instance on "
+                        "the deployment host, and this is a write path. Required "
+                        "unless the collection is routed (QDRANT_COLLECTION_ROUTES) "
+                        "or QDRANT_URL is explicitly configured; a route always wins")
     p.add_argument("--qdrant-timeout", type=int, default=120,
                    help="per-request Qdrant timeout in seconds (default: %(default)s)")
     p.add_argument("--collection", default=None,
@@ -1520,7 +1525,11 @@ def main() -> None:
                    help="max concurrent prune-deletes under --replace (default: %(default)s)")
     # text index (BM25)
     p.add_argument("--text-backend", choices=["none", "elasticsearch"], default="none")
-    p.add_argument("--es-url", default="http://localhost:9200")
+    p.add_argument("--es-url", default="",
+                   help="Elasticsearch cluster to WRITE to (only with --text-backend "
+                        "elasticsearch). NO default — see --qdrant-url (#454). "
+                        "Required unless the index is routed (ES_COLLECTION_ROUTES) "
+                        "or ELASTICSEARCH_URL is explicitly configured")
     p.add_argument("--es-index", default="ragstack")
     # embedding
     p.add_argument("--embedding-api", choices=["sidecar", "openai"], default="sidecar")
@@ -1671,7 +1680,7 @@ def main() -> None:
     p.add_argument("--resume", action="store_true", help="skip lines up to the checkpoint")
     p.add_argument("--checkpoint", type=Path, default=None,
                    help="checkpoint file (default: <input>.ckpt)")
-    args = p.parse_args()
+    args = p.parse_args(argv)
     # #828 §6: a missing [markdown] extra with --structure-metadata on is a
     # refusal at configuration (exit 2), before the registry or any store.
     require_structure_backends_or_exit(args.structure_metadata)
@@ -1679,11 +1688,24 @@ def main() -> None:
     # --no-index is catalog-only: it writes to no store, so it registers nothing.
     target = None if args.no_index else ingest_target.resolve_or_exit(
         args,
+        settings=settings,
         model=args.embedding_model,
         chunk_method=args.chunk_method,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
     )
+    if target is not None:
+        # Then decide WHERE, with no guessing (#454): a route, the flag, or an
+        # explicitly configured QDRANT_URL / ELASTICSEARCH_URL — never the code
+        # default, which is localhost and therefore production on this host.
+        try:
+            ingest_target.require_store_urls(
+                target, qdrant_url=args.qdrant_url, es_url=args.es_url,
+                settings=settings, text=args.text_backend == "elasticsearch",
+            )
+        except ingest_target.TargetError as e:
+            print(f"error: {e}", file=sys.stderr, flush=True)
+            raise SystemExit(2) from None
     _refuse_size_unit_mismatch(args, target)
     # #828 §7: a marker that needs the parser (text_render) refuses a missing
     # [markdown] extra whatever --structure-metadata says, before any I/O.

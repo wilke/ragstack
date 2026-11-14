@@ -7,7 +7,12 @@ real ``ElasticsearchTextIndex`` (correct schema, no re-embedding). Idempotent.
 
 Example:
     python scripts/backfill_es_from_qdrant.py \\
+        --qdrant-url <QDRANT_URL> --es-url <ES_URL> \\
         --collection ragstack_salesforce_sfr_embedding_mistral_4096_928f8ebe
+
+Both URLs are REQUIRED, with no default (#454): the conventional
+``localhost:6333`` / ``localhost:9200`` are the PRODUCTION stores on the
+deployment host, and this script writes the ES index.
 
 The ES index name defaults to the collection name, matching the serving API's
 ``_es_index_name()`` when ``qdrant_collection_explicit`` is pinned.
@@ -76,16 +81,23 @@ async def run(args: argparse.Namespace) -> None:
     print(f"done: indexed {total} chunks into ES index '{args.es_index or args.collection}'")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--collection", required=True, help="Qdrant collection to read from")
-    p.add_argument("--qdrant-url", default="http://localhost:6333")
+    p.add_argument("--qdrant-url", required=True,
+                   help="Qdrant instance to READ chunk text from. REQUIRED, no "
+                        "default: the conventional localhost:6333 is the "
+                        "PRODUCTION instance on the deployment host (#454)")
     p.add_argument("--qdrant-timeout", type=float, default=120.0)
-    p.add_argument("--es-url", default="http://localhost:9200")
+    p.add_argument("--es-url", required=True,
+                   help="Elasticsearch cluster to WRITE to. REQUIRED, no default: "
+                        "the conventional localhost:9200 is the PRODUCTION "
+                        "cluster on the deployment host, and this is a write "
+                        "path (#454)")
     p.add_argument("--es-index", default="", help="ES index (default: same as --collection)")
     p.add_argument("--es-api-key", default="")
     p.add_argument("--batch-size", type=int, default=1000)
-    asyncio.run(run(p.parse_args()))
+    asyncio.run(run(p.parse_args(argv)))
 
 
 if __name__ == "__main__":

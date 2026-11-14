@@ -3314,6 +3314,6 @@ G3-G6 line numbers come from the sweep; only G1 and G2's function locations were
 1. **Settle `ingest_jsonl.py`.** Either accept ADR-0006 and delete the script (and its docs), or make it call an exported `loaders.record_doc_id()` / `record_to_document()`. This closes N1 and July I1/I2/I3/I7/I9 in one move. Related: #25.
 2. **Land plan §8's single `chunker_for` factory** with one `ChunkDefaults` (N2, N2b). Related: #609.
 3. **Extract `ragstack/sqlstore.py`** for the DSN, SQLite connect and Postgres bootstrap, and add the DDL lock to the three stores that lack it (N18-N20). This is the cheap first slice of #351.
-4. **Add `ingestion/worker_cli.py` and `IngestTarget.open_stores()`** with required store URLs (N3, N4, N12). This finishes #454.
+4. **Add `ingestion/worker_cli.py` and `IngestTarget.open_stores()`** with required store URLs (N3, N4, N12). #454 itself is closed (each write CLI now requires its URLs); this step removes the per-script copies of that guard.
 5. **Make `store_routing` take an `override`** and route `python/ragstack/ops/ingest_target.py` through it; add one Qdrant-store factory in `deps` (N5, N5b). Related: #445.
 6. **Mechanical cleanups**, each small and already filed: #103 (bisect), #104 (LLM transport + `120.0`), #105 (in-memory base; N6 folds in naturally), #107 (`scoped_id` + `Chunk.from_storage_fields`, also closing N13).

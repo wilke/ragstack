@@ -1994,9 +1994,11 @@ operator tool streams, enriches scholarly metadata, fans out embedding across
 endpoints, and is resumable:
 
 ```bash
-# Run from python/. --qdrant-url and --es-url are NOT optional in practice: they
-# default to :6333 and :9200, which on the deployment host are the PRODUCTION
-# stores, and this is a write path that creates an index and upserts points (#454).
+# Run from python/. --qdrant-url and --es-url have NO default (#454): the
+# conventional :6333 and :9200 are the PRODUCTION stores on the deployment host,
+# and this is a write path that creates an index and upserts points. Each is
+# required unless the collection is routed or QDRANT_URL / ELASTICSEARCH_URL is
+# explicitly configured.
 cd python && python scripts/ingest_jsonl.py corpus.jsonl --tenant public \
   --qdrant-url "$QDRANT_URL" --es-url "$ES_URL" \
   --embedding-api openai \
