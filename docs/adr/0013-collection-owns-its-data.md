@@ -54,9 +54,9 @@ chunks: the owner, grantees including `public`, and admins
   from a file header, an archive or a source payload. Every path that loads, copies or
   rebuilds chunks stamps from the target record.
 - **Recovery vs new instance:** a record whose stores survive (seed, an in-place tenant
-  restore) keeps its key, and its write counter (ADR-0014) is set above every value that
-  any backup of that key records. Replaying data from a backup, or cloning (such as an
-  ADR-0007 restore-as), creates a new instance with a new key.
+  restore) keeps its key and starts a new backup epoch, so no backup taken before the
+  recovery can count as current (ADR-0014). An admin replay (ADR-0014 decision 3), or a
+  clone such as an ADR-0007 restore-as, creates a new instance with a new key.
 - **The writer** is recorded as a separate provenance field, never filtered on.
 
 **3. Who may write is unchanged:** the owner, a `write` grantee, or an admin. Whoever

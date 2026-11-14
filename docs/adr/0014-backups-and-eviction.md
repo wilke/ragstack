@@ -56,8 +56,9 @@ collection's ownership.
 **4. Current means same instance, no write since the backup.**
 - Every committed write advances the collection's write counter. That covers every writer
   (API, workflows, scripts), and deletes and backfills too. The counter never decreases.
-- A backup records the collection's instance key (ADR-0013) and the counter value read when
-  it started. It is **current** while both still match.
+- A backup records the collection's instance key (ADR-0013), its backup epoch, and the
+  counter value read when it started. It is **current** while all three still match. A
+  recovery starts a new epoch (ADR-0013 decision 2).
 - A reload restores from the backup that was current at eviction, and leaves the counter
   unchanged.
 - This replaces `archive_pending` as the eviction test.
@@ -99,9 +100,10 @@ otherwise).
     already dormant when this lands. They never make a resident collection evictable; a
     resident collection needs a new backup first.
   - Versions held only in other writers' Workspaces are not reloaded. Such a reload reports
-    what it skipped and marks the collection incomplete (#633).
-  - A collection that is dormant and shared when this lands is reloaded by an operator, or
-    given a system backup, before the private-only rule applies.
+    what it skipped and flags the collection as incomplete (#633).
+  - A collection that is dormant and shared when this lands is reloaded by an operator, with
+    a credential that can read the owner's archive, or given a system backup, before the
+    private-only rule applies.
 - **Retention is not decided here.** User backups and snapshots follow the owner's own
   storage. System backups follow operator policy.
 - **Today's per-ingest version deltas** (`ragstack-archive/1`) become one way of producing a

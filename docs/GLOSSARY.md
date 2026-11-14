@@ -283,12 +283,13 @@ tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.
 - **User backup:** started by the owner (for BV-BRC users, written to their Workspace by
   the BV-BRC layer above the API).
 - **System backup:** started by an admin or by maintenance, on operator storage.
-- **Current:** the backup's instance key and counter value still match the collection's.
-  Every committed write, deletes included, advances the counter, and it never decreases.
+- **Current:** the backup's instance key, backup epoch and counter value still match the
+  collection's. Every committed write, deletes included, advances the counter, and it never
+  decreases. A recovery starts a new epoch.
 - **Reload vs replay:** a reload after eviction keeps the live owner and grants. Only an
   admin replay into an empty collection or tenant applies the backup's access rows.
 - **Snapshot:** a previous owner's user backup after a transfer. It stays with them and is
-  never a reload source. System backups survive a transfer.
+  never a reload or replay source. System backups survive a transfer.
 - **Eviction:** drops a collection's stores to free a slot and keeps the row `dormant` for
   reload on demand. It **requires a current backup**: a system backup, or an owner-only
   backup while the collection is private. Sharing or transferring a dormant collection
