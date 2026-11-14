@@ -833,6 +833,46 @@ archived, which is an operator problem, not a user one.
 **Always run `dry_run=true` first.** Eviction drops the collection's physical
 Qdrant and ES resources.
 
+### `archive_pending`: a collection that is never evicted
+
+**What it means.** The flag says the stores may hold chunks that no archive
+version holds. It is set on a GoWe ingest that failed after it may have written (#632):
+- a staging failure;
+- a non-COMPLETED submission, unless every document failed on its own;
+- any error or cancellation after the engine may have accepted the submission;
+- a delivered archive whose receipts were unusable or whose version could not be
+  recorded;
+- at startup, an in-flight GoWe ingest that died with the previous process.
+
+A submit the engine refused outright (no connection, or a 4xx) does not set it. A
+flagged row shows `archive_pending: true` on `GET /v1/collections`, and
+`shortfall.reasons.archive_pending` counts it.
+
+**Why it never clears by itself.** An archive version holds only *its own job's*
+chunks: it is a delta, not a snapshot. A later successful ingest does not archive
+the failed load's chunks, so clearing the flag then would let eviction drop chunks
+that exist nowhere else. A re-ingest of those documents cannot help either, because
+the duplicate guard refuses them (#768). An automatic re-archive is not built yet
+(#353). Until it is, the flag stays set and the collection stays physically
+present. That costs capacity, not data.
+
+**Clearing it by hand.** Do this only after you have checked that the archive covers
+the stores. Compare the chunk count in Qdrant/ES for the collection with the sum of
+the `versions/<n>/manifest.json` chunk counts in the owner's Workspace, or
+re-archive the collection first. Then edit the registry row. No endpoint does this,
+on purpose: an admin endpoint is a follow-up.
+
+```sql
+-- sqlite or Postgres registry (the column is an integer 0/1 on both)
+UPDATE collections SET archive_pending = 0 WHERE id = '<collection-id>';
+```
+
+On the JSON registry backend, the flag lives in the sidecar
+`<COLLECTIONS_FILE>.lifecycle.json`: set `"archive_pending": false` in that
+collection's entry. Stop the API first, because the file is rewritten under a lock.
+A running API reads the registry on each eviction, so with the SQL backends no
+restart is needed.
+
 ### The two refusals
 
 - **507** when nothing is evictable — `api/eviction.py:214-232`. The `detail` is

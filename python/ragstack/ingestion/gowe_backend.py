@@ -315,17 +315,28 @@ class GoWeBackend:
         # is submitted exactly as before.
         job.update(provenance_inputs(self.workflow_cwl, self.cwl_path, wf_id))
         labels = {"worker_group": self.worker_group} if self.worker_group else None
+        # From the submit call on, the engine may have accepted the submission
+        # and its tasks may have upserted chunks: any exception — cancellation
+        # included (a shutdown mid-poll) — carries the mark (#632). The one
+        # exception is a submit the engine definitely did not take (no
+        # connection, or a 4xx refusal): marking it would cost the collection
+        # its evictability for good, since the flag never clears.
         try:
-            # From here on the engine may have accepted the submission (a submit
-            # that times out may still have been taken) and its tasks may have
-            # upserted chunks: any exception carries the mark (#632).
             sub = await self.client.submit(
                 wf_id, job, labels=labels, output_destination=output_destination, token=token
             )
+        except GoWeError as e:
+            if not e.definitely_not_accepted:
+                _mark_may_have_written(e)
+            raise
+        except BaseException as e:
+            _mark_may_have_written(e)
+            raise
+        try:
             return await self._collect(items, job, sub, wf_id, token=token,
                                        output_destination=output_destination,
                                        workspace=workspace)
-        except Exception as e:
+        except BaseException as e:
             _mark_may_have_written(e)
             raise
 

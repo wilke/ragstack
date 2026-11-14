@@ -87,7 +87,7 @@ log = logging.getLogger(__name__)
 # Why a record was NOT chosen — the keys of ``Shortfall.reasons``, in the
 # order the checks run. Mirrored by contracts/schemas/eviction_response.json.
 REASON_NOT_ACTIVE = "not_active"          #: state != active (dormant, restoring, archiving, lost)
-REASON_ARCHIVE_PENDING = "archive_pending"  #: the last load's archive step failed
+REASON_ARCHIVE_PENDING = "archive_pending"  #: the stores may be ahead of the archive (#632)
 REASON_NO_ARCHIVE = "no_archive"          #: no version was ever archived
 REASON_IN_FLIGHT = "in_flight"            #: an accepted/running ingest job targets it
 REASON_PROTECTED = "protected"            #: its stores are the shared surface's / shared

@@ -1252,6 +1252,10 @@ def _gowe_backend(http_request: Request) -> GoWeBackend:
     return backend
 
 
+#: How long a cancelled GoWe ingest waits for its ``archive_pending`` write.
+_CANCELLED_FLAG_TIMEOUT_S = 5.0
+
+
 async def _flag_archive_pending(
     collection_store: CollectionStore | None, target: CollectionEntry, job_id: str
 ) -> None:
@@ -1298,11 +1302,15 @@ async def _run_gowe_ingest(
     archive" (ADR-0005 §5: eviction refuses such a row). It is set on EVERY
     failure that may have written to the stores (#632): a staging failure (the
     load happened, the archive was not delivered), a non-COMPLETED submission
-    whose batches may have upserted (``GoWeRun.may_have_written``), and any
+    whose batches may have upserted (``GoWeRun.may_have_written``), any
     exception raised after the engine may have accepted the submission —
     including a :class:`GoWeContractError` on a DELIVERED archive whose
-    receipts are unusable. A failure before submit (duplicate names, workflow
-    registration) writes nothing and does not flag the row.
+    receipts are unusable, and a cancellation (best effort, then re-raised) —
+    and a delivered archive whose version could not be recorded. A failure
+    before submit (duplicate names, workflow registration) or a submit the
+    engine definitely refused (no connection, a 4xx) writes nothing and does
+    not flag the row. A process killed outright runs no handler; the startup
+    interruption sweep flags those rows instead (``deps.py``).
 
     Nothing here clears the flag. A version is a per-job DELTA (that job's
     chunks only), so a later successful archive does not cover the earlier
@@ -1349,6 +1357,9 @@ async def _run_gowe_ingest(
         if run.may_have_written and not run.archive_ref:
             # A non-COMPLETED submission whose sibling batches may have upserted
             # before `pack` could run: no version exists for those chunks (#632).
+            # (`may_have_written` is only ever set on a run with no archive; the
+            # second test states the invariant this branch relies on rather
+            # than trusting it.)
             await _flag_archive_pending(collection_store, target, job_id)
 
         if run.archive_ref and collection_store is not None and version is not None:
@@ -1359,6 +1370,10 @@ async def _run_gowe_ingest(
             except Exception:  # noqa: BLE001 — the archive exists; the list is repairable
                 log.warning("ingest job %s: could not record version %s on %r",
                             job_id, version, target.id, exc_info=True)
+                # The stores certainly hold this run's chunks and the row does
+                # not list the version that holds them: restore would skip it
+                # if it trusted the row, so the row must not be evictable (#632).
+                await _flag_archive_pending(collection_store, target, job_id)
         for r in run.results:
             await job_store.mark_item(
                 job_id, r.item_id, status=r.status, chunk_ids=r.chunk_ids, error=r.error
@@ -1397,6 +1412,22 @@ async def _run_gowe_ingest(
 
             chunks = sum(len(r.chunk_ids or []) for r in run.results)
             write_ingest_manifest_for(target, source=source, chunk_count=chunks or None)
+    except asyncio.CancelledError as e:
+        # The task was cancelled (a server shutdown mid-poll). After submit the
+        # engine keeps running the submission without us, and the restart's
+        # interruption sweep only fails the job — so flag the row now, best
+        # effort: shielded from a second cancellation, bounded so shutdown is
+        # never held up, and the cancellation always propagates (#632).
+        if may_have_written(e):
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(_flag_archive_pending(collection_store, target, job_id)),
+                    timeout=_CANCELLED_FLAG_TIMEOUT_S,
+                )
+            except BaseException:  # noqa: BLE001 — never mask the cancellation
+                log.warning("ingest job %s: cancelled; could not flag archive_pending on %r",
+                            job_id, target.id)
+        raise
     except Exception as e:  # noqa: BLE001 — a background task must never raise
         log.warning("ingest job %s failed: %s", job_id, type(e).__name__)
         if may_have_written(e):

@@ -168,3 +168,111 @@ async def test_a_flag_that_cannot_be_written_is_not_fatal(client, gowe, monkeypa
     job = await _job(await _upload(client, "a.pdf"))
     assert job.status == "failed"  # the run's own outcome, not the flag's failure
     assert gowe["store"].calls.get("set_archive_pending") == 1
+
+
+# --- fix round: refused submits, append_version, cancellation --------------- #
+
+@pytest.mark.parametrize(("attrs", "flagged"), [
+    ({"status_code": 400}, False),
+    ({"connect_error": True}, False),
+    ({"status_code": 503}, True),
+    ({}, True),  # a timeout: no status, a connection was made
+], ids=["400", "connect-error", "503", "timeout"])
+async def test_a_submit_the_engine_refused_does_not_flag_the_row(
+        client, gowe, attrs, flagged):  # noqa: F811
+    """No connection or a 4xx: the engine took nothing, so the never-clearing
+    flag would cost evictability for nothing. A 5xx or a timeout is ambiguous."""
+    await _seed_one_version(client, gowe)
+
+    async def submit(*a, **kw):
+        raise GoWeError("POST /api/v1/submissions failed", **attrs)
+
+    gowe["backend"].client.submit = submit  # type: ignore[method-assign]
+    job = await _job(await _upload(client, "a.pdf"))
+    assert job.status == "failed" and job.error == "GoWeError"
+    row = await gowe["store"]._inner.get("lib1")
+    assert row.archive_pending is flagged and evictable(row) is not flagged
+
+
+async def test_an_unrecorded_delivered_version_flags_the_row(client, gowe, monkeypatch):  # noqa: F811
+    """The archive was delivered and the stores certainly wrote, but the row
+    does not list the version that holds the chunks."""
+    await _seed_one_version(client, gowe)
+
+    async def broken(cid, version):
+        raise RuntimeError("registry write failed")
+
+    monkeypatch.setattr(gowe["store"]._inner, "append_version", broken)
+    job = await _job(await _upload(client, "a.pdf"))
+    assert job.status == "completed"  # the run itself succeeded
+    row = await gowe["store"]._inner.get("lib1")
+    assert row.versions == [1]
+    assert row.archive_pending is True and not evictable(row)
+
+
+async def test_a_failing_flag_write_on_an_exception_path_is_not_fatal(
+        client, gowe, monkeypatch):  # noqa: F811
+    await _seed_one_version(client, gowe)
+
+    async def broken(cid, pending):
+        raise RuntimeError("registry down")
+
+    async def wait(sub_id, **kw):
+        raise GoWeError("poll failed")
+
+    monkeypatch.setattr(gowe["store"]._inner, "set_archive_pending", broken)
+    gowe["backend"].client.wait = wait  # type: ignore[method-assign]
+    job = await _job(await _upload(client, "a.pdf"))
+    assert job.status == "failed" and job.error == "GoWeError"
+    assert gowe["store"].calls.get("set_archive_pending") == 1
+
+
+async def _cancel_mid_poll(gowe) -> None:  # noqa: F811
+    """Drive _run_gowe_ingest directly, cancel it while it polls."""
+    import asyncio
+
+    from ragstack.api.routers.documents import _run_gowe_ingest
+    from ragstack.ingestion.manifest import WorkItem
+
+    polling = asyncio.Event()
+
+    async def wait(sub_id, **kw):
+        polling.set()
+        await asyncio.Event().wait()  # never returns
+
+    backend = gowe["backend"]
+    backend.client.wait = wait  # type: ignore[method-assign]
+    js = app.state.job_store
+    job = await js.create("upload", tenant_id="t", collection_id="lib1")
+    task = asyncio.create_task(_run_gowe_ingest(
+        js, backend, job.job_id,
+        [WorkItem(item_id="a", source="ws:///alice@patricbrc.org/home/a.pdf")],
+        {"version": "2"}, "tok", "ws:///alice@patricbrc.org/home/v/",
+        app.state.collections.resolve("lib1"), "upload", gowe["workspace"],
+        collection_store=gowe["store"], version=2,
+    ))
+    await asyncio.wait_for(polling.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_a_cancellation_mid_poll_flags_the_row_and_still_propagates(
+        client, gowe):  # noqa: F811
+    """A server shutdown cancels the background task while the engine keeps
+    running the submission; the restart's sweep would only fail the job."""
+    await _seed_one_version(client, gowe)
+    await _cancel_mid_poll(gowe)
+    row = await gowe["store"]._inner.get("lib1")
+    assert row.archive_pending is True and not evictable(row)
+
+
+async def test_a_cancellation_whose_flag_write_fails_still_propagates(
+        client, gowe, monkeypatch):  # noqa: F811
+    await _seed_one_version(client, gowe)
+
+    async def broken(cid, pending):
+        raise RuntimeError("registry down")
+
+    monkeypatch.setattr(gowe["store"]._inner, "set_archive_pending", broken)
+    await _cancel_mid_poll(gowe)  # asserts CancelledError, not RuntimeError
