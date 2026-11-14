@@ -90,12 +90,11 @@ not own and whose other readers no registry here can enumerate, so
 the way it already refuses a store another registry id serves. `purge=false` still
 works and is how a routed collection is released: the binding goes, the store stays.
 
-**Known gap.** The `restore-collection` submission seeds the bare
-`QDRANT_URL`/`ELASTICSEARCH_URL` — the gate is built once at startup, before any
-record exists, so neither leg is routed there. Restoring a routed collection aims
-the worker at the default instances; `COLLECTION_RESTORE_INPUTS_JSON` is the
-override until both legs are resolved per record inside
-`CollectionRestorer.inputs_for`.
+**Restore routes too** (#442). The `restore-collection` submission resolves both
+legs per record inside `CollectionRestorer.inputs_for`, through the same
+`store_routing` functions as ingest, so a routed collection is replayed onto its
+routed instances. `COLLECTION_RESTORE_INPUTS_JSON` may not set `qdrant_url` /
+`es_url` (refused at boot).
 
 ## The migration path: → a sharded cluster
 

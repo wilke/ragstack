@@ -59,6 +59,12 @@ FAILURE_MARKERS = ("ArchiveCorrupt", "SpecMismatch")
 #: The workflow input that carries the version directories (restore-collection.cwl).
 VERSIONS_INPUT = "versions"
 
+#: The store targets a restore writes to (#442). They are a property of the
+#: COLLECTION — resolved per record through ``ragstack.store_routing``, the same
+#: functions the ingest path uses — never deployment-wide static inputs, so
+#: ``COLLECTION_RESTORE_INPUTS_JSON`` may not set them (refused at boot).
+STORE_URL_INPUTS = frozenset({"qdrant_url", "es_url"})
+
 #: Where the repo keeps the restore workflow (used when the setting is empty).
 DEFAULT_CWL = Path(__file__).resolve().parents[2] / "cwl" / "restore-collection.cwl"
 
@@ -179,6 +185,7 @@ class CollectionRestorer:
         cwl_path: str | Path = "",
         workflow_name: str = "ragstack-restore-collection",
         static_inputs: dict[str, Any] | None = None,
+        store_urls: Callable[[CollectionRecord], dict[str, str]] | None = None,
         worker_group: str = "",
         tool_image: str = "",
         poll_interval: float = 5.0,
@@ -192,6 +199,10 @@ class CollectionRestorer:
         self._cwl_text: str | None = None
         self.workflow_name = workflow_name
         self.static_inputs = dict(static_inputs or {})
+        # Per-record store targets (#442): ``rec -> {"qdrant_url", "es_url"}``,
+        # resolved through the collection's routes. Applied OVER the static
+        # inputs, so no deployment-wide value can redirect a routed collection.
+        self._store_urls = store_urls
         self.worker_group = (worker_group or "").strip()
         # Retired (ADR-0010, #655): the image a workflow names is stamped into
         # the CWL at release time; nothing is substituted when it is read.
@@ -234,9 +245,30 @@ class CollectionRestorer:
     def inputs_for(self, rec: CollectionRecord, versions: list[tuple[int, str]]) -> dict[str, Any]:
         """The workflow's inputs object: every version directory as a
         ``ws://`` Directory (pre-staged by the engine), the registry identity
-        the loader verifies against, and the store settings."""
+        the loader verifies against, and the store settings.
+
+        The store URLs are resolved for THIS record (``store_urls``, #442) and
+        win over the static inputs: a routed collection is restored onto the
+        instances the API reads it from, never onto the defaults (ADR-0002 —
+        the physical store is the collection's identity).
+
+        Without a resolver the static inputs must name both URLs themselves
+        (a hand-wired restorer); otherwise this raises :class:`RestoreError`
+        rather than submit a run the engine can only fail later on a missing
+        required CWL input — the row is left ``dormant`` for a retry."""
+        if self._store_urls is not None:
+            store_urls = self._store_urls(rec)
+        else:
+            missing = sorted(k for k in STORE_URL_INPUTS if not self.static_inputs.get(k))
+            if missing:
+                raise RestoreError(
+                    f"restore of {rec.spec.id!r} has no store target ({', '.join(missing)}): "
+                    "the restorer was built without a store_urls resolver", state=DORMANT,
+                )
+            store_urls = {}
         return {
             **self.static_inputs,
+            **store_urls,
             VERSIONS_INPUT: [{"class": "Directory", "location": uri} for _n, uri in versions],
             "collection_id": rec.spec.id,
             "spec_hash": rec.spec_hash,

@@ -495,8 +495,8 @@ async def test_a_routed_collection_is_ingested_to_its_routed_instance(
     The route keys on the PHYSICAL collection name (``lib1_phys``), the same key
     the API's own store construction uses — seeding the bare ``qdrant_url``
     instead would build a second, invisible copy of a store that already exists
-    on the routed instance. This is the deliberate divergence from the restore
-    path, which still seeds the unrouted URL (tracked as a follow-up).
+    on the routed instance. The restore path resolves it the same way (#442,
+    tests/unit/test_deps.py).
 
     The vector leg alone is routed here: ``es_collection_routes`` is empty, so
     ``es_url`` stays the bare setting. One leg routed and the other not is a
