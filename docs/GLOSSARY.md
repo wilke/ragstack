@@ -248,7 +248,9 @@ grant suffices to ingest there, because per-chunk `tenant_id` stamping is what
 isolates writers) keys on the entry's `is_shared_surface` **flag** — never on
 what `default` points at. Keyed on the pointer, aiming `default` at an owned
 collection would let any *reader* of it ingest into somebody else's corpus just
-by omitting `collection`.
+by omitting `collection`. ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed,
+ends this exemption: the shared corpus gets a service-account owner and ingest needs
+`write`.)
 
 ## Caller, owner, writer
 
@@ -258,18 +260,17 @@ ownership bug so far lived where they are not.
 | | What it is | Where it is recorded |
 |---|---|---|
 | **caller** | the authenticated principal making *this* request (whose token or key is on it) | nowhere durable; the request's `Principal` |
-| **owner** | the one subject the collection belongs to; it changes on transfer | the active `owner` row in `shares` (ADR-0004 decision 5) |
-| **writer** | the subject that ingested a given chunk; it never changes | the per-chunk stamp |
+| **owner** | the one subject the collection belongs to; it changes on transfer | the active `owner` row in `shares` (ADR-0004 decision 5). Not `spec.owner`, which records the **creator** and never changes |
+| **writer** | the subject that ingested a given chunk; it never changes | today, the per-chunk stamp |
 
 They differ when an admin or a grantee with `write` ingests, and after a transfer. Per
-[ADR-0013](adr/0013-collection-owns-its-data.md) (Proposed), data and backups belong to the
-**owner**, visibility follows the collection's access rows, and the writer stamp is
-provenance only.
+[ADR-0013](adr/0013-collection-owns-its-data.md) (Proposed), a collection owns its data:
+new collections stamp every chunk with the collection's instance key, and the writer
+becomes an unfiltered provenance field.
 
 **Naming trap:** the per-chunk stamp is called `tenant_id`, and `Principal.tenant` holds
-the caller's subject (`bvbrc:<user>` for a BV-BRC user). Neither is a **tenant** in the
-sense above, which is a deployment. The stamp keeps its name and means the writer;
-`Principal.tenant` becomes `subject` (ADR-0013 decision 4).
+the caller's subject (`bvbrc:<user>` for a BV-BRC user) or an API key's configured label.
+Neither is a **tenant** in the sense above, which is a deployment.
 
 ## Backup, snapshot, eviction, deletion
 
@@ -278,14 +279,15 @@ tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.
 
 - **User backup:** started by the owner (for BV-BRC users, written to their Workspace by
   the BV-BRC layer above the API).
-- **System backup:** started by an admin or by maintenance, on operator storage. Both kinds
-  carry the access rows, so a replay keeps ownership.
-- **Current:** no write of any kind since the backup completed (`archive_pending` is the
-  "written since" flag).
+- **System backup:** started by an admin or by maintenance, on operator storage.
+- **Current:** the collection's write counter has not moved since the backup. Every write,
+  deletes included, advances it.
+- **Reload vs replay:** a reload after eviction keeps the live owner and grants. Only an
+  admin replay into an empty collection or tenant applies the backup's access rows.
 - **Snapshot:** a previous owner's backup after a transfer. It stays with them and is never
-  a restore source for the new owner.
+  a reload source.
 - **Eviction:** drops a collection's stores to free a slot and keeps the row `dormant` for
-  reload on demand. It **requires a current backup the server can read**.
+  reload on demand. It **requires a current backup**.
 - **Deletion:** removes the collection. It needs no backup.
 
 ---
