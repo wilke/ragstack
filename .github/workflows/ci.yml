@@ -246,7 +246,7 @@ jobs:
         # have silently turned this job into a no-op. `RAGSTACK_TEST_PG_DSN` is
         # likewise the post-#369 name (the old `TEST_PG_DSN` is inert); it names
         # the `ragstack_test` database of the job's own postgres service, which
-        # passes the fixture's deployment-database denylist. This re-enables a
+        # passes the fixture's test-database guard (#369). This re-enables a
         # suite CI had not run since the rename, so its first run may surface rot.
         env:
           RAGSTACK_TEST_ES_URL: http://localhost:9200

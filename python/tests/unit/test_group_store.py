@@ -9,7 +9,6 @@ and every mutation is soft (never DELETE) and audited.
 """
 from __future__ import annotations
 
-import os
 import sqlite3
 from types import SimpleNamespace
 
@@ -342,12 +341,8 @@ async def test_postgres_store_shares_the_sqlite_schema():
     assert isinstance(PostgresGroupStore("postgresql://x/y"), object)
 
 
-@pytest.mark.skipif(
-    not os.environ.get("RAGSTACK_TEST_POSTGRES_DSN"),
-    reason="set RAGSTACK_TEST_POSTGRES_DSN to exercise the postgres backend",
-)
-async def test_postgres_round_trip():
-    store = PostgresGroupStore(os.environ["RAGSTACK_TEST_POSTGRES_DSN"])
+async def test_postgres_round_trip(pg_test_dsn):
+    store = PostgresGroupStore(pg_test_dsn)
     try:
         assert (await store.get_group(PUBLIC)) is not None
         assert await store.is_member("x:y", PUBLIC) is True

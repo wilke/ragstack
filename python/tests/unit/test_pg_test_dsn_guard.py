@@ -1,4 +1,8 @@
-"""``pg_test_dsn`` refuses a DSN naming a deployment database (#369).
+"""``pg_test_dsn`` refuses any DSN not provably naming a test database (#369).
+
+The rule (see ``tests/conftest.py``): a ``postgresql://`` URL with no connection
+service; database not on the denylist; database name contains ``test`` or
+``scratch``.
 
 The guard is pure — it parses the DSN and opens no connection — so most cases
 here call it directly with fake DSNs. Two cases run the real fixture in a
@@ -33,7 +37,7 @@ PG_TARGET = "tests/unit/test_collection_store_versions.py::test_postgres_next_ve
         ("postgresql://u:pw@db.example/", {"PGDATABASE": "ragstack"}),     # libpq env
         ("postgresql://ragstack:pw@db.example", {}),                       # defaults to user
         ("postgresql://db.example", {"PGUSER": "ragstack"}),
-        ("postgresql://u:pw@db.example/acme", {"RAGSTACK_TEST_PG_DENY": "dev, Acme"}),
+        ("postgresql://u:pw@db.example/acme_test", {"RAGSTACK_TEST_PG_DENY": "dev, Acme_Test"}),
     ],
 )
 def test_a_deployment_database_is_refused(dsn, env):
@@ -45,11 +49,27 @@ def test_a_deployment_database_is_refused(dsn, env):
 @pytest.mark.parametrize(
     "dsn, env",
     [
+        # a per-tenant database, named after its tenant by new-tenant.sh
+        ("postgresql://acme:pw@db.example:5432/acme", {}),
+        ("postgresql://u:pw@db.example/ragstack2", {}),        # not a denylist hit either
+        ("postgresql://u:pw@db.example/", {"PGDATABASE": "mine"}),
+        ("postgresql://dev:pw@db.example", {}),                # defaults to the user
+    ],
+)
+def test_a_database_not_marked_as_a_test_database_is_refused(dsn, env):
+    problem = _pg_test_dsn_problem(dsn, env)
+    assert problem is not None and "does not mark it as a test database" in problem
+    assert ":pw@" not in problem
+
+
+@pytest.mark.parametrize(
+    "dsn, env",
+    [
         ("postgresql://ragstack:ragstack@localhost:5432/ragstack_test", {}),
         ("postgresql://u:pw@db.example/scratch", {"RAGSTACK_TEST_PG_DENY": "dev,acme"}),
-        ("postgresql://u:pw@db.example/", {"PGDATABASE": "mine"}),
-        # whole-name match, not substring: a name merely containing "ragstack"
-        ("postgresql://u:pw@db.example/ragstack2", {}),
+        ("postgresql://u:pw@db.example/", {"PGDATABASE": "My_Scratch_DB"}),
+        ("postgresql://u:pw@db.example/?dbname=TEST1", {}),
+        ("postgresql://ragstack_test@db.example", {}),           # defaults to the user
     ],
 )
 def test_a_scratch_database_is_allowed(dsn, env):
@@ -59,6 +79,20 @@ def test_a_scratch_database_is_allowed(dsn, env):
 def test_a_non_url_dsn_is_refused():
     problem = _pg_test_dsn_problem("host=db.example dbname=ragstack password=s3cret", {})
     assert problem is not None and "postgresql://" in problem
+    assert "s3cret" not in problem
+
+
+@pytest.mark.parametrize(
+    "dsn, env",
+    [
+        ("postgresql://u:s3cret@db.example/ragstack_test?service=prod", {}),
+        ("postgresql://u:s3cret@db.example/ragstack_test", {"PGSERVICE": "prod"}),
+    ],
+)
+def test_a_connection_service_is_refused(dsn, env):
+    """The database then comes from a service file the guard cannot read."""
+    problem = _pg_test_dsn_problem(dsn, env)
+    assert problem is not None and "connection service" in problem
     assert "s3cret" not in problem
 
 

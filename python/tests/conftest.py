@@ -59,16 +59,22 @@ touch a real database by default again:
   — the schema isolation here is defence in depth, not a substitute for
   pointing this at something other than shared/production infra.
 - A second line of defence refuses (``pytest.fail``, not skip — the opt-in is
-  *claimed*, and it names a database no test may touch) a DSN whose database
-  is a deployment's. The rule, exactly: the effective database name (the URL
-  path; else a ``dbname``/``database`` query key; else ``PGDATABASE``; else the
-  user name, which is what libpq and asyncpg fall back to) is compared,
-  case-insensitively and whole-name, against ``_PG_DENY_BUILTIN`` plus the
-  comma-separated ``RAGSTACK_TEST_PG_DENY``. A match fails. Nothing else is
-  inferred: ``ragstack_test`` passes because it is not on the list, not
-  because it contains "test". The built-in list cannot know per-tenant
-  databases — ``apptainer/new-tenant.sh --postgres`` names each after its
-  tenant — so a host that has those exports them in ``RAGSTACK_TEST_PG_DENY``.
+  *claimed*, and it names a database no test may touch) a DSN that is not
+  provably a test database. The rule, exactly, checked in this order:
+
+  1. The DSN must be a ``postgresql://`` URL, and must not name a connection
+     service (a ``service`` query key, or ``PGSERVICE`` set): in either case
+     the database comes from somewhere the guard cannot read.
+  2. The effective database name — the URL path; else a ``dbname``/``database``
+     query key; else ``PGDATABASE``; else the user name, which is what libpq
+     and asyncpg fall back to — must not be on the denylist:
+     ``_PG_DENY_BUILTIN`` plus the comma-separated ``RAGSTACK_TEST_PG_DENY``
+     (case-insensitive, whole name).
+  3. It must contain ``test`` or ``scratch`` (case-insensitive substring), e.g.
+     ``ragstack_test``. This is what keeps per-tenant databases out:
+     ``apptainer/new-tenant.sh --postgres`` names each after its tenant, so no
+     built-in denylist can enumerate them.
+
   The refusal names the database and a password-redacted DSN, never the
   password.
 """
@@ -214,8 +220,12 @@ def _doi_enrichment_off(monkeypatch):
 #: default — the one #369's migration landed in; ``postgres`` is the server's
 #: maintenance database (and ``new-tenant.sh``'s example admin DSN); the
 #: templates are cloned into every new database. Per-tenant databases are named
-#: after the tenant and so cannot be listed here — see ``RAGSTACK_TEST_PG_DENY``.
+#: after the tenant and so cannot be listed here; ``_PG_TEST_MARKERS`` keeps
+#: them out instead.
 _PG_DENY_BUILTIN = frozenset({"ragstack", "postgres", "template0", "template1"})
+
+#: A test database's name must contain one of these (case-insensitive).
+_PG_TEST_MARKERS = ("test", "scratch")
 
 
 def _redact_dsn(dsn: str) -> str:
@@ -266,19 +276,27 @@ def _pg_test_dsn_problem(dsn: str, env) -> str | None:
     Pure — opens no connection — so ``tests/unit/test_pg_test_dsn_guard.py``
     exercises it with fake DSNs. See the module docstring for the rule.
     """
-    from urllib.parse import urlsplit
+    from urllib.parse import parse_qs, urlsplit
 
     try:
-        scheme = urlsplit(dsn).scheme.lower()
+        parts = urlsplit(dsn)
+        scheme = parts.scheme.lower()
     except ValueError:
         scheme = ""
     if scheme not in {"postgres", "postgresql"}:
         # Not echoed at all: a key=value DSN has no URL shape to redact.
         return (
-            "RAGSTACK_TEST_PG_DSN is not a postgresql:// URL; the deployment-database "
-            "guard cannot read its database name, so it refuses."
+            "RAGSTACK_TEST_PG_DSN is not a postgresql:// URL; the test-database "
+            "guard cannot read its database name, so it refuses (#369)."
         )
     redacted = _redact_dsn(dsn)
+    if "service" in parse_qs(parts.query) or env.get("PGSERVICE"):
+        return (
+            f"RAGSTACK_TEST_PG_DSN ({redacted}) resolves through a connection service "
+            "(a 'service' query key or PGSERVICE), so its database comes from a "
+            "service file the test-database guard cannot see; it refuses (#369). "
+            "Name the database in the URL and unset PGSERVICE."
+        )
     database = _pg_effective_database(dsn, env)
     extra = {
         n.strip().lower() for n in env.get("RAGSTACK_TEST_PG_DENY", "").split(",") if n.strip()
@@ -290,8 +308,16 @@ def _pg_test_dsn_problem(dsn: str, env) -> str | None:
             f"RAGSTACK_TEST_PG_DSN names database {database!r} ({redacted}), which is "
             f"on the {source} denylist of deployment databases (#369). Postgres tests "
             "create and drop schemas there. Point RAGSTACK_TEST_PG_DSN at a scratch "
-            "database whose name is not on the list, e.g. 'ragstack_test'. Denied: "
-            f"{', '.join(sorted(denied))}."
+            "database whose name contains 'test' or 'scratch', e.g. 'ragstack_test'. "
+            f"Denied: {', '.join(sorted(denied))}."
+        )
+    if not any(m in database.lower() for m in _PG_TEST_MARKERS):
+        return (
+            f"RAGSTACK_TEST_PG_DSN names database {database!r} ({redacted}), whose name "
+            "does not mark it as a test database (#369). Postgres tests create and drop "
+            "schemas there, and deployment databases — per-tenant ones are named after "
+            "their tenant — cannot all be listed. Use a scratch database whose name "
+            "contains 'test' or 'scratch', e.g. 'ragstack_test'."
         )
     return None
 

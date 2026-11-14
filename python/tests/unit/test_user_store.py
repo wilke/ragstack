@@ -16,7 +16,6 @@ converted into a service account silently, and disabling is soft state
 from __future__ import annotations
 
 import asyncio
-import os
 import sqlite3
 from types import SimpleNamespace
 
@@ -744,12 +743,8 @@ async def test_postgres_store_shares_the_sqlite_schema():
     assert set(us._ROLE_SET_COLUMNS) < set(us._COLUMNS)
 
 
-@pytest.mark.skipif(
-    not os.environ.get("RAGSTACK_TEST_POSTGRES_DSN"),
-    reason="set RAGSTACK_TEST_POSTGRES_DSN to exercise the postgres backend",
-)
-async def test_postgres_round_trip():
-    store = PostgresUserStore(os.environ["RAGSTACK_TEST_POSTGRES_DSN"])
+async def test_postgres_round_trip(pg_test_dsn):
+    store = PostgresUserStore(pg_test_dsn)
     subject = "bvbrc:pg-roundtrip@patricbrc.org"
     try:
         provisional = await store.ensure_provisional(subject, ISSUER)
