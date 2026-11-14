@@ -79,8 +79,8 @@ collection's ownership.
 otherwise).
 - On transfer, the previous owner's user backups become **snapshots**. They stay with that
   owner, and they are never a reload or replay source for the collection.
-- The collection is current again once the new owner backs it up (the BV-BRC layer may do
-  this on first use), or once a system backup exists.
+- The collection is current again once the new owner backs it up, or once a system backup
+  exists.
 
 ## Consequences
 
