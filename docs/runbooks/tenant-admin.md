@@ -845,7 +845,10 @@ version holds. It is set on a GoWe ingest that failed after it may have written 
 - at startup, an in-flight GoWe ingest that died with the previous process.
 
 A submit the engine refused outright (no connection, or a 4xx) does not set it. A
-flagged row shows `archive_pending: true` on `GET /v1/collections`, and
+submission the engine accepted but which failed before any task ran *is* flagged,
+as is an interrupted job that died before its submit: the API cannot tell either
+from a run that wrote, so these are accepted false positives. They cost
+evictability, never data. A flagged row shows `archive_pending: true` on `GET /v1/collections`, and
 `shortfall.reasons.archive_pending` counts it.
 
 **Why it never clears by itself.** An archive version holds only *its own job's*
@@ -857,9 +860,14 @@ the duplicate guard refuses them (#768). An automatic re-archive is not built ye
 present. That costs capacity, not data.
 
 **Clearing it by hand.** Do this only after you have checked that the archive covers
-the stores. Compare the chunk count in Qdrant/ES for the collection with the sum of
-the `versions/<n>/manifest.json` chunk counts in the owner's Workspace, or
-re-archive the collection first. Then edit the registry row. No endpoint does this,
+the stores. That means checking **chunk ids**, not counts. Every chunk id in the
+collection's Qdrant points (and ES documents) must appear in some version's
+`chunks.jsonl.gz` in the owner's Workspace, after the replay order's tombstones are
+applied. **Matching counts are not proof.** A document deleted after the failed load
+can hide that load's extra chunks, so the totals agree while the failed load's
+chunks are in no version. If you cannot do the id comparison, leave the flag set: an
+automatic re-archive does not exist yet (#353). Once coverage is shown, edit the
+registry row. No endpoint does this,
 on purpose: an admin endpoint is a follow-up.
 
 ```sql

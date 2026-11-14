@@ -2152,6 +2152,10 @@ async def interrupted_gowe_ingest_collections(job_store: Any, cfg: Any) -> set[s
     positive that costs the collection its evictability, never data."""
     if getattr(cfg, "ingest_backend", "local") != "gowe":
         return set()
+    if not getattr(job_store, "sweeps_interrupted", True):
+        # Postgres (#7): nothing is swept, its in-flight rows may be live jobs
+        # of sibling workers — and reading them would open the pool at boot.
+        return set()
     out: set[str] = set()
     for cid in await job_store.active_collection_ids(stale_after=_SWEEP_HORIZON):
         if await job_store.active_for_collection(cid, stale_after=_SWEEP_HORIZON,
@@ -2367,12 +2371,22 @@ async def lifespan(app: FastAPI):
     # Mark them failed at startup rather than leaving them stuck "running" forever.
     # Each store decides whether the sweep is safe: the multi-process Postgres
     # store no-ops it (an unscoped sweep would reap sibling workers' live jobs).
-    gowe_interrupted = await interrupted_gowe_ingest_collections(job_store, settings)
+    #
+    # #632: the collections of interrupted GoWe ingests are flagged
+    # archive_pending FIRST, so a crash anywhere later in this boot leaves the
+    # flags written — while the jobs are still in flight, the next boot finds
+    # them again (flagging twice is harmless). That needs the registry here.
+    #
+    # The durable collection registry. Defaults to the JSON-file backend, i.e.
+    # exactly the shipped `collections_file` behaviour; sqlite/postgres are seeded
+    # once from that file so switching backends needs no hand-transcription.
+    collection_store = make_collection_store(settings)
+    await seed_from_json(collection_store, settings)
+    app.state.collection_store = collection_store
+    await flag_interrupted_collections(
+        collection_store, await interrupted_gowe_ingest_collections(job_store, settings)
+    )
     interrupted = await job_store.fail_interrupted()
-    if not interrupted:
-        # A store that no-ops the sweep (Postgres, #7) interrupted nothing: its
-        # in-flight rows may be sibling workers' live jobs.
-        gowe_interrupted = set()
     if interrupted:
         log.warning(
             "marked %d interrupted ingest job(s) as failed at startup", interrupted
@@ -2459,13 +2473,7 @@ async def lifespan(app: FastAPI):
     app.state.rewriters = _build_rewriters(llm)
     app.state.reranker = _build_reranker(http_client)
 
-    # The durable collection registry. Defaults to the JSON-file backend, i.e.
-    # exactly the shipped `collections_file` behaviour; sqlite/postgres are seeded
-    # once from that file so switching backends needs no hand-transcription.
-    collection_store = make_collection_store(settings)
-    await seed_from_json(collection_store, settings)
-    app.state.collection_store = collection_store
-    await flag_interrupted_collections(collection_store, gowe_interrupted)
+    # (The collection registry was built before the job sweep, above.)
 
     # Collection lifecycle (#358): the gate every collection-scoped read/ingest
     # passes through after authorization (dormant → one restore + 503,

@@ -1425,8 +1425,10 @@ async def _run_gowe_ingest(
                     timeout=_CANCELLED_FLAG_TIMEOUT_S,
                 )
             except BaseException:  # noqa: BLE001 — never mask the cancellation
-                log.warning("ingest job %s: cancelled; could not flag archive_pending on %r",
-                            job_id, target.id)
+                # A timed-out wait_for leaves the shielded write running: it
+                # may still land.
+                log.warning("ingest job %s: cancelled; may not have flagged "
+                            "archive_pending on %r", job_id, target.id)
         raise
     except Exception as e:  # noqa: BLE001 — a background task must never raise
         log.warning("ingest job %s failed: %s", job_id, type(e).__name__)

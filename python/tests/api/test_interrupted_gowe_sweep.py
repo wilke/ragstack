@@ -75,17 +75,24 @@ def _in_memory_settings(monkeypatch) -> None:
     monkeypatch.setattr(s, "ingest_backend", "gowe")
 
 
-async def _boot(monkeypatch, job_store) -> InMemoryCollectionStore:
-    from fastapi import FastAPI
+def _store() -> InMemoryCollectionStore:
+    return InMemoryCollectionStore([_spec("ingesting"), _spec("graphing"), _spec("done")])
 
+
+def _local_backend(*a, **k):
     from ragstack.ingestion.backends import LocalAsyncIORunner
 
-    store = InMemoryCollectionStore([_spec("ingesting"), _spec("graphing"), _spec("done")])
+    return LocalAsyncIORunner(max_concurrency=1)
+
+
+async def _boot(monkeypatch, job_store, store=None, ingest_backend=_local_backend):
+    from fastapi import FastAPI
+
+    store = store if store is not None else _store()
     monkeypatch.setattr(deps, "make_job_store", lambda *a, **k: job_store)
     monkeypatch.setattr(deps, "make_collection_store", lambda *a, **k: store)
     # The GoWe backend itself needs an engine; the sweep only reads the setting.
-    monkeypatch.setattr(deps, "make_ingest_backend",
-                        lambda *a, **k: LocalAsyncIORunner(max_concurrency=1))
+    monkeypatch.setattr(deps, "make_ingest_backend", ingest_backend)
     # ADR-0010's boot check refuses a gowe tenant with no image dirs; not under test.
     monkeypatch.setattr(deps, "_verify_tool_images_at_boot", lambda: None)
     try:
@@ -107,16 +114,45 @@ async def test_startup_flags_the_collection_of_an_interrupted_gowe_ingest(monkey
     assert await js.active_collection_ids() == set()
 
 
-async def test_a_store_that_sweeps_nothing_flags_nothing(monkeypatch) -> None:
+async def test_a_store_that_does_not_sweep_is_not_read_and_flags_nothing(monkeypatch) -> None:
     """Postgres no-ops fail_interrupted (#7): its in-flight rows may be live
-    jobs of sibling workers, not interrupted ones."""
+    jobs of sibling workers, and reading them would open the pool at boot —
+    a slow or unavailable Postgres must not hang or fail startup over it."""
     _in_memory_settings(monkeypatch)
     js = await _jobs()
 
-    async def no_sweep() -> int:
-        return 0
+    async def unreachable(*a, **k):
+        raise AssertionError("a non-sweeping job store must not be read at boot")
 
-    monkeypatch.setattr(js, "fail_interrupted", no_sweep)
+    monkeypatch.setattr(js, "sweeps_interrupted", False, raising=False)
+    monkeypatch.setattr(js, "active_collection_ids", unreachable)
+    monkeypatch.setattr(js, "active_for_collection", unreachable)
+    assert await deps.interrupted_gowe_ingest_collections(
+        js, SimpleNamespace(ingest_backend="gowe")) == set()
     store = await _boot(monkeypatch, js)
     assert (await store.get("ingesting")).archive_pending is False
+
+
+def test_only_the_postgres_job_store_declares_it_does_not_sweep() -> None:
+    from ragstack.jobstore import PostgresJobStore, SqliteJobStore
+
+    assert InMemoryJobStore.sweeps_interrupted is True
+    assert SqliteJobStore.sweeps_interrupted is True
+    assert PostgresJobStore.sweeps_interrupted is False
+
+
+async def test_a_crash_after_the_sweep_still_leaves_the_flag(monkeypatch) -> None:
+    """Boot 1 fails the in-flight jobs, then a later startup step raises. The
+    flags were written before the sweep, so boot 2 — which finds nothing in
+    flight any more — still sees the collection unevictable."""
+    _in_memory_settings(monkeypatch)
+    js, store = await _jobs(), _store()
+
+    def boom(*a, **k):
+        raise RuntimeError("ingest backend misconfigured")
+
+    await _boot(monkeypatch, js, store, ingest_backend=boom)
+    assert await js.active_collection_ids() == set()  # boot 1 swept the jobs
+    await _boot(monkeypatch, js, store)
+    assert (await store.get("ingesting")).archive_pending is True
 
