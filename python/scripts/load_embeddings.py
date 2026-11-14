@@ -42,6 +42,10 @@ disagreement between this worker and the API exits **2**; a mid-stream failure
 exits **1** (both leave it ``dormant``, retried). Chunk versions replace their
 documents and upsert both legs; tombstone versions delete by doc id.
 
+**SIGTERM** (#341, either mode): while ``--bulk-refresh`` has the refresh
+interval parked, a SIGTERM restores it and exits **143**, which ``restore.py``'s
+``classify_failure`` treats like any non-3 code: ``dormant``, retried.
+
 **Store URLs have no default** (#636, the #454 rule): on the deployment host
 ``localhost:6333`` / ``:9200`` are the PRODUCTION stores. Per leg the URL comes
 from the collection's route (``QDRANT_COLLECTION_ROUTES`` /
@@ -90,8 +94,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import sys
 
 from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap
@@ -246,6 +252,98 @@ def _graph_store_for_replay():
                            database=settings.neo4j_database or None)
 
 
+#: Exit status when SIGTERM stopped a load after the parked refresh interval
+#: was restored: the shell convention for "terminated by signal 15" (128 + 15),
+#: so a supervisor reads it the same as a default-action SIGTERM death (#341).
+EXIT_SIGTERM = 128 + signal.SIGTERM
+
+
+class Terminated(Exception):
+    """SIGTERM stopped the load; the parked refresh interval was restored first."""
+
+
+@contextlib.asynccontextmanager
+async def parked_refresh(tindex, enabled: bool):
+    """Park the text index's refresh interval for a bulk load and restore it on
+    the way out — normal return, failure, cancellation, SIGINT **or SIGTERM**.
+
+    Both load paths (embedding files and ``--replay``) go through this one
+    manager so the park/restore pair cannot drift between them. Yields the
+    prior value (``None`` when nothing was parked: ``enabled`` false, or a text
+    index without ``bulk_load_refresh`` such as the in-memory one).
+
+    #341: SIGTERM's default action kills the process without unwinding, so a
+    plain ``kill``, a container/supervisor teardown or an engine cancellation
+    used to leave the index at ``refresh_interval: -1``. While parked, a
+    one-shot SIGTERM handler cancels the running task instead, the restore
+    below runs, and :class:`Terminated` is raised (``main`` maps it to
+    :data:`EXIT_SIGTERM`). The handler removes itself on first delivery, so a
+    second SIGTERM gets the default action and still kills; it is also removed
+    when the manager exits. Outside the parked window nothing is installed —
+    there is nothing to restore there.
+    """
+    if not (enabled and hasattr(tindex, "bulk_load_refresh")):
+        yield None
+        return
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    term = {"seen": False, "armed": False}
+
+    def _on_sigterm() -> None:
+        term["seen"] = True
+        loop.remove_signal_handler(signal.SIGTERM)  # a second SIGTERM kills
+        print("SIGTERM: stopping; restoring refresh_interval before exit "
+              "(send SIGTERM again to kill without restoring)",
+              file=sys.stderr, flush=True)
+        if term["armed"] and task is not None:
+            task.cancel()
+
+    # Installed BEFORE parking: a SIGTERM that lands while the park request is
+    # in flight is held (not armed yet) and honoured as soon as it returns,
+    # rather than killing the process with the setting possibly applied.
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
+        installed = True
+    except (NotImplementedError, RuntimeError):  # pragma: no cover — no unix signals
+        installed = False
+    try:
+        prior = await tindex.bulk_load_refresh(True)
+        print(f"refresh_interval parked (was {prior or 'default'})", flush=True)
+        try:
+            term["armed"] = True
+            if term["seen"]:
+                raise asyncio.CancelledError
+            yield prior
+        except asyncio.CancelledError:
+            if not term["seen"]:
+                raise  # SIGINT / an outer cancellation: unchanged behaviour
+            if task is not None:
+                task.uncancel()
+            raise Terminated("terminated by SIGTERM; refresh_interval was restored") from None
+        finally:
+            term["armed"] = False
+            await tindex.restore_refresh(prior)
+            try:
+                await tindex.refresh()
+            except Exception as e:
+                if not term["seen"]:
+                    raise  # a normal exit must not report a stale index as fresh
+                # Stopping on SIGTERM: the interval is restored, so the index
+                # refreshes on its own; a failed forced refresh must not turn
+                # the 143 into a traceback and exit 1.
+                print(f"refresh_interval restored; forced refresh failed: {e!r}",
+                      file=sys.stderr, flush=True)
+            else:
+                print("refresh_interval restored + index refreshed", flush=True)
+        if term["seen"]:
+            # Landed during the restore itself: the load finished, but the
+            # stop was asked for — exit as terminated, not as success.
+            raise Terminated("terminated by SIGTERM; refresh_interval was restored")
+    finally:
+        if installed:
+            loop.remove_signal_handler(signal.SIGTERM)
+
+
 async def _replay(args, target) -> int:
     """``--replay``: verify every version, THEN build the stores, then replay.
 
@@ -277,19 +375,14 @@ async def _replay(args, target) -> int:
         print(str(e), file=sys.stderr, flush=True)
         return 3
     pipeline = await _build_pipeline(args, target)
-    tindex = pipeline.text_index
-    can_park = args.bulk_refresh and hasattr(tindex, "bulk_load_refresh")
-    prior = await tindex.bulk_load_refresh(True) if can_park else None
     try:
-        summary = await run_replay(
-            pipeline, list(args.replay), spec_hash=spec_hash, collection_id=collection_id,
-            batch_size=args.replay_batch, delete_concurrency=args.delete_concurrency,
-            log=lambda msg: print(msg, flush=True), manifests=manifests,
-        )
+        async with parked_refresh(pipeline.text_index, args.bulk_refresh):
+            summary = await run_replay(
+                pipeline, list(args.replay), spec_hash=spec_hash, collection_id=collection_id,
+                batch_size=args.replay_batch, delete_concurrency=args.delete_concurrency,
+                log=lambda msg: print(msg, flush=True), manifests=manifests,
+            )
     finally:
-        if can_park:
-            await tindex.restore_refresh(prior)
-            await tindex.refresh()
         if pipeline.graph_store is not None and hasattr(pipeline.graph_store, "close"):
             await pipeline.graph_store.close()
     out = summary.as_dict()
@@ -416,13 +509,9 @@ async def amain(args, target=None) -> int:
 
     # Refresh off for the duration, restored in `finally` even on failure — and an
     # explicit refresh before we return, so the count-based verification the driver
-    # runs immediately after does not read a stale index (#323).
-    tindex = pipeline.text_index
-    can_park = args.bulk_refresh and hasattr(tindex, "bulk_load_refresh")
-    prior = await tindex.bulk_load_refresh(True) if can_park else None
-    if can_park:
-        print(f"refresh_interval parked (was {prior or 'default'})", flush=True)
-    try:
+    # runs immediately after does not read a stale index (#323). SIGTERM too
+    # (#341): see parked_refresh.
+    async with parked_refresh(pipeline.text_index, args.bulk_refresh):
         # return_exceptions + re-raise, for the same reason index_chunks does it:
         # a bare gather propagates the first failure while the other files keep
         # loading unsupervised. run_load_file already converts per-file errors into
@@ -436,11 +525,6 @@ async def amain(args, target=None) -> int:
         for o in outcomes:
             if isinstance(o, BaseException):
                 raise o
-    finally:
-        if can_park:
-            await tindex.restore_refresh(prior)
-            await tindex.refresh()
-            print("refresh_interval restored + index refreshed", flush=True)
     summary = merge_summary(receipts)
     # #849: the cap this load applied, recorded whether or not it bit.
     summary["chunk_cap"] = cap_record
@@ -734,7 +818,11 @@ def main(argv=None, *, settings=None) -> int:
         # #847 G1: every document verified against the file before amain
         # builds (ensure_collection) or writes any store.
         args.glossary_attach = _resolve_glossary_file(args)
-    return asyncio.run(amain(args, target))
+    try:
+        return asyncio.run(amain(args, target))
+    except Terminated as e:
+        print(str(e), file=sys.stderr, flush=True)
+        return EXIT_SIGTERM
 
 
 if __name__ == "__main__":
