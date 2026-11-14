@@ -250,10 +250,25 @@ class CollectionRestorer:
         The store URLs are resolved for THIS record (``store_urls``, #442) and
         win over the static inputs: a routed collection is restored onto the
         instances the API reads it from, never onto the defaults (ADR-0002 —
-        the physical store is the collection's identity)."""
+        the physical store is the collection's identity).
+
+        Without a resolver the static inputs must name both URLs themselves
+        (a hand-wired restorer); otherwise this raises :class:`RestoreError`
+        rather than submit a run the engine can only fail later on a missing
+        required CWL input — the row is left ``dormant`` for a retry."""
+        if self._store_urls is not None:
+            store_urls = self._store_urls(rec)
+        else:
+            missing = sorted(k for k in STORE_URL_INPUTS if not self.static_inputs.get(k))
+            if missing:
+                raise RestoreError(
+                    f"restore of {rec.spec.id!r} has no store target ({', '.join(missing)}): "
+                    "the restorer was built without a store_urls resolver", state=DORMANT,
+                )
+            store_urls = {}
         return {
             **self.static_inputs,
-            **(self._store_urls(rec) if self._store_urls is not None else {}),
+            **store_urls,
             VERSIONS_INPUT: [{"class": "Directory", "location": uri} for _n, uri in versions],
             "collection_id": rec.spec.id,
             "spec_hash": rec.spec_hash,

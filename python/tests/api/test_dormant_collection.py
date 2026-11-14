@@ -257,7 +257,8 @@ async def world(client, _acl_store, tmp_path, monkeypatch):
                          restore_timeout=3600)
     gate.restorer = CollectionRestorer(
         store, workspace=workspace, gowe=FakeGoWeClient(engine),
-        cwl_path=DEFAULT_CWL, static_inputs={"qdrant_url": "http://q", "es_url": "http://e"},
+        cwl_path=DEFAULT_CWL,
+        store_urls=lambda rec: {"qdrant_url": "http://q", "es_url": "http://e"},
         worker_group="ragstack", poll_interval=0, timeout=60, on_change=gate.invalidate,
     )
     set_lifecycle_gate(gate)

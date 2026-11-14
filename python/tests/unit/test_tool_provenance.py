@@ -387,7 +387,7 @@ async def test_restorer_submits_provenance_only_when_stamped(tmp_path: Path, sta
 
     restorer = CollectionRestorer(
         _Store(), workspace=_WS(), gowe=client, cwl_path=cwl_dir / "restore-collection.cwl",
-        static_inputs={"qdrant_url": "http://127.0.0.1:1", "es_url": "http://127.0.0.1:1"},
+        store_urls=lambda rec: {"qdrant_url": "http://127.0.0.1:1", "es_url": "http://127.0.0.1:1"},
     )
     rec = SimpleNamespace(spec=SimpleNamespace(id="c", owner="u"), spec_hash="abcd1234",
                           versions=[1])

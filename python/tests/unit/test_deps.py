@@ -651,7 +651,7 @@ _R_ES_ROUTED = "http://es-routed.invalid:1"
 _VERSIONS = [(1, "ws:///u/home/.ragstack/collections/lib1/versions/1")]
 
 
-def _restore_record():
+def _restore_record(text_index="lib1_text"):
     from ragstack.collection_store import CollectionRecord, CollectionSpec
 
     # Distinct id / collection / text_index, so each leg's key is pinned: the
@@ -659,12 +659,14 @@ def _restore_record():
     # physical index — never the registry id.
     return CollectionRecord(
         spec=CollectionSpec(id="lib1", owner="u", collection="lib1_phys",
-                            text_index="lib1_text", embedding_model_dim=4),
+                            text_index=text_index, embedding_model_dim=4),
         spec_hash="abcd1234",
     )
 
 
-def _restore_inputs(monkeypatch, *, blob="", qroutes=None, eroutes=None):
+def _restore_inputs(monkeypatch, *, blob="", qroutes=None, eroutes=None, record=None):
+    import asyncio
+
     import httpx
 
     from ragstack.collection_store import InMemoryCollectionStore
@@ -675,8 +677,11 @@ def _restore_inputs(monkeypatch, *, blob="", qroutes=None, eroutes=None):
     monkeypatch.setattr(deps.settings, "es_collection_routes", eroutes or {})
     monkeypatch.setattr(deps.settings, "collection_restore_inputs_json", blob)
     http = httpx.AsyncClient(base_url="http://127.0.0.1:1")
-    gate = deps._build_lifecycle_gate(InMemoryCollectionStore(), http)
-    return gate.restorer.inputs_for(_restore_record(), _VERSIONS)
+    try:
+        gate = deps._build_lifecycle_gate(InMemoryCollectionStore(), http)
+        return gate.restorer.inputs_for(record or _restore_record(), _VERSIONS)
+    finally:
+        asyncio.run(http.aclose())
 
 
 def test_restore_of_an_unrouted_collection_uses_the_default_stores(monkeypatch):
@@ -728,3 +733,58 @@ def test_the_restore_inputs_blob_still_carries_other_worker_inputs(monkeypatch):
     assert inputs["backpressure"] is True
     assert inputs["collection_id"] == "lib1" and inputs["spec_hash"] == "abcd1234"
     assert inputs["qdrant_url"] == _R_QDRANT_ROUTED
+
+
+@pytest.mark.parametrize("blob", ["{not json", "[]", '"a string"'])
+def test_a_malformed_restore_inputs_blob_refuses_the_boot(monkeypatch, blob):
+    """As GOWE_WORKFLOW_INPUTS_JSON: no restore built from a blob ignored in part."""
+    with pytest.raises(ValueError, match="collection_restore_inputs_json"):
+        _restore_inputs(monkeypatch, blob=blob)
+
+
+def test_a_restorer_without_a_resolver_refuses_rather_than_drop_the_store_urls():
+    """Both URLs are REQUIRED CWL inputs (#407). A restorer built without a
+    resolver must not submit a run without them: the engine would only fail it
+    later, on a missing input. It raises a RestoreError that leaves the row dormant."""
+    from ragstack.collection_store import DORMANT, InMemoryCollectionStore
+    from ragstack.restore import CollectionRestorer, RestoreError
+
+    bare = CollectionRestorer(InMemoryCollectionStore(), workspace=None, gowe=None)
+    with pytest.raises(RestoreError, match="qdrant_url") as exc:
+        bare.inputs_for(_restore_record(), _VERSIONS)
+    assert exc.value.state == DORMANT
+    # A hand-wired restorer that names both itself still works.
+    wired = CollectionRestorer(InMemoryCollectionStore(), workspace=None, gowe=None,
+                               static_inputs={"qdrant_url": _R_QDRANT, "es_url": _R_ES})
+    assert wired.inputs_for(_restore_record(), _VERSIONS)["es_url"] == _R_ES
+
+
+def _ingest_store_urls(record):
+    """The URLs the INGEST path seeds for the same record (documents._gowe_inputs),
+    from a real CollectionEntry built the way deps builds one."""
+    from ragstack.api.collections import CollectionEntry
+    from ragstack.api.routers.documents import _gowe_inputs
+
+    spec = record.spec
+    entry = CollectionEntry(
+        id=spec.id, label=spec.id, collection=spec.collection, model="", dim=4,
+        chunk_method="", chunk_size=None, chunk_overlap=None, chunk_params={},
+        is_shared_surface=False, retriever=None, vector_store=None, text_index=None,
+        text_index_name=spec.es_index(), owner=spec.owner,
+    )
+    inputs = _gowe_inputs(entry, record, 1, "job", "t")
+    return inputs["qdrant_url"], inputs["es_url"]
+
+
+@pytest.mark.parametrize("text_index", ["lib1_text", ""], ids=["own-index", "blank-index"])
+@pytest.mark.parametrize("routes", [
+    ({}, {}),
+    ({"lib1_phys": _R_QDRANT_ROUTED}, {"lib1_text": _R_ES_ROUTED, "lib1_phys": _R_ES_ROUTED}),
+], ids=["unrouted", "routed"])
+def test_restore_and_ingest_target_the_same_stores(monkeypatch, routes, text_index):
+    """Parity: whatever ingest writes to, restore replays into. With a blank
+    ``text_index`` the ES leg keys on the collection name (``es_index()``)."""
+    record = _restore_record(text_index)
+    qroutes, eroutes = routes
+    restored = _restore_inputs(monkeypatch, qroutes=qroutes, eroutes=eroutes, record=record)
+    assert (restored["qdrant_url"], restored["es_url"]) == _ingest_store_urls(record)

@@ -323,6 +323,8 @@ Before #442 that blob was merged *over* the seeded values, so it could aim every
 restore — routed collections included — at one instance. A worker that reaches
 the stores at a different address than the API does is not supported on either
 path.
+The upgrade step is in
+[`docs/runbooks/upgrade-407-remove-gowe-store-urls.md`](runbooks/upgrade-407-remove-gowe-store-urls.md#the-restore-twin--collection_restore_inputs_json-442).
 
 ---
 
@@ -630,7 +632,7 @@ and the worker has a graph store (#350). The API-side settings, all at the end o
 | `collection_restore_poll_interval` | `5` | Seconds between submission polls. |
 | `collection_restore_cwl` | `""` | Absolute path to `restore-collection.cwl`; empty = the repo copy next to the package. |
 | `collection_restore_workflow_name` | `ragstack-restore-collection` | Name the workflow is registered under. |
-| `collection_restore_inputs_json` | `{}` | Extra static inputs for other worker-side knobs (e.g. `backpressure`). It may **not** set `qdrant_url` / `es_url`: the API resolves both per collection, honouring `QDRANT_COLLECTION_ROUTES` / `ES_COLLECTION_ROUTES` exactly as ingest does, and refuses to boot if the blob names either (#442). It cannot displace the record's identity (`collection_id`, `spec_hash`, `versions`) or `registry` either. Worker group comes from `gowe_worker_group`. |
+| `collection_restore_inputs_json` | `{}` | Extra static inputs for other worker-side knobs (e.g. `backpressure`). It may **not** set `qdrant_url` / `es_url`: the API resolves both per collection, honouring `QDRANT_COLLECTION_ROUTES` / `ES_COLLECTION_ROUTES` exactly as ingest does, and refuses to boot if the blob names either (#442). It cannot displace the record's identity (`collection_id`, `spec_hash`, `versions`), nor `registry` when `COLLECTION_REGISTRY_NAME` is set. Malformed JSON, or a non-object, refuses the boot. Worker group comes from `gowe_worker_group`. |
 
 ---
 

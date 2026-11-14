@@ -2036,13 +2036,14 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     from ragstack.restore import STORE_URL_INPUTS, CollectionRestorer
     from ragstack.workspace import WorkspaceClient
 
+    # A malformed blob refuses the boot, as GOWE_WORKFLOW_INPUTS_JSON does: a
+    # restore built from half the operator's intent is not a safe default.
     try:
         extra = json.loads(settings.collection_restore_inputs_json or "{}")
-        if not isinstance(extra, dict):
-            raise ValueError("not a JSON object")
-    except ValueError as e:
-        log.warning("collection_restore_inputs_json is invalid (%s); ignoring", e)
-        extra = {}
+    except json.JSONDecodeError as e:
+        raise ValueError(f"collection_restore_inputs_json is not valid JSON: {e}") from e
+    if not isinstance(extra, dict):
+        raise ValueError("collection_restore_inputs_json must be a JSON object")
     # #442: the store targets are per COLLECTION, not per deployment. They are
     # resolved for each record inside `CollectionRestorer.inputs_for` through
     # the same `store_routing` functions the ingest path uses (so

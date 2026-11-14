@@ -60,6 +60,52 @@ In `/rag/data/tenants/dev/config/tenant.env`:
    `qdrant_url` = the tenant's `QDRANT_URL`. If the API refuses to boot, the
    error names the remaining key — step 2 was incomplete.
 
+## The restore twin — `COLLECTION_RESTORE_INPUTS_JSON` (#442)
+
+**Applies to:** the first deploy that carries the #442 fix. The same rule, one
+setting over.
+
+Before #442 the restore gate seeded the bare `QDRANT_URL` / `ELASTICSEARCH_URL`
+into every `restore-collection` submission and merged `COLLECTION_RESTORE_INPUTS_JSON`
+**over** them. A routed collection (`QDRANT_COLLECTION_ROUTES` /
+`ES_COLLECTION_ROUTES`) was therefore replayed into a second copy on the default
+instances, or wherever the blob pointed, while the API kept serving the stale
+routed copy. The fix resolves both URLs **per collection**, through the same
+routing functions as ingest, and applies them over the blob. A `qdrant_url` or
+`es_url` in the blob would be inert, so the API **refuses to start** with:
+
+```
+collection_restore_inputs_json may not set qdrant_url, es_url: restore store
+targets are resolved per collection ...
+```
+
+A malformed blob (invalid JSON, or not an object) now also refuses the boot
+instead of being logged and ignored.
+
+**What to do.** Check every tenant's config for the variable before the deploy:
+
+```bash
+grep -l 'COLLECTION_RESTORE_INPUTS_JSON' /rag/data/tenants/*/config/tenant.env
+```
+
+For each hit, drop `qdrant_url` / `es_url` from the JSON and keep any other keys
+(e.g. `backpressure`). Delete the line if nothing is left. Restart by recorded pid,
+as in step 3 above.
+
+**The supported alternative.** A blob URL was one address for *every* restore.
+What it was usually standing in for is a per-collection target, and that is what
+the routes express:
+
+- the default stores for this tenant → `QDRANT_URL` / `ELASTICSEARCH_URL`;
+- a collection that lives on another instance → an entry in
+  `QDRANT_COLLECTION_ROUTES` (keyed by the physical collection) and/or
+  `ES_COLLECTION_ROUTES` (keyed by the physical index), the same entries the API
+  reads and ingest writes through.
+
+A worker that reaches the stores at a different address than the API does is not
+supported on restore, as it was not on ingest after #407. Both paths now seed the
+address the API itself uses.
+
 ## Rollback
 
 Re-adding the keys puts the API back in the refusing state; it will not restore
