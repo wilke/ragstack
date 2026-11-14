@@ -53,9 +53,10 @@ chunks: the owner, grantees including `public`, and admins
 - **Where it comes from:** the key always comes from the **target** registry record, never
   from a file header, an archive or a source payload. Every path that loads, copies or
   rebuilds chunks stamps from the target record.
-- **Recreating vs cloning:** recovering a record in place (seed, replay, an in-place tenant
-  restore) keeps its key. A clone, such as an ADR-0007 restore-as, gets a new key and
-  restamps.
+- **Recovery vs new instance:** a record whose stores survive (seed, an in-place tenant
+  restore) keeps its key, and its write counter (ADR-0014) is set above every value that
+  any backup of that key records. Replaying data from a backup, or cloning (such as an
+  ADR-0007 restore-as), creates a new instance with a new key.
 - **The writer** is recorded as a separate provenance field, never filtered on.
 
 **3. Who may write is unchanged:** the owner, a `write` grantee, or an admin. Whoever
@@ -69,7 +70,7 @@ row (ADR-0004), not `spec.owner`, which records the creator. A transfer moves on
   stamp, then switching to it in one registry write, then purging the old chunks.
 - The switch commits only if the old instance's write counter (ADR-0014) has not moved since
   the build started. Otherwise the build is redone, so a delete made during the build is
-  never undone.
+  never undone. Once the switch commits, writes to the old instance are refused.
 - Re-ingesting single documents never switches the scheme.
 - There is no bulk rewrite. `shared_scope` goes when the last writer-stamped collection
   does.
@@ -98,6 +99,8 @@ ingests.**
   both.
 - **Rebuilding exposes hidden chunks.** Rebuilding an existing collection makes the chunks
   that grantees and admins wrote visible to all of its readers.
+- **A rebuild is a new instance,** so earlier backups stop being current. The collection
+  stays resident until it is backed up again.
 - **A `write` grant on a public collection publishes at once.**
 - **Some row-level separations end for new collections.**
   - Two deployments routed to one store cannot read each other's new collections. That is

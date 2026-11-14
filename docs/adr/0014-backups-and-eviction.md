@@ -51,7 +51,7 @@ collection's ownership.
 - A reload after eviction keeps the live owner and grants, so a revoked grant never comes
   back.
 - The backup's access rows are applied only when an admin replays into an empty collection
-  or tenant.
+  or tenant. A replay creates a new instance (ADR-0013 decision 2).
 
 **4. Current means same instance, no write since the backup.**
 - Every committed write advances the collection's write counter. That covers every writer
@@ -92,13 +92,16 @@ otherwise).
 **Accepted:**
 - **A private collection whose owner never returns can only be deleted,** unless a system
   backup exists.
-- **Writing to the owner's backup target needs a credential that can reach it,** not the
-  caller's. How the server gets one is an implementation choice.
+- **Writing to or reading from the owner's backup target needs a credential that can reach
+  it,** not the caller's. How the server gets one is an implementation choice.
 - **Rollout:**
-  - Existing archives in the current owner's Workspace count as owner-only backups.
-  - Archives in other writers' Workspaces are not used for reload.
-  - A collection that is dormant and shared when this lands is reloaded, or given a system
-    backup, before the private-only rule applies.
+  - Existing archives in the current owner's Workspace can reload collections that are
+    already dormant when this lands. They never make a resident collection evictable; a
+    resident collection needs a new backup first.
+  - Versions held only in other writers' Workspaces are not reloaded. Such a reload reports
+    what it skipped and marks the collection incomplete (#633).
+  - A collection that is dormant and shared when this lands is reloaded by an operator, or
+    given a system backup, before the private-only rule applies.
 - **Retention is not decided here.** User backups and snapshots follow the owner's own
   storage. System backups follow operator policy.
 - **Today's per-ingest version deltas** (`ragstack-archive/1`) become one way of producing a
