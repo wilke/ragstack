@@ -54,7 +54,8 @@ it holds no store and **is not counted**. So "I have 100 collections and the cap
 is 100" does not by itself mean the next create is refused; and at the bound a
 create does not simply refuse, it **evicts** the least-recently-accessed active
 collection whose archive is current and takes the freed slot
-([ADR-0005](adr/0005-tenant-anatomy.md) decision 5).
+([ADR-0005](adr/0005-tenant-anatomy.md) decision 5; "archive" becomes "backup" under
+[ADR-0014](adr/0014-backups-and-eviction.md), Proposed).
 
 ## Store
 
@@ -248,7 +249,52 @@ grant suffices to ingest there, because per-chunk `tenant_id` stamping is what
 isolates writers) keys on the entry's `is_shared_surface` **flag** — never on
 what `default` points at. Keyed on the pointer, aiming `default` at an owned
 collection would let any *reader* of it ingest into somebody else's corpus just
-by omitting `collection`.
+by omitting `collection`. ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed,
+ends this exemption for ingest: the shared corpus gets a service-account owner and
+ingest needs `write`. Users keep deleting their own chunks there until it is retired.)
+
+## Caller, owner, writer
+
+Three identities can touch one collection. They are often the same person, and every
+ownership bug so far lived where they are not.
+
+| | What it is | Where it is recorded |
+|---|---|---|
+| **caller** | the authenticated principal making *this* request (whose token or key is on it) | nowhere durable; the request's `Principal` |
+| **owner** | the one subject the collection belongs to; it changes on transfer | the active `owner` row in `shares` (ADR-0004 decision 5). Not `spec.owner`, which records the **creator** and never changes |
+| **writer** | the subject that ingested a given chunk; it never changes | today, the per-chunk stamp |
+
+They differ when an admin or a grantee with `write` ingests, and after a transfer. Per
+[ADR-0013](adr/0013-collection-owns-its-data.md) (Proposed), a collection owns its data:
+new collections stamp every chunk with the collection's instance key, and the writer
+becomes an unfiltered provenance field. Existing collections keep the writer stamp until
+they are rebuilt as a new instance.
+
+**Naming trap:** the per-chunk stamp is called `tenant_id`, and `Principal.tenant` holds
+the caller's full `issuer:subject` (`bvbrc:<user>` for a BV-BRC user) or an API key's
+configured label. `Principal.subject` is the bare subject. Neither is a **tenant** in the
+sense above, which is a deployment.
+
+## Backup, snapshot, eviction, deletion
+
+Per [ADR-0014](adr/0014-backups-and-eviction.md) (Proposed), for one collection. A whole
+tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.md)).
+
+- **User backup:** started by the owner (for BV-BRC users, written to their Workspace by
+  the BV-BRC layer above the API).
+- **System backup:** started by an admin or by maintenance, on operator storage.
+- **Current:** the backup's instance key, backup epoch and counter value still match the
+  collection's. Every committed write, deletes included, advances the counter, and it never
+  decreases. A recovery starts a new epoch.
+- **Reload vs replay:** a reload after eviction keeps the live owner and grants. Only an
+  admin replay into an empty collection or tenant applies the backup's access rows.
+- **Snapshot:** a previous owner's user backup after a transfer. It stays with them and is
+  never a reload or replay source. System backups survive a transfer.
+- **Eviction:** drops a collection's stores to free a slot and keeps the row `dormant` for
+  reload on demand. It **requires a current backup**: a system backup, or an owner-only
+  backup while the collection is private. Sharing or transferring a dormant collection
+  requires reloading it first.
+- **Deletion:** removes the collection. It needs no backup.
 
 ---
 
