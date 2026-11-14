@@ -10,17 +10,20 @@ This was the root cause of a multi-day production failure: a 1.99 GB shard of
 by exactly 38,322 documents and the batch failed after 63 other shards had
 loaded fine.
 """
+import json
+
 import pytest
 
 from ragstack.models import Chunk
 from ragstack.stores.elasticsearch import (
     _BULK_MAX_BYTES,
     ElasticsearchTextIndex,
+    _doc_bytes_estimate,
 )
 
 
 class _FakeES:
-    """Records each bulk call's operation count and approximate body size."""
+    """Records each bulk call's operation count and its encoded body size."""
 
     def __init__(self, limit: int | None = None) -> None:
         self.calls: list[int] = []
@@ -30,7 +33,10 @@ class _FakeES:
     async def bulk(self, operations, refresh=None, **kw):
         # Two entries per document: the action line and the source.
         docs = len(operations) // 2
-        size = sum(len(str(o)) for o in operations)
+        # The real wire bytes: UTF-8 JSON, non-ASCII unescaped, as the client
+        # sends it. One NDJSON line per operation.
+        size = sum(len(json.dumps(o, ensure_ascii=False).encode()) + 1
+                   for o in operations)
         if self._limit is not None and size > self._limit:
             raise RuntimeError(f"413 payload too large: {size} > {self._limit}")
         self.calls.append(docs)
@@ -104,3 +110,64 @@ async def test_empty_input_makes_no_request():
     es = _FakeES()
     await _index(es).index([])
     assert es.calls == []
+
+
+# --- #177: the estimate must count the metadata actually being sent ----------
+
+
+def _meta_heavy_chunks(n, meta_bytes):
+    """Tiny content, ~1 MB of metadata each: the mis-extracted reference list
+    copied into `citation` that #177's corpus scan found on ~100 chunks of one doc."""
+    return [
+        Chunk(id=f"c{i}", doc_id="d0", content="short", start_char=0, end_char=5,
+              metadata={"tenant_id": "public", "citation": "r" * meta_bytes})
+        for i in range(n)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_metadata_heavy_chunks_close_the_batch_by_bytes():
+    """60 chunks x 1 MB metadata = 60 MB. The old estimate (content + flat 2 KB)
+    called that ~123 KB and sent it as one request — over the 20 MiB cap, and
+    a server with a smaller http.max_content_length answers it with a 413."""
+    es = _FakeES(limit=_BULK_MAX_BYTES)
+    await _index(es).index(_meta_heavy_chunks(60, 1_000_000))
+    assert sum(es.calls) == 60
+    assert len(es.calls) > 1
+    assert max(es.bytes) <= _BULK_MAX_BYTES
+
+
+def test_estimate_counts_serialized_metadata():
+    small = Chunk(id="a", doc_id="d", content="x" * 100, metadata={"t": "y"})
+    big = Chunk(id="b", doc_id="d", content="x" * 100, metadata={"t": "y" * 500_000})
+    assert _doc_bytes_estimate(big) - _doc_bytes_estimate(small) >= 499_999
+
+
+@pytest.mark.asyncio
+async def test_normal_chunks_keep_the_same_request_count():
+    """Ordinary chunks with ordinary metadata still batch on the count cap."""
+    es = _FakeES()
+    chunks = [
+        Chunk(id=f"c{i}", doc_id=f"d{i // 30}", content="w" * 2000, start_char=0,
+              end_char=2000, metadata={"tenant_id": "public", "title": "A title",
+                                       "authors": "Doe J, Roe R", "year": 2021})
+        for i in range(1200)
+    ]
+    await _index(es).index(chunks)
+    assert es.calls == [500, 500, 200]
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_metadata_batches_stay_under_the_cap_in_real_bytes():
+    """CJK/emoji metadata: the fake measures UTF-8 bytes, the estimate counts
+    ensure_ascii escapes (never fewer bytes), so no batch can exceed the cap."""
+    es = _FakeES(limit=_BULK_MAX_BYTES)
+    chunks = [
+        Chunk(id=f"c{i}", doc_id="d0", content="内容" * 100, start_char=0,
+              end_char=200, metadata={"tenant_id": "public",
+                                      "title": ("漢字" if i % 2 else "😀") * 400_000})
+        for i in range(40)
+    ]
+    await _index(es).index(chunks)
+    assert sum(es.calls) == 40
+    assert max(es.bytes) <= _BULK_MAX_BYTES

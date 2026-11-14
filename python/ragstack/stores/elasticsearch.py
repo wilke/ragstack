@@ -9,6 +9,7 @@ this backend is actually selected.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -97,15 +98,34 @@ _METADATA_KEYWORD_IGNORE_ABOVE = KEYWORD_IGNORE_ABOVE
 
 # Bulk-request sizing. ES rejects a body over `http.max_content_length` (100 MB by
 # default) with a bare HTTP 413 — no per-item errors, nothing indexed. Cap well
-# under it: the per-chunk estimate below counts raw content length only, so it
-# undercounts JSON escaping, the action line before each document, and the
-# metadata block. A generous margin is much cheaper than a 413.
+# under it. The per-chunk estimate (``_doc_bytes_estimate``) is the JSON-serialized
+# size of the content, the metadata block and the symbol glossary, plus a flat
+# allowance for the rest. It used to count raw content length only and treat
+# metadata as part of a flat 2 KB, which a real corpus falsifies: mis-extracted
+# ``title``/``citation`` values reach ~1 MB per chunk (#177), so a batch of such
+# chunks could build a body many times the estimate. A generous margin is much
+# cheaper than a 413.
 _BULK_MAX_BYTES = 20 * 1024 * 1024
 _BULK_BATCH_SIZE = 500
-# Flat allowance per document for the action line + metadata + field names. Chunk
-# content dominates for real text; this keeps small-content chunks from looking
-# free and letting the count cap alone drive an oversized body.
+# Flat allowance per document for the action line, the fixed fields and their
+# names. Kept at its historical 2 KB so small chunks never look free and the
+# count cap alone cannot drive an oversized body. The action line and the
+# doc_id/chunk_id fields are NOT measured: ids beyond ~900 chars each would
+# exceed this allowance. Real ids are far shorter, and the 20 MiB cap's margin
+# under ES's 100 MB absorbs the difference.
 _METADATA_BYTES_ESTIMATE = 2048
+
+
+def _doc_bytes_estimate(c: Chunk) -> int:
+    """Upper-bound-ish size of ``c``'s share of a bulk body: the serialized
+    content, metadata and glossary (``ensure_ascii`` escapes are never shorter
+    than the UTF-8 sent) plus the flat per-document allowance."""
+    return (
+        len(json.dumps(c.content))
+        + len(json.dumps(c.metadata, default=str))
+        + len(json.dumps(c.symbol_glossary))
+        + _METADATA_BYTES_ESTIMATE
+    )
 
 # The dynamic template alone, which is all that can be pushed at an index that
 # already exists. A template governs fields it maps for the FIRST time, so it is
@@ -569,15 +589,17 @@ class ElasticsearchTextIndex:
         Split on BOTH count and accumulated bytes: chunk sizes vary by orders of
         magnitude across a corpus (a figure caption vs a full methods section),
         so a count-only cap still lets a run of large chunks build an oversized
-        body. The byte cap is deliberately well under the server limit — the
-        estimate ignores JSON escaping and the action lines between documents.
+        body. The byte cap is deliberately well under the server limit. Each
+        document's estimate counts its serialized metadata (#177): a handful of
+        chunks carrying ~1 MB mis-extracted titles must close the batch early
+        rather than ride along under a flat 2 KB guess.
         """
         if not chunks:
             return
         batch: list[Chunk] = []
         nbytes = 0
         for c in chunks:
-            approx = len(c.content) + _METADATA_BYTES_ESTIMATE
+            approx = _doc_bytes_estimate(c)
             if batch and (
                 len(batch) >= self._bulk_batch_size or nbytes + approx > _BULK_MAX_BYTES
             ):

@@ -15,6 +15,13 @@ from __future__ import annotations
 import os
 import random
 
+# Matched by class name (MRO included, so subclasses count), like the transient
+# names below: importing ragstack.stores.errors would run the stores package
+# __init__ and pull qdrant-client into this deliberately light module.
+_NON_TRANSIENT_ERROR_NAMES = frozenset({"OversizedPointError"})
+# Upper bound on exceptions visited by the non-transient guard's chain walk.
+_MAX_CHAIN_LINKS = 64
+
 _TRANSIENT_ERROR_NAMES = frozenset({
     "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
     "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
@@ -41,7 +48,27 @@ def is_transient_error(exc: BaseException) -> bool:
     fault: ``PooledEmbedder`` raises ``RuntimeError('all embedding endpoints
     failed') from last_exc``, so the retriable httpx/timeout error is one level
     down. Inspecting only the top exception would miss the multi-endpoint flap
-    this feature exists to survive."""
+    this feature exists to survive.
+
+    An ``OversizedPointError`` anywhere in the chain is NOT transient (#177): a
+    point too big for the store's request limit is rejected identically on every
+    retry. Checked first, over the whole chain, because the walk below would
+    otherwise call it transient twice over — via its chained 4xx
+    ``UnexpectedResponse`` (a transient name) and via its message, whose byte
+    counts can contain the digits ``502``/``503``/``504``."""
+
+    # Follows BOTH links of every exception (``raise X from Y`` sets __cause__
+    # but the poison error may sit in __context__), bounded and cycle-safe.
+    visited: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending and len(visited) < _MAX_CHAIN_LINKS:
+        link = pending.pop()
+        if id(link) in visited:
+            continue
+        visited.add(id(link))
+        if any(c.__name__ in _NON_TRANSIENT_ERROR_NAMES for c in type(link).__mro__):
+            return False
+        pending.extend(e for e in (link.__cause__, link.__context__) if e is not None)
 
     def _one(e: BaseException) -> bool:
         if isinstance(e, (TimeoutError, ConnectionError)):

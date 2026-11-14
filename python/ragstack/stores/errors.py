@@ -81,3 +81,16 @@ class StoreUnavailable(RuntimeError):
 class VectorDimMismatch(RuntimeError):
     """An existing collection's vector size disagrees with the configured
     embedding dimension. Fatal: writing would mix incompatible vectors."""
+
+
+class OversizedPointError(RuntimeError):
+    """A single vector-store point, sent alone because it alone exceeds the
+    upsert byte cap, was rejected by the store with a 4xx (#177).
+
+    Names the chunk so the poison row is findable without a scroll-diff; the
+    store's own error is chained as ``__cause__``. Deterministic, NOT transient:
+    retrying sends the same oversized body and gets the same 4xx, so
+    ``ingestion.retry.is_transient_error`` refuses it before walking the cause
+    chain (whose 4xx ``UnexpectedResponse`` would otherwise read as transient).
+    The classifier matches it by class NAME, so renaming it needs retry.py's
+    ``_NON_TRANSIENT_ERROR_NAMES`` updated too (a test pins the pair)."""

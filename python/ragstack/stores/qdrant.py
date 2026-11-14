@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import time
@@ -16,7 +17,7 @@ from typing import Any
 # scope because _failure_kind classifies the transport exception types.
 import httpx
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.http.exceptions import ApiException
+from qdrant_client.http.exceptions import ApiException, UnexpectedResponse
 from qdrant_client.models import (
     Condition,
     Distance,
@@ -35,6 +36,7 @@ from ragstack.stores.errors import (
     KIND_ERROR,
     KIND_TIMEOUT,
     KIND_UNREACHABLE,
+    OversizedPointError,
     StoreUnavailable,
     VectorDimMismatch,
 )
@@ -55,6 +57,53 @@ log = logging.getLogger(__name__)
 # and ADR-0003 decision 1; access is decided at the collection (resolve_access),
 # this filter is defence in depth.
 _TENANT_FIELD = OWNER_FIELD
+
+# Upsert request sizing (#177). Qdrant rejects a request body over
+# ``service.max_request_size_mb`` (32 MiB by default) and rejects the WHOLE
+# request — every point in it, not just the oversized one. A count-only batch
+# of 256 points is fine for ordinary chunks, but a handful of poison rows (a
+# paper's ~1 MB reference list mis-extracted into ``title``/``citation``, copied
+# onto many chunks) push one batch over the limit and the whole file's upsert
+# fails. So batches are bounded by estimated bytes as well as by count.
+#
+# The estimate is an UPPER bound on what qdrant-client's REST path sends:
+# - vector: 25 bytes per dimension. pydantic-core writes a float with
+#   1e-5 <= |x| < 1e16 in plain decimal, so the longest form is e.g.
+#   ``-0.000012345678901234568`` (24 chars) plus a comma; exponent forms
+#   (``-2.2250738585072014e-308``) are no longer. Typical embeddings measure
+#   ~20-21.5 bytes/dim, so this over-counts ordinary vectors by ~20%.
+# - payload: ``len(json.dumps(payload))`` with ``ensure_ascii=True``, whose
+#   ``\uXXXX`` escapes are never shorter than the UTF-8 the client sends.
+# - a fixed per-point allowance for the id and the JSON keys/brackets.
+# The default cap (28 MiB) is chosen so an ordinary 256-point batch of 4096-d
+# vectors (25 MiB of vector at the worst-case per-dim bound, plus a few KB of
+# payload per point: ~25.6 MiB estimated) still goes as ONE request —
+# behaviour for normal data is unchanged — and because the estimate is an
+# upper bound, a request it admits is at most 28 MiB on the wire, ~12% under
+# the server's 32 MiB.
+UPSERT_MAX_BYTES_DEFAULT = 28 * 1024 * 1024
+_VECTOR_BYTES_PER_DIM = 25
+_POINT_OVERHEAD_BYTES = 128
+
+
+def _point_bytes_estimate(point: PointStruct) -> int:
+    """Upper-bound estimate of ``point``'s share of an upsert request body."""
+    vector = point.vector
+    dims = len(vector) if isinstance(vector, list) else 0
+    payload_bytes = len(json.dumps(point.payload or {}, default=str))
+    return _POINT_OVERHEAD_BYTES + dims * _VECTOR_BYTES_PER_DIM + payload_bytes
+
+
+def _largest_payload_field(payload: dict[str, Any]) -> tuple[str, int]:
+    """The payload key with the longest JSON-serialized value, and that length."""
+    best, best_len = "", 0
+    for k, v in payload.items():
+        n = len(json.dumps(v, default=str))
+        if n > best_len:
+            best, best_len = k, n
+    return best, best_len
+
+
 # Upper bound (seconds) on a tenant-filtered count, so an unindexed large
 # collection degrades to "unavailable" fast instead of hanging the read.
 _COUNT_TIMEOUT_S = 5
@@ -234,6 +283,7 @@ class QdrantVectorStore:
         upsert_batch_size: int = 256,
         upsert_concurrency: int = 1,
         postmortem_probe: bool = False,
+        upsert_max_bytes: int = UPSERT_MAX_BYTES_DEFAULT,
     ) -> None:
         # `timeout` (seconds) bounds each request; raise it for heavy ops (large
         # filtered deletes) so they fail fast/explicitly instead of hanging.
@@ -253,6 +303,9 @@ class QdrantVectorStore:
         # under a capped/optimizing collection).
         self._upsert_batch_size = max(1, upsert_batch_size)
         self._upsert_concurrency = max(1, upsert_concurrency)
+        # ... and by estimated request bytes (#177): a few metadata-heavy points
+        # must not push a 256-point request over Qdrant's request size limit.
+        self._upsert_max_bytes = max(1, upsert_max_bytes)
         # #427 W9, opt-in and default off — see _postmortem_probe. The rate-limit
         # state lives on the instance because an instance is bound to exactly one
         # collection (``self._collection`` is fixed at construction), so
@@ -342,20 +395,75 @@ class QdrantVectorStore:
     async def _upsert_points(self, points: list[PointStruct]) -> None:
         """Upsert in bounded batches so one request never carries an oversized
         payload; pipeline the batches when ``upsert_concurrency`` > 1. Idempotent
-        (deterministic point ids), so batch order and partial retries are safe."""
-        bs = self._upsert_batch_size
-        batches = [points[i : i + bs] for i in range(0, len(points), bs)]
+        (deterministic point ids), so batch order and partial retries are safe.
+
+        A batch closes at ``upsert_batch_size`` points OR when the next point
+        would push its estimated body past ``upsert_max_bytes`` (#177). A point
+        whose estimate alone exceeds the cap goes in a request of its own: it
+        may still be accepted (the cap sits under the server limit). If the
+        server rejects it with a 4xx, ``OversizedPointError`` names it, and
+        the batches already sent before it are written rather than lost with
+        it. ``upsert`` still raises: on the serial path the batches after it
+        are NOT sent, and on the concurrent path ``gather`` raises once the
+        in-flight batches settle — the caller sees a failed upsert either way,
+        just a correctly attributed one."""
+        batches = self._batches(points)
         if len(batches) <= 1 or self._upsert_concurrency == 1:
             for batch in batches:
-                await self._client.upsert(collection_name=self._collection, points=batch)
+                await self._upsert_batch(batch)
             return
         sem = asyncio.Semaphore(self._upsert_concurrency)
 
         async def _one(batch: list[PointStruct]) -> None:
             async with sem:
-                await self._client.upsert(collection_name=self._collection, points=batch)
+                await self._upsert_batch(batch)
 
         await asyncio.gather(*(_one(b) for b in batches))
+
+    def _batches(self, points: list[PointStruct]) -> list[list[PointStruct]]:
+        bs, cap = self._upsert_batch_size, self._upsert_max_bytes
+        batches: list[list[PointStruct]] = []
+        batch: list[PointStruct] = []
+        nbytes = 0
+        for p in points:
+            approx = _point_bytes_estimate(p)
+            if batch and (len(batch) >= bs or nbytes + approx > cap):
+                batches.append(batch)
+                batch, nbytes = [], 0
+            batch.append(p)
+            nbytes += approx
+        if batch:
+            batches.append(batch)
+        return batches
+
+    async def _upsert_batch(self, batch: list[PointStruct]) -> None:
+        try:
+            await self._client.upsert(collection_name=self._collection, points=batch)
+        except Exception as e:
+            if len(batch) != 1:
+                raise
+            point = batch[0]
+            approx = _point_bytes_estimate(point)
+            if approx <= self._upsert_max_bytes:
+                raise
+            # Only a store-side 4xx is "rejected": a timeout or a 5xx on a big
+            # point is not evidence the point is the problem, and rewrapping it
+            # would hide a transient fault behind a non-transient error type.
+            status = getattr(e, "status_code", None)
+            if not (isinstance(e, UnexpectedResponse) and isinstance(status, int)
+                    and 400 <= status < 500):
+                raise
+            # The poison row: name it, its size and its heaviest field, so the
+            # failure is attributable without a scroll-diff of the collection.
+            payload = point.payload or {}
+            field, field_len = _largest_payload_field(payload)
+            raise OversizedPointError(
+                f"qdrant rejected an oversized point sent alone: "
+                f"chunk_id={payload.get('chunk_id')!r} doc_id={payload.get('doc_id')!r} "
+                f"estimated_bytes={approx} (cap {self._upsert_max_bytes}); "
+                f"largest payload field {field!r} is {field_len} bytes serialized: "
+                f"{type(e).__name__}: {str(e)[:500]}"
+            ) from e
 
     async def search(
         self,

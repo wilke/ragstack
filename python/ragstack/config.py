@@ -76,6 +76,24 @@ class Settings(BaseSettings):
     # a capped/optimizing collection. The bulk load path raises concurrency itself.
     qdrant_upsert_batch_size: int = 256
     qdrant_upsert_concurrency: int = 1
+    # ...and bounded by estimated request bytes (#177): Qdrant rejects a whole
+    # request over service.max_request_size_mb (32 MiB default), so a few
+    # metadata-heavy chunks would sink the 255 ordinary ones batched with them.
+    # The default (28 MiB, an upper-bound estimate) keeps an ordinary 256-point
+    # batch of 4096-d vectors in one request. If the server's
+    # max_request_size_mb is lowered, lower this too and leave ~10% headroom
+    # under it (e.g. 16 MiB server -> ~14 MiB here). Must be > 0.
+    qdrant_upsert_max_bytes: int = 28 * 1024 * 1024
+
+    @field_validator("qdrant_upsert_max_bytes")
+    @classmethod
+    def _validate_qdrant_upsert_max_bytes(cls, value: int) -> int:
+        # A zero/negative cap is a misconfiguration, not "unbounded": refuse it
+        # at boot rather than let the store clamp it to 1 byte, which would send
+        # every point in a request of its own.
+        if value <= 0:
+            raise ValueError(f"qdrant_upsert_max_bytes must be > 0, got {value}")
+        return value
     # Explicit Qdrant collection override. When set (env QDRANT_COLLECTION_EXPLICIT),
     # the API serves this literal collection name verbatim instead of deriving one
     # from (qdrant_collection, embedding_model, embedding_model_dim) via
