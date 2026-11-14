@@ -95,6 +95,11 @@ shared data** — they are two independent stores that happen to agree.
 **Pinned**: `QDRANT_COLLECTION_EXPLICIT` names it outright. Used for corpora built
 before the derivation scheme (`ragstack_sfr_tok256`, `lucid_sfr_tok256`).
 
+**Per instance** ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed): a new
+collection's Qdrant and ES names add its instance and a store generation to the derived
+name. Every load builds a new generation, and the registry record holds the current
+names. Its graph triples carry the instance key, which survives reloads.
+
 ---
 
 ## The invariant that ties collection to store
@@ -266,9 +271,9 @@ ownership bug so far lived where they are not.
 
 They differ when an admin or a grantee with `write` ingests, and after a transfer. Per
 [ADR-0013](adr/0013-collection-owns-its-data.md) (Proposed), a collection owns its data:
-new collections stamp every chunk with the collection's instance key, and the writer
-becomes an unfiltered provenance field. Existing collections keep the writer stamp until
-they are rebuilt as a new instance.
+each new collection instance gets its own stores, chunks are not filtered by stamp, and
+the writer becomes an unfiltered provenance field. Existing collections keep the writer
+stamp until they are moved into a new instance.
 
 **Naming trap:** the per-chunk stamp is called `tenant_id`, and `Principal.tenant` holds
 the caller's full `issuer:subject` (`bvbrc:<user>` for a BV-BRC user) or an API key's

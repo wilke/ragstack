@@ -59,8 +59,8 @@ collection's ownership.
 - A backup records the collection's instance key (ADR-0013), its backup epoch, and the
   counter value read when it started. It is **current** while all three still match. A
   recovery starts a new epoch (ADR-0013 decision 2).
-- A reload restores from the backup that was current at eviction, and leaves the counter
-  unchanged.
+- A reload restores from the backup that was current at eviction, into new stores
+  (ADR-0013 decision 3), and leaves the counter unchanged.
 - This replaces `archive_pending` as the eviction test.
 
 **5. Backups are optional. Eviction needs a current backup; deletion does not.**
