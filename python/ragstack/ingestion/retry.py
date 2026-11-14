@@ -19,6 +19,8 @@ import random
 # names below: importing ragstack.stores.errors would run the stores package
 # __init__ and pull qdrant-client into this deliberately light module.
 _NON_TRANSIENT_ERROR_NAMES = frozenset({"OversizedPointError"})
+# Upper bound on exceptions visited by the non-transient guard's chain walk.
+_MAX_CHAIN_LINKS = 64
 
 _TRANSIENT_ERROR_NAMES = frozenset({
     "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
@@ -55,13 +57,18 @@ def is_transient_error(exc: BaseException) -> bool:
     ``UnexpectedResponse`` (a transient name) and via its message, whose byte
     counts can contain the digits ``502``/``503``/``504``."""
 
+    # Follows BOTH links of every exception (``raise X from Y`` sets __cause__
+    # but the poison error may sit in __context__), bounded and cycle-safe.
     visited: set[int] = set()
-    link: BaseException | None = exc
-    while link is not None and id(link) not in visited:
+    pending: list[BaseException] = [exc]
+    while pending and len(visited) < _MAX_CHAIN_LINKS:
+        link = pending.pop()
+        if id(link) in visited:
+            continue
         visited.add(id(link))
         if any(c.__name__ in _NON_TRANSIENT_ERROR_NAMES for c in type(link).__mro__):
             return False
-        link = link.__cause__ or link.__context__
+        pending.extend(e for e in (link.__cause__, link.__context__) if e is not None)
 
     def _one(e: BaseException) -> bool:
         if isinstance(e, (TimeoutError, ConnectionError)):

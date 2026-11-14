@@ -272,7 +272,7 @@ def test_estimate_bounds_worst_case_floats_and_non_ascii_payloads():
         {"chunk_id": "c", "doc_id": "d", "content": "w" * 2000},
         {"chunk_id": "c", "doc_id": "d", "title": "漢字のタイトル" * 20_000},
         {"chunk_id": "c", "doc_id": "d", "title": "😀🧬" * 20_000},
-        {"chunk_id": "c", "doc_id": "d", "scores": worst[:5000]},
+        {"chunk_id": "c", "doc_id": "d", "scores": worst},
     ]
     for payload in payloads:
         p = PointStruct(id="00000000-0000-0000-0000-000000000001",
@@ -373,11 +373,25 @@ def test_retry_names_track_the_error_class():
     assert OversizedPointError.__name__ in _NON_TRANSIENT_ERROR_NAMES
 
 
-def test_ordinary_unexpected_response_is_still_transient():
-    """The guard is specific: a bare UnexpectedResponse keeps its old class."""
-    e = UnexpectedResponse(status_code=400, reason_phrase="Bad Request",
+def test_ordinary_5xx_unexpected_response_is_still_transient():
+    """The guard is specific: a bare 5xx UnexpectedResponse stays transient."""
+    e = UnexpectedResponse(status_code=503, reason_phrase="Service Unavailable",
                            content=b"", headers=httpx.Headers())
     assert is_transient_error(e)
+
+
+def test_oversized_point_error_only_in_context_is_still_not_transient():
+    """``raise X from other`` while handling the poison error: the poison sits
+    only in __context__ (__cause__ is ``other``), and must still be found."""
+    poison = _oversized_error()
+    try:
+        try:
+            raise poison
+        except OversizedPointError:
+            raise RuntimeError("batch failed") from ConnectionError("503 reset")
+    except RuntimeError as outer:
+        assert outer.__cause__ is not None and outer.__context__ is poison
+        assert not is_transient_error(outer)
 
 
 def test_settings_refuse_a_non_positive_byte_cap():
