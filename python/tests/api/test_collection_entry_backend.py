@@ -156,6 +156,18 @@ async def test_qdrant_backend_with_a_dead_url_still_gets_a_qdrant_store(
     assert deps._qdrant_url_for("phys_alpha") == DEAD
 
 
+async def test_qdrant_collection_store_honours_the_upsert_byte_cap(
+    dead_stores, monkeypatch,
+):
+    """#177: the byte cap is a safety limit, so registry and user-created
+    collections (built by ``_vector_store_for``) must carry the configured
+    value, not silently fall back to the constructor default."""
+    monkeypatch.setattr(deps.settings, "vector_backend", "qdrant")
+    monkeypatch.setattr(deps.settings, "qdrant_upsert_max_bytes", 12_345_678)
+    vs = deps._vector_store_for("phys_beta", dim=4)
+    assert vs._upsert_max_bytes == 12_345_678
+
+
 async def test_memory_backend_is_refused_under_require_durable(dead_stores, monkeypatch):
     """The same gate ``_build_vector_store`` applies to the default collection:
     an in-memory store is never handed to a deployment that demanded durability."""

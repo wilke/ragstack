@@ -404,6 +404,10 @@ def _vector_store_for(
             api_key=settings.qdrant_api_key or None,
             timeout=settings.qdrant_timeout,
             postmortem_probe=settings.qdrant_postmortem_probe,
+            # A safety limit, not a tuning knob, so it is passed here even
+            # though batch size/concurrency still are not (#445): registry and
+            # user-created collections must honour a lowered server limit (#177).
+            upsert_max_bytes=settings.qdrant_upsert_max_bytes,
         )
 
     if settings.require_durable_backends:

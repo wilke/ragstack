@@ -109,7 +109,10 @@ _BULK_MAX_BYTES = 20 * 1024 * 1024
 _BULK_BATCH_SIZE = 500
 # Flat allowance per document for the action line, the fixed fields and their
 # names. Kept at its historical 2 KB so small chunks never look free and the
-# count cap alone cannot drive an oversized body.
+# count cap alone cannot drive an oversized body. The action line and the
+# doc_id/chunk_id fields are NOT measured: ids beyond ~900 chars each would
+# exceed this allowance. Real ids are far shorter, and the 20 MiB cap's margin
+# under ES's 100 MB absorbs the difference.
 _METADATA_BYTES_ESTIMATE = 2048
 
 

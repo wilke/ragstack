@@ -10,6 +10,8 @@ This was the root cause of a multi-day production failure: a 1.99 GB shard of
 by exactly 38,322 documents and the batch failed after 63 other shards had
 loaded fine.
 """
+import json
+
 import pytest
 
 from ragstack.models import Chunk
@@ -21,7 +23,7 @@ from ragstack.stores.elasticsearch import (
 
 
 class _FakeES:
-    """Records each bulk call's operation count and approximate body size."""
+    """Records each bulk call's operation count and its encoded body size."""
 
     def __init__(self, limit: int | None = None) -> None:
         self.calls: list[int] = []
@@ -31,7 +33,10 @@ class _FakeES:
     async def bulk(self, operations, refresh=None, **kw):
         # Two entries per document: the action line and the source.
         docs = len(operations) // 2
-        size = sum(len(str(o)) for o in operations)
+        # The real wire bytes: UTF-8 JSON, non-ASCII unescaped, as the client
+        # sends it. One NDJSON line per operation.
+        size = sum(len(json.dumps(o, ensure_ascii=False).encode()) + 1
+                   for o in operations)
         if self._limit is not None and size > self._limit:
             raise RuntimeError(f"413 payload too large: {size} > {self._limit}")
         self.calls.append(docs)
@@ -150,3 +155,19 @@ async def test_normal_chunks_keep_the_same_request_count():
     ]
     await _index(es).index(chunks)
     assert es.calls == [500, 500, 200]
+
+
+@pytest.mark.asyncio
+async def test_non_ascii_metadata_batches_stay_under_the_cap_in_real_bytes():
+    """CJK/emoji metadata: the fake measures UTF-8 bytes, the estimate counts
+    ensure_ascii escapes (never fewer bytes), so no batch can exceed the cap."""
+    es = _FakeES(limit=_BULK_MAX_BYTES)
+    chunks = [
+        Chunk(id=f"c{i}", doc_id="d0", content="内容" * 100, start_char=0,
+              end_char=200, metadata={"tenant_id": "public",
+                                      "title": ("漢字" if i % 2 else "😀") * 400_000})
+        for i in range(40)
+    ]
+    await _index(es).index(chunks)
+    assert sum(es.calls) == 40
+    assert max(es.bytes) <= _BULK_MAX_BYTES

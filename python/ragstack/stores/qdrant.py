@@ -17,7 +17,7 @@ from typing import Any
 # scope because _failure_kind classifies the transport exception types.
 import httpx
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.http.exceptions import ApiException
+from qdrant_client.http.exceptions import ApiException, UnexpectedResponse
 from qdrant_client.models import (
     Condition,
     Distance,
@@ -36,6 +36,7 @@ from ragstack.stores.errors import (
     KIND_ERROR,
     KIND_TIMEOUT,
     KIND_UNREACHABLE,
+    OversizedPointError,
     StoreUnavailable,
     VectorDimMismatch,
 )
@@ -66,19 +67,22 @@ _TENANT_FIELD = OWNER_FIELD
 # fails. So batches are bounded by estimated bytes as well as by count.
 #
 # The estimate is an UPPER bound on what qdrant-client's REST path sends:
-# - vector: 24 bytes per dimension. pydantic serializes a float32-derived float
-#   as at most 23 chars (``-1.2345678901234567e-05``) plus a comma; measured
-#   mean is ~21.5 bytes/dim at 768-d and 4096-d.
+# - vector: 25 bytes per dimension. pydantic-core writes a float with
+#   1e-5 <= |x| < 1e16 in plain decimal, so the longest form is e.g.
+#   ``-0.000012345678901234568`` (24 chars) plus a comma; exponent forms
+#   (``-2.2250738585072014e-308``) are no longer. Typical embeddings measure
+#   ~20-21.5 bytes/dim, so this over-counts ordinary vectors by ~20%.
 # - payload: ``len(json.dumps(payload))`` with ``ensure_ascii=True``, whose
 #   ``\uXXXX`` escapes are never shorter than the UTF-8 the client sends.
 # - a fixed per-point allowance for the id and the JSON keys/brackets.
 # The default cap (28 MiB) is chosen so an ordinary 256-point batch of 4096-d
-# vectors (24 MiB of vector at the pessimistic per-dim bound, plus a few KB of
-# payload per point) still goes as ONE request — behaviour for normal data is
-# unchanged — while the estimate's pessimism (~10% on the vector) keeps real
-# bodies comfortably under the server's 32 MiB.
+# vectors (25 MiB of vector at the worst-case per-dim bound, plus a few KB of
+# payload per point: ~25.6 MiB estimated) still goes as ONE request —
+# behaviour for normal data is unchanged — and because the estimate is an
+# upper bound, a request it admits is at most 28 MiB on the wire, ~12% under
+# the server's 32 MiB.
 UPSERT_MAX_BYTES_DEFAULT = 28 * 1024 * 1024
-_VECTOR_BYTES_PER_DIM = 24
+_VECTOR_BYTES_PER_DIM = 25
 _POINT_OVERHEAD_BYTES = 128
 
 
@@ -88,13 +92,6 @@ def _point_bytes_estimate(point: PointStruct) -> int:
     dims = len(vector) if isinstance(vector, list) else 0
     payload_bytes = len(json.dumps(point.payload or {}, default=str))
     return _POINT_OVERHEAD_BYTES + dims * _VECTOR_BYTES_PER_DIM + payload_bytes
-
-
-class OversizedPointError(RuntimeError):
-    """A single point, sent alone because it alone exceeds the upsert byte cap,
-    was rejected by Qdrant. Names the chunk so the poison row is findable; the
-    store's own error is chained as ``__cause__`` (so transient-error
-    classification, which walks the cause chain, sees what it saw before)."""
 
 
 def _largest_payload_field(payload: dict[str, Any]) -> tuple[str, int]:
@@ -403,9 +400,13 @@ class QdrantVectorStore:
         A batch closes at ``upsert_batch_size`` points OR when the next point
         would push its estimated body past ``upsert_max_bytes`` (#177). A point
         whose estimate alone exceeds the cap goes in a request of its own: it
-        may still be accepted (the cap sits under the server limit), and if it
-        is rejected only that point fails — with an error that names it —
-        instead of the 255 ordinary points that happened to share its batch."""
+        may still be accepted (the cap sits under the server limit). If the
+        server rejects it with a 4xx, ``OversizedPointError`` names it, and
+        the batches already sent before it are written rather than lost with
+        it. ``upsert`` still raises: on the serial path the batches after it
+        are NOT sent, and on the concurrent path ``gather`` raises once the
+        in-flight batches settle — the caller sees a failed upsert either way,
+        just a correctly attributed one."""
         batches = self._batches(points)
         if len(batches) <= 1 or self._upsert_concurrency == 1:
             for batch in batches:
@@ -444,6 +445,13 @@ class QdrantVectorStore:
             point = batch[0]
             approx = _point_bytes_estimate(point)
             if approx <= self._upsert_max_bytes:
+                raise
+            # Only a store-side 4xx is "rejected": a timeout or a 5xx on a big
+            # point is not evidence the point is the problem, and rewrapping it
+            # would hide a transient fault behind a non-transient error type.
+            status = getattr(e, "status_code", None)
+            if not (isinstance(e, UnexpectedResponse) and isinstance(status, int)
+                    and 400 <= status < 500):
                 raise
             # The poison row: name it, its size and its heaviest field, so the
             # failure is attributable without a scroll-diff of the collection.
