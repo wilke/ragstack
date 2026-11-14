@@ -5,8 +5,9 @@
 - **Deciders:** @wilke
 - **Amends:** [ADR-0005](0005-tenant-anatomy.md) decision 5, in two places:
   - "Whose archive is current" becomes "whose backup is current", as defined below.
-  - "A dormant collection restores on first access" becomes "on first access by someone who
-    can read its backup".
+  - "A dormant collection restores on first access" becomes "on first access, using a
+    credential that can read its backup". For a system backup any authorized reader triggers
+    the reload; for an owner-only backup, only the owner does.
 - **Related:** [#633](https://github.com/wilke/ragstack/issues/633),
   [#632](https://github.com/wilke/ragstack/issues/632) (`archive_pending`),
   [ADR-0007](0007-tenant-control-plane.md) (whole-tenant backup and restore),
@@ -35,15 +36,16 @@ Eviction frees space in a tenant. It is safe only if the collection can be reloa
 
 ## Decision
 
-**1. A backup belongs to the collection's owner,** meaning the active owner row
+**1. A user backup belongs to the collection's owner,** meaning the active owner row
 (ADR-0004). Writes by others are included in the owner's next backup, never in one under
-the writer's identity.
+the writer's identity. System backups belong to the operator. Both kinds carry the
+collection's ownership.
 
 **2. Two triggers.**
 - A **user backup** is one the owner starts. For BV-BRC users it goes to their Workspace,
   driven by the BV-BRC service layer above the API.
-- A **system backup** is one an admin or maintenance starts, on operator storage. It stays
-  a reload source across a transfer.
+- A **system backup** is one an admin or maintenance starts, on operator storage (for
+  example the ADR-0012 registry). It stays a reload source across a transfer.
 
 **3. Live access rows win.** A backup carries the collection's record and access rows.
 - A reload after eviction keeps the live owner and grants, so a revoked grant never comes
@@ -51,11 +53,13 @@ the writer's identity.
 - The backup's access rows are applied only when an admin replays into an empty collection
   or tenant.
 
-**4. Current means no write since the backup.**
+**4. Current means same instance, no write since the backup.**
 - Every committed write advances the collection's write counter. That covers every writer
-  (API, workflows, scripts), and deletes and backfills too.
-- A backup is current while the counter equals the value read when the backup started.
-- A reload sets the counter to the backup's value.
+  (API, workflows, scripts), and deletes and backfills too. The counter never decreases.
+- A backup records the collection's instance key (ADR-0013) and the counter value read when
+  it started. It is **current** while both still match.
+- A reload restores from the backup that was current at eviction, and leaves the counter
+  unchanged.
 - This replaces `archive_pending` as the eviction test.
 
 **5. Backups are optional. Eviction needs a current backup; deletion does not.**
@@ -65,14 +69,15 @@ the writer's identity.
 - A backup held **only by the owner** makes a collection evictable only while it is
   **private**, with no grantees and no `public`. It reloads when the owner, or the BV-BRC
   layer acting with the owner's token, touches it.
-- A reload is never attempted with a non-owner's credential, so a non-owner can never push a
+- An owner-only backup is reloaded only with the owner's credential, and a system backup
+  with the server's. A non-owner's credential is never used, so a non-owner can never push a
   collection to `lost`.
 - Deleting a collection needs no backup.
 
 **6. Sharing or transferring a dormant collection requires reloading it first** (409
 otherwise).
 - On transfer, the previous owner's user backups become **snapshots**. They stay with that
-  owner and are never a reload source for the collection.
+  owner, and they are never a reload or replay source for the collection.
 - The collection is current again once the new owner backs it up (the BV-BRC layer may do
   this on first use), or once a system backup exists.
 
@@ -89,9 +94,11 @@ otherwise).
   backup exists.
 - **Writing to the owner's backup target needs a credential that can reach it,** not the
   caller's. How the server gets one is an implementation choice.
-- **Existing archives in writers' Workspaces stay where they are.** They are not used for
-  reload, and a collection that depends on one needs a fresh backup before it can be
-  evicted.
+- **Rollout:**
+  - Existing archives in the current owner's Workspace count as owner-only backups.
+  - Archives in other writers' Workspaces are not used for reload.
+  - A collection that is dormant and shared when this lands is reloaded, or given a system
+    backup, before the private-only rule applies.
 - **Retention is not decided here.** User backups and snapshots follow the owner's own
   storage. System backups follow operator policy.
 - **Today's per-ingest version deltas** (`ragstack-archive/1`) become one way of producing a

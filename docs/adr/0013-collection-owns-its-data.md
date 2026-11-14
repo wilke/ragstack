@@ -38,8 +38,9 @@ not the reader:
 
 ## Decision
 
-**1. A collection's data belongs to the collection.** Whoever passes the collection's access
-check sees all of its chunks: the owner, grantees including `public`, and admins
+**1. A collection's data belongs to the collection.** On collection-stamped collections
+(decision 4 covers the rest), whoever passes the collection's access check sees all of its
+chunks: the owner, grantees including `public`, and admins
 (ADR-0003 decisions 2 and 5, ADR-0004).
 
 **2. New collections stamp every chunk with the collection's instance key.**
@@ -51,8 +52,10 @@ check sees all of its chunks: the owner, grantees including `public`, and admins
 - **Graph:** Neo4j triples carry the key too, and graph reads scope by collection.
 - **Where it comes from:** the key always comes from the **target** registry record, never
   from a file header, an archive or a source payload. Every path that loads, copies or
-  rebuilds chunks stamps from the target record. Every path that recreates a record (seed,
-  replay, tenant restore) keeps its key.
+  rebuilds chunks stamps from the target record.
+- **Recreating vs cloning:** recovering a record in place (seed, replay, an in-place tenant
+  restore) keeps its key. A clone, such as an ADR-0007 restore-as, gets a new key and
+  restamps.
 - **The writer** is recorded as a separate provenance field, never filtered on.
 
 **3. Who may write is unchanged:** the owner, a `write` grantee, or an admin. Whoever
@@ -64,7 +67,10 @@ row (ADR-0004), not `spec.owner`, which records the creator. A transfer moves on
   move.
 - A collection moves only by building a **new instance** to completion with the collection
   stamp, then switching to it in one registry write, then purging the old chunks.
-  Re-ingesting single documents never switches the scheme.
+- The switch commits only if the old instance's write counter (ADR-0014) has not moved since
+  the build started. Otherwise the build is redone, so a delete made during the build is
+  never undone.
+- Re-ingesting single documents never switches the scheme.
 - There is no bulk rewrite. `shared_scope` goes when the last writer-stamped collection
   does.
 

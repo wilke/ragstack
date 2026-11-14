@@ -54,7 +54,8 @@ it holds no store and **is not counted**. So "I have 100 collections and the cap
 is 100" does not by itself mean the next create is refused; and at the bound a
 create does not simply refuse, it **evicts** the least-recently-accessed active
 collection whose archive is current and takes the freed slot
-([ADR-0005](adr/0005-tenant-anatomy.md) decision 5).
+([ADR-0005](adr/0005-tenant-anatomy.md) decision 5; "archive" becomes "backup" under
+[ADR-0014](adr/0014-backups-and-eviction.md), Proposed).
 
 ## Store
 
@@ -282,8 +283,8 @@ tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.
 - **User backup:** started by the owner (for BV-BRC users, written to their Workspace by
   the BV-BRC layer above the API).
 - **System backup:** started by an admin or by maintenance, on operator storage.
-- **Current:** the collection's write counter still equals the value read when the backup
-  started. Every committed write, deletes included, advances it.
+- **Current:** the backup's instance key and counter value still match the collection's.
+  Every committed write, deletes included, advances the counter, and it never decreases.
 - **Reload vs replay:** a reload after eviction keeps the live owner and grants. Only an
   admin replay into an empty collection or tenant applies the backup's access rows.
 - **Snapshot:** a previous owner's user backup after a transfer. It stays with them and is
