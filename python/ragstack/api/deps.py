@@ -2164,16 +2164,21 @@ async def interrupted_gowe_ingest_collections(job_store: Any, cfg: Any) -> set[s
     return out
 
 
-async def flag_interrupted_collections(collection_store: Any, ids: set[str]) -> None:
-    """Flag each of ``ids`` ``archive_pending``; a failed write is logged, never
-    raised (startup must not die on it)."""
+async def flag_interrupted_collections(collection_store: Any, ids: set[str]) -> bool:
+    """Flag each of ``ids`` ``archive_pending``. Returns True when every write
+    succeeded (an id the registry no longer has counts as done: there is no row
+    to protect). A failed write is logged, never raised — startup must not die
+    on it — and the caller must then NOT sweep the jobs, or the flag is lost."""
+    ok = True
     for cid in sorted(ids):
         try:
             if await collection_store.set_archive_pending(cid, True):
                 log.warning("collection %r: an interrupted GoWe ingest may have written; "
                             "flagged archive_pending", cid)
         except Exception:  # noqa: BLE001
+            ok = False
             log.warning("collection %r: could not flag archive_pending", cid, exc_info=True)
+    return ok
 
 
 @asynccontextmanager
@@ -2383,10 +2388,19 @@ async def lifespan(app: FastAPI):
     collection_store = make_collection_store(settings)
     await seed_from_json(collection_store, settings)
     app.state.collection_store = collection_store
-    await flag_interrupted_collections(
+    flagged = await flag_interrupted_collections(
         collection_store, await interrupted_gowe_ingest_collections(job_store, settings)
     )
-    interrupted = await job_store.fail_interrupted()
+    if flagged:
+        interrupted = await job_store.fail_interrupted()
+    else:
+        # Sweeping now would fail the jobs with their collections unflagged, and
+        # the next boot would find nothing in flight to flag: keep them running.
+        interrupted = 0
+        log.warning(
+            "interrupted GoWe ingest job(s) left running at startup: an "
+            "archive_pending write failed; the next boot re-flags and sweeps them"
+        )
     if interrupted:
         log.warning(
             "marked %d interrupted ingest job(s) as failed at startup", interrupted

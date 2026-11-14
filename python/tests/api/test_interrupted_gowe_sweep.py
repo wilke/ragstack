@@ -2,10 +2,12 @@
 
 SIGKILL / OOM runs no handler, so a submitted GoWe run keeps writing to the
 stores while nothing flags the row; the restart's interruption sweep then fails
-the job and the row is evictable. The sweep now reads the in-flight INGEST
-jobs' registry ids first (GoWe deployments only; graph-extraction jobs write no
-chunks) and flags them once the registry is up. A store that no-ops the sweep
-(Postgres) interrupted nothing, so nothing is flagged there.
+the job and the row is evictable. Startup now builds the registry FIRST, reads
+the in-flight INGEST jobs' registry ids (GoWe deployments only; graph-extraction
+jobs write no chunks), writes their flags, and only then sweeps — and skips the
+sweep for this boot if any flag write failed, so the next boot finds the jobs
+again. A crash later in the same boot cannot lose the flags. A job store that
+does not sweep (Postgres, ``sweeps_interrupted = False``) is not read at all.
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ async def test_a_local_deployment_names_none() -> None:
 
 async def test_flagging_sets_the_rows_and_survives_a_failing_store() -> None:
     store = InMemoryCollectionStore([_spec("a"), _spec("b")])
-    await deps.flag_interrupted_collections(store, {"a", "unknown"})
+    assert await deps.flag_interrupted_collections(store, {"a", "unknown"}) is True
     assert (await store.get("a")).archive_pending is True
     assert (await store.get("b")).archive_pending is False
 
@@ -60,7 +62,7 @@ async def test_flagging_sets_the_rows_and_survives_a_failing_store() -> None:
         async def set_archive_pending(self, cid, pending):
             raise RuntimeError("registry down")
 
-    await deps.flag_interrupted_collections(Broken(), {"a"})  # logged, not raised
+    assert await deps.flag_interrupted_collections(Broken(), {"a"}) is False  # not raised
 
 
 def _in_memory_settings(monkeypatch) -> None:
@@ -156,3 +158,24 @@ async def test_a_crash_after_the_sweep_still_leaves_the_flag(monkeypatch) -> Non
     await _boot(monkeypatch, js, store)
     assert (await store.get("ingesting")).archive_pending is True
 
+
+
+async def test_a_failed_flag_write_keeps_the_jobs_running_for_the_next_boot(monkeypatch) -> None:
+    """A flag write that fails at boot (e.g. sqlite "database is locked") must
+    not be followed by the sweep, or the flag is lost for good."""
+    _in_memory_settings(monkeypatch)
+    js, store = await _jobs(), _store()
+    real = store.set_archive_pending
+
+    async def locked(cid, pending):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(store, "set_archive_pending", locked)
+    await _boot(monkeypatch, js, store)
+    assert "ingesting" in await js.active_collection_ids()  # not swept
+    assert (await store.get("ingesting")).archive_pending is False
+
+    monkeypatch.setattr(store, "set_archive_pending", real)
+    await _boot(monkeypatch, js, store)
+    assert (await store.get("ingesting")).archive_pending is True
+    assert await js.active_collection_ids() == set()  # swept on the good boot
