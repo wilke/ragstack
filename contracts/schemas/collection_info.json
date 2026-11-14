@@ -27,7 +27,7 @@
       "enum": ["active", "archiving", "dormant", "restoring", "lost", null]
     },
     "archive_pending": {
-      "description": "True when the last ingest/delete loaded but its archive step or upload failed: the collection stays active, cannot be evicted, and the owner's next authenticated call re-triggers the archive. Null/absent when untracked.",
+      "description": "True when an ingest failed after it may have written to the stores, so the stores may be ahead of the archive: the collection stays active and cannot be evicted. Never cleared automatically (an archive version is a per-job delta); an operator clears it after checking the archive covers the stores. Null/absent when untracked.",
       "type": ["boolean", "null"]
     },
     "versions": {

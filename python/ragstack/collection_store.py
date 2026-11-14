@@ -39,7 +39,7 @@ empty table once from the configured ``collections_file`` (see
 Lifecycle (#353 / #358). Every record also carries the collection's lifecycle
 bookkeeping — ``state`` (``active | archiving | dormant | restoring | lost``),
 ``versions`` (the ordered archive version numbers restore replays),
-``archive_pending`` (the last load's archive step failed: not evictable),
+``archive_pending`` (the stores may be ahead of the archive: not evictable),
 ``last_accessed_at`` (eviction's LRU key) and ``graph_archived_versions``
 (the versions whose graph leg is archived, #350). These live on
 :class:`CollectionRecord`, never on :class:`CollectionSpec` (the frozen JSON file
@@ -269,8 +269,9 @@ def evictable(rec: CollectionRecord) -> bool:
     """May the eviction policy (#359) make this collection dormant?
 
     Only an ``active`` collection whose archive is CURRENT: ``archive_pending``
-    means the last load's archive step failed, so evicting would lose data that
-    exists nowhere else; an empty ``versions`` list means no archive was ever
+    means the stores may be ahead of the archive (a GoWe load that may have
+    written failed before its version was recorded, #632), so evicting could
+    lose data that exists nowhere else; an empty ``versions`` list means no archive was ever
     written, for the same reason. Every other state is either mid-transition or
     already off the physical stores."""
     return rec.state == ACTIVE and not rec.archive_pending and bool(rec.versions)

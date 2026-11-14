@@ -671,7 +671,7 @@ the rest are optional:
 | `is_default` | bool | the **global registry pointer** flag (see above) |
 | `default` | bool | deprecated alias of `is_default` |
 | `state` | string \| null | `active` \| `archiving` \| `dormant` \| `restoring` \| `lost`; null for a collection the registry does not track (the settings-derived default). See [POST /v1/collections/{id}/restore](#post-v1collectionsidrestore) |
-| `archive_pending` | bool \| null | the last load succeeded but its archive step failed — the collection stays active and cannot be evicted |
+| `archive_pending` | bool \| null | a load failed after it may have written to the stores, so the stores may be ahead of the archive — the collection stays active and cannot be evicted |
 | `versions` | int[] \| null | ordered archive version numbers on the registry row; a restore replays them in this order |
 | `count`, `text_count` | int \| null | tenant-scoped vector and BM25 chunk counts (own + `public`, widened by a read share); null when unavailable — compare the two for a vector↔text parity check |
 | `provenance` | object \| null | build lineage from the collection's manifest; `source` is `ingest` (verified) or `config` (declared). Deliberately omits `embedding_endpoints` — internal infra URLs are not exposed here |
@@ -726,7 +726,7 @@ exactly one** least-recently-accessed active collection whose Workspace archive 
 current (#359): its row is swapped `active → dormant` *before* its Qdrant collection
 and ES index are dropped, so readers get `503 + Retry-After` from that instant and
 the first access restores it. Never evicted: a collection with an `accepted`/`running`
-ingest job, one whose last archive step failed (`archive_pending`), one never archived,
+ingest job, one whose stores may be ahead of its archive (`archive_pending`), one never archived,
 one whose stores are the legacy shared surface's (the settings-derived default, or a
 spec that claims its stores) or are shared with another registry id. When no candidate
 exists the create is `507` and the detail counts the ineligible collections per reason

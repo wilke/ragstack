@@ -1695,8 +1695,9 @@ paths:
             is current (it becomes `dormant` and is restored on its next
             access) and the create proceeds. This response means no candidate
             exists: the `detail` names, per reason, how many collections were
-            ineligible — `not_active`, `archive_pending` (last archive step
-            failed; the owner's next call retries it), `no_archive` (never
+            ineligible — `not_active`, `archive_pending` (an ingest failed after it
+            may have written, so the stores may be ahead of the archive; never
+            cleared automatically), `no_archive` (never
             archived), `in_flight` (an ingest job is running), `protected`
             (the legacy shared surface or a store shared by two registry ids),
             `unregistered` (not served by this process). The bound is taken
@@ -4233,9 +4234,11 @@ components:
           enum: [active, archiving, dormant, restoring, lost, null]
         archive_pending:
           description: >-
-            True when the last ingest/delete loaded but its archive step or
-            upload failed — the collection stays active, cannot be evicted, and
-            the owner's next authenticated call re-triggers the archive.
+            True when an ingest failed after it may have written to the stores,
+            so the stores may be ahead of the archive — the collection stays
+            active and cannot be evicted. Never cleared automatically (an
+            archive version is a per-job delta); an operator clears it after
+            checking the archive covers the stores.
           type: [boolean, "null"]
         versions:
           description: >-

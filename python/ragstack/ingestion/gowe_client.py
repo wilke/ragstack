@@ -47,7 +47,29 @@ _TOKEN_FILES = ("~/.gowe/credentials.json", "~/.bvbrc_token", "~/.patric_token",
 
 
 class GoWeError(RuntimeError):
-    """A GoWe API call failed (non-2xx, or a submission ended non-COMPLETED)."""
+    """A GoWe API call failed (non-2xx, or a submission ended non-COMPLETED).
+
+    ``status_code`` is the engine's HTTP status when the call got a response
+    (``None`` otherwise); ``connect_error`` is True when no connection was made
+    at all (the request never reached the engine). Callers that must tell "the
+    engine definitely did not take this request" from "it may have" read these
+    — a timeout or a 5xx is the ambiguous case (#632)."""
+
+    def __init__(self, *args: object, status_code: int | None = None,
+                 connect_error: bool = False) -> None:
+        super().__init__(*args)
+        self.status_code = status_code
+        self.connect_error = connect_error
+
+    @property
+    def definitely_not_accepted(self) -> bool:
+        """True only when the engine cannot have acted on the request: no
+        connection was made, or it answered with a 4xx other than 408 (a
+        request timeout says nothing about what the server did)."""
+        if self.connect_error:
+            return True
+        return self.status_code is not None and 400 <= self.status_code < 500 \
+            and self.status_code != 408
 
 
 def load_bvbrc_token() -> str | None:
@@ -126,12 +148,16 @@ class GoWeClient:
         except httpx.HTTPError as exc:
             # ``from None`` + type name only: an httpx error's text can include
             # the request (and so the Authorization header) — never re-raise it.
+            # ConnectError: no connection, so the request was never sent. A
+            # ConnectTimeout is a TimeoutException, deliberately not included.
             raise GoWeError(
-                f"{method} {path}: transport error ({type(exc).__name__})"
+                f"{method} {path}: transport error ({type(exc).__name__})",
+                connect_error=isinstance(exc, httpx.ConnectError),
             ) from None
         if resp.status_code >= 400:
             body = _scrub(resp.text[:500], token, self._token)
-            raise GoWeError(f"{method} {path} -> {resp.status_code}: {body}")
+            raise GoWeError(f"{method} {path} -> {resp.status_code}: {body}",
+                            status_code=resp.status_code)
         return resp
 
     async def _json(

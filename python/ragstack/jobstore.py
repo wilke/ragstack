@@ -291,6 +291,11 @@ class JobStore(Protocol):
 
     async def fail_interrupted(self) -> int: ...
 
+    #: Does :meth:`fail_interrupted` actually sweep? False for a store whose
+    #: in-flight rows may belong to live sibling workers (Postgres, #7): the
+    #: startup code then reads nothing from it before the sweep (#632).
+    sweeps_interrupted: bool
+
     # --- per-item state (resumable manifest runs) ---
 
     async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
@@ -353,6 +358,8 @@ class JobStore(Protocol):
 
 class InMemoryJobStore:
     """Process-local job store. Loses state on restart — dev/tests only."""
+
+    sweeps_interrupted = True
 
     def __init__(self) -> None:
         self._jobs: dict[str, IngestJob] = {}
@@ -490,6 +497,8 @@ class SqliteJobStore:
     (``asyncio.to_thread``) so blocking sqlite never stalls the event loop.
     WAL mode allows the single background writer to coexist with status reads.
     """
+
+    sweeps_interrupted = True
 
     def __init__(self, path: str) -> None:
         self._path = path
@@ -739,6 +748,9 @@ class PostgresJobStore:
     connection pool and schema are created lazily on first use (asyncpg needs an
     event loop), so construction stays synchronous like the other stores.
     """
+
+    #: fail_interrupted is a no-op here (#7).
+    sweeps_interrupted = False
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
         self._dsn = _normalize_dsn(dsn)
