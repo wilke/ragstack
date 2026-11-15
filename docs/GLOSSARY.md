@@ -96,10 +96,10 @@ shared data** — they are two independent stores that happen to agree.
 before the derivation scheme (`ragstack_sfr_tok256`, `lucid_sfr_tok256`).
 
 **Per instance** ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed): a new
-collection's Qdrant and ES stores belong to one generation of its instance, and are named
-from the derived name plus that instance and generation. Every load builds a new
-generation, and the registry record is the only pointer to the current names. Its graph
-triples carry the instance key, which survives reloads.
+collection's Qdrant and ES stores belong to one generation of its instance. Every load
+builds a new generation, and the registry record is the only pointer to the current
+names. Its graph triples carry the instance key, which survives reloads. Existing
+collections stay in the `stamped` scheme, under their deterministic names, until moved.
 
 ---
 
@@ -256,8 +256,8 @@ isolates writers) keys on the entry's `is_shared_surface` **flag** — never on
 what `default` points at. Keyed on the pointer, aiming `default` at an owned
 collection would let any *reader* of it ingest into somebody else's corpus just
 by omitting `collection`. ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed,
-ends this exemption for ingest: the shared corpus gets a service-account owner and
-ingest needs `write`. Users keep deleting their own chunks there until it is retired.)
+ends this exemption for ingest: the shared corpus is frozen and takes no new chunks.
+Users keep deleting their own chunks there until it is retired.)
 
 ## Caller, owner, writer
 
@@ -290,8 +290,9 @@ tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.
   the BV-BRC layer above the API).
 - **System backup:** started by an admin or by maintenance, on operator storage.
 - **Current:** the backup's instance key, backup epoch and counter value still match the
-  collection's. Every committed write, deletes included, advances the counter, and it never
-  decreases. A recovery starts a new epoch.
+  collection's, and for a user backup its owner is still the owner. Every committed write,
+  deletes included, advances the counter, and it never decreases. The events that start a
+  new epoch are listed in ADR-0013 decision 2.
 - **Reload vs replay:** a reload after eviction keeps the live owner and grants. Only an
   admin replay into an empty collection or tenant applies the backup's access rows.
 - **Snapshot:** a previous owner's user backup after a transfer. It stays with them and is

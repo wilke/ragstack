@@ -57,10 +57,12 @@ collection's ownership.
 - Every committed write advances the collection's write counter. That covers every writer
   (API, workflows, scripts), and deletes and backfills too. The counter never decreases.
 - A backup records the collection's instance key (ADR-0013), its backup epoch, and the
-  counter value read when it started. It is **current** while all three still match. A
-  recovery starts a new epoch (ADR-0013 decision 2).
-- A reload restores from the backup that was current at eviction, into new stores
-  (ADR-0013 decision 3), and leaves the counter unchanged.
+  counter value read when it started. It is **current** while all three still match and,
+  for a user backup, while its owner is still the collection's owner. The events that start
+  a new epoch are listed in ADR-0013 decision 2. No restore lowers a counter.
+- A reload restores from the backup that was current at eviction, and leaves the counter
+  unchanged. In the instance scheme it loads into new stores (ADR-0013 decision 4); a
+  `stamped` collection reloads into its existing names.
 - This replaces `archive_pending` as the eviction test.
 
 **5. Backups are optional. Eviction needs a current backup; deletion does not.**
@@ -96,6 +98,8 @@ otherwise).
 - **Writing to or reading from the owner's backup target needs a credential that can reach
   it,** not the caller's. How the server gets one is an implementation choice.
 - **Rollout:**
+  - Every existing collection gets an instance key when this lands (ADR-0013 decision 2),
+    so the currency test applies to it.
   - Existing archives in the current owner's Workspace can reload collections that are
     already dormant when this lands. They never make a resident collection evictable; a
     resident collection needs a new backup first.
