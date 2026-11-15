@@ -96,9 +96,10 @@ shared data** — they are two independent stores that happen to agree.
 before the derivation scheme (`ragstack_sfr_tok256`, `lucid_sfr_tok256`).
 
 **Per instance** ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed): a new
-collection's Qdrant and ES names add its instance and a store generation to the derived
-name. Every load builds a new generation, and the registry record holds the current
-names. Its graph triples carry the instance key, which survives reloads.
+collection's Qdrant and ES stores belong to one generation of its instance, and are named
+from the derived name plus that instance and generation. Every load builds a new
+generation, and the registry record is the only pointer to the current names. Its graph
+triples carry the instance key, which survives reloads.
 
 ---
 
@@ -273,7 +274,7 @@ They differ when an admin or a grantee with `write` ingests, and after a transfe
 [ADR-0013](adr/0013-collection-owns-its-data.md) (Proposed), a collection owns its data:
 each new collection instance gets its own stores, chunks are not filtered by stamp, and
 the writer becomes an unfiltered provenance field. Existing collections keep the writer
-stamp until they are moved into a new instance.
+stamp until they are moved into a new instance, after a risk check.
 
 **Naming trap:** the per-chunk stamp is called `tenant_id`, and `Principal.tenant` holds
 the caller's full `issuer:subject` (`bvbrc:<user>` for a BV-BRC user) or an API key's
