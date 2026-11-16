@@ -38,14 +38,15 @@ is served only from its routed servers.
 slot, recording its generation and any new key before building. A builder whose claim is
 gone stops. When a claim on a new generation expires, its stores move to the retiring
 list in the same step that frees the slot; a `stamped` load into its recorded names
-retires nothing. A claimed collection counts as in flight for eviction.
+retires nothing. Triples a failed or expired build wrote under a new key are dropped with
+its stores. A claimed collection counts as in flight for eviction.
 
 **3. Writes are admitted and fenced.**
 - A write is admitted only while no claim is held, registers as in flight, and names the
   generation it resolved. It commits by advancing the write counter (ADR-0014 decision 4)
   while that generation is still current; otherwise it is reported failed.
-- A claim waits until admitted writes have finished or their leases expired. A write whose
-  lease expires advances the counter and is reported failed.
+- A claim waits until admitted writes have finished or their leases expired. A writer
+  whose lease has expired stops; its write advances the counter and is reported failed.
 - Every writer goes through admission, including workflows, scripts and graph extraction.
 
 **4. Check, then switch atomically.** The build is checked against its source (the backup
@@ -80,8 +81,8 @@ server with the source. Graph extraction advances the write counter.
 with a tombstone, keyed by instance key, naming every generation and the graph data (the
 key's scopes, or a `stamped` collection's tagged triples). Purge drops them all, except
 stores another entry or deployment reaches, which are unregistered, never dropped
-(ADR-0013 decision 5). An `instance` id is free at once; a `stamped` id is free when its
-tombstone is gone. The tombstone is deleted when every drop, graph included, is confirmed
+(ADR-0013 decision 5). A tombstone's names count as claimed until it is deleted. An `instance` id is
+free at once; a `stamped` id is free when its tombstone is gone. The tombstone is deleted when every drop, graph included, is confirmed
 and no claim is held. A switch against a tombstone drops its own build.
 
 **9. Capacity.** Building, retiring and tombstoned generations count toward the store

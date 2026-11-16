@@ -68,8 +68,8 @@ into it (decision 6). The owner is the active owner row (ADR-0004), not `spec.ow
   backup restores a `stamped` collection into the target record's own names, refused if
   another entry claims them. A clone of a `stamped` source copies the whole collection and
   follows the move rules below (movability, risk check).
-- **Movable** only when its Qdrant and ES servers, and its graph server where one is
-  configured, are exclusive to this deployment in the operators' inventory (ADR-0007),
+- **Movable** only when its Qdrant and ES servers, and its graph server where graph is
+  enabled, are exclusive to this deployment in the operators' inventory (ADR-0007),
   compared by resolved address, with no legacy deployment and no inbound route reaching
   them, and it is not fixed (decision 5).
 - **Risk check:** access stays per collection; what changes is that the writer filter
@@ -78,7 +78,8 @@ into it (decision 6). The owner is the active owner row (ADR-0004), not `spec.ow
   that will cover the whole collection. The owner confirms, deletes that data, or leaves
   the collection `stamped`. Where
   two writers hold copies of one document, the owner's is kept, otherwise the owner picks.
-  The move aborts if the write counter, the grants or the owner changed since the decision.
+  After the move's claim has drained admitted writes, the counts, grants and owner are
+  compared with what the owner decided on, and the move aborts if any differ.
 - **Running it:** a dormant collection is reloaded first. A move is an operator command; it
   checks movability at the claim and again before the switch. The source's stores and
   triples retire after the switch like any old generation. There is no bulk rewrite.
