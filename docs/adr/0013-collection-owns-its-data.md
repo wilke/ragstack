@@ -66,14 +66,16 @@ into it (decision 6). The owner is the active owner row (ADR-0004), not `spec.ow
 - **Until moved** it keeps its filter, `shared_scope`, recorded names and graph tagging, and
   reloads, recovers and rolls back as today. #558 persists there. A replay of a `stamped`
   backup restores a `stamped` collection into the target record's own names, refused if
-  another entry claims them. A clone of a `stamped` source copies only the chunks and
-  triples the cloner can read.
+  another entry claims them. A clone of a `stamped` source copies the whole collection and
+  follows the move rules below (movability, risk check).
 - **Movable** only when its Qdrant, ES and graph servers are exclusive to this deployment
   in the operators' inventory (ADR-0007), compared by resolved address, with no legacy
   deployment and no inbound route reaching them, and it is not fixed (decision 5).
-- **Risk check:** before the move, the owner sees counts of hidden chunks and triples per
-  writer and source document, and the `write` grants that will cover the whole collection.
-  The owner confirms, deletes the hidden data, or leaves the collection `stamped`. Where
+- **Risk check:** access stays per collection; what changes is that the writer filter
+  goes. Before the move, the owner sees counts of chunks and triples stamped by writers
+  other than the owner or `public`, per writer and source document, and the `write` grants
+  that will cover the whole collection. The owner confirms, deletes that data, or leaves
+  the collection `stamped`. Where
   two writers hold copies of one document, the owner's is kept, otherwise the owner picks.
   The move aborts if the write counter, the grants or the owner changed since the decision.
 - **Running it:** a dormant collection is reloaded first. A move is an operator command; it
@@ -81,8 +83,9 @@ into it (decision 6). The owner is the active owner row (ADR-0004), not `spec.ow
   triples retire after the switch like any old generation. There is no bulk rewrite.
 
 **5. Fixed stores stay `stamped` and are never evicted.** The settings-derived entry,
-pinned names, and stores whose name is not derived from their id and build spec. No single
-deployment recovers or rolls back a store another deployment reaches. A fixed or shared
+pinned names, stores whose name is not derived from their id and build spec, and any store
+another entry or deployment reaches. No single deployment evicts, purges, recovers or
+rolls back a store another entry or deployment reaches. A fixed or shared
 store becomes movable once its pin, route or other claimant is removed; otherwise its way
 out is a re-ingest into a new collection. `shared_scope` goes when the last `stamped`
 collection is moved or retired.
@@ -104,7 +107,8 @@ dropped by scope.
   `stamped`, with #558, until re-ingested or unshared.
 - **"Stay on the current release" is real only for tenants with their own store servers
   and no routes in or out.**
-- **Moving exposes hidden data,** gated by the owner's decision. The risk falls on the
+- **Moving shows the owner's readers data the writer filter hid,** gated by the owner's
+  decision. The risk falls on the
   writers, whose data it was contributed as.
 - **A move, clone or replay is a new instance,** so earlier backups stop being current.
 - **A `write` grant on a public collection publishes at once.**
@@ -128,7 +132,7 @@ dropped by scope.
   several deployments reach, with no owner decision.
 - **Freeze the shared corpora.** Rejected as more machinery than the risk warrants; ending
   read-to-ingest is enough.
-- **Spin hidden data off into collections owned by its writers.** Can be a later tool.
+- **Spin other writers' data off into collections owned by them.** Can be a later tool.
 - **One graph database per collection now.** Adds a service before it is needed.
 - **One common graph, filtered only at retrieval.** Triples from private chunks would be
   readable through graph endpoints.

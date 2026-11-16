@@ -36,8 +36,9 @@ is served only from its routed servers.
 
 **2. One load at a time, under a leased claim.** A load claims the collection's single
 slot, recording its generation and any new key before building. A builder whose claim is
-gone stops. When a claim expires, its stores move to the retiring list in the same step
-that frees the slot. A claimed collection counts as in flight for eviction.
+gone stops. When a claim on a new generation expires, its stores move to the retiring
+list in the same step that frees the slot; a `stamped` load into its recorded names
+retires nothing. A claimed collection counts as in flight for eviction.
 
 **3. Writes are admitted and fenced.**
 - A write is admitted only while no claim is held, registers as in flight, and names the
@@ -57,7 +58,8 @@ old generation becomes **retiring**. A failed check or switch drops the build.
 write or claim names it. A reader that finds its generation gone re-reads the record.
 Eviction follows the same rule and leaves the record dormant with no current generation.
 A clone from live stores fails if its source's generation or counter changed, and counts
-as a claim on the source generation until it ends.
+as a claim on the source generation for drop and eviction, not for write admission,
+until it ends.
 
 **6. Graph during a load.** Graph data belongs to the key's scopes, not to a generation,
 so a generation change never touches it.
@@ -65,8 +67,8 @@ so a generation change never touches it.
   documents and chunks the new generation holds. Archived graph legs are loaded only where
   triples are missing.
 - A replay or a clone from a backup loads the archived graph legs under the new key.
-- A clone from live stores copies the source's triples under the new key, only those the
-  cloner can read, and never changes the source's.
+- A clone from live stores copies the source's triples under the new key and never
+  changes the source's.
 
 **7. Backup epochs** (ADR-0014 decision 4). A new epoch starts on a recovery, a rollback,
 a reload that reports skipped versions, and any tenant restore. A tenant restore-as
@@ -75,7 +77,9 @@ server with the source. Graph extraction advances the write counter.
 
 **8. Purge leaves a tombstone.** Purge removes the access rows, then replaces the record
 with a tombstone, keyed by instance key, naming every generation and the key's graph
-scopes. Purge drops them all. The id is free at once. The tombstone is deleted when every
+scopes. Purge drops them all, and keeps today's refusals for stores another entry or
+deployment reaches (ADR-0013 decision 5). The id is free at once for an `instance`
+collection; a `stamped` collection's id stays taken until its tombstone is deleted. The tombstone is deleted when every
 drop, graph included, is confirmed and no claim is held. A switch against a tombstone
 drops its own build.
 
