@@ -12,7 +12,7 @@
   [#632](https://github.com/wilke/ragstack/issues/632) (`archive_pending`),
   [ADR-0007](0007-tenant-control-plane.md) (whole-tenant backup and restore),
   [ADR-0012](0012-document-chunk-registry.md) (Proposed: the registry as archive target),
-  [ADR-0013](0013-collection-owns-its-data.md)
+  [ADR-0013](0013-collection-owns-its-data.md), [ADR-0015](0015-loads-build-new-stores.md)
 
 ## Context
 
@@ -51,17 +51,18 @@ collection's ownership.
 - A reload after eviction keeps the live owner and grants, so a revoked grant never comes
   back.
 - The backup's access rows are applied only when an admin replays into an empty collection
-  or tenant. A replay creates a new instance (ADR-0013 decision 2).
+  or tenant. A replay creates a new instance (ADR-0013 decision 2); a replay of a
+  `stamped` backup restores a `stamped` collection (ADR-0013 decision 4).
 
 **4. Current means same instance, no write since the backup.**
 - Every committed write advances the collection's write counter. That covers every writer
   (API, workflows, scripts), and deletes and backfills too. The counter never decreases.
 - A backup records the collection's instance key (ADR-0013), its backup epoch, and the
   counter value read when it started. It is **current** while all three still match and,
-  for a user backup, while its owner is still the collection's owner. The events that start
-  a new epoch are listed in ADR-0013 decision 2. No restore lowers a counter.
+  for a user backup, while it was taken by the current owner since they last became owner.
+  The events that start a new epoch are listed in ADR-0015 decision 7.
 - A reload restores from the backup that was current at eviction, and leaves the counter
-  unchanged. In the instance scheme it loads into new stores (ADR-0013 decision 4); a
+  unchanged. In the instance scheme it loads into new stores (ADR-0015); a
   `stamped` collection reloads into its existing names.
 - This replaces `archive_pending` as the eviction test.
 
@@ -98,8 +99,8 @@ otherwise).
 - **Writing to or reading from the owner's backup target needs a credential that can reach
   it,** not the caller's. How the server gets one is an implementation choice.
 - **Rollout:**
-  - Every existing collection gets an instance key when this lands (ADR-0013 decision 2),
-    so the currency test applies to it.
+  - ADR-0013 and ADR-0015 ship with or before this record. Every existing collection gets
+    an instance key then (ADR-0013 decision 2), so the currency test applies to it.
   - Existing archives in the current owner's Workspace can reload collections that are
     already dormant when this lands. They never make a resident collection evictable; a
     resident collection needs a new backup first.

@@ -65,7 +65,7 @@ collection whose archive is current and takes the freed slot
 collection 'lucid'
   ├── Qdrant collection   lucid_sfr_tok256      (vectors)
   ├── Elasticsearch index lucid_sfr_tok256      (BM25 text)
-  └── Neo4j triples       scoped by (name, tenant_id, collection)
+  └── Neo4j triples       scoped by (name, tenant_id, collection); by graph scope in the instance scheme
 ```
 
 The two retrieval legs are separate objects that a hybrid query fuses. **They may
@@ -97,9 +97,10 @@ before the derivation scheme (`ragstack_sfr_tok256`, `lucid_sfr_tok256`).
 
 **Per instance** ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed): a new
 collection's Qdrant and ES stores belong to one generation of its instance. Every load
-builds a new generation, and the registry record is the only pointer to the current
-names. Its graph triples carry the instance key, which survives reloads. Existing
-collections stay in the `stamped` scheme, under their deterministic names, until moved.
+builds a new generation ([ADR-0015](adr/0015-loads-build-new-stores.md)), and the registry
+record is the only pointer to the current names. Its graph triples belong to a graph scope
+(the instance key plus an optional partition), which survives reloads. Existing
+collections stay in the `stamped` scheme, under their recorded names, until moved.
 
 ---
 
@@ -134,7 +135,7 @@ A frequent confusion, because "Postgres rows" sounds like it belongs to the stor
 | user profiles, roles | `users` table | subject (per **tenant**) |
 | vectors | Qdrant | store name |
 | text | Elasticsearch | store name |
-| graph triples | Neo4j | `(name, tenant_id, collection)` |
+| graph triples | Neo4j | `(name, tenant_id, collection)`; `instance` scheme: graph scope (instance key + optional partition) |
 
 So the relational rows are **collection-level, not store-level**. Deleting a store
 does not remove them, and revoking ACLs does not remove data — which is precisely
@@ -256,7 +257,8 @@ isolates writers) keys on the entry's `is_shared_surface` **flag** — never on
 what `default` points at. Keyed on the pointer, aiming `default` at an owned
 collection would let any *reader* of it ingest into somebody else's corpus just
 by omitting `collection`. ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed,
-ends this exemption for ingest: the shared corpus is frozen and takes no new chunks.
+ends this exemption for ingest: the OA, ASM and Lucid corpora are frozen and take no new
+chunks; any other shared corpus needs `write`.
 Users keep deleting their own chunks there until it is retired.)
 
 ## Caller, owner, writer
@@ -290,9 +292,10 @@ tenant is backed up by `ragstack-ctl` ([ADR-0007](adr/0007-tenant-control-plane.
   the BV-BRC layer above the API).
 - **System backup:** started by an admin or by maintenance, on operator storage.
 - **Current:** the backup's instance key, backup epoch and counter value still match the
-  collection's, and for a user backup its owner is still the owner. Every committed write,
+  collection's, and a user backup was taken by the current owner since they last became
+  owner. Every committed write,
   deletes included, advances the counter, and it never decreases. The events that start a
-  new epoch are listed in ADR-0013 decision 2.
+  new epoch are listed in ADR-0015 decision 7.
 - **Reload vs replay:** a reload after eviction keeps the live owner and grants. Only an
   admin replay into an empty collection or tenant applies the backup's access rows.
 - **Snapshot:** a previous owner's user backup after a transfer. It stays with them and is

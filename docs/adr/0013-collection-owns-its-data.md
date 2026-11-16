@@ -1,237 +1,148 @@
 # ADR 0013 — A collection owns its data: each collection instance has its own stores
 
 - **Status:** Proposed
-- **Date:** 2026-11-14 (revised; first draft 2026-11-13 stamped chunks in shared stores)
+- **Date:** 2026-11-16 (revised; first draft 2026-11-13 stamped chunks in shared stores)
 - **Deciders:** @wilke
 - **Amends:**
-  - [ADR-0003](0003-access-control.md) decisions 1 and 2. On collections in the instance
-    scheme (decision 2) the per-chunk stamp is no longer a read filter. The planned
-    `owner_id` rename is dropped.
+  - [ADR-0003](0003-access-control.md) decisions 1 and 2: in the `instance` scheme the
+    per-chunk stamp is no longer a read filter. The planned `owner_id` rename is dropped.
   - ADR-0003 decision 2b and [ADR-0002](0002-collection-identity.md) decision 5: the shared
-    corpus's read-to-ingest exemption ends (decision 8).
-  - ADR-0002 decision 1: in the instance scheme the derived name is the base of the store
+    corpus's read-to-ingest exemption ends.
+  - ADR-0002 decision 1: in the `instance` scheme the derived name is the base of the store
     name, not the whole of it.
 - **Related:** [#558](https://github.com/wilke/ragstack/issues/558),
-  [#350](https://github.com/wilke/ragstack/issues/350),
-  [#285](https://github.com/wilke/ragstack/issues/285),
-  [ADR-0004](0004-users-groups-shares.md), [ADR-0007](0007-tenant-control-plane.md),
-  [ADR-0014](0014-backups-and-eviction.md)
+  [ADR-0004](0004-users-groups-shares.md), [ADR-0014](0014-backups-and-eviction.md),
+  [ADR-0015](0015-loads-build-new-stores.md) (how loads build, switch and drop)
 
 ## Context
 
-ADR-0003 put access control at the collection and demoted the per-chunk `tenant_id` to
-provenance. The demotion never shipped. The stamp, which holds the writer's subject, still
-does five jobs:
+ADR-0003 demoted the per-chunk `tenant_id`, which holds the writer's subject, to
+provenance. The demotion never shipped. The stamp still does five jobs: the read filter,
+chunk identity, the scope of replace/delete/duplicate checks, separation between registry
+entries or deployments that reach one store, and hiding leftovers of a failed purge.
+Because the stamp is the writer, data disappears without error whenever the writer is not
+the reader: after a transfer the new owner sees nothing (#558), and the owner cannot see,
+delete or replace what an admin or a `write` grantee wrote.
 
-1. **Read filter:** a read sees `{caller, public}`. `api/scope.py` `shared_scope` adds the
-   owner's stamp for a grantee (`tenancy.py` `scope_filters`).
-2. **Chunk identity:** `stores/qdrant.py` `_point_id` = uuid5(`{stamp}:{chunk_id}`), and
-   `stores/elasticsearch.py` `_es_id` follows the same pattern.
-3. **Replace, delete and duplicate scope:** replace and `DELETE /v1/documents/{doc_id}` act
-   on the writer's own chunks; the duplicate check on the writer's and `public` ones
-   (`ingestion/pipeline.py`, `api/routers/documents.py`).
-4. **Separation on shared stores:** one physical store may be reached by more than one
-   registry entry or deployment, through a route or a shared server (`collections.py`
-   `_routed_store_legs`, `_shared_store_users`; `ops/evict.py`).
-5. **Hiding leftovers:** a purge removes the access and registry rows before the stores. If
-   it fails part-way, a recreated id gets the same deterministic store name (ADR-0002).
-
-Because the stamp is the writer, data disappears without any error whenever the writer is
-not the reader:
-- after a transfer, the new owner sees nothing (#558);
-- chunks written by an admin or a `write` grantee are invisible to the owner, and the owner
-  cannot delete or replace them.
-
-Jobs 2–5 exist only because different data can end up in one physical store. Graph
-triples live in one Neo4j database, tagged with the collection's Qdrant store name and
-unique on (name, writer, collection) (`stores/neo4j.py`). Backups hold triples only for
-versions that were graph-extracted, so eviction keeps triples in place. As of 2026-11-14,
-graph extraction is switched off on every deployed tenant, and some production stores are
-reached by two deployments (a shared server pair, and a route from one tenant into
-another's store).
+The last four jobs exist only because different data can end up in one store. Some
+production stores are reached by two or three deployments, through a shared server or a
+route. Graph triples share one Neo4j database, tagged with the Qdrant store name and
+unique on (name, writer, collection). As of 2026-11-14 graph extraction is off on every
+deployed tenant.
 
 ## Decision
 
-**1. A collection's data belongs to the collection.** In the instance scheme, whoever
-passes the collection's access check sees all of its chunks and triples: the owner,
-grantees including `public`, and admins (ADR-0003 decisions 2 and 5, ADR-0004). Writing
-into someone else's collection contributes the data to that collection.
+**1. A collection's data belongs to the collection.** In the `instance` scheme, whoever
+passes the collection's access check sees all of its chunks and graph data. Writing into
+someone else's collection contributes the data to it. Who may write is unchanged (owner,
+`write` grantee, admin) except for frozen corpora (decision 6). The owner is the active
+owner row (ADR-0004), not `spec.owner`.
 
-**2. Each collection records its scheme and its instance key.**
-- **Scheme:** every registry record says `stamped` or `instance`. Every read, write, delete
-  and graph path chooses its behaviour from that field; a missing or unknown value is
-  treated as `stamped`, so a fault keeps the filter on. New collections are `instance`;
-  existing ones are `stamped` until moved (decision 5); fixed-name stores (decision 6) are
-  always `stamped`.
-- **Instance key:** minted when a record is created, and minted for every existing record
-  when this ships, so ADR-0014 backup currency works for both schemes. It comes from a
-  namespace that collection ids, store names and subjects cannot enter (enforced at id
-  validation), and is unique across every deployment that shares a store or graph server.
-  It always comes from the **target** registry record, never from a file header, an archive
-  or a source payload.
-- **New key:** a clone, an admin replay (ADR-0014 decision 3), a move (decision 5) and an
-  ADR-0007 restore-as create a new instance. A restore-as re-mints every key and renames
-  every generation before it serves.
-- **Same key, new backup epoch** (ADR-0014 decision 4): a recovery, a rollback, a reload
-  that reports skipped versions, and an in-place tenant restore.
+**2. Every record has a scheme and an instance key.**
+- **Scheme:** `stamped` or `instance`. Every record, including one persisted for the
+  settings-derived entry, gets the field when this ships. A record whose scheme is missing,
+  unknown, or disagrees with its stores is refused, never defaulted: `instance` behaviour
+  applies only to stores that are generations minted for that record's key.
+- **Key:** minted at create, and for every existing record when this ships. It comes from
+  a namespace collection ids, store names and subjects cannot enter, is unique across
+  every deployment sharing a store or graph server, and is always read from the **target**
+  record, never from a file header, archive or payload.
+- A clone, an admin replay and a move create a new instance with a new key.
 
-**3. In the instance scheme each instance has its own stores.**
-- **Vector and text stores** belong to one *generation* of the instance. Each load
-  (decision 4) creates a new generation with new store names. The registry record names the
-  current generation and is the only pointer to it. The store server a collection uses is
-  recorded on the record or resolved by collection id; a generation that cannot be resolved
-  is an error, never a fallback to the default server.
-- **Graph:** triples carry the instance key and are kept apart from stamped triples, with
-  their own uniqueness on (name, key). The writer is provenance: not part of identity, not
-  filtered on, not a delete scope. A generation change never touches the graph; a key's
-  triples are deleted only when the key is retired (purge, or the source of a move).
-- **Chunks** are not filtered by stamp. Chunk ids do not include the writer, so there is
-  one copy per document. Replace, delete and the duplicate check act on the whole
-  collection. The writer is shown only to the owner and admins.
+**3. In the `instance` scheme an instance has its own stores and no read filter.**
+- Vector and text stores are generations of the instance (ADR-0015). Old and new data,
+  and different collections, never share a store.
+- Chunk ids do not include the writer: one copy per document. Replace, delete and the
+  duplicate check act on the whole collection.
+- Graph data belongs to a **graph scope**: the instance key plus an optional partition
+  label (for example one workflow episode). Triples are unique within their scope and kept
+  apart from `stamped` triples. Every graph read, export and delete names its scopes; there
+  are no unscoped reads.
+- The writer is provenance only: never an identity, filter or delete scope, and shown only
+  to the owner and admins, including in graph results and stats.
 
-**4. In the instance scheme every load builds new stores, then switches.** A *load* is a
-reload after eviction, a recovery, a rollback, a clone, an admin replay or a move; ordinary
-ingest is not a load.
-- **One load at a time:** a load first claims the collection's single pending slot on the
-  record, naming its job, its generation, any new key, and a lease. The claim fails while
-  another live claim exists. A claim whose lease has expired, and everything it built, may
-  be dropped by any process.
-- **Write fence:** every write names the generation it read at its start, and commits only
-  by advancing the write counter (ADR-0014 decision 4) while that generation is current and
-  no load holds the slot. This covers every writer, including workflows and scripts, and
-  each graph-extraction batch. A write that fails the fence fails visibly and may be
-  retried.
-- **Check:** the build is checked before the switch. If the check fails, it is dropped and
-  the current generation keeps serving.
-- **Switch:** atomic. It succeeds only if the lifecycle state, the current generation, the
-  write counter and the slot's claim are all unchanged since the claim; otherwise the build
-  is dropped. The old generation becomes **retiring**.
-- **Drop:** a retiring generation is dropped only when no reader or writer can still reach
-  it. Eviction follows the same rule: the current generation becomes retiring and the
-  record stays dormant with no current generation. A collection with a claimed slot counts
-  as in flight for eviction.
-- **Clone from live stores:** reads the source's generation and counter at the start and
-  fails if either changed by the end.
-- **Graph during a load:**
-  - a load that keeps the key keeps its triples, deletes those whose document is not in the
-    new generation, and does not load archived graph legs on top of the kept ones;
-  - a clone or replay from a backup loads the archived graph legs under the new key;
-    versions without one contribute no graph;
-  - a clone from live stores copies the source's triples under the new key and never
-    changes the source's;
-  - a move copies them under the new key before the switch (decision 5).
-- **Capacity:** building and retiring generations count toward the store server's physical
-  budget; a load is refused when there is no room, and concurrent loads per tenant are
-  limited. Requests that trigger a reload of the same collection join the one claimed load.
+**4. A `stamped` collection becomes `instance` only by a move, after a risk check.**
+- **Until moved** it keeps its filter, `shared_scope`, recorded names and graph tagging, and
+  reloads, recovers and rolls back as today. #558 persists there. A replay of a `stamped`
+  backup restores a `stamped` collection. A clone of a `stamped` source copies only what
+  the cloner can read under its filter.
+- **Movable** only when no other registry entry or route, in any deployment that can reach
+  its Qdrant, ES or Neo4j server, reaches its stores (keyed by server and name), and it is
+  not fixed (decision 5). This is attested from the operators' tenant inventory (ADR-0007),
+  re-checked at the switch, and a move is refused if it cannot be read.
+- **Risk check:** before the move, the owner sees counts of hidden chunks and triples per
+  writer and source document, and the `write` grants that will cover the whole collection.
+  The owner confirms, deletes the hidden data, or leaves the collection `stamped`. With no
+  hidden data, only the grants are confirmed. Inside the move the snapshot is compared,
+  and the move aborts if anything differs or the owner changed.
+- **Duplicates:** where two writers hold copies of one document, the owner's is kept,
+  otherwise the owner picks. Triples of a discarded copy are not copied.
+- **Graph:** a move copies the source's triples into the new key's scope and deletes them
+  after the switch, only when the graph server is inside the attestation; otherwise it
+  copies none and reports that.
+- Moves are run by the deployment owner. There is no bulk rewrite.
 
-**5. A `stamped` collection becomes `instance` only by a move, after a risk check.**
-- **Movable:** only a collection whose stores this registry entry alone reaches. Not
-  movable: fixed-name stores (decision 6), stores another registry entry on the host
-  claims, and any store reached through a route, in either direction. Eligibility is decided
-  from the host-wide registry union, not from stamps.
-- A move is a load from the collection's own resident stores into a new instance. A dormant
-  collection is reloaded first. Clones and replays from a `stamped` source are moves for the
-  purpose of this decision.
-- **Risk check:** run inside the move's write-fenced window, over chunk and triple writers.
-  The move needs no decision when every stamp is the owner's or `public`. Otherwise the
-  owner is shown counts per writer and per document, not content, and decides: let the
-  hidden data become visible, delete it, or leave the collection `stamped`. Where two
-  writers hold copies of one document, the owner's copy is kept, otherwise the newest.
-  A change of owner aborts a pending move. A move also makes every `write` grant a grant
-  over the whole collection, and the owner is told which grants exist.
-- **Before the move, unchanged:** a `stamped` collection reloads, recovers and rolls back
-  into its existing deterministic names, with its filter, `shared_scope` and its current
-  graph tagging. #558 persists there.
-- **Who runs it:** moves on deployed tenants are operations run by the deployment owner.
-  There is no bulk rewrite.
+**5. Fixed stores stay `stamped`.** The settings-derived entry, pinned names, stores whose
+name is not derived from their id and build spec, frozen corpora (decision 6), and stores
+that fail the movability test. They are never evicted by one deployment alone, and never
+recovered or rolled back in place by one deployment when another reaches them. A fixed
+store becomes movable once its pin, route or other claimant is removed; otherwise its way
+out is a re-ingest into a new collection. `shared_scope` goes when the last `stamped`
+collection is moved or retired.
 
-**6. Fixed-name stores stay `stamped`.** The settings-default collection, stores pinned by
-deployment settings, the shared corpus (decision 8), specs that name a physical store, and
-stores that fail the movability test in decision 5. They are never rebuilt into
-generations and keep today's eviction protection. Their way out is a re-ingest into a new
-`instance` collection, or a move the operators of every deployment that reaches the store
-coordinate. `shared_scope` goes when the last `stamped` collection is moved or retired.
+**6. The OA, ASM and Lucid corpora are frozen.** The shared open-access corpus, the ASM
+stores and the Lucid corpus take no new chunks and no chunk-payload backfills; only their
+registry records may change. The freeze is enforced at the stores as well as in the API,
+because more than one deployment reaches some of them. They keep their writer stamps and
+filter, because chunks users ingested there were written as private to them. Users can
+delete their own chunks there until retirement; at retirement they are offered an export,
+and the remaining user chunks are deleted after notice. They are replaced by new
+`instance` collections. Every other settings-derived entry loses read-to-ingest only:
+writing needs `write`.
 
-**7. The graph is reached only through instance keys.** Every graph read and delete names
-its keys, and there are no unscoped graph reads. A multi-collection graph read means the
-union of per-key results. One shared Neo4j database with key-tagged triples is what ships.
-A later backend may give a key, or a set of keys, its own database or graph, so small
-graphs (for example one per OpenChia episode) can be created, exported and dropped on
-their own; that choice is not made here. `stamped` triples stay on the legacy path.
-
-**8. The legacy shared corpus is frozen.** It takes no new chunks and no chunk-payload
-backfills; only its registry record may change. It keeps its writer stamps and filter,
-because chunks users ingested there were written as private to them and it never had an
-owner to contribute to. Users can delete their own chunks there until it is retired. It is
-replaced by new `instance` collections; at retirement, its remaining user chunks are
-deleted with it, after notice.
-
-**9. Purge leaves a tombstone until every store is gone.** Purge removes the access rows
-first, then turns the record into a tombstone naming the key and every generation (current,
-pending, retiring). The tombstone is deleted only after each drop is confirmed, and
-inventory reports tombstones. A switch against a tombstone drops its own build.
-
-**10. Who may write is unchanged,** except for the shared corpus (decision 8): the owner, a
-`write` grantee, or an admin. Whoever writes, the data belongs to the collection and to its
-current owner, i.e. the active owner row (ADR-0004), not `spec.owner`, which records the
-creator. A transfer moves only that row.
+**7. One graph database now; scopes keep the door open.** All scopes share one Neo4j
+database. A later backend may give a scope, or a set of scopes, its own database or
+graph, so small graphs can be created, exported and dropped on their own. Export and drop
+by scope work the same on either backend. `stamped` triples stay on the legacy path.
 
 ## Consequences
 
-**Gained:** in the instance scheme:
-- transfer, admin ingest and grantee ingest work;
-- there is one copy per document;
-- the owner can delete and replace anything;
-- old and new data never share a store, so no per-chunk filter keeps them apart;
-- a failed load leaves the serving stores untouched;
-- a collection's graph can be exported or dropped by its key;
-- a failed purge leaves a record that names what is left.
+**Gained** in the `instance` scheme: transfer, admin ingest and grantee ingest work; one
+copy per document; the owner can delete and replace anything; a graph can be exported or
+dropped by scope.
 
 **Accepted:**
-- **Two schemes run side by side** until the last `stamped` collection is moved or retired.
-  The flagship pinned corpora and every store reached by two deployments stay `stamped`,
-  with #558, until re-ingested or coordinated.
+- **Two schemes run side by side** until the last `stamped` collection is moved or
+  retired. The pinned corpora and every store reached by more than one deployment stay
+  `stamped`, with #558, until re-ingested or unshared.
 - **"Stay on the current release" is real only for tenants with their own store servers
-  and no routes in or out.** Where stores are shared, every deployment that reaches them is
-  bound by decisions 6 and 8.
-- **Moving exposes hidden data,** gated by the risk check (decision 5).
-- **A move, clone or restore-as is a new instance,** so earlier backups stop being current.
-- **Loading a resident collection needs room for two copies** and fences writes while it
-  runs.
-- **Store names can no longer be computed from the build spec alone.** Tools that do so
-  read the registry record instead: inventory, protected stores, leftover sweeps, copy,
-  purge and eviction drops, graph reads and writes, and the guard that matches a
-  content-addressed create to an existing store. Store route tables are re-keyed by
-  collection id or move onto the record, which changes deployment configuration.
+  and no routes in or out.** Elsewhere every deployment that reaches a store is bound by
+  decisions 5 and 6.
+- **Moving exposes hidden data,** gated by the owner's decision. The risk falls on the
+  writers, whose data it was contributed as.
+- **A move, clone or replay is a new instance,** so earlier backups stop being current.
 - **A `write` grant on a public collection publishes at once.**
-- **`TENANT_COLLECTIONS`** still limits which collections a key may reach, but it no longer
-  separates rows inside an `instance` collection. Orgs that need separation use separate
-  collections or tenants.
-- **API contract changes.** The graph endpoints gain a collection scope, the writer field
-  is hidden from readers other than the owner and admins, and `/v1/stats/tenants` changes
-  meaning in the instance scheme. Python and Go change in step.
+- **`TENANT_COLLECTIONS`** limits which collections a key may reach but no longer
+  separates rows inside an `instance` collection.
+- **Store names can no longer be computed from the build spec.** Every tool that derives
+  them reads the record instead, and store route tables are re-keyed by collection id.
+- **API contract changes:** graph endpoints take scopes, the writer field and the
+  `tenant_id` filter are limited to owners and admins, and `/v1/stats/tenants` changes
+  meaning. Python and Go change in step.
 
 ## Alternatives considered
 
-- **Stamp every chunk with the instance key and keep instances in shared stores.** The
-  first draft of this record. It keeps the read filter, mixes old and new copies in one
-  store during a rebuild, and needs a stamp-by-stamp purge.
-- **Swap through Qdrant and ES aliases.** Neo4j has no aliases, so the graph could not
-  follow, and the registry is already the system of record.
-- **Delete the current stores, then reload.** Loses the data if the backup turns out to be
-  bad.
-- **Drop the per-chunk filter but keep one deterministic store per collection id.**
-  ADR-0003's plan. Leftovers of a failed purge would reach a recreated id, and loads would
-  still mix old and new data in one store.
-- **Drop the filter in place on every existing collection.** Fast, but it exposes data on
-  stores two deployments reach and gives no owner a decision.
-- **One graph database per collection now** (Neo4j Enterprise, Apache AGE, another graph
-  store). Adds a service before it is needed; decision 7 keeps the path open.
-- **One common graph, filtered only at retrieval.** Triples extracted from private chunks
-  would be readable through graph endpoints.
-- **Time-based drain** (drop after a fixed delay plus the longest job). No job has a known
-  upper bound, so late writes would be acknowledged and lost.
-- **Relabel every chunk on transfer.** A bulk write that cannot be atomic with the owner
-  change, and admin and grantee ingest stay broken.
-- **Widen `shared_scope` to every recorded writer.** An owner's view would depend on who
-  wrote what, and replace and delete stay split.
+- **Stamp every chunk with the instance key in shared stores.** The first draft. Keeps the
+  read filter and mixes old and new copies during a rebuild.
+- **One deterministic store per collection id, no filter.** ADR-0003's plan. Leftovers of
+  a failed purge reach a recreated id.
+- **Drop the filter in place on every existing collection.** Exposes data on stores two
+  deployments reach, with no owner decision.
+- **Spin hidden data off into collections owned by its writers.** More machinery than an
+  owner's delete-or-expose choice; can be a later tool.
+- **One graph database per collection now.** Adds a service before it is needed; decision
+  7 keeps the path open.
+- **One common graph, filtered only at retrieval.** Triples from private chunks would be
+  readable through graph endpoints.
+- **Relabel every chunk on transfer, or widen `shared_scope` to every writer.** Neither is
+  atomic with the owner change, and replace and delete stay split.
