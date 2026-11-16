@@ -1,7 +1,7 @@
 # ADR 0014 — Collection backups belong to the owner; eviction needs a current backup, deletion does not
 
 - **Status:** Proposed
-- **Date:** 2026-11-13
+- **Date:** 2026-11-13 (revised 2026-11-16)
 - **Deciders:** @wilke
 - **Amends:** [ADR-0005](0005-tenant-anatomy.md) decision 5, in two places:
   - "Whose archive is current" becomes "whose backup is current", as defined below.
@@ -55,8 +55,9 @@ collection's ownership.
   `stamped` backup restores a `stamped` collection (ADR-0013 decision 4).
 
 **4. Current means same instance, no write since the backup.**
-- Every committed write advances the collection's write counter. That covers every writer
-  (API, workflows, scripts), and deletes and backfills too. The counter never decreases.
+- Every committed write (one acknowledged to its caller) advances the collection's write
+  counter. That covers every writer (API, workflows, scripts), and deletes and backfills
+  too. The counter never decreases.
 - A backup records the collection's instance key (ADR-0013), its backup epoch, and the
   counter value read when it started. It is **current** while all three still match and,
   for a user backup, while it was taken by the current owner since they last became owner.
@@ -69,7 +70,8 @@ collection's ownership.
 **5. Backups are optional. Eviction needs a current backup; deletion does not.**
 - A collection without a current backup stays resident, and at the cap it counts toward the
   507.
-- A **system** backup makes any collection evictable.
+- A **system** backup makes any collection evictable, except fixed stores (ADR-0013
+  decision 5).
 - A backup held **only by the owner** makes a collection evictable only while it is
   **private**, with no grantees and no `public`. It reloads when the owner, or the BV-BRC
   layer acting with the owner's token, touches it.

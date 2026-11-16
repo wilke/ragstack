@@ -53,7 +53,8 @@ other sense — listed, owned, shareable, counted against the per-owner quota �
 it holds no store and **is not counted**. So "I have 100 collections and the cap
 is 100" does not by itself mean the next create is refused; and at the bound a
 create does not simply refuse, it **evicts** the least-recently-accessed active
-collection whose archive is current and takes the freed slot
+collection whose archive is current and takes the freed slot (under
+[ADR-0015](adr/0015-loads-build-new-stores.md), Proposed, the cap counts stores, not rows)
 ([ADR-0005](adr/0005-tenant-anatomy.md) decision 5; "archive" becomes "backup" under
 [ADR-0014](adr/0014-backups-and-eviction.md), Proposed).
 
@@ -257,9 +258,8 @@ isolates writers) keys on the entry's `is_shared_surface` **flag** — never on
 what `default` points at. Keyed on the pointer, aiming `default` at an owned
 collection would let any *reader* of it ingest into somebody else's corpus just
 by omitting `collection`. ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed,
-ends this exemption for ingest: the OA, ASM and Lucid corpora are frozen and take no new
-chunks; any other shared corpus needs `write`.
-Users keep deleting their own chunks there until it is retired.)
+ends this exemption for ingest: writing to a shared corpus needs `write`, granted by the
+operator who owns it. Users keep deleting their own chunks there.)
 
 ## Caller, owner, writer
 
@@ -324,4 +324,6 @@ extract-graph step has run over it (`archive.py` writes `"graph": false`, and
 replay has no extractor), so a dropped graph could not be rebuilt. The plumbing
 (`ops/evict.py`'s `graph_store=` argument) is in place and unit-tested for when
 per-version triples archiving lands (#350). Until then an evicted collection's
-triples remain, and every read of them stays collection-scoped.
+triples remain, and every read of them stays collection-scoped. In the `instance`
+scheme ([ADR-0013](adr/0013-collection-owns-its-data.md), Proposed) purge drops the
+key's graph scopes and a tombstone records them until the drop is confirmed (ADR-0015).

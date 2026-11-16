@@ -23,7 +23,7 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 | [0010](0010-tool-image-binding.md) | Three artifacts, each a build of a tag — tools image, server, workflow (GoWe id = text + image name); release order is linear; identity in labels + receipt; no image override |  Accepted |
 | [0011](0011-provenance-records.md) | Provenance records: one record format (`ragstack.provenance/1`, fingerprinted core), one ambient API, written into the artifact it describes; Workflow Run RO-Crate for interchange | Accepted |
 | [0012](0012-document-chunk-registry.md) | A document and chunk registry is the system of record; the stores are projections of it | Proposed |
-| [0013](0013-collection-owns-its-data.md) | A collection owns its data: each collection instance has its own stores; existing collections move after a risk check; OA, ASM and Lucid corpora frozen | Proposed |
+| [0013](0013-collection-owns-its-data.md) | A collection owns its data: each collection instance has its own stores; existing collections move after a risk check | Proposed |
 | [0014](0014-backups-and-eviction.md) | Collection backups belong to the owner; eviction needs a current backup, deletion does not | Proposed |
 | [0015](0015-loads-build-new-stores.md) | Loads build new stores, then switch: one leased load at a time, fenced writes, drop only what nothing can reach | Proposed |
 
