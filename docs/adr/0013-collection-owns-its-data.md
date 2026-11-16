@@ -68,9 +68,10 @@ into it (decision 6). The owner is the active owner row (ADR-0004), not `spec.ow
   backup restores a `stamped` collection into the target record's own names, refused if
   another entry claims them. A clone of a `stamped` source copies the whole collection and
   follows the move rules below (movability, risk check).
-- **Movable** only when its Qdrant, ES and graph servers are exclusive to this deployment
-  in the operators' inventory (ADR-0007), compared by resolved address, with no legacy
-  deployment and no inbound route reaching them, and it is not fixed (decision 5).
+- **Movable** only when its Qdrant and ES servers, and its graph server where one is
+  configured, are exclusive to this deployment in the operators' inventory (ADR-0007),
+  compared by resolved address, with no legacy deployment and no inbound route reaching
+  them, and it is not fixed (decision 5).
 - **Risk check:** access stays per collection; what changes is that the writer filter
   goes. Before the move, the owner sees counts of chunks and triples stamped by writers
   other than the owner or `public`, per writer and source document, and the `write` grants

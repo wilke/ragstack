@@ -67,8 +67,9 @@ so a generation change never touches it.
   documents and chunks the new generation holds. Archived graph legs are loaded only where
   triples are missing.
 - A replay or a clone from a backup loads the archived graph legs under the new key.
-- A clone from live stores copies the source's triples under the new key and never
-  changes the source's.
+- A move, or a clone from live stores, copies the source's triples under the new key
+  before the switch (for a move, those of the documents the owner kept) and never changes
+  the source's.
 
 **7. Backup epochs** (ADR-0014 decision 4). A new epoch starts on a recovery, a rollback,
 a reload that reports skipped versions, and any tenant restore. A tenant restore-as
@@ -76,12 +77,12 @@ a reload that reports skipped versions, and any tenant restore. A tenant restore
 server with the source. Graph extraction advances the write counter.
 
 **8. Purge leaves a tombstone.** Purge removes the access rows, then replaces the record
-with a tombstone, keyed by instance key, naming every generation and the key's graph
-scopes. Purge drops them all, and keeps today's refusals for stores another entry or
-deployment reaches (ADR-0013 decision 5). The id is free at once for an `instance`
-collection; a `stamped` collection's id stays taken until its tombstone is deleted. The tombstone is deleted when every
-drop, graph included, is confirmed and no claim is held. A switch against a tombstone
-drops its own build.
+with a tombstone, keyed by instance key, naming every generation and the graph data (the
+key's scopes, or a `stamped` collection's tagged triples). Purge drops them all, except
+stores another entry or deployment reaches, which are unregistered, never dropped
+(ADR-0013 decision 5). An `instance` id is free at once; a `stamped` id is free when its
+tombstone is gone. The tombstone is deleted when every drop, graph included, is confirmed
+and no claim is held. A switch against a tombstone drops its own build.
 
 **9. Capacity.** Building, retiring and tombstoned generations count toward the store
 server's budget, which counts stores, not rows. A load that finds no room evicts as
