@@ -130,7 +130,7 @@ def _degrade(
     """Record one fallback (#748, #751 principle 4): on the response (the
     ``degraded`` list the handler emits), on the per-request summary line
     (``degraded=rerank,…`` via :func:`note`) and on the process counter
-    (``ragstack_fallback_total{component}``). ``degraded`` is ``None`` for a
+    (``observability.fallbacks.record_fallback``). ``degraded`` is ``None`` for a
     caller outside a request (none today; the parameter is optional so the
     helpers stay callable from tests without a list)."""
     reason = degraded_reason(exc)

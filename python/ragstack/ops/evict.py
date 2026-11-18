@@ -16,7 +16,7 @@ Two halves, kept apart on purpose:
     records that are :func:`~ragstack.collection_store.evictable` (``active ∧
     ¬archive_pending ∧ versions non-empty``) AND not in flight (an
     ``accepted``/``running`` ingest job targets them) AND not
-    :func:`protected`. Returns as many victims as it can plus a
+    :func:`make_protected`. Returns as many victims as it can plus a
     :class:`Shortfall` counting, per reason, why the rest were ineligible.
     The perf test pins selection over 1,000 rows under 5 ms.
 :func:`evict`
@@ -36,7 +36,7 @@ spec that *claims* the settings-derived default's physical stores (the
 the LEGACY MULTI-TENANT DATA — every tenant's chunks, isolated only by the
 per-chunk ``tenant_id``. Evicting it would destroy that data at eviction time
 (the restore side would be safe: by then the stores are empty, and the archive
-holds only the owner's versions). :func:`protected` is the one predicate that
+holds only the owner's versions). :func:`make_protected` is the one predicate that
 says no: a record whose physical stores are the derived default's, or an
 ``is_shared_surface`` entry's, or any store another registry id also claims
 (the purge guard's ``_shared_store_users`` case — dropping one id's store
@@ -259,8 +259,19 @@ def make_protected(
     derived: tuple[str, str] | None = None,
     records: Iterable[CollectionRecord] = (),
 ) -> Callable[[CollectionRecord], bool]:
-    """Build :func:`protected` for ``registry`` ONCE (the leg sets are
-    precomputed) so selection over a thousand records stays O(n).
+    """Build the predicate *may eviction NEVER drop this record's physical
+    stores?* for ``registry`` ONCE (the leg sets are precomputed) so selection
+    over a thousand records stays O(n).
+
+    The predicate is True when the record's Qdrant collection or ES index is
+    one of the settings-derived default's legs (``derived`` =
+    ``(collection, es_index)`` from ``deps.derived_default_stores()``) — the
+    legacy shared surface carrying every tenant's data, whether served by the
+    synthesised ``default`` entry or by a spec that claims it (ADR-0002
+    decision 5's ``claimed_by`` branch) — or one of any ``is_shared_surface``
+    entry's legs, or a store another registry id also claims (in ``registry``
+    or among the durable ``records``). See the module docstring for why the
+    claimed case is the dangerous one.
 
     ``records`` are the DURABLE registry rows: a sibling over the same store
     may exist only there (a hand-authored ``collections_file`` row, a CLI
@@ -287,27 +298,6 @@ def make_protected(
         return any(claimants.get(leg, set()) - {spec.id} for leg in own)
 
     return _protected
-
-
-def protected(
-    rec: CollectionRecord,
-    registry: Any,
-    *,
-    derived: tuple[str, str] | None = None,
-    records: Iterable[CollectionRecord] = (),
-) -> bool:
-    """May eviction NEVER drop this record's physical stores?
-
-    True when the record's Qdrant collection or ES index is one of the
-    settings-derived default's legs (``derived`` = ``(collection, es_index)``
-    from ``deps.derived_default_stores()``) — the legacy shared surface
-    carrying every tenant's data, whether served by the synthesised
-    ``default`` entry or by a spec that claims it (ADR-0002 decision 5's
-    ``claimed_by`` branch) — or one of any ``is_shared_surface`` entry's legs,
-    or a store another registry id also claims (in ``registry`` or among the
-    durable ``records``). See the module docstring for why the claimed case
-    is the dangerous one."""
-    return make_protected(registry, derived=derived, records=records)(rec)
 
 
 # --------------------------------------------------------------------------- #

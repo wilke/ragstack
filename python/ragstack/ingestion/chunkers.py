@@ -1772,10 +1772,7 @@ def _pack_spans_tokens(
     exceed ``chunk_overlap``, then resume there. ``i`` always advances by at least
     one unit so a large overlap can't loop.
     """
-    if budget_mode not in BUDGET_MODES:
-        raise ValueError(
-            f"unknown budget_mode {budget_mode!r}; valid: {', '.join(BUDGET_MODES)}"
-        )
+    _validate_budget_mode(budget_mode)
     text = doc.content
     n = len(spans)
     # Per-span token counts, memoized (a span is re-counted across overlap).

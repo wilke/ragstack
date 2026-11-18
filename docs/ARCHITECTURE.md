@@ -217,7 +217,7 @@ ownership model will sit on.
   model call. Settings: `graph_context_depth` (hops), `graph_context_score`,
   `graph_min_confidence` (#347), `graph_query_entity_max` (5), `graph_query_ngram_max` (3).
 - **rewriting/rewriters.py** — `PassthroughRewriter`, `MultiQueryRewriter`, `HyDERewriter`.
-- **scoring/scorers.py** — `RRFScorer`, `CrossEncoderScorer` (in-process), `SidecarReranker` (HTTP).
+- **scoring/scorers.py** — `RRFScorer`, `SidecarReranker` (HTTP cross-encoder).
 
 ### 4.5 Storage adapters (`python/ragstack/stores/`)
 - **qdrant.py** — `QdrantVectorStore`; build-spec-scoped collections, deterministic point
@@ -412,8 +412,8 @@ Every stage degrades gracefully: an unknown rewrite strategy falls back to the p
 a rerank failure falls back to the fused order, and an LLM failure returns sources with a
 note — the call still returns 200. Since #751 PR-3 it also *says so*: the response carries
 `degraded: [{component: rerank|generation|rewrite, reason}]` (omitted when nothing fell
-back), the fallback is counted per process (`ragstack_fallback_total{component}`, exported
-by PR-5), the per-request summary line gets `degraded=rerank`, and the reranker's verdict is
+back), the fallback is counted per process (an in-memory counter in
+`observability/fallbacks.py`; no metrics endpoint exports it yet), the per-request summary line gets `degraded=rerank`, and the reranker's verdict is
 written into the shared dependency cache that `GET /v1/health/deep` serves — one fact,
 projected everywhere, so a two-hour silent fallback (#748) cannot happen again. The
 "rerank unavailable" warning is rate-limited to one line per minute with a suppressed count.

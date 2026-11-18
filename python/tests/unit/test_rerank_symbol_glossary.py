@@ -4,7 +4,8 @@
 Pins four things:
 
 * the passage text — ``content + "\\n" + symbol_glossary`` when on and the
-  chunk has one, exactly ``content`` otherwise — and that both scorers use it;
+  chunk has one, exactly ``content`` otherwise — and that the sidecar reranker
+  sends it;
 * hydration: a candidate only the vector leg found (Qdrant stores no glossary)
   gets its glossary from its own collection's text index before the rerank, in
   ONE batched, tenant-scoped call, and a failed call degrades to no glossary;
@@ -28,7 +29,7 @@ from ragstack.models import Chunk, ScoredChunk
 from ragstack.retrieval import glossary as glossary_mod
 from ragstack.retrieval.glossary import hydrate_chunks, hydrate_symbol_glossary
 from ragstack.retrieval.retriever import CollectionLeg, HybridRetriever, MultiCollectionRetriever
-from ragstack.scoring.scorers import CrossEncoderScorer, SidecarReranker, rerank_passage
+from ragstack.scoring.scorers import SidecarReranker, rerank_passage
 from ragstack.stores.errors import StoreUnavailable
 from ragstack.stores.memory import InMemoryTextIndex
 from ragstack.tenancy import scope_filters
@@ -114,34 +115,6 @@ async def test_sidecar_constructor_default_is_off_for_library_callers() -> None:
     setting explicitly (see the deps test below)."""
     docs, _ = await _sidecar_documents(None, [_chunk("c1", "Qb = 0.5", GLOSS)])
     assert docs == ["Qb = 0.5"]
-
-
-class _FakeModel:
-    def __init__(self) -> None:
-        self.pairs: list[tuple[str, str]] = []
-
-    def predict(self, pairs):
-        self.pairs = list(pairs)
-
-        class _Arr(list):
-            def tolist(self):
-                return list(self)
-
-        return _Arr(float(len(p[1])) for p in pairs)
-
-
-@pytest.mark.parametrize(
-    ("include", "want"),
-    [(True, [f"Qb = 0.5\n{GLOSS}", "plain"]), (False, ["Qb = 0.5", "plain"])],
-)
-async def test_local_cross_encoder_uses_the_same_passage(include: bool, want: list[str]) -> None:
-    scorer = CrossEncoderScorer(model_name="unused", include_symbol_glossary=include)
-    model = _FakeModel()
-    scorer._model = model  # type: ignore[assignment]
-    chunks = [_chunk("c1", "Qb = 0.5", GLOSS), _chunk("c2", "plain")]
-    out = await scorer.score("q", chunks)
-    assert [p[1] for p in model.pairs] == want
-    assert {s.chunk.content for s in out} == {"Qb = 0.5", "plain"}
 
 
 # --------------------------------------------------------------------------- #
@@ -552,9 +525,3 @@ async def test_hydrate_chunks_is_a_library_helper_without_the_router() -> None:
     assert [c.content for c in out] == ["Qb", "a b c", "y"]
     assert ti.calls == [(["c1"], ["alice", "public"])]
     assert await hydrate_chunks(None, chunks, ["alice"]) is chunks
-
-
-@pytest.mark.parametrize("flag", [True, False])
-def test_local_cross_encoder_reads_the_setting_when_not_given(monkeypatch, flag: bool) -> None:
-    monkeypatch.setenv("RERANK_INCLUDE_SYMBOL_GLOSSARY", "true" if flag else "false")
-    assert CrossEncoderScorer(model_name="unused").include_symbol_glossary is flag

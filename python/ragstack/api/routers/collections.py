@@ -1594,11 +1594,10 @@ class PurgeReport(BaseModel):
 # Purge targets, in the order they're attempted. "registry" first because a
 # collection whose binding is gone can no longer be queried or ingested into, so
 # even a purge that then fails on Qdrant leaves nothing writing new data into the
-# store the operator is about to clean up by hand.
+# store the operator is about to clean up by hand. The store-leg targets
+# ("vectors", "text_index", "graph") are named in ops/evict.py (TARGET_*), whose
+# drop_stores the purge shares.
 _TARGET_REGISTRY = "registry"
-_TARGET_VECTORS = "vectors"
-_TARGET_TEXT = "text_index"
-_TARGET_GRAPH = "graph"  # the collection's triples (#295/#380); only when a graph store exists
 _TARGET_MANIFEST = "manifest"
 
 

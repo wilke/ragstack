@@ -2424,9 +2424,7 @@ The API client sends full chunk text and does no truncation of its own.
 
 **Tools & models:** `BAAI/bge-reranker-v2-m3` (`Settings.reranker_model`,
 sidecar `MODEL_NAME`) at `crossencoder_sidecar_url` (default `:50052`). The
-in-process `CrossEncoderScorer` (sentence-transformers) implements the same
-`Scorer` protocol but blocks the event loop on `predict`. The API builds only
-the sidecar client.
+API has no in-process cross-encoder; it builds only the sidecar client.
 
 **Inputs → Outputs:** `(query, list[Chunk], top_k | None)` →
 `list[ScoredChunk]` (`retrieval_method="reranked"`). On the wire:

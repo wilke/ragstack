@@ -71,7 +71,7 @@ To run a single test: `cd python && pytest tests/path/to/test_x.py::test_name -v
 
 ## Implementation layout
 
-**Python (`python/ragstack/`)** — protocol-driven; `protocols.py` defines the interfaces (`DocumentLoader`, `Chunker`, `Embedder`, `Scorer`, …) that concrete classes in `ingestion/`, `retrieval/`, `rewriting/`, `scoring/`, `graph/`, `stores/` satisfy. `pipeline/` orchestrates them; `api/` is the FastAPI surface.
+**Python (`python/ragstack/`)** — protocol-driven; `protocols.py` defines the interfaces (`DocumentLoader`, `Chunker`, `Embedder`, `Scorer`, …) that concrete classes in `ingestion/`, `retrieval/`, `rewriting/`, `scoring/`, `graph/`, `stores/` satisfy. `ingestion/pipeline.py` orchestrates ingestion; `api/` is the FastAPI surface.
 
 **Go (`go/internal/`)** — `api/` holds the Chi router and per-resource handler files (`handler_query.go`, etc.); `config/` reads env; `platform/` has shared errors; `observability/` for logging. Note this is **Phase 1 scaffold** — many handlers may return stubs while Python is the more complete implementation.
 
