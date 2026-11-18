@@ -279,6 +279,40 @@ async def test_p2_unknown_and_unreadable_collections_have_one_404_body(
     )
 
 
+#: The owner routes addressed by the pointer name. Each refuses ``default``
+#: before resolving it (409 naming no id); none acts on the refusal.
+_POINTER_NAME_OWNER_ROUTES = [
+    ("list-shares", "GET", "/v1/collections/default/shares", None),
+    ("revoke-share", "DELETE", "/v1/collections/default/shares/conf-p2-no-such-share", None),
+    ("transfer-owner", "POST", "/v1/collections/default/owner", {"subject": "conf-p2-nobody"}),
+]
+
+
+@pytest.mark.parametrize(
+    "label,method,path,body",
+    _POINTER_NAME_OWNER_ROUTES,
+    ids=[r[0] for r in _POINTER_NAME_OWNER_ROUTES],
+)
+async def test_p2_pointer_name_on_owner_routes_never_names_the_target(
+    caller_without_default_access, label, method, path, body,
+) -> None:
+    """``GET /v1/collections/default/shares`` resolved ``default`` to the
+    pointer target and ran the ownership check on it, so P2 (who cannot read
+    the target) got ``unknown collection '<target id>'; ...`` — the real id of
+    a collection P2 was never shown. Every owner route must refuse the pointer
+    name instead, with a body that names no id."""
+    p2 = caller_without_default_access
+    resp = await p2.client.request(method, path, json=body, headers=p2.headers)
+    assert resp.status_code == 409, (
+        f"{label}: P2 addressing the pointer name got {resp.status_code}, "
+        f"expected the 409 refusal: {resp.text}"
+    )
+    assert p2.default_id not in resp.text, (
+        f"{label}: the response names the pointer target {p2.default_id!r}, an id "
+        f"P2 cannot read: {resp.text}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # F6, the documents surface — the drift this persona found, now closed
 # --------------------------------------------------------------------------- #

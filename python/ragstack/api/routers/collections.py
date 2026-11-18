@@ -1319,8 +1319,8 @@ async def restore_collection(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise unknown_collection(collection_id) from None
-    await enforce_access(principal, entry.id, "owner")
+        raise unknown_collection(collection_id, reason="miss") from None
+    await enforce_access(principal, entry.id, "owner", named=collection_id)
 
     caller = gowe_caller(principal)  # the one caller rule (api/security.py)
     if caller is None:
@@ -1478,8 +1478,8 @@ async def extract_collection_graph(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise unknown_collection(collection_id) from None
-    await enforce_access(principal, entry.id, "owner")
+        raise unknown_collection(collection_id, reason="miss") from None
+    await enforce_access(principal, entry.id, "owner", named=collection_id)
     rec = await store.get(entry.id)
     if rec is None:
         raise HTTPException(
@@ -1818,10 +1818,10 @@ async def delete_collection(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise unknown_collection(collection_id) from None
+        raise unknown_collection(collection_id, reason="miss") from None
 
     # Owner-or-admin: 403 for a non-owner, 503 if the ACL store can't answer.
-    await enforce_access(principal, entry.id, "owner")
+    await enforce_access(principal, entry.id, "owner", named=collection_id)
 
     # BOTH guards sit AFTER the owner gate, deliberately: a 409 that fires for a
     # caller who cannot read the collection would be an existence oracle for a
@@ -1889,7 +1889,7 @@ async def delete_collection(
     await revoke_collection_acl(get_acl_store(), entry.id, principal.tenant)
 
     if not registry.remove(collection_id):  # pragma: no cover — resolve() just succeeded
-        raise unknown_collection(collection_id)
+        raise unknown_collection(collection_id, reason="miss")
     await store.delete(collection_id)
 
     if not purge:
@@ -2137,12 +2137,13 @@ async def list_shares(
     share list never leaks who a private collection is shared with. A non-owner
     who can read it gets 403; one who cannot gets 404 (existence not leaked); a
     store outage is 503 (fail closed)."""
+    _refuse_pointer_name(collection_id)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise unknown_collection(collection_id) from None
+        raise unknown_collection(collection_id, reason="miss") from None
 
-    await enforce_access(principal, entry.id, "owner")
+    await enforce_access(principal, entry.id, "owner", named=collection_id)
 
     store = get_acl_store()
     try:
@@ -2196,9 +2197,9 @@ async def create_share(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise unknown_collection(collection_id) from None
+        raise unknown_collection(collection_id, reason="miss") from None
 
-    await enforce_access(principal, entry.id, "owner")
+    await enforce_access(principal, entry.id, "owner", named=collection_id)
 
     perm = (req.permission or PERM_READ).strip()
     if perm == PERM_OWNER:
@@ -2316,9 +2317,9 @@ async def revoke_share(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise unknown_collection(collection_id) from None
+        raise unknown_collection(collection_id, reason="miss") from None
 
-    await enforce_access(principal, entry.id, "owner")
+    await enforce_access(principal, entry.id, "owner", named=collection_id)
 
     store = get_acl_store()
     try:
@@ -2484,12 +2485,12 @@ async def transfer_collection_owner(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise unknown_collection(collection_id) from None
+        raise unknown_collection(collection_id, reason="miss") from None
 
     # Current-owner OR admin. enforce_access already admits admin (the logged
     # bypass in resolve_access) and already maps a denial to 403-if-readable /
     # 404-otherwise, so an unknown id and an unreadable one are indistinguishable.
-    await enforce_access(principal, entry.id, "owner")
+    await enforce_access(principal, entry.id, "owner", named=collection_id)
 
     # Same resolution as a share grantee — '@service:', 'issuer:subject', bare
     # username, and every reserved-subject/degenerate-form 422 — so the two

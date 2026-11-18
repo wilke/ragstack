@@ -31,7 +31,7 @@ underneath, unchanged — defence in depth (ADR-0003 decision 3).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
@@ -58,6 +58,7 @@ from ragstack.authz import (
 from ragstack.collection_store import RESERVED_COLLECTION_ID
 from ragstack.config import settings
 from ragstack.identity import get_identity_provider
+from ragstack.observability.context import current_context
 
 log = logging.getLogger(__name__)
 
@@ -72,14 +73,49 @@ def auth_configured() -> bool:
     return bool(settings.api_keys) or get_identity_provider() is not None
 
 
-def unknown_collection(collection_id: str) -> HTTPException:
+#: The 404 for a collection the SERVER chose (an omitted ``collection`` or the
+#: pointer name, resolved for the caller) that the caller turns out not to be
+#: able to see. It names no collection: echoing an id the caller never named
+#: would tell them about a collection they were never shown. Defined here so
+#: :func:`enforce_access` can raise it; :mod:`ragstack.api.default_collection`
+#: re-exports it for its own empty-readable-set 404.
+NO_ACCESSIBLE_COLLECTION = "no collection is accessible to this caller"
+
+#: Why a collection 404 was raised, for the server log only (#1029): ``miss``
+#: the registry does not know the id, ``deny`` it exists (or may) but the caller
+#: may not see it (ACL or the tenant allowlist).
+NotFoundReason = Literal["miss", "deny"]
+
+
+def _log_not_found(reason: NotFoundReason, named: str | None, resolved: str | None) -> None:
+    """One server-side line per collection 404, so support can tell a typo
+    (``reason=miss``) from lost access (``reason=deny``). The response body is
+    the same for both by design; this line is the only place they differ."""
+    ctx = current_context()
+    log.info(
+        "collection 404: reason=%s collection=%r resolved=%r request_id=%s",
+        reason,
+        named,
+        resolved if resolved is not None else named,
+        ctx.request_id if ctx is not None else "-",
+    )
+
+
+def unknown_collection(
+    collection_id: str, *, reason: NotFoundReason, resolved: str | None = None
+) -> HTTPException:
     """The ONE 404 for a collection the caller may not see (#1029).
 
     Raised for an id the registry does not know AND for one the caller cannot
     read (:func:`enforce_access`). The two must be byte-identical: the same
     status with different text would tell a caller which private ids exist.
     Every route that answers "no such collection" for a caller-named id raises
-    this rather than formatting its own message."""
+    this rather than formatting its own message.
+
+    ``collection_id`` is the id the CALLER named, never a resolved canonical id
+    (``default`` resolves to the pointer target, which the caller may never have
+    been shown). ``reason`` and ``resolved`` go to the server log only."""
+    _log_not_found(reason, collection_id, resolved)
     return HTTPException(
         status_code=404,
         detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
@@ -131,8 +167,17 @@ async def enforce_access(
     collection_id: str,
     action: Action,
     store: AclStore | None = None,
+    *,
+    named: str | None,
 ) -> None:
     """Authorize ``action`` on ``collection_id`` for ``principal`` or raise.
+
+    ``collection_id`` is the RESOLVED registry id the decision runs on;
+    ``named`` is the id the CALLER supplied, which is all a 404 may echo
+    (#1029). The two differ when the caller named the pointer (``default``) or
+    omitted ``collection`` and the server picked one: pass ``named=None`` there,
+    and a 404 then names no id at all (:data:`NO_ACCESSIBLE_COLLECTION`).
+    Required, so a new caller has to decide which case it is.
 
     Raises :class:`HTTPException` — 404 (read denied, or a write/owner denial on
     a collection the caller can't read either), 403 (write/owner denied on a
@@ -174,7 +219,10 @@ async def enforce_access(
                 status_code=_DENY_STATUS[action],
                 detail=f"you do not have {action} access to collection {collection_id!r}",
             )
-    raise unknown_collection(collection_id)
+    if named is None:
+        _log_not_found("deny", None, collection_id)
+        raise HTTPException(status_code=404, detail=NO_ACCESSIBLE_COLLECTION)
+    raise unknown_collection(named, reason="deny", resolved=collection_id)
 
 
 async def filter_readable(

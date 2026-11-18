@@ -409,29 +409,40 @@ async def _authorize_ingest_target(
     write will land in, including the shared surface: a pinned
     ``qdrant_collection_explicit`` keeps its name across a settings change, so
     that collection is precisely where a swapped embedder or chunker would
-    quietly append incoherent data to a 25M-point index.
+    quietly append incoherent data to a 25M-point index. It runs after the
+    access check, so only a caller allowed to write there ever sees its 409.
     """
+    named: str | None
     if not collection_id or is_reserved_collection_id(collection_id):
-        # Naming the pointer == omitting it (#276).
+        # Naming the pointer == omitting it (#276). The server picked the id, so
+        # a 404 must not echo it (`named=None`, #1029).
+        named = None
         target = await resolve_ingest_default_entry(collections, principal)
     else:
+        named = collection_id
         allowed = collections.permitted(
             allowed_collection_ids(principal.tenant, settings.tenant_collections)
         )
         if allowed is not None and collection_id not in allowed:
-            raise unknown_collection(collection_id)
+            raise unknown_collection(collection_id, reason="deny")
         try:
             target = collections.resolve(collection_id)
         except KeyError:
-            raise unknown_collection(collection_id) from None
-    _guard(target)
+            raise unknown_collection(collection_id, reason="miss") from None
     # Enforcement runs after BOTH branches. On the implicit one it cannot
     # contradict the pick (resolve_write_many and resolve_access's write branch
     # are the same policy, in the same file) — what it adds is the collection
     # LIFECYCLE gate, which no filter in default_collection.py runs.
     await enforce_access(
-        principal, target.id, "read" if target.is_shared_surface else "write"
+        principal,
+        target.id,
+        "read" if target.is_shared_surface else "write",
+        named=named,
     )
+    # The build-spec guard runs only AFTER the access check (#1029): its 409
+    # names the physical collection and its model/dim/chunk fields, so running
+    # it first told a stranger that a private id exists and how it was built.
+    _guard(target)
     return target
 
 
@@ -2333,7 +2344,7 @@ async def list_documents(
     # because the collection LIFECYCLE gate lives inside it and `filter_readable`
     # does not run it (see api/default_collection.py's module docstring).
     default = await resolve_default_entry(registry, principal)
-    await enforce_access(principal, default.id, "read")
+    await enforce_access(principal, default.id, "read", named=None)
     try:
         docs, next_cursor = await default.text_index.list_documents(
             readable_tenants(tenant), limit=limit, cursor=cursor
@@ -2389,7 +2400,10 @@ async def delete_document(
     taken from the same entry that was authorized, never from ``app.state``."""
     default = await resolve_default_entry(registry, principal)
     await enforce_access(
-        principal, default.id, "read" if default.is_shared_surface else "write"
+        principal,
+        default.id,
+        "read" if default.is_shared_surface else "write",
+        named=None,
     )
     await default.vector_store.delete(doc_id, tenant_id=tenant)
     await default.text_index.delete(doc_id, tenant_id=tenant)

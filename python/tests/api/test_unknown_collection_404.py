@@ -64,7 +64,10 @@ def _entry(cid: str, default: bool = False) -> CollectionEntry:
 
 
 @pytest.fixture
-async def _private_collection():
+async def _private_collection(client):
+    """Depends on ``client`` because ``_entry`` reads ``app.state``'s stores,
+    which only the ``client`` fixture installs — without it this fixture worked
+    only after some earlier test had set them up."""
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
@@ -150,7 +153,7 @@ async def test_graph_extract_unknown_and_unreadable_give_the_same_404_body(
 
 
 async def test_unknown_collection_helper_is_the_one_body():
-    e = unknown_collection("x")
+    e = unknown_collection("x", reason="miss")
     assert isinstance(e, HTTPException)
     assert e.status_code == 404
     assert e.detail == "unknown collection 'x'; see GET /v1/collections"
@@ -164,6 +167,143 @@ async def test_enforce_access_read_denial_uses_the_helper(_private_collection):
     stranger = Principal(tenant="stranger", role=ROLE_USER)
     for action in ("read", "write", "owner"):
         with pytest.raises(HTTPException) as ei:
-            await enforce_access(stranger, PRIVATE, action)
+            await enforce_access(stranger, PRIVATE, action, named=PRIVATE)
         assert ei.value.status_code == 404
-        assert ei.value.detail == unknown_collection(PRIVATE).detail
+        assert ei.value.detail == unknown_collection(PRIVATE, reason="miss").detail
+
+
+@pytest.mark.parametrize("action", ["read", "write", "owner"])
+async def test_enforce_access_404_names_the_id_the_caller_named(_private_collection, action):
+    """The 404 echoes ``named`` (what the caller supplied), never the resolved id
+    the decision ran on: ``default`` resolves to the pointer target, which the
+    caller may never have been shown. ``named=None`` (the server picked the id)
+    names no id at all."""
+    from ragstack.api.access import NO_ACCESSIBLE_COLLECTION, enforce_access
+    from ragstack.api.security import Principal
+
+    stranger = Principal(tenant="stranger", role=ROLE_USER)
+    with pytest.raises(HTTPException) as ei:
+        await enforce_access(stranger, PRIVATE, action, named="default")
+    assert ei.value.status_code == 404
+    assert ei.value.detail == unknown_collection("default", reason="deny").detail
+    assert PRIVATE not in ei.value.detail
+
+    with pytest.raises(HTTPException) as ei:
+        await enforce_access(stranger, PRIVATE, action, named=None)
+    assert ei.value.status_code == 404
+    assert ei.value.detail == NO_ACCESSIBLE_COLLECTION
+
+
+# --------------------------------------------------------------------------- #
+# `default` (the pointer name) never echoes the pointer target
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+async def _private_pointer_target(_private_collection):
+    """Repoint the registry pointer at PRIVATE, which ``stranger`` cannot read."""
+    app.state.collections = CollectionRegistry(
+        [_entry(SHARED_ID, True), _entry(PRIVATE)], default_id=PRIVATE
+    )
+
+
+@pytest.mark.parametrize(
+    "label,method,path,body", ROUTES, ids=[r[0] for r in ROUTES]
+)
+async def test_pointer_name_never_names_the_pointer_target(
+    client, _private_pointer_target, label, method, path, body
+):
+    """Naming ``default`` on any route must not put the real id of a pointer
+    target the caller cannot read into the body. The owner routes refuse the
+    pointer name (409, names no id); ``GET .../default/shares`` used to resolve
+    it and answer ``unknown collection 'priv-coll'; ...``. The query/ingest rows
+    treat ``default`` as an omitted ``collection`` and serve the caller's own
+    default."""
+    resp = await _ask(client, method, path, body, "default")
+    if path.startswith("/v1/collections/"):
+        # Every owner route refuses the pointer name before resolving it.
+        assert resp.status_code == 409, f"{label}: {resp.status_code} {resp.text}"
+    assert resp.status_code < 500, f"{label}: {resp.text}"
+    assert PRIVATE not in resp.text, (
+        f"{label}: naming 'default' answered {resp.status_code} {resp.text!r}, "
+        f"which names the pointer target {PRIVATE!r} the caller cannot read"
+    )
+
+
+async def test_graph_extract_pointer_name_never_names_the_pointer_target(
+    client, _private_pointer_target, monkeypatch
+):
+    from ragstack.api.routers import collections as collections_router
+
+    monkeypatch.setattr(
+        collections_router, "gowe_caller", lambda principal: ("tok", principal.tenant)
+    )
+    resp = await _ask(client, "POST", "/v1/collections/{cid}/graph", None, "default")
+    assert resp.status_code == 409, resp.text
+    assert PRIVATE not in resp.text
+
+
+# --------------------------------------------------------------------------- #
+# ingest: the build-spec 409 runs only after the access check
+# --------------------------------------------------------------------------- #
+
+
+async def test_ingest_build_spec_409_is_only_for_a_caller_who_may_write(
+    client, _private_collection, tmp_path, monkeypatch
+):
+    """``check_ingest_build_spec``'s 409 names the physical collection and its
+    model/dim/chunk fields. It used to run before ``enforce_access``, so a
+    stranger ingesting into a private collection whose build spec had drifted
+    got that 409 instead of the unknown-collection 404."""
+    from ragstack.api import deps
+    from ragstack.provenance import make_ingest_manifest, write_manifest
+
+    d = str(tmp_path / "manifests")
+    monkeypatch.setattr(deps.settings, "collection_manifest_dir", d)
+    monkeypatch.setattr(deps.settings, "collection_spec_guard", True)
+    entry = app.state.collections.resolve(PRIVATE)
+    write_manifest(
+        d,
+        make_ingest_manifest(
+            collection=entry.collection, model="other-model", dim=entry.dim,
+            chunk_method=entry.chunk_method, chunk_size=entry.chunk_size,
+            chunk_overlap=entry.chunk_overlap, chunk_params=entry.chunk_params,
+        ),
+    )
+    payload = {"source": "nothing.txt", "collection": PRIVATE}
+
+    stranger = await client.post(
+        "/v1/ingest", json=payload, headers={"X-API-Key": KEYS["stranger"]}
+    )
+    assert stranger.status_code == 404, stranger.text
+    assert stranger.json() == {"detail": unknown_collection(PRIVATE, reason="deny").detail}
+
+    owner = await client.post(
+        "/v1/ingest", json=payload, headers={"X-API-Key": KEYS["owner"]}
+    )
+    assert owner.status_code == 409, owner.text
+    assert "embedding_model" in owner.text
+
+
+# --------------------------------------------------------------------------- #
+# the server log tells a miss from a deny; the body does not
+# --------------------------------------------------------------------------- #
+
+
+async def test_404_logs_miss_or_deny_server_side_only(client, _private_collection, caplog):
+    path = "/v1/collections/{cid}/shares"
+    with caplog.at_level("INFO", logger="ragstack.api.access"):
+        caplog.clear()
+        unreadable = await _ask(client, "GET", path, None, PRIVATE)
+        deny_lines = [r.getMessage() for r in caplog.records if "collection 404" in r.getMessage()]
+        caplog.clear()
+        unknown = await _ask(client, "GET", path, None, UNKNOWN)
+        miss_lines = [r.getMessage() for r in caplog.records if "collection 404" in r.getMessage()]
+
+    assert len(deny_lines) == 1 and "reason=deny" in deny_lines[0], deny_lines
+    assert repr(PRIVATE) in deny_lines[0]
+    assert len(miss_lines) == 1 and "reason=miss" in miss_lines[0], miss_lines
+    assert repr(UNKNOWN) in miss_lines[0]
+    assert "request_id=" in deny_lines[0] and "request_id=-" not in deny_lines[0]
+    for resp in (unreadable, unknown):
+        assert "reason" not in resp.text and "deny" not in resp.text and "miss" not in resp.text
