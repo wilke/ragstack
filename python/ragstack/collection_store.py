@@ -813,8 +813,7 @@ class JsonFileCollectionStore:
         return getattr(self._settings, "collections_json", "") or ""
 
     def load_specs_sync(self) -> list[CollectionSpec]:
-        """Blocking read of the registry — used directly by the synchronous
-        ``load_collection_specs`` façade, and off-thread by :meth:`list_specs`."""
+        """Blocking read of the registry — run off-thread by :meth:`list_specs`."""
         path = self.path
         if path:
             with json_file_lock(path):
