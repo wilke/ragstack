@@ -839,8 +839,23 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
         make_ingest_backend(settings, http=app_state.http_client),
         shard_size=settings.ingest_shard_size,
         job_store=app_state.job_store,
-        quota=TenantQuota(settings.tenant_max_concurrency),
+        quota=_tenant_quota_of(app_state),
     )
+
+
+def _tenant_quota_of(app_state: Any) -> TenantQuota:
+    """The app's ONE tenant quota (#1025). The limit is per tenant, so every
+    per-collection ingester must share the quota the lifespan built (the same
+    one the default ingester and queries hold); a fresh one per call let a
+    tenant run N x TENANT_MAX_CONCURRENCY shards across N collections.
+
+    A duck-typed ``app_state`` with no lifespan behind it gets one built from
+    the setting and stored on it, so its later ingesters share it too."""
+    quota = getattr(app_state, "tenant_quota", None)
+    if quota is None:
+        quota = TenantQuota(settings.tenant_max_concurrency)
+        app_state.tenant_quota = quota
+    return quota
 
 
 def write_ingest_manifest_for(
