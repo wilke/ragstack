@@ -39,6 +39,9 @@ def qdrant_url_for(collection: str, settings: Any, *, override: str = "") -> str
     would build a second, invisible copy of a store that exists elsewhere. For
     an unrouted collection the operator naming an instance is the more specific
     statement, so it beats the ambient setting.
+    ``override`` is only for operator CLI values on the bulk-write path, which
+    must also call ``ingest_target.require_store_urls``; API code must never
+    pass request-derived text.
 
     The key is the **physical** collection name, the same one the store is
     created under — never the registry id.
@@ -63,6 +66,9 @@ def es_url_for(index: str, settings: Any, *, override: str = "") -> str:
     operator named would build a second, invisible half of a corpus whose
     vectors are elsewhere, and leave the API reading the routed index it never
     filled.
+    ``override`` is only for operator CLI values on the bulk-write path, which
+    must also call ``ingest_target.require_store_urls``; API code must never
+    pass request-derived text.
 
     The key is the **physical index name** — what a collection's
     ``text_index``/``es_index()`` resolves to, which is not its id. Keying on the

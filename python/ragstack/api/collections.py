@@ -19,9 +19,7 @@ The registry is *built* in ``api/deps.py`` (which owns the embedder/store/
 retriever construction helpers); this module holds the lookup container so both
 the builder and the routers can import it without a cycle. The durable side —
 ``CollectionSpec`` itself and the backends that persist it — lives in
-:mod:`ragstack.collection_store`; the three ``*_collection_spec`` helpers here
-are the JSON-file façade over it, kept for the callers (and tests) that hold a
-``settings`` object rather than a store.
+:mod:`ragstack.collection_store`.
 """
 from __future__ import annotations
 

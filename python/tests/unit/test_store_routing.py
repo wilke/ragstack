@@ -214,9 +214,10 @@ def test_an_empty_route_still_beats_the_override(monkeypatch):
 
 def test_the_ingest_target_resolves_through_store_routing(monkeypatch):
     """``ops.ingest_target`` used to carry its own copy of both resolvers with
-    the override layered on; a copy is the #407 bug class. Every combination of
-    routed/unrouted × override/none must agree with ``store_routing`` — and the
-    private copies must be gone, so nothing can drift back onto them."""
+    the override layered on; a copy is the #407 bug class. The private copies
+    must be gone, and ``target_from_spec`` must give the literal URLs of the
+    precedence route > CLI override > setting on both legs (compared against
+    fixed strings, not against ``store_routing``, which now runs the same code)."""
     from ragstack.collection_store import CollectionSpec
     from ragstack.ops import ingest_target as it
 
@@ -226,13 +227,22 @@ def test_the_ingest_target_resolves_through_store_routing(monkeypatch):
                         {"routed_phys": "http://127.0.0.1:1/routed"})
     monkeypatch.setattr(settings, "es_collection_routes",
                         {"routed_idx": "http://127.0.0.1:2/routed"})
-    for collection, index in (("routed_phys", "routed_idx"), ("plain_phys", "plain_idx")):
+
+    def target(collection, index, q_over, e_over):
         spec = CollectionSpec(
             id="c", collection=collection, text_index=index, embedding_model="m",
             embedding_model_dim=4, chunk_method="fixed_token", chunk_size=256,
             chunk_overlap=32,
         )
-        for q_over, e_over in (("", ""), ("http://127.0.0.1:3/cli", "http://127.0.0.1:4/cli")):
-            t = it.target_from_spec(spec, settings, qdrant_url=q_over, es_url=e_over)
-            assert t.qdrant_url == qdrant_url_for(collection, settings, override=q_over)
-            assert t.es_url == es_url_for(index, settings, override=e_over)
+        return it.target_from_spec(spec, settings, qdrant_url=q_over, es_url=e_over)
+
+    cli_q, cli_e = "http://127.0.0.1:3/cli", "http://127.0.0.1:4/cli"
+    # Routed + CLI override -> the route.
+    t = target("routed_phys", "routed_idx", cli_q, cli_e)
+    assert (t.qdrant_url, t.es_url) == ("http://127.0.0.1:1/routed", "http://127.0.0.1:2/routed")
+    # Unrouted + CLI override -> the override.
+    t = target("plain_phys", "plain_idx", cli_q, cli_e)
+    assert (t.qdrant_url, t.es_url) == (cli_q, cli_e)
+    # Unrouted + empty override -> the setting.
+    t = target("plain_phys", "plain_idx", "", "")
+    assert (t.qdrant_url, t.es_url) == ("http://127.0.0.1:1/default", "http://127.0.0.1:2/default")
