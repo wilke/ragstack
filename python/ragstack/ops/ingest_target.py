@@ -50,6 +50,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ragstack.store_routing import es_url_for, qdrant_url_for
+
 log = logging.getLogger(__name__)
 
 
@@ -484,40 +486,6 @@ def load_specs(settings: Any | None = None) -> list[Any]:
     return asyncio.run(_run())
 
 
-def _qdrant_url_for(collection: str, settings: Any, override: str = "") -> str:
-    """The Qdrant instance serving ``collection``.
-
-    A **routed** collection lives on its own instance and that routing wins over
-    any command-line URL: writing it to the default instance would silently build
-    a second, invisible copy of a store that already exists elsewhere. For
-    everything else an explicit ``--qdrant-url`` beats the ambient setting, since
-    the operator naming an instance is the more specific statement.
-    """
-    routes = getattr(settings, "qdrant_collection_routes", None) or {}
-    if collection in routes:
-        return routes[collection]
-    return override or settings.qdrant_url
-
-
-def _es_url_for(index: str, settings: Any, override: str = "") -> str:
-    """The Elasticsearch cluster serving ``index``.
-
-    :func:`_qdrant_url_for` one leg over, and for the same reason: a **routed**
-    index already lives on another cluster, so the route wins over ``--es-url``
-    — writing the text leg to the default cluster would build a second,
-    invisible half of a corpus whose vectors are elsewhere, and leave the API
-    reading the routed index it never filled. Unrouted, the operator's explicit
-    ``--es-url`` beats the ambient setting.
-
-    Keyed by the physical INDEX name (``spec.es_index()``), not the collection
-    id — see ``config.es_collection_routes``.
-    """
-    routes = getattr(settings, "es_collection_routes", None) or {}
-    if index in routes:
-        return routes[index]
-    return override or settings.elasticsearch_url
-
-
 def configured_explicitly(settings: Any, field: str) -> bool:
     """Was ``field`` set by configuration rather than left at its code default?
 
@@ -553,8 +521,9 @@ def require_store_urls(
 ) -> None:
     """Refuse a write whose store URL would come from a code default (#636).
 
-    Per leg, the URL may come from — in the order :func:`_qdrant_url_for` and
-    :func:`_es_url_for` already apply — the collection's ROUTE in the registry
+    Per leg, the URL may come from — in the order
+    :func:`ragstack.store_routing.qdrant_url_for` and ``es_url_for`` already
+    apply — the collection's ROUTE in the registry
     settings, the explicit flag, or the settings' URL **only if that setting
     was explicitly configured** (:func:`configured_explicitly`) — and in every
     case the resolved URL must be non-empty: an exported but empty
@@ -607,10 +576,10 @@ def target_from_spec(
     return IngestTarget(
         collection_id=spec.id,
         spec=spec,
-        qdrant_url=_qdrant_url_for(spec.collection, s, qdrant_url),
+        qdrant_url=qdrant_url_for(spec.collection, s, override=qdrant_url),
         collection=spec.collection,
         es_index=spec.es_index(),
-        es_url=_es_url_for(spec.es_index(), s, es_url),
+        es_url=es_url_for(spec.es_index(), s, override=es_url),
     )
 
 

@@ -32,9 +32,6 @@ from typing import Any
 from ragstack.collection_store import (
     RESERVED_COLLECTION_ID,
     CollectionSpec,
-    JsonFileCollectionStore,
-    append_spec_to_file,
-    remove_spec_from_file,
 )
 from ragstack.tenancy import allowed_collection_ids
 
@@ -48,10 +45,7 @@ __all__ = [
     "CollectionRegistry",
     "CollectionSpec",
     "confined_collection_name",
-    "forget_collection_spec",
     "is_reserved_collection_id",
-    "load_collection_specs",
-    "persist_collection_spec",
 ]
 
 
@@ -300,34 +294,3 @@ def confined_collection_name(
         return None
     return registry.resolve(present[0]).collection
 
-
-def load_collection_specs(settings: Any) -> list[CollectionSpec]:
-    """Parse ``collections_file`` (preferred) or ``collections_json`` into specs.
-    Returns [] (single-collection mode) when neither is set.
-
-    Synchronous façade over :class:`JsonFileCollectionStore` — the file read runs
-    under the same shared ``flock`` as the writers, so a reader can never observe
-    a registry mid-update."""
-    return JsonFileCollectionStore(settings).load_specs_sync()
-
-
-def persist_collection_spec(settings: Any, spec: CollectionSpec) -> bool:
-    """Write-through upsert a spec into ``collections_file`` so it survives
-    restart (the lifespan re-reads that file). Returns ``False`` when no file is
-    configured (in-memory only, lost on restart).
-
-    Concurrency-safe as of the durable-registry work: the read-modify-write runs
-    under an exclusive ``flock`` on ``{collections_file}.lock`` and writes through
-    a per-writer unique temp path, so two API processes sharing one registry file
-    can no longer lose each other's entry. The file format is unchanged."""
-    path: str = getattr(settings, "collections_file", "") or ""
-    return append_spec_to_file(path, spec)
-
-
-def forget_collection_spec(settings: Any, cid: str) -> bool:
-    """Write-through remove the spec with id ``cid`` from ``collections_file`` so a
-    delete survives restart. Returns ``False`` when no file is configured or the id
-    isn't present in the file (e.g. an in-memory-only or default entry). Same lock
-    discipline as :func:`persist_collection_spec`."""
-    path: str = getattr(settings, "collections_file", "") or ""
-    return remove_spec_from_file(path, cid)
