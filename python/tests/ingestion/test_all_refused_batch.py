@@ -56,6 +56,7 @@ from ragstack.ingestion.shard import run_shard
 from ragstack.ingestion.work_identity import is_duplicate_refusal
 from ragstack.jobstore import FAILED as JOB_FAILED
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
+from tests.gowe_record_support import EXEC_PREFIX, engine_record, stderr_snippet
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 import archive_version  # noqa: E402
@@ -246,7 +247,8 @@ def _pack(tmp_path: Path, embs: list[Path], receipts: list[Path]) -> int:
 def test_pack_of_an_all_refused_run_names_each_document(tmp_path, monkeypatch, capsys):
     """The single-upload case: every batch all-refused, so the pack step has
     nothing to archive. It exits with its own code and puts every document's
-    reason FIRST on stderr, inside the engine's 1000-character window."""
+    reason FIRST on stderr, within the engine's 1000-byte budget so the
+    engine keeps it uncut."""
     embs, receipts = [], []
     for i, names in enumerate([["b.pdf", "c.pdf"], ["d.pdf"]]):
         shard = _shard(tmp_path, f"batch{i}.jsonl",
@@ -261,7 +263,8 @@ def test_pack_of_an_all_refused_run_names_each_document(tmp_path, monkeypatch, c
 
     assert rc == NOTHING_TO_ARCHIVE_EXIT_CODE
     err = capsys.readouterr().err
-    window = err[:1000]
+    window = stderr_snippet(err)
+    assert window == err  # fits the budget: nothing cut
     assert window.startswith(f"{NOTHING_TO_ARCHIVE}: docs=3 failed=3 listed=3")
     by_name = parse_nothing_to_archive(window)
     assert set(by_name) == {"b.pdf", "c.pdf", "d.pdf"}
@@ -351,21 +354,15 @@ def test_nothing_to_archive_of_ignores_other_failures(record) -> None:
 # the REAL engine record shape (GoWe 0.26.1, the #771 review)
 # --------------------------------------------------------------------------- #
 
-#: What GoWe's worker prepends to a failed apptainer tool's stderr.
-EXEC_PREFIX = "execute: apptainer command failed (exit {code}): "
 
 
 def real_record(code: int, tool_stderr: str, step: str = "pack") -> dict:
-    """A FAILED submission exactly as the deployed engine records it: the
-    context's ``exit_code`` is ALWAYS -1 for a failed apptainer tool, the real
-    code survives only in the worker's prefix, and the stderr is cut to 1000
-    characters with a ``...(truncated)`` marker (scheduler buildSubmissionError)."""
-    stderr = EXEC_PREFIX.format(code=code) + tool_stderr
-    if len(stderr) > 1000:
-        stderr = stderr[:1000] + "...(truncated)"
-    return {"id": "sub_x", "state": "FAILED", "error": {
-        "code": "TASK_FAILED", "message": f"step '{step}' task failed with exit code -1",
-        "context": {"step_id": step, "exit_code": -1, "stderr": stderr}}}
+    """A FAILED submission exactly as the deployed engine records it
+    (``tests.gowe_record_support``): the context's ``exit_code`` is ALWAYS -1
+    for a failed apptainer tool, the real code survives only in the worker's
+    prefix, and a stderr past 1000 bytes keeps its first line and its end
+    (GoWe #338, scheduler ``stderrSnippet``)."""
+    return engine_record(code, tool_stderr, step=step)
 
 
 def _refusals(n: int) -> list[ShardReceipt]:
@@ -420,8 +417,8 @@ def test_real_engine_exit_5_needs_the_label_line() -> None:
 
 
 def test_prefix_plus_the_largest_listing_fits_the_engine_window() -> None:
-    """The worker's ~44-character prefix sits INSIDE the 1000 kept characters:
-    the label and every listed line must survive it uncut."""
+    """The worker's ~44-character prefix counts against the engine's
+    1000-byte budget: the label and every listed line must survive uncut."""
     tool = format_nothing_to_archive(_refusals(200))
     payload = EXEC_PREFIX.format(code=NOTHING_TO_ARCHIVE_EXIT_CODE) + tool
     assert len(payload) <= 1000

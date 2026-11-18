@@ -193,10 +193,12 @@ NOTHING_TO_ARCHIVE_EXIT_CODE = 5
 #: The label line the archive step prints first on stderr in that case.
 NOTHING_TO_ARCHIVE = "nothing_to_archive"
 #: GoWe copies the failed task's stderr into the submission's error record
-#: truncated to its first 1000 characters, and the worker PREPENDS its own
-#: ``execute: apptainer command failed (exit 5): `` (~44 characters) inside
-#: that window. Stay under what is left so no listed line is cut, and stop
-#: listing documents (whole lines only) when the budget is spent.
+#: whole when it is at most 1000 bytes; past that it keeps only the first line
+#: (<= 200 bytes) and the end, dropping the middle (GoWe #338). The worker
+#: PREPENDS its own ``execute: apptainer command failed (exit 5): `` (~44
+#: characters) inside that budget. Stay under what is left so the listing is
+#: not cut, and stop listing documents (whole lines only) when the budget is
+#: spent.
 NOTHING_TO_ARCHIVE_STDERR_BUDGET = 880
 _MAX_LISTED_ERROR = 400
 
