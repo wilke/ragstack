@@ -66,6 +66,7 @@ from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.models import DERIVED_BY_LLM, LLM_MAX_CONFIDENCE, Triple
 from ragstack.stores.memory import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 from tests.archive_support import corrupt_file, tombstone_version
+from tests.gowe_record_support import engine_record
 
 yaml = pytest.importorskip("yaml")
 
@@ -537,14 +538,11 @@ def test_graph_cap_refusal_classified_by_exit_code_first():
 
 def _engine_record(code: int, tool_stderr: str) -> dict:
     """A FAILED graph-extract submission as the deployed GoWe (0.26.1)
-    records it: ``context.exit_code`` is ALWAYS -1 for a failed apptainer
-    tool; the real code survives only in the worker's ``execute: apptainer
-    command failed (exit N): `` prefix at the head of ``context.stderr``
-    (#1027, the shape ``gowe_backend.tool_exit_code`` reads)."""
-    return {"state": "FAILED", "error": {
-        "code": "TASK_FAILED", "message": "step 'load' task failed with exit code -1",
-        "context": {"step_id": "load", "exit_code": -1,
-                    "stderr": f"execute: apptainer command failed (exit {code}): {tool_stderr}"}}}
+    records it (``tests.gowe_record_support``): ``context.exit_code`` is
+    ALWAYS -1 for a failed apptainer tool; the real code survives only in the
+    worker's ``execute: apptainer command failed (exit N): `` prefix at the
+    head of ``context.stderr`` (#1027, the shape ``tool_exit_code`` reads)."""
+    return engine_record(code, tool_stderr, step="load")
 
 
 def test_graph_cap_refusal_read_from_the_engine_record_not_context_minus_1():
@@ -559,6 +557,19 @@ def test_graph_cap_refusal_read_from_the_engine_record_not_context_minus_1():
     rec = _engine_record(4, line)
     rec["error"]["context"]["stderr"] = line
     assert graph_cap_refusal_of(rec) is None
+
+
+def test_graph_cap_refusal_as_the_tools_first_stderr_line_keeps_its_numbers():
+    """#1027 review: when the refusal is the tool's FIRST stderr line it
+    shares the engine's line with the worker prefix; the line is read the way
+    ``cap_refusal_of`` reads it (``_tool_lines``), so the numbers survive."""
+    line = format_graph_refusal(199_998, 3, 200_000)
+    rec = _engine_record(4, f"{line}\n")
+    assert rec["error"]["context"]["stderr"].startswith(
+        f"execute: apptainer command failed (exit 4): {line}")
+    assert graph_cap_refusal_of(rec) == line
+    # ...also when the rest of a long stderr was cut (the first line is kept).
+    assert graph_cap_refusal_of(_engine_record(4, f"{line}\n" + "warn\n" * 400)) == line
 
 
 # --------------------------------------------------------------------------- #

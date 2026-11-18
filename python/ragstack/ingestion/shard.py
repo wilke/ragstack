@@ -47,7 +47,7 @@ format decision, not a batch-rule one — so the run still fails at the pack
 step. Since #768 that failure carries the per-item detail:
 ``archive_version.py`` exits ``receipts.NOTHING_TO_ARCHIVE_EXIT_CODE`` with each
 document's row error first on stderr, and ``GoWeBackend`` lifts those onto the
-items (as many as fit the engine's 1000-character stderr window).
+items (as many as fit the engine's ~1000-byte stderr budget).
 
 Retry safety: a re-run against a working endpoint overwrites in place
 (deterministic ids + upsert of the same content), so an engine retry is safe. The

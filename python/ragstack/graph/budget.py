@@ -106,20 +106,22 @@ def graph_cap_refusal_of(submission: dict[str, Any]) -> str | None:
     — the deployed engine records ``context.exit_code = -1`` for every failed
     tool, so the real code is read where that function finds it, #1027)
     ``== GRAPH_CAP_REFUSED_EXIT_CODE`` decides. The refusal line the tool
-    printed to stderr supplies the numbers when it is inside the engine's
-    stderr window; without it the bare label is returned — the label is what
-    the job records either way. A refusal line with a DIFFERENT exit code is
-    not a cap refusal (the exit code is authoritative)."""
+    printed to stderr supplies the numbers when the engine's stderr cut kept
+    it (lines are read through ``gowe_backend._tool_lines``, so a refusal that
+    is the tool's FIRST stderr line, behind the worker prefix, still counts);
+    without it the bare label is returned — the label is what the job records
+    either way. A refusal line with a DIFFERENT exit code is not a cap refusal
+    (the exit code is authoritative)."""
     # Imported here, not at module level: the extract-graph / load-graph
     # worker tools import this module for the cap itself and have no use for
     # the engine client that gowe_backend brings in.
-    from ragstack.ingestion.gowe_backend import tool_exit_code
+    from ragstack.ingestion.gowe_backend import _tool_lines, tool_exit_code
 
     if tool_exit_code(submission) != GRAPH_CAP_REFUSED_EXIT_CODE:
         return None
     ctx, message = _failure_context(submission)
     for text in (str(ctx.get("stderr") or ""), message):
-        for line in text.splitlines():
-            if is_graph_cap_refusal(line.strip()):
-                return line.strip()
+        for line in _tool_lines(text):
+            if is_graph_cap_refusal(line):
+                return line
     return GRAPH_CAP_EXCEEDED

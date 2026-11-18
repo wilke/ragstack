@@ -48,6 +48,7 @@ from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.workspace import WorkspaceNotFound, collection_folder, ws_uri
 from tests.api.conftest import SHARED_ID
 from tests.archive_support import chunk_version, tamper_manifest, tombstone_version
+from tests.gowe_record_support import engine_record
 
 pytestmark = pytest.mark.asyncio
 
@@ -96,11 +97,9 @@ class FakeEngine:
     """The GoWe side. ``submit`` resolves the ``ws://`` Directory inputs back
     to local dirs and runs the loader's verification — the part of the
     restore workflow that decides lost-vs-restored — recording COMPLETED or a
-    FAILED record carrying the loader's marker line. ``hold`` keeps every
-    submission non-terminal until :meth:`release`."""
-
-    #: GoWe keeps only the first 1000 characters of a failed task's stderr.
-    STDERR_KEEP = 1000
+    FAILED record in the deployed engine's shape (``exit_code: -1``, the
+    loader's exit 3 only in the worker prefix, stderr cut as GoWe #338 cuts
+    it). ``hold`` keeps every submission non-terminal until :meth:`release`."""
 
     def __init__(self, workspace: FakeWorkspace) -> None:
         self.workspace = workspace
@@ -112,6 +111,8 @@ class FakeEngine:
         # What the loader writes to stderr BEFORE the marker line (store
         # client warnings from building the pipeline); real runs have plenty.
         self.stderr_prefix = ""
+        # ...and AFTER it (interpreter-shutdown warnings, store client close).
+        self.stderr_suffix = ""
         # How many times `wait` gives up (its own timeout) before returning.
         self.wait_timeouts = 0
         # ...and whether the engine forgets the submission at that moment.
@@ -133,15 +134,14 @@ class FakeEngine:
             verify_replay(dirs, spec_hash=inputs["spec_hash"], collection_id=inputs["collection_id"])
             record = {"id": sub_id, "state": "COMPLETED", "outputs": {}}
         except ReplayRefused as e:
-            # The real terminal record: error.{code, message, context.{stderr,
-            # exit_code}}, stderr truncated to its first 1000 characters —
-            # the loader's marker line comes AFTER whatever the pipeline build
-            # printed, so it may or may not fall inside the window.
-            stderr = (self.stderr_prefix + str(e) + "\n")[: self.STDERR_KEEP]
-            record = {"id": sub_id, "state": "FAILED", "error": {
-                "code": "TASK_FAILED", "message": "step replay failed",
-                "context": {"stderr": stderr, "exit_code": 3},
-            }}
+            # The real terminal record (GoWe 0.26.1): context.exit_code is -1,
+            # the loader's exit 3 survives only in the worker prefix, and a
+            # long stderr keeps its first line and its end — the marker line
+            # sits between whatever came before and after it, so it may or
+            # may not survive the cut.
+            record = engine_record(
+                3, self.stderr_prefix + str(e) + "\n" + self.stderr_suffix,
+                step="replay", sub_id=sub_id)
         self.records[sub_id] = record
         return {"id": sub_id, "state": "PENDING"}
 
@@ -423,18 +423,22 @@ async def test_tampered_manifest_makes_the_collection_lost(client, identity, wor
 async def test_marker_beyond_the_engines_stderr_window_still_classifies_as_lost(
     client, identity, world,
 ):
-    """The engine keeps the first 1000 chars of stderr; the loader's marker
-    line comes after the pipeline build's client warnings, so it is often
-    outside the window. The exit code (3) is what decides `lost`."""
+    """Past 1000 bytes the engine keeps only the first line and the end of
+    stderr; a marker line with enough output on both sides falls in the cut
+    middle. The exit code (3, read from the worker prefix on the engine's
+    ``exit_code: -1`` record) is what decides `lost`."""
     store, gate, engine = world["store"], world["gate"], world["engine"]
-    engine.stderr_prefix = ("UserWarning: Failed to obtain server version. Unable to check "
-                            "client-server compatibility.\n") * 15  # > 1000 chars
+    warning = ("UserWarning: Failed to obtain server version. Unable to check "
+               "client-server compatibility.\n")
+    engine.stderr_prefix = warning * 15  # > 1000 bytes before the marker
+    engine.stderr_suffix = warning * 15  # ...and after it
     tamper_manifest(world["versions"][0], spec_hash="deadbeef")
     await store.set_state(CID, DORMANT)
     gate.invalidate(CID)
     assert (await _retrieve(client)).status_code == 503
     await gate.drain()
     record = engine.records["sub_1"]
+    assert record["error"]["context"]["exit_code"] == -1  # the deployed shape
     assert "SpecMismatch" not in record["error"]["context"]["stderr"]  # the case that bit
     rec = await store.get(CID)
     assert rec.state == LOST, rec.state_reason
@@ -464,29 +468,23 @@ async def test_classify_failure_is_exit_code_first():
 
 
 def _engine_record(code: int, tool_stderr: str) -> dict:
-    """A FAILED restore submission as the deployed GoWe (0.26.1) records it:
-    ``context.exit_code`` is ALWAYS -1 for a failed apptainer tool; the real
-    code survives only in the worker's ``execute: apptainer command failed
-    (exit N): `` prefix at the head of a stderr cut to 1000 characters
-    (#1027, the shape ``gowe_backend.tool_exit_code`` reads)."""
-    stderr = f"execute: apptainer command failed (exit {code}): {tool_stderr}"
-    if len(stderr) > 1000:
-        stderr = stderr[:1000] + "...(truncated)"
-    return {"id": "sub_r", "state": "FAILED", "error": {
-        "code": "TASK_FAILED", "message": "step 'restore' task failed with exit code -1",
-        "context": {"step_id": "restore", "exit_code": -1, "stderr": stderr}}}
+    """A FAILED restore submission as the deployed GoWe (0.26.1) records it
+    (``tests.gowe_record_support``): ``context.exit_code`` is ALWAYS -1; the
+    real code survives only in the worker prefix, and a long stderr keeps its
+    first line and its end (#1027, the shape ``tool_exit_code`` reads)."""
+    return engine_record(code, tool_stderr, step="restore", sub_id="sub_r")
 
 
 async def test_classify_failure_reads_the_engine_exit_code_not_context_minus_1():
     """#1027: the loader's refusal (exit 3) on the real engine record is
-    ``lost`` — even when the marker fell outside the 1000-char window, which is
-    exactly when the exit code is the only signal."""
-    noise = "client warning: store connect\n" * 60  # pushes the marker out of the window
-    rec = _engine_record(3, noise + "ArchiveCorrupt: vectors.f32: sha256 x != y\n")
+    ``lost`` — even when the marker fell in the middle the engine cuts out,
+    which is exactly when the exit code is the only signal."""
+    noise = "client warning: store connect\n" * 60
+    rec = _engine_record(3, noise + "ArchiveCorrupt: vectors.f32: sha256 x != y\n" + noise)
     assert "ArchiveCorrupt" not in rec["error"]["context"]["stderr"]
     state, reason = classify_failure(rec)
     assert state == LOST and "exit 3" in reason, reason
-    # Marker inside the window: it is quoted in the reason.
+    # Marker inside the kept text: it is quoted in the reason.
     state, reason = classify_failure(_engine_record(3, "SpecMismatch: spec_hash a != b\n"))
     assert state == LOST and reason.endswith("SpecMismatch: spec_hash a != b"), reason
     # Any other real code stays retryable, with the REAL code recorded — even
@@ -494,6 +492,58 @@ async def test_classify_failure_reads_the_engine_exit_code_not_context_minus_1()
     for code in (1, 2, 137):
         state, reason = classify_failure(_engine_record(code, "ArchiveCorrupt: looks like one\n"))
         assert state == DORMANT and f"(exit {code})" in reason and "exit -1)" not in reason, reason
+
+
+async def test_classify_failure_keeps_the_marker_at_the_end_of_a_long_stderr():
+    """GoWe #338 keeps the END of a long stderr, where the loader's marker is
+    (it is the last line ``--replay`` prints before exiting 3): exit 3 with
+    the marker at the end → ``lost``, the marker quoted."""
+    noise = "UserWarning: Failed to obtain server version.\n" * 60
+    rec = _engine_record(3, noise + "ArchiveCorrupt: vectors.f32: sha256 x != y\n")
+    stderr = rec["error"]["context"]["stderr"]
+    assert "...(truncated)..." in stderr and len(stderr) < 1100
+    assert stderr.startswith("execute: apptainer command failed (exit 3): ")
+    state, reason = classify_failure(rec)
+    assert state == LOST and reason.endswith("ArchiveCorrupt: vectors.f32: sha256 x != y"), reason
+
+
+def _minus_1_record(stderr: str, **extra) -> dict:
+    """``exit_code: -1`` with NO worker prefix: a stage-in failure, a
+    scheduler error, a cancellation or a tool that printed nothing."""
+    return {"id": "sub_m", "state": "FAILED", **extra, "error": {
+        "code": "TASK_FAILED", "message": "step 'restore' task failed with exit code -1",
+        "context": {"step_id": "restore", "exit_code": -1, "stderr": stderr}}}
+
+
+@pytest.mark.parametrize("record", [
+    _minus_1_record(""),
+    _minus_1_record("execute: stage-in: download ws://u/home/v/1: not found"),
+    # marker text in a stderr with no tool code (a stage-in error names user
+    # file paths) is not the loader's refusal...
+    _minus_1_record("execute: stage-in: download ws://u/home/ArchiveCorrupt: x.pdf: not found"),
+    # ...nor marker text anywhere else in the record (the inputs)
+    _minus_1_record("", inputs={"versions": [{"location": "ws://u/home/SpecMismatch: v/1"}]}),
+], ids=["empty", "stage-in", "marker-in-stderr", "marker-in-inputs"])
+async def test_classify_failure_minus_1_without_a_tool_code_is_dormant(record):
+    """#1027 review: ``exit_code: -1`` with no recoverable tool code is
+    retryable, as before #1027 — the state and message recorded, the marker
+    fallback NOT consulted (it is only for records without an exit code)."""
+    state, reason = classify_failure(record)
+    assert state == DORMANT, reason
+    assert reason.startswith("restore submission sub_m ended FAILED (exit -1)"), reason
+    assert "task failed with exit code -1" in reason
+
+
+async def test_classify_failure_marker_decides_only_without_an_exit_code():
+    """The two ends of the rule: -1 + prefix ``(exit 3)`` → ``lost``; a record
+    with no ``exit_code`` at all falls back to the marker → ``lost``."""
+    rec = _minus_1_record("execute: apptainer command failed (exit 3): warnings only\n")
+    state, reason = classify_failure(rec)
+    assert state == LOST and "exit 3" in reason, reason
+    state, reason = classify_failure({"id": "s", "state": "FAILED", "error": {
+        "code": "TASK_FAILED", "message": "m",
+        "context": {"stderr": "junk\nSpecMismatch: spec_hash a != b\n"}}})
+    assert state == LOST and reason.endswith("SpecMismatch: spec_hash a != b"), reason
 
 
 async def test_wait_timeout_does_not_demote_while_the_engine_still_runs(

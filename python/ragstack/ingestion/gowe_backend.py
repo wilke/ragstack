@@ -102,8 +102,9 @@ NO_READABLE_RECEIPT = "no readable receipt for shard"
 BATCH_FAILED = "batch failed"
 #: Per-item error when the run ingested NO document (the archive step exited
 #: ``NOTHING_TO_ARCHIVE_EXIT_CODE``) but this document's own reason is not in
-#: the engine's error record — it keeps only the first 1000 characters of the
-#: failed task's stderr, which lists a handful of documents (#768).
+#: the engine's error record — it keeps only about 1000 bytes of the failed
+#: task's stderr (the first line and the end), which lists a handful of
+#: documents (#768).
 NOTHING_TO_ARCHIVE_UNLISTED = (
     f"{NOTHING_TO_ARCHIVE}: no document of this run was ingested; this "
     f"document's own reason is not listed in the engine's error record"
@@ -668,8 +669,9 @@ def map_receipt_entries(
 def _failure_context(submission: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """GoWe's terminal failure record is ``error: {code, message, context:
     {stderr, exit_code, …}}`` (the scheduler copies the failed task's stderr
-    in, truncated to its first 1000 characters). Returns ``(context,
-    message)``, tolerating a bare-string or missing ``error`` — the same
+    in; past 1000 bytes it keeps the first line, capped at 200 bytes, then
+    ``\n...(truncated)...\n``, then the END of stderr — GoWe #338). Returns
+    ``(context, message)``, tolerating a bare-string or missing ``error`` — the same
     reading ``restore.py`` applies to the restore workflow's record."""
     err = submission.get("error")
     if isinstance(err, dict):
@@ -682,8 +684,9 @@ def _failure_context(submission: dict[str, Any]) -> tuple[dict[str, Any], str]:
 #: failed (exit N): <the tool's stderr>`` (worker.go / toolexec/execute.go). The
 #: deployed engine (0.26.1) records ``context.exit_code = -1`` for EVERY failed
 #: apptainer tool, so this prefix is the only place the tool's real exit code
-#: survives. It is matched ONLY at offset 0 of ``context.stderr``
-#: (``stderr[:1000] + "...(truncated)"``), never searched for and never read
+#: survives. It is matched ONLY at offset 0 of ``context.stderr`` (the
+#: engine's cut always keeps the first line, capped at 200 bytes, so the
+#: prefix survives it), never searched for and never read
 #: from ``message``: other worker failures embed user-controlled text (a
 #: stage-in error, ``execute: stage-in: …``, names the user's file path), and
 #: a file named ``…command failed (exit 5): nothing_to_archive…pdf`` must not
@@ -814,8 +817,8 @@ def nothing_to_archive_of(submission: dict[str, Any]) -> dict[str, str] | None:
     be there too as confirmation — exit 5 is not reserved by the engine, so a
     bare 5 from some other failure is not read as this. The mapping comes from
     the JSON lines after the label (``receipts.format_nothing_to_archive``); it
-    may be shorter than the item list (the engine keeps 1000 characters), even
-    empty."""
+    may be shorter than the item list (the engine keeps about 1000 bytes of
+    stderr: the first line and the end), even empty."""
     if tool_exit_code(submission) != NOTHING_TO_ARCHIVE_EXIT_CODE:
         return None
     ctx, message = _failure_context(submission)

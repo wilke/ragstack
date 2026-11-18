@@ -91,18 +91,22 @@ def workspace_subject(owner: str) -> str:
 
 
 #: The loader's exit code when it REFUSES an archive (`load_embeddings.py
-#: --replay`): verification failed before any write. Declared as a
-#: ``permanentFailCodes`` entry in restore-collection.cwl, so the engine does
-#: not retry it either. Exit 2 is a registry disagreement between the API and
-#: the worker (a deployment misconfiguration — retried once an operator fixes
-#: it), exit 1 a mid-stream failure; both stay ``dormant``.
+#: --replay`): verification failed before any write. restore-collection.cwl
+#: declares it in ``permanentFailCodes``, but only GoWe's local executor reads
+#: that list: the deployed engine runs the step on its apptainer executor,
+#: which retries a refusal like any other failure before the submission ends
+#: FAILED. Classifying it ``lost`` here is what stops the API retrying it on
+#: every access. Exit 2 is a registry disagreement between the API and the
+#: worker (a deployment misconfiguration — retried once an operator fixes it),
+#: exit 1 a mid-stream failure; both stay ``dormant``.
 REFUSED_EXIT_CODE = 3
 
 
 def _submission_error(record: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """GoWe's terminal failure record is ``error: {code, message, context:
-    {stderr, exit_code, …}}`` (the scheduler copies the failed task's stderr in,
-    truncated to its first 1000 characters). Returns ``(context, message)``,
+    {stderr, exit_code, …}}`` (the scheduler copies the failed task's stderr in;
+    past 1000 bytes it keeps the first line, capped at 200 bytes, then
+    ``...(truncated)...``, then the END of stderr). Returns ``(context, message)``,
     tolerating a bare string ``error`` or a missing one."""
     err = record.get("error")
     if isinstance(err, dict):
@@ -118,13 +122,21 @@ def classify_failure(record: dict[str, Any]) -> tuple[str, str]:
     — the deployed engine records ``context.exit_code = -1`` for every failed
     tool, so the real code is read where that function finds it, #1027)
     ``== 3`` is the loader's refusal code (sha256 / geometry / spec_hash
-    failure, before any write) → ``lost``. The refusal marker in the captured
-    stderr is only a SECONDARY
-    signal, because the engine keeps just the first 1000 characters of stderr
-    and the loader builds its stores (client warnings and all) before it
-    prints the marker — so the marker can fall outside the window while the
-    exit code never does. Anything else is an engine-side or retryable failure:
-    ``dormant`` with the state and message recorded, so the next access tries
+    failure, before any write) → ``lost``. Any other recovered code is
+    retryable: ``dormant``.
+
+    A record that carries an ``exit_code`` from which no tool code can be
+    recovered (``-1`` with no worker prefix: a stage-in failure, a scheduler
+    error, a cancellation, a tool that printed nothing) is ``dormant`` too: the
+    failure is not known to be the loader's refusal, and a stage-in error
+    names user file paths, so marker text there must not condemn the archive.
+
+    The refusal marker (``ArchiveCorrupt:`` / ``SpecMismatch:``) decides only
+    for a record with NO ``exit_code`` at all. Otherwise it is quoted in the
+    ``lost`` reason when it survived the engine's stderr cut (past 1000 bytes
+    the engine keeps the first line and the end of stderr, so a marker followed
+    by enough later output is lost, while the exit code never is).
+    ``dormant`` records the state and message, so the next access tries
     again."""
     ctx, message = _submission_error(record)
     stderr = str(ctx.get("stderr") or "")
@@ -134,21 +146,22 @@ def classify_failure(record: dict[str, Any]) -> tuple[str, str]:
         marker = _marker_line(stderr) or _marker_line(message)
         return LOST, (f"archive refused by the loader (exit {REFUSED_EXIT_CODE})"
                       + (f": {marker}" if marker else f"; submission {sub}"))
-    if code is not None:
+    raw_code = ctx.get("exit_code")
+    if code is not None or raw_code is not None:
         # The exit code is authoritative: anything other than the refusal code
         # (mid-stream ArchiveError = 1, registry disagreement = 2, OOM = 137) is
-        # retryable, even if a refusal-looking line made it into the window.
+        # retryable, even if a refusal-looking line made it into the window —
+        # and so is the engine's -1 when no tool code can be recovered.
         detail = f": {message}" if message else ""
+        shown = code if code is not None else raw_code
         return DORMANT, (f"restore submission {sub} ended {record.get('state', '')} "
-                         f"(exit {code}){detail}")
+                         f"(exit {shown}){detail}")
     marker = _marker_line(stderr) or _marker_line(message) or _marker_line(
         json.dumps(record, default=str))
     if marker:
         return LOST, f"archive refused by the loader: {marker}"
     state = record.get("state") or "FAILED"
     detail = f": {message[:200]}" if message else ""
-    if code is not None:
-        detail += f" (exit {code})"
     return DORMANT, f"restore submission {sub} ended {state}{detail}"
 
 
