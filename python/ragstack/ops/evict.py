@@ -15,8 +15,8 @@ Two halves, kept apart on purpose:
     Pure and synchronous — the policy. Least-recently-accessed first among the
     records that are :func:`~ragstack.collection_store.evictable` (``active ∧
     ¬archive_pending ∧ versions non-empty``) AND not in flight (an
-    ``accepted``/``running`` ingest job targets them) AND not
-    :func:`make_protected`. Returns as many victims as it can plus a
+    ``accepted``/``running`` ingest job targets them) AND not protected (the
+    predicate :func:`make_protected` builds). Returns as many victims as it can plus a
     :class:`Shortfall` counting, per reason, why the rest were ineligible.
     The perf test pins selection over 1,000 rows under 5 ms.
 :func:`evict`
@@ -36,8 +36,8 @@ spec that *claims* the settings-derived default's physical stores (the
 the LEGACY MULTI-TENANT DATA — every tenant's chunks, isolated only by the
 per-chunk ``tenant_id``. Evicting it would destroy that data at eviction time
 (the restore side would be safe: by then the stores are empty, and the archive
-holds only the owner's versions). :func:`make_protected` is the one predicate that
-says no: a record whose physical stores are the derived default's, or an
+holds only the owner's versions). The predicate :func:`make_protected` builds
+is the one that says no: a record whose physical stores are the derived default's, or an
 ``is_shared_surface`` entry's, or any store another registry id also claims
 (the purge guard's ``_shared_store_users`` case — dropping one id's store
 destroys the other's data), is never a candidate.

@@ -53,7 +53,8 @@ DEFAULT_BUDGET_MODE = "joined"
 
 
 def _validate_budget_mode(budget_mode: str) -> str:
-    """Reject an unknown ``budget_mode`` at construction time.
+    """Reject an unknown ``budget_mode`` (at chunker construction and again
+    when ``_pack_spans_tokens`` packs).
 
     Loud rather than silently falling back to a default: the two modes produce
     materially differently-sized chunks, and a typo that quietly selected the

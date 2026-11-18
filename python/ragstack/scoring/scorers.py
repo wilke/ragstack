@@ -17,8 +17,9 @@ def rerank_passage(chunk: Chunk, include_symbol_glossary: bool) -> str:
     scored TEXT changes — the reranker returns the original chunk, so a
     response's ``content`` never carries the glossary.
 
-    Shared by :class:`SidecarReranker` and the eval scripts' rerankers, so
-    they cannot disagree on what a passage is."""
+    Used by :class:`SidecarReranker`. ``scripts/eval/reranker_test.py`` does
+    not import it; its ``content+gloss`` rendering is pinned (by its
+    docstring) to equal this function with the glossary on."""
     if include_symbol_glossary and chunk.symbol_glossary:
         return f"{chunk.content}\n{chunk.symbol_glossary}"
     return chunk.content
