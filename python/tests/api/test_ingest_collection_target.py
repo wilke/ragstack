@@ -69,34 +69,38 @@ def _two_collections() -> tuple[CollectionEntry, CollectionEntry]:
     return a, b
 
 
-def test_ingestors_for_two_collections_share_the_app_tenant_quota():
+@pytest.mark.asyncio
+async def test_ingestors_for_two_collections_share_the_app_tenant_quota():
     """The limit is per TENANT: every per-collection ingester must hold the one
     quota the lifespan put on app.state (the same one queries and the default
     ingester use), not a fresh one each — N fresh quotas would let a tenant run
     N x TENANT_MAX_CONCURRENCY shards by spreading its ingest over N collections."""
     quota = TenantQuota(2)
-    app_state = SimpleNamespace(
-        graph_store=None, kg_extractor=None, http_client=httpx.AsyncClient(),
-        job_store=None, tenant_quota=quota,
-    )
-    a, b = _two_collections()
-    assert build_ingestor_for(app_state, a)._quota is quota
-    assert build_ingestor_for(app_state, b)._quota is quota
+    async with httpx.AsyncClient() as http:
+        app_state = SimpleNamespace(
+            graph_store=None, kg_extractor=None, http_client=http,
+            job_store=None, tenant_quota=quota,
+        )
+        a, b = _two_collections()
+        assert build_ingestor_for(app_state, a)._quota is quota
+        assert build_ingestor_for(app_state, b)._quota is quota
 
 
-def test_ingestors_share_one_quota_without_a_lifespan(monkeypatch):
+@pytest.mark.asyncio
+async def test_ingestors_share_one_quota_without_a_lifespan(monkeypatch):
     """A duck-typed app_state with no ``tenant_quota`` (no lifespan ran) still
     gets ONE quota for all its ingesters, built from the setting — never a fresh
     one per call."""
     from ragstack.config import settings
 
     monkeypatch.setattr(settings, "tenant_max_concurrency", 3)
-    app_state = SimpleNamespace(
-        graph_store=None, kg_extractor=None, http_client=httpx.AsyncClient(), job_store=None,
-    )
-    a, b = _two_collections()
-    qa = build_ingestor_for(app_state, a)._quota
-    qb = build_ingestor_for(app_state, b)._quota
+    async with httpx.AsyncClient() as http:
+        app_state = SimpleNamespace(
+            graph_store=None, kg_extractor=None, http_client=http, job_store=None,
+        )
+        a, b = _two_collections()
+        qa = build_ingestor_for(app_state, a)._quota
+        qb = build_ingestor_for(app_state, b)._quota
     assert qa is qb
     assert qa._limit == 3
 
@@ -106,8 +110,9 @@ async def test_concurrent_shards_across_collections_never_exceed_the_tenant_limi
     monkeypatch,
 ):
     """Behavioural twin of the identity test: one tenant ingesting into two
-    collections at once holds at most TENANT_MAX_CONCURRENCY items in flight in
-    total. The runner alone would allow 8 per ingester."""
+    collections at once holds at most TENANT_MAX_CONCURRENCY (2) items in flight
+    in total. The runner alone would allow 8 per ingester; a fresh quota per
+    collection would allow 2 per collection, so a peak of 4."""
     import asyncio
 
     from ragstack.config import settings
@@ -116,6 +121,7 @@ async def test_concurrent_shards_across_collections_never_exceed_the_tenant_limi
     monkeypatch.setattr(settings, "ingest_backend", "local")
     monkeypatch.setattr(settings, "ingest_concurrency", 8)
     monkeypatch.setattr(settings, "ingest_shard_size", 1)
+    monkeypatch.setattr(settings, "tenant_max_concurrency", 2)
 
     active = peak = 0
 
@@ -128,24 +134,26 @@ async def test_concurrent_shards_across_collections_never_exceed_the_tenant_limi
             active -= 1
             return ["c"]
 
-    app_state = SimpleNamespace(
-        graph_store=None, kg_extractor=None, http_client=httpx.AsyncClient(),
-        job_store=None, tenant_quota=TenantQuota(2),
-    )
-    a, b = _two_collections()
-    ingestors = [build_ingestor_for(app_state, e) for e in (a, b)]
-    for ing in ingestors:
-        ing._pipeline = _SlowPipe()
-
     def manifest(tag: str) -> Manifest:
         return Manifest(items=[
             WorkItem(item_id=f"{tag}{i}", source=f"/s/{tag}{i}") for i in range(4)
         ])
 
-    results = await asyncio.gather(*(
-        ing.ingest_manifest(manifest(tag), tenant_id="t")
-        for ing, tag in zip(ingestors, "ab", strict=True)
-    ))
+    async with httpx.AsyncClient() as http:
+        # As the lifespan does: one quota built from the setting, on app state.
+        app_state = SimpleNamespace(
+            graph_store=None, kg_extractor=None, http_client=http,
+            job_store=None, tenant_quota=TenantQuota(settings.tenant_max_concurrency),
+        )
+        a, b = _two_collections()
+        ingestors = [build_ingestor_for(app_state, e) for e in (a, b)]
+        for ing in ingestors:
+            ing._pipeline = _SlowPipe()
+
+        results = await asyncio.gather(*(
+            ing.ingest_manifest(manifest(tag), tenant_id="t")
+            for ing, tag in zip(ingestors, "ab", strict=True)
+        ))
     assert [len(r) for r in results] == [4, 4]
     assert peak == 2, peak
 
