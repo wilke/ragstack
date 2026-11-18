@@ -26,7 +26,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from ragstack.api.access import enforce_access, is_user_created
+from ragstack.api.access import enforce_access, is_user_created, unknown_collection
 from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
@@ -419,17 +419,11 @@ async def _authorize_ingest_target(
             allowed_collection_ids(principal.tenant, settings.tenant_collections)
         )
         if allowed is not None and collection_id not in allowed:
-            raise HTTPException(
-                status_code=404,
-                detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
-            )
+            raise unknown_collection(collection_id)
         try:
             target = collections.resolve(collection_id)
         except KeyError:
-            raise HTTPException(
-                status_code=404,
-                detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
-            ) from None
+            raise unknown_collection(collection_id) from None
     _guard(target)
     # Enforcement runs after BOTH branches. On the implicit one it cannot
     # contradict the pick (resolve_write_many and resolve_access's write branch

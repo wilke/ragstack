@@ -72,6 +72,20 @@ def auth_configured() -> bool:
     return bool(settings.api_keys) or get_identity_provider() is not None
 
 
+def unknown_collection(collection_id: str) -> HTTPException:
+    """The ONE 404 for a collection the caller may not see (#1029).
+
+    Raised for an id the registry does not know AND for one the caller cannot
+    read (:func:`enforce_access`). The two must be byte-identical: the same
+    status with different text would tell a caller which private ids exist.
+    Every route that answers "no such collection" for a caller-named id raises
+    this rather than formatting its own message."""
+    return HTTPException(
+        status_code=404,
+        detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
+    )
+
+
 def _unavailable() -> HTTPException:
     return HTTPException(
         status_code=503,
@@ -160,10 +174,7 @@ async def enforce_access(
                 status_code=_DENY_STATUS[action],
                 detail=f"you do not have {action} access to collection {collection_id!r}",
             )
-    raise HTTPException(
-        status_code=404,
-        detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
-    )
+    raise unknown_collection(collection_id)
 
 
 async def filter_readable(

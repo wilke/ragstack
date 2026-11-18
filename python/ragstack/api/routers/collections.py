@@ -34,6 +34,7 @@ from ragstack.api.access import (
     enforce_access,
     owner_quota_exceeded_response,
     revoke_collection_acl,
+    unknown_collection,
     write_owner_row,
 )
 from ragstack.api.collections import (
@@ -1318,7 +1319,7 @@ async def restore_collection(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+        raise unknown_collection(collection_id) from None
     await enforce_access(principal, entry.id, "owner")
 
     caller = gowe_caller(principal)  # the one caller rule (api/security.py)
@@ -1477,7 +1478,7 @@ async def extract_collection_graph(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+        raise unknown_collection(collection_id) from None
     await enforce_access(principal, entry.id, "owner")
     rec = await store.get(entry.id)
     if rec is None:
@@ -1817,7 +1818,7 @@ async def delete_collection(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+        raise unknown_collection(collection_id) from None
 
     # Owner-or-admin: 403 for a non-owner, 503 if the ACL store can't answer.
     await enforce_access(principal, entry.id, "owner")
@@ -1888,7 +1889,7 @@ async def delete_collection(
     await revoke_collection_acl(get_acl_store(), entry.id, principal.tenant)
 
     if not registry.remove(collection_id):  # pragma: no cover — resolve() just succeeded
-        raise HTTPException(404, f"unknown collection {collection_id!r}")
+        raise unknown_collection(collection_id)
     await store.delete(collection_id)
 
     if not purge:
@@ -2139,7 +2140,7 @@ async def list_shares(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+        raise unknown_collection(collection_id) from None
 
     await enforce_access(principal, entry.id, "owner")
 
@@ -2195,7 +2196,7 @@ async def create_share(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+        raise unknown_collection(collection_id) from None
 
     await enforce_access(principal, entry.id, "owner")
 
@@ -2315,7 +2316,7 @@ async def revoke_share(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+        raise unknown_collection(collection_id) from None
 
     await enforce_access(principal, entry.id, "owner")
 
@@ -2483,7 +2484,7 @@ async def transfer_collection_owner(
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
-        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+        raise unknown_collection(collection_id) from None
 
     # Current-owner OR admin. enforce_access already admits admin (the logged
     # bypass in resolve_access) and already maps a denial to 403-if-readable /
