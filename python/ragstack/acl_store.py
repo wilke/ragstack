@@ -50,6 +50,7 @@ from ragstack.collection_store import (
     ensure_columns_sqlite,
 )
 from ragstack.config import settings
+from ragstack.sqlstore import is_unique_violation
 from ragstack.user_store import (
     MEMORY,
     POSTGRES,
@@ -897,30 +898,18 @@ class PostgresAclStore(PostgresUserStore):
     """
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
-        super().__init__(dsn, min_size=min_size, max_size=max_size)
-        self._shares_ready = False
-        self._shares_ddl_lock = asyncio.Lock()
+        super().__init__(dsn, min_size=min_size, max_size=max_size)  # users DDL step
+        # Cross-process serialization: IF NOT EXISTS DDL races under
+        # concurrency (duplicate-key on pg_class); the transaction-scoped
+        # advisory lock makes the second booting worker wait instead of crash.
+        self._lazy.add_step(self._shares_ddl, lock_key=_SHARES_DDL_LOCK_KEY)
 
-    async def _pool_(self) -> Any:
-        pool = await super()._pool_()  # users DDL on first call
-        if not self._shares_ready:
-            async with self._shares_ddl_lock:
-                if not self._shares_ready:
-                    async with pool.acquire() as conn, conn.transaction():
-                        # Cross-process serialization: IF NOT EXISTS DDL races
-                        # under concurrency (duplicate-key on pg_class); the
-                        # transaction-scoped advisory lock makes the second
-                        # booting worker wait instead of crash. The asyncio lock
-                        # above only serializes coroutines in THIS process.
-                        await conn.execute(
-                            "SELECT pg_advisory_xact_lock($1)", _SHARES_DDL_LOCK_KEY
-                        )
-                        await conn.execute(_SHARES_DDL)
-                        await ensure_columns_postgres(conn, "shares", _SHARES_COLUMNS)
-                        for stmt in _SHARES_INDEXES:
-                            await conn.execute(stmt)
-                    self._shares_ready = True
-        return pool
+    @staticmethod
+    async def _shares_ddl(conn: Any) -> None:
+        await conn.execute(_SHARES_DDL)
+        await ensure_columns_postgres(conn, "shares", _SHARES_COLUMNS)
+        for stmt in _SHARES_INDEXES:
+            await conn.execute(stmt)
 
     @staticmethod
     async def _active_rows(conn: Any, collection_id: str) -> list[ShareRecord]:
@@ -938,8 +927,8 @@ class PostgresAclStore(PostgresUserStore):
                 f"INSERT INTO shares ({', '.join(_SHARE_COLUMNS)}) VALUES ({placeholders})",
                 *_share_to_row(rec),
             )
-        except Exception as e:  # asyncpg.UniqueViolationError, without the import
-            if type(e).__name__ == "UniqueViolationError":
+        except Exception as e:
+            if is_unique_violation(e):
                 raise ShareInvariantError(str(e)) from e
             raise
 

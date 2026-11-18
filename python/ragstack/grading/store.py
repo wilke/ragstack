@@ -42,6 +42,7 @@ from ragstack.grading.models import (
     GradingTaskRecord,
     GradingVerdictRecord,
 )
+from ragstack.sqlstore import LazyPool, sqlite_connect
 
 log = logging.getLogger(__name__)
 
@@ -328,10 +329,7 @@ class SqliteGradingStore:
                 conn.execute(stmt)
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path)
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        return sqlite_connect(self._path)
 
     # --- create / read batches ------------------------------------------- #
     def _create_batch_sync(
@@ -521,14 +519,6 @@ class SqliteGradingStore:
         return None
 
 
-def _normalize_dsn(dsn: str) -> str:
-    """Strip SQLAlchemy-style ``+driver`` suffixes asyncpg doesn't understand
-    (the same helper :mod:`ragstack.jobstore` needs, for the same DSN)."""
-    for marker in ("+asyncpg", "+psycopg2", "+psycopg"):
-        dsn = dsn.replace(marker, "")
-    return dsn
-
-
 class PostgresGradingStore:
     """Durable, multi-process store backed by Postgres via asyncpg.
 
@@ -537,31 +527,16 @@ class PostgresGradingStore:
     """
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
-        self._dsn = _normalize_dsn(dsn)
-        self._min = min_size
-        self._max = max_size
-        self._pool: Any = None
-        self._lock = asyncio.Lock()
+        self._lazy = LazyPool(dsn, store="grading", min_size=min_size, max_size=max_size)
+        self._lazy.add_step(self._ddl)
+
+    @staticmethod
+    async def _ddl(conn: Any) -> None:
+        for stmt in _SCHEMA:
+            await conn.execute(stmt)
 
     async def _pool_(self) -> Any:
-        if self._pool is None:
-            async with self._lock:
-                if self._pool is None:
-                    try:
-                        import asyncpg
-                    except ImportError as e:  # pragma: no cover
-                        raise RuntimeError(
-                            "postgres grading store requires asyncpg "
-                            "(pip install ragstack[postgres])"
-                        ) from e
-                    pool = await asyncpg.create_pool(
-                        self._dsn, min_size=self._min, max_size=self._max
-                    )
-                    async with pool.acquire() as conn:
-                        for stmt in _SCHEMA:
-                            await conn.execute(stmt)
-                    self._pool = pool
-        return self._pool
+        return await self._lazy.get()
 
     async def create_batch(
         self, batch: GradingBatchRecord, tasks: list[GradingTaskRecord]
@@ -719,9 +694,7 @@ class PostgresGradingStore:
         )
 
     async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
-            self._pool = None
+        await self._lazy.close()
 
 
 def make_grading_store(backend: str, path: str, dsn: str = "") -> GradingStore:

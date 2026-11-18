@@ -64,6 +64,7 @@ from ragstack.collection_store import (
     ensure_columns_sqlite,
 )
 from ragstack.config import settings
+from ragstack.sqlstore import LazyPool, is_unique_violation, sqlite_connect
 from ragstack.tenancy import DEFAULT_TENANT, PUBLIC_TENANT
 
 log = logging.getLogger(__name__)
@@ -989,9 +990,7 @@ class SqliteUserStore:
     def _connect(self) -> sqlite3.Connection:
         # ``with closing(...) as conn, conn:`` — sqlite3's connection context
         # manager commits but does NOT close (jobstore.py's note).
-        conn = sqlite3.connect(self._path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        return sqlite_connect(self._path)
 
     def _upsert(self, conn: sqlite3.Connection, rec: UserRecord) -> None:
         # Profile columns ONLY (see _SEEN_ASSIGN_COLUMNS): the first-auth hook
@@ -1190,13 +1189,6 @@ class SqliteUserStore:
         """No persistent connection to release."""
 
 
-def _normalize_dsn(dsn: str) -> str:
-    """Strip SQLAlchemy-style ``+driver`` suffixes asyncpg doesn't understand."""
-    for marker in ("+asyncpg", "+psycopg2", "+psycopg"):
-        dsn = dsn.replace(marker, "")
-    return dsn
-
-
 class PostgresUserStore:
     """Durable, multi-process profile table on Postgres via asyncpg.
 
@@ -1206,41 +1198,21 @@ class PostgresUserStore:
     """
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
-        self._dsn = _normalize_dsn(dsn)
-        self._min = min_size
-        self._max = max_size
-        self._pool: Any = None
-        self._lock = asyncio.Lock()
+        self._lazy = LazyPool(dsn, store="user", min_size=min_size, max_size=max_size)
+        # Cross-process serialization: IF NOT EXISTS DDL races under
+        # concurrency (duplicate-key on pg_class), and ADD COLUMN IF NOT EXISTS
+        # takes ACCESS EXCLUSIVE — so two workers booting at once would
+        # otherwise be able to fail one startup nondeterministically. The
+        # advisory lock mirrors the shares/groups DDL steps the subclasses add.
+        self._lazy.add_step(self._users_ddl, lock_key=_USERS_DDL_LOCK_KEY)
+
+    @staticmethod
+    async def _users_ddl(conn: Any) -> None:
+        await conn.execute(_USERS_DDL)
+        await ensure_columns_postgres(conn, "users", _USERS_COLUMNS)
 
     async def _pool_(self) -> Any:
-        if self._pool is None:
-            async with self._lock:
-                if self._pool is None:
-                    try:
-                        import asyncpg
-                    except ImportError as e:  # pragma: no cover
-                        raise RuntimeError(
-                            "postgres user store requires asyncpg "
-                            "(pip install ragstack[postgres])"
-                        ) from e
-                    pool = await asyncpg.create_pool(
-                        self._dsn, min_size=self._min, max_size=self._max
-                    )
-                    async with pool.acquire() as conn, conn.transaction():
-                        # Cross-process serialization: IF NOT EXISTS DDL races
-                        # under concurrency (duplicate-key on pg_class), and
-                        # ADD COLUMN IF NOT EXISTS takes ACCESS EXCLUSIVE — so
-                        # two workers booting at once would otherwise be able
-                        # to fail one startup nondeterministically. Mirrors the
-                        # shares/groups DDL locks. The asyncio lock above only
-                        # serializes coroutines in THIS process.
-                        await conn.execute(
-                            "SELECT pg_advisory_xact_lock($1)", _USERS_DDL_LOCK_KEY
-                        )
-                        await conn.execute(_USERS_DDL)
-                        await ensure_columns_postgres(conn, "users", _USERS_COLUMNS)
-                    self._pool = pool
-        return self._pool
+        return await self._lazy.get()
 
     async def upsert_seen(
         self, subject: str, issuer: str, email: str = "", display_name: str = ""
@@ -1302,8 +1274,7 @@ class PostgresUserStore:
                         *_record_to_row(rec),
                     )
                 except Exception as e:  # pragma: no cover - needs a real race
-                    # asyncpg types matched by name to avoid importing asyncpg.
-                    if type(e).__name__ != "UniqueViolationError":
+                    if not is_unique_violation(e):
                         raise
                     raise UserInvariantError(
                         f"{subject!r} was created concurrently; retry"
@@ -1403,8 +1374,7 @@ class PostgresUserStore:
         return [_row_to_record(tuple(r)) for r in rows]
 
     async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
+        await self._lazy.close()
 
 
 # --------------------------------------------------------------------------- #

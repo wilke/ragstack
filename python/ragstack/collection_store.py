@@ -68,6 +68,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from ragstack.sqlstore import LazyPool, sqlite_connect
+
 try:  # POSIX only; Windows has no flock and the JSON path degrades to unlocked.
     import fcntl
 except ImportError:  # pragma: no cover - non-POSIX
@@ -1361,16 +1363,11 @@ class SqliteCollectionStore:
 
     def _connect(self) -> sqlite3.Connection:
         # ``with closing(...) as conn, conn:`` — sqlite3's connection context
-        # manager commits but does NOT close (jobstore.py's note).
-        conn = sqlite3.connect(self._path)
-        # busy_timeout FIRST: setting journal_mode=WAL is itself a write that can
-        # lose a race against another process opening the same fresh database, so
-        # it needs the timeout too. Wait for a contended write lock rather than
-        # raising SQLITE_BUSY immediately — required now that create() holds a
-        # write transaction across a count and an insert.
-        conn.execute("PRAGMA busy_timeout=5000")
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        # manager commits but does NOT close (jobstore.py's note). The shared
+        # busy timeout makes a contended write lock wait rather than raise
+        # SQLITE_BUSY — required since create() holds a write transaction
+        # across a count and an insert.
+        return sqlite_connect(self._path)
 
     def _list_sync(self) -> list[CollectionRecord]:
         with closing(self._connect()) as conn, conn:
@@ -1605,13 +1602,6 @@ class SqliteCollectionStore:
 _COLLECTIONS_CREATE_LOCK_KEY = 0x7261675F636F6C6C
 
 
-def _normalize_dsn(dsn: str) -> str:
-    """Strip SQLAlchemy-style ``+driver`` suffixes asyncpg doesn't understand."""
-    for marker in ("+asyncpg", "+psycopg2", "+psycopg"):
-        dsn = dsn.replace(marker, "")
-    return dsn
-
-
 class PostgresCollectionStore:
     """Durable, multi-process registry on Postgres via asyncpg.
 
@@ -1622,31 +1612,16 @@ class PostgresCollectionStore:
     """
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
-        self._dsn = _normalize_dsn(dsn)
-        self._min = min_size
-        self._max = max_size
-        self._pool: Any = None
-        self._lock = asyncio.Lock()
+        self._lazy = LazyPool(dsn, store="collection", min_size=min_size, max_size=max_size)
+        self._lazy.add_step(self._ddl)
+
+    @staticmethod
+    async def _ddl(conn: Any) -> None:
+        await conn.execute(_COLLECTIONS_DDL)
+        await ensure_columns_postgres(conn, "collections", _COLLECTIONS_COLUMNS)
 
     async def _pool_(self) -> Any:
-        if self._pool is None:
-            async with self._lock:
-                if self._pool is None:
-                    try:
-                        import asyncpg
-                    except ImportError as e:  # pragma: no cover
-                        raise RuntimeError(
-                            "postgres collection store requires asyncpg "
-                            "(pip install ragstack[postgres])"
-                        ) from e
-                    pool = await asyncpg.create_pool(
-                        self._dsn, min_size=self._min, max_size=self._max
-                    )
-                    async with pool.acquire() as conn:
-                        await conn.execute(_COLLECTIONS_DDL)
-                        await ensure_columns_postgres(conn, "collections", _COLLECTIONS_COLUMNS)
-                    self._pool = pool
-        return self._pool
+        return await self._lazy.get()
 
     async def list_specs(self) -> list[CollectionSpec]:
         return [r.spec for r in await self.list_records()]
@@ -1840,8 +1815,7 @@ class PostgresCollectionStore:
         return int(n)
 
     async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
+        await self._lazy.close()
 
 
 # --------------------------------------------------------------------------- #
