@@ -20,6 +20,7 @@ from typing import Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from ragstack.collection_store import ensure_columns_postgres, ensure_columns_sqlite
+from ragstack.sqlstore import LazyPool, sqlite_connect
 
 log = logging.getLogger(__name__)
 
@@ -515,9 +516,7 @@ class SqliteJobStore:
         # context manager (``with conn:``) commits the transaction but does
         # *not* close the connection, so ``with conn:`` alone leaks a handle
         # per operation. The idiom is ``with closing(self._connect()) as conn, conn:``.
-        conn = sqlite3.connect(self._path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        return sqlite_connect(self._path)
 
     @staticmethod
     def _row_to_job(row: tuple) -> IngestJob:
@@ -733,13 +732,6 @@ class SqliteJobStore:
         """No persistent connection to release — each op opens and closes its own."""
 
 
-def _normalize_dsn(dsn: str) -> str:
-    """Strip SQLAlchemy-style ``+driver`` suffixes asyncpg doesn't understand."""
-    for marker in ("+asyncpg", "+psycopg2", "+psycopg"):
-        dsn = dsn.replace(marker, "")
-    return dsn
-
-
 class PostgresJobStore:
     """Durable, multi-process job store backed by Postgres via asyncpg.
 
@@ -753,36 +745,20 @@ class PostgresJobStore:
     sweeps_interrupted = False
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
-        self._dsn = _normalize_dsn(dsn)
-        self._min = min_size
-        self._max = max_size
-        self._pool = None
-        self._lock = asyncio.Lock()
+        self._lazy = LazyPool(dsn, store="job", min_size=min_size, max_size=max_size)
+        self._lazy.add_step(self._ddl)
+
+    @staticmethod
+    async def _ddl(conn) -> None:
+        await conn.execute(_JOBS_DDL)
+        await conn.execute(_JOB_ITEMS_DDL)
+        # Additive migration for a `jobs` table from a pre-#130 build — CREATE
+        # TABLE IF NOT EXISTS above is a no-op against an existing table.
+        await ensure_columns_postgres(conn, "jobs", _JOBS_COLUMNS)
+        await conn.execute(_JOBS_ACTIVE_INDEX_DDL)
 
     async def _pool_(self):
-        if self._pool is None:
-            async with self._lock:
-                if self._pool is None:
-                    try:
-                        import asyncpg
-                    except ImportError as e:  # pragma: no cover
-                        raise RuntimeError(
-                            "postgres job store requires asyncpg "
-                            "(pip install ragstack[postgres])"
-                        ) from e
-                    pool = await asyncpg.create_pool(
-                        self._dsn, min_size=self._min, max_size=self._max
-                    )
-                    async with pool.acquire() as conn:
-                        await conn.execute(_JOBS_DDL)
-                        await conn.execute(_JOB_ITEMS_DDL)
-                        # Additive migration for a `jobs` table from a pre-#130
-                        # build — CREATE TABLE IF NOT EXISTS above is a no-op
-                        # against an existing table.
-                        await ensure_columns_postgres(conn, "jobs", _JOBS_COLUMNS)
-                        await conn.execute(_JOBS_ACTIVE_INDEX_DDL)
-                    self._pool = pool
-        return self._pool
+        return await self._lazy.get()
 
     async def create(
         self, source: str, tenant_id: str = "", collection_id: str = "", kind: str = KIND_INGEST
@@ -986,8 +962,7 @@ class PostgresJobStore:
         return int(n or 0)
 
     async def close(self) -> None:
-        if self._pool is not None:
-            await self._pool.close()
+        await self._lazy.close()
 
 
 def make_job_store(backend: str, path: str, dsn: str = "") -> JobStore:

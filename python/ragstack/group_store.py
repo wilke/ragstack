@@ -75,6 +75,7 @@ from ragstack.collection_store import (
     ensure_columns_sqlite,
 )
 from ragstack.config import settings
+from ragstack.sqlstore import is_unique_violation
 from ragstack.user_store import MEMORY, POSTGRES, SQLITE, _now
 
 log = logging.getLogger(__name__)
@@ -187,8 +188,8 @@ _GROUPS_INDEXES = (_GROUPS_INDEX_NAME, _GROUP_MEMBERS_INDEX_ACTIVE)
 
 # Advisory-lock key serializing the groups DDL across processes. Distinct from
 # acl_store._SHARES_DDL_LOCK_KEY: the groups DDL runs in a SEPARATE transaction
-# after super()._pool_() already ran (and released, being xact-scoped) the
-# shares DDL under the shares key, so a distinct key keeps the two independent.
+# after the shares DDL step already ran (and released, being xact-scoped) the
+# shares key, so a distinct key keeps the two independent.
 # Any stable 64-bit constant works; this one is b"rag_grps" as an int64.
 _GROUPS_DDL_LOCK_KEY = 0x7261675F67727073
 
@@ -836,38 +837,24 @@ class PostgresGroupStore(PostgresAclStore):
     """
 
     def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
-        super().__init__(dsn, min_size=min_size, max_size=max_size)
-        self._groups_ready = False
-        self._groups_ddl_lock = asyncio.Lock()
+        super().__init__(dsn, min_size=min_size, max_size=max_size)  # users + shares steps
+        self._lazy.add_step(self._groups_ddl, lock_key=_GROUPS_DDL_LOCK_KEY)
 
-    async def _pool_(self) -> Any:
-        pool = await super()._pool_()  # users + shares DDL
-        if not self._groups_ready:
-            async with self._groups_ddl_lock:
-                if not self._groups_ready:
-                    async with pool.acquire() as conn, conn.transaction():
-                        await conn.execute(
-                            "SELECT pg_advisory_xact_lock($1)", _GROUPS_DDL_LOCK_KEY
-                        )
-                        await conn.execute(_GROUPS_DDL)
-                        await ensure_columns_postgres(conn, "groups", _GROUPS_COLUMNS)
-                        await conn.execute(_GROUP_MEMBERS_DDL)
-                        await ensure_columns_postgres(
-                            conn, "group_members", _GROUP_MEMBERS_COLUMNS
-                        )
-                        for stmt in _GROUPS_INDEXES:
-                            await conn.execute(stmt)
-                        pub = _public_group()
-                        placeholders = ", ".join(
-                            f"${i + 1}" for i in range(len(_GROUP_COLUMNS))
-                        )
-                        await conn.execute(
-                            f"INSERT INTO groups ({', '.join(_GROUP_COLUMNS)}) "
-                            f"VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING",
-                            *_group_to_row(pub),
-                        )
-                    self._groups_ready = True
-        return pool
+    @staticmethod
+    async def _groups_ddl(conn: Any) -> None:
+        await conn.execute(_GROUPS_DDL)
+        await ensure_columns_postgres(conn, "groups", _GROUPS_COLUMNS)
+        await conn.execute(_GROUP_MEMBERS_DDL)
+        await ensure_columns_postgres(conn, "group_members", _GROUP_MEMBERS_COLUMNS)
+        for stmt in _GROUPS_INDEXES:
+            await conn.execute(stmt)
+        pub = _public_group()
+        placeholders = ", ".join(f"${i + 1}" for i in range(len(_GROUP_COLUMNS)))
+        await conn.execute(
+            f"INSERT INTO groups ({', '.join(_GROUP_COLUMNS)}) "
+            f"VALUES ({placeholders}) ON CONFLICT (id) DO NOTHING",
+            *_group_to_row(pub),
+        )
 
     @staticmethod
     async def _group_row(conn: Any, group_id: str) -> GroupRecord | None:
@@ -883,8 +870,8 @@ class PostgresGroupStore(PostgresAclStore):
                 f"VALUES ({placeholders})",
                 *_group_to_row(rec),
             )
-        except Exception as e:  # asyncpg.UniqueViolationError, without the import
-            if type(e).__name__ == "UniqueViolationError":
+        except Exception as e:
+            if is_unique_violation(e):
                 raise GroupInvariantError(str(e)) from e
             raise
 
@@ -898,7 +885,7 @@ class PostgresGroupStore(PostgresAclStore):
                 *_member_to_row(rec),
             )
         except Exception as e:
-            if type(e).__name__ == "UniqueViolationError":
+            if is_unique_violation(e):
                 raise GroupInvariantError(str(e)) from e
             raise
 
