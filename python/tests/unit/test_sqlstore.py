@@ -125,6 +125,7 @@ class _Pool:
 
     async def close(self):
         self.closed = True
+        self.log.append(("pool-close",))
 
 
 @pytest.fixture
@@ -198,17 +199,109 @@ def test_lazy_pool_retries_a_failed_step_without_rerunning_earlier_ones(fake_asy
     assert ("rollback",) in log
 
 
-def test_lazy_pool_close_releases_the_pool(fake_asyncpg):
+def test_lazy_pool_closed_stays_closed(fake_asyncpg):
+    """After close(), get() must raise, not quietly open a pool nothing closes."""
     created, _ = fake_asyncpg
     lazy = LazyPool("postgresql://u@h/db", store="test")
 
     async def go():
-        await lazy.close()  # nothing created yet: a no-op
         pool = await lazy.get()
         await lazy.close()
         assert pool.closed
-        again = await lazy.get()
-        assert again is not pool
+        with pytest.raises(RuntimeError, match="postgres test store is closed"):
+            await lazy.get()
+        await lazy.close()  # idempotent
 
     asyncio.run(go())
-    assert len(created) == 2
+    assert len(created) == 1
+
+
+def test_lazy_pool_close_before_first_use_creates_nothing(fake_asyncpg):
+    created, _ = fake_asyncpg
+    lazy = LazyPool("postgresql://u@h/db", store="test")
+
+    async def go():
+        await lazy.close()
+        with pytest.raises(RuntimeError, match="is closed"):
+            await lazy.get()
+
+    asyncio.run(go())
+    assert created == []
+
+
+def test_lazy_pool_close_during_bootstrap_waits_for_it(fake_asyncpg):
+    """close() racing a get() that is still running DDL steps: the bootstrap
+    finishes on its pool, then close() closes it, and later get()s raise."""
+    created, log = fake_asyncpg
+    lazy = LazyPool("postgresql://u@h/db", store="test")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(conn):
+        entered.set()
+        await release.wait()
+        await conn.execute("SLOW")
+
+    async def after(conn):
+        await conn.execute("AFTER")
+
+    lazy.add_step(slow)
+    lazy.add_step(after, lock_key=7)
+
+    async def go():
+        getter = asyncio.create_task(lazy.get())
+        await entered.wait()
+        closer = asyncio.create_task(lazy.close())
+        await asyncio.sleep(0)
+        release.set()
+        pool = await getter  # before the fix: AttributeError on a None pool
+        await closer
+        assert pool.closed
+        with pytest.raises(RuntimeError, match="is closed"):
+            await lazy.get()
+
+    asyncio.run(go())
+    assert len(created) == 1
+    # Both steps ran, and the pool closed only after the bootstrap finished.
+    assert log[-3:] == [("execute", "AFTER", ()), ("commit",), ("pool-close",)]
+
+
+# Pinned: the advisory keys serialise DDL across processes, so they and the
+# step order must not drift. (name, lock_key) per step, in run order.
+_USERS_KEY = 0x7261675F75736572  # b"rag_user"
+_SHARES_KEY = 0x7261675F73686172  # b"rag_shar"
+_GROUPS_KEY = 0x7261675F67727073  # b"rag_grps"
+
+
+def _pg_store_cases():
+    from ragstack.acl_store import PostgresAclStore
+    from ragstack.collection_store import PostgresCollectionStore
+    from ragstack.grading.store import PostgresGradingStore
+    from ragstack.group_store import PostgresGroupStore
+    from ragstack.jobstore import PostgresJobStore
+    from ragstack.user_store import PostgresUserStore
+
+    return [
+        (PostgresCollectionStore, [("_ddl", None)]),
+        (PostgresJobStore, [("_ddl", None)]),
+        (PostgresGradingStore, [("_ddl", None)]),
+        (PostgresUserStore, [("_users_ddl", _USERS_KEY)]),
+        (PostgresAclStore, [("_users_ddl", _USERS_KEY), ("_shares_ddl", _SHARES_KEY)]),
+        (
+            PostgresGroupStore,
+            [
+                ("_users_ddl", _USERS_KEY),
+                ("_shares_ddl", _SHARES_KEY),
+                ("_groups_ddl", _GROUPS_KEY),
+            ],
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cls", "expected"), _pg_store_cases(), ids=lambda v: getattr(v, "__name__", "")
+)
+def test_postgres_store_ddl_steps_and_lock_keys_are_pinned(cls, expected):
+    store = cls("postgresql://u@h/db")  # lazy: nothing connects
+    steps = [(step.__name__, key) for step, key in store._lazy._steps]
+    assert steps == expected
