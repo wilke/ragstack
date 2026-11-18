@@ -79,7 +79,11 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from ragstack.api.access import filter_readable, filter_writable
+from ragstack.api.access import (
+    NO_ACCESSIBLE_COLLECTION,
+    filter_readable,
+    filter_writable,
+)
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.security import Principal
 from ragstack.config import settings
@@ -97,12 +101,12 @@ NO_WRITABLE_COLLECTION = (
     "in 'collection', or create your own (POST /v1/collections)"
 )
 
-#: The 404 a caller with an empty readable set gets. It names no collection —
-#: the id was chosen by the SERVER, not by the caller, so echoing it would tell
-#: them about a collection they were never shown (api/access.py's
-#: no-existence-oracle stance). Byte-identical to the message the allowlist path
-#: has always used, and pinned by the tests for #419.
-NO_ACCESSIBLE_COLLECTION = "no collection is accessible to this caller"
+#: The 404 a caller with an empty readable set gets
+#: (:data:`ragstack.api.access.NO_ACCESSIBLE_COLLECTION`, imported above). It
+#: names no collection — the id was chosen by the SERVER, not by the caller, so
+#: echoing it would tell them about a collection they were never shown
+#: (api/access.py's no-existence-oracle stance). Byte-identical to the message
+#: the allowlist path has always used, and pinned by the tests for #419.
 
 
 async def visible_entries(

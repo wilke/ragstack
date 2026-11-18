@@ -18,7 +18,7 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
-from ragstack.api.access import enforce_access
+from ragstack.api.access import enforce_access, unknown_collection
 from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
@@ -794,10 +794,7 @@ def _check_allowlist(
     one remaining rule lives in :mod:`ragstack.api.default_collection`."""
     allowed = registry.permitted(allowed_collection_ids(tenant, settings.tenant_collections))
     if allowed is not None and collection not in allowed:
-        raise HTTPException(
-            status_code=404,
-            detail=f"unknown collection {collection!r}; see GET /v1/collections",
-        )
+        raise unknown_collection(collection, reason="deny")
 
 
 # `_resolve_entry` is the ONLY place /v1/query, /v1/retrieve, /v1/chunks and
@@ -840,16 +837,15 @@ async def _resolve_entry(
         try:
             entry = registry.resolve(collection)
         except KeyError:
-            raise HTTPException(
-                status_code=404,
-                detail=f"unknown collection {collection!r}; see GET /v1/collections",
-            ) from None
+            raise unknown_collection(collection, reason="miss") from None
     # Kept on BOTH branches, including after the readable-set pick: the
     # collection LIFECYCLE gate (dormant → 503 + restore) lives inside
     # enforce_access and filter_readable does not run it. It can never
     # contradict the pick — resolve_read_many and resolve_access are
     # semantically identical for `read`.
-    await enforce_access(principal, entry.id, "read")
+    # `collection` is None on the implicit branch: the server picked the id, so
+    # a 404 must not echo it (#1029).
+    await enforce_access(principal, entry.id, "read", named=collection)
     # Stamp the registry id onto the request context so every log line this
     # request produces — the summary line included — names the collection. Every
     # collection-scoped route funnels through here, so this is the one place it

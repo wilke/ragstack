@@ -32,6 +32,7 @@ import httpx
 import pytest
 
 from conftest import skip_no_credential
+from personas import P2_COLLECTION_PREFIX
 
 pytestmark = pytest.mark.asyncio
 
@@ -209,6 +210,106 @@ async def test_p2_private_collection_is_invisible_to_another_non_admin(
     assert named.status_code == 404, (
         f"a non-owner naming {p2.readable_id!r} got {named.status_code}, "
         f"expected 404: {named.text}"
+    )
+
+
+#: An id no server registers. Prefixed like the rest of this file's litter so a
+#: body naming it is recognisably the suite's probe.
+_UNKNOWN_COLLECTION = f"{P2_COLLECTION_PREFIX}no-such-collection"
+
+#: (label, method, path, json body); ``{cid}`` is the collection id. Each route
+#: answers a caller-named collection it cannot see with a 404, and none of them
+#: acts on a 404: the owner routes resolve the id and run the ownership check
+#: before they touch anything.
+_COLLECTION_404_ROUTES = [
+    ("query", "POST", "/v1/query", {"query": "conformance 404 probe", "collection": "{cid}"}),
+    ("chunks", "GET", f"/v1/chunks?ids={_PROBE_CHUNK_ID}&collection={{cid}}", None),
+    ("list-shares", "GET", "/v1/collections/{cid}/shares", None),
+    ("revoke-share", "DELETE", "/v1/collections/{cid}/shares/conf-p2-no-such-share", None),
+    ("transfer-owner", "POST", "/v1/collections/{cid}/owner", {"subject": "conf-p2-nobody"}),
+]
+
+
+@pytest.mark.parametrize(
+    "label,method,path,body",
+    _COLLECTION_404_ROUTES,
+    ids=[r[0] for r in _COLLECTION_404_ROUTES],
+)
+async def test_p2_unknown_and_unreadable_collections_have_one_404_body(
+    caller_without_default_access, label, method, path, body,
+) -> None:
+    """An unknown id and an existing id P2 cannot read give the SAME 404 body
+    (#1029), byte for byte once the echoed id is masked.
+
+    The status alone is not enough: the owner routes used to answer a registry
+    miss with ``unknown collection 'x'`` and an unreadable collection with
+    ``unknown collection 'x'; see GET /v1/collections``, so the text told P2
+    which private ids exist. The body names the id the caller supplied and
+    nothing else, so masking that id must leave two identical byte strings.
+    """
+    p2 = caller_without_default_access
+
+    async def ask(cid: str) -> httpx.Response:
+        payload = (
+            {k: v.format(cid=cid) if isinstance(v, str) else v for k, v in body.items()}
+            if body is not None
+            else None
+        )
+        return await p2.client.request(
+            method, path.format(cid=cid), json=payload, headers=p2.headers
+        )
+
+    unreadable = await ask(p2.default_id)
+    unknown = await ask(_UNKNOWN_COLLECTION)
+    assert unreadable.status_code == 404, (
+        f"{label}: P2 naming {p2.default_id!r} got {unreadable.status_code}, "
+        f"expected 404: {unreadable.text}"
+    )
+    assert unknown.status_code == 404, (
+        f"{label}: naming the unknown id {_UNKNOWN_COLLECTION!r} got "
+        f"{unknown.status_code}, expected 404: {unknown.text}"
+    )
+    mask = b"<COLLECTION>"
+    assert unreadable.content.replace(p2.default_id.encode(), mask) == (
+        unknown.content.replace(_UNKNOWN_COLLECTION.encode(), mask)
+    ), (
+        f"{label}: the 404 for a collection P2 cannot read ({unreadable.content!r}) "
+        f"differs from the 404 for an unknown id ({unknown.content!r}) — the "
+        "body is an existence oracle for private collections"
+    )
+
+
+#: The owner routes addressed by the pointer name. Each refuses ``default``
+#: before resolving it (409 naming no id); none acts on the refusal.
+_POINTER_NAME_OWNER_ROUTES = [
+    ("list-shares", "GET", "/v1/collections/default/shares", None),
+    ("revoke-share", "DELETE", "/v1/collections/default/shares/conf-p2-no-such-share", None),
+    ("transfer-owner", "POST", "/v1/collections/default/owner", {"subject": "conf-p2-nobody"}),
+]
+
+
+@pytest.mark.parametrize(
+    "label,method,path,body",
+    _POINTER_NAME_OWNER_ROUTES,
+    ids=[r[0] for r in _POINTER_NAME_OWNER_ROUTES],
+)
+async def test_p2_pointer_name_on_owner_routes_never_names_the_target(
+    caller_without_default_access, label, method, path, body,
+) -> None:
+    """``GET /v1/collections/default/shares`` resolved ``default`` to the
+    pointer target and ran the ownership check on it, so P2 (who cannot read
+    the target) got ``unknown collection '<target id>'; ...`` — the real id of
+    a collection P2 was never shown. Every owner route must refuse the pointer
+    name instead, with a body that names no id."""
+    p2 = caller_without_default_access
+    resp = await p2.client.request(method, path, json=body, headers=p2.headers)
+    assert resp.status_code == 409, (
+        f"{label}: P2 addressing the pointer name got {resp.status_code}, "
+        f"expected the 409 refusal: {resp.text}"
+    )
+    assert p2.default_id not in resp.text, (
+        f"{label}: the response names the pointer target {p2.default_id!r}, an id "
+        f"P2 cannot read: {resp.text}"
     )
 
 
