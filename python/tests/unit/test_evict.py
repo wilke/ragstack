@@ -45,7 +45,6 @@ from ragstack.ops.evict import (
     ineligible_reason,
     lru_stamp,
     make_protected,
-    protected,
 )
 
 NOW = 1_800_000_000.0  # unix seconds; the stamps below are relative to it
@@ -303,8 +302,8 @@ def test_a_spec_claiming_the_derived_defaults_stores_is_never_a_victim():
     assert not any(e.is_shared_surface for e in registry.entries())
     assert evictable(legacy)  # the state predicate alone would let it through
 
-    assert protected(legacy, registry, derived=DERIVED) is True
-    assert protected(lib, registry, derived=DERIVED) is False
+    assert make_protected(registry, derived=DERIVED)(legacy) is True
+    assert make_protected(registry, derived=DERIVED)(lib) is False
 
     victims, shortfall = choose_victims(
         [legacy, lib], 2, now=NOW, protected=make_protected(registry, derived=DERIVED),
@@ -316,7 +315,7 @@ def test_a_spec_claiming_the_derived_defaults_stores_is_never_a_victim():
 def test_a_spec_claiming_only_the_derived_es_index_is_protected_too():
     """Both legs are the shared surface; either one is enough to refuse."""
     rec = _rec("es-only", collection="ragstack_lib_es_only", text_index=DERIVED[1])
-    assert protected(rec, _registry_for(rec), derived=DERIVED)
+    assert make_protected(_registry_for(rec), derived=DERIVED)(rec)
 
 
 def test_the_synthesised_default_entry_is_protected_by_its_flag():
@@ -327,9 +326,9 @@ def test_the_synthesised_default_entry_is_protected_by_its_flag():
     over_default = _rec("default", collection="ragstack")
     lib = _rec("lib")
     registry = _Registry(default_entry, _entry_for(lib))
-    assert protected(over_default, registry) is True
-    assert protected(over_default, registry, derived=DERIVED) is True
-    assert protected(lib, registry, derived=DERIVED) is False
+    assert make_protected(registry)(over_default) is True
+    assert make_protected(registry, derived=DERIVED)(over_default) is True
+    assert make_protected(registry, derived=DERIVED)(lib) is False
 
 
 def test_a_store_two_registry_ids_share_is_protected():
@@ -343,8 +342,8 @@ def test_a_store_two_registry_ids_share_is_protected():
     solo = _rec("solo")
     registry = _registry_for(a, b, half_a, half_b, solo)
     for rec in (a, b, half_a, half_b):
-        assert protected(rec, registry, derived=DERIVED), rec.spec.id
-    assert not protected(solo, registry, derived=DERIVED)
+        assert make_protected(registry, derived=DERIVED)(rec), rec.spec.id
+    assert not make_protected(registry, derived=DERIVED)(solo)
 
 
 def test_a_sibling_that_exists_only_in_the_durable_store_still_protects():
@@ -356,8 +355,8 @@ def test_a_sibling_that_exists_only_in_the_durable_store_still_protects():
     c1 = _rec("c1", collection="phys_shared", accessed_ago=1_000)
     c2 = _rec("c2", collection="phys_shared", accessed_ago=10)
     registry = _registry_for(c1)  # c2 is NOT served here
-    assert protected(c1, registry, derived=DERIVED) is False  # the hole, registry-only
-    assert protected(c1, registry, derived=DERIVED, records=[c1, c2]) is True
+    assert make_protected(registry, derived=DERIVED)(c1) is False  # the hole, registry-only
+    assert make_protected(registry, derived=DERIVED, records=[c1, c2])(c1) is True
     victims, shortfall = choose_victims(
         [c1, c2], 1, now=NOW,
         protected=make_protected(registry, derived=DERIVED, records=[c1, c2]),
@@ -368,7 +367,7 @@ def test_a_sibling_that_exists_only_in_the_durable_store_still_protects():
     # A durable sibling over the ES leg only is the same case.
     h1 = _rec("h1", collection="phys_h1", text_index="shared_es")
     h2 = _rec("h2", collection="phys_h2", text_index="shared_es")
-    assert protected(h1, _registry_for(h1), derived=DERIVED, records=[h1, h2]) is True
+    assert make_protected(_registry_for(h1), derived=DERIVED, records=[h1, h2])(h1) is True
 
 
 # --------------------------------------------------------------------------- #

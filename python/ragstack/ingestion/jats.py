@@ -288,9 +288,15 @@ def render_rows(head: list[str], rows: list[list[str]]) -> str:
 
 
 def _split_long_pieces(label: str, body: str, max_chars: int) -> list[tuple[str, int]]:
-    """:func:`split_long` plus, per piece, the offset where its ``body`` part
-    starts (the length of the repeated ``label`` prefix; the piece's length
-    when it is the label alone). Offsets are lengths of what was appended."""
+    """Split an over-long unit on sentence boundaries, repeating ``label``;
+    returns, per piece, its text and the offset where its ``body`` part starts
+    (the length of the repeated ``label`` prefix; the piece's length when it
+    is the label alone). Offsets are lengths of what was appended.
+
+    A unit is stored as ONE chunk, so an unsplit 14k-char caption would embed as
+    a ~3,600-token blob -- inside SFR's 4080 window, so it would not error, but
+    wildly out of family with a 512-token collection and a poor retrieval unit.
+    """
     prefix = f"{label} " if label else ""
     budget = max(200, max_chars - len(prefix))
     out: list[tuple[str, int]] = []
@@ -309,16 +315,6 @@ def _split_long_pieces(label: str, body: str, max_chars: int) -> list[tuple[str,
         only = prefix.strip()
         return [(only, len(only))]
     return out
-
-
-def split_long(label: str, body: str, max_chars: int) -> list[str]:
-    """Split an over-long unit on sentence boundaries, repeating ``label``.
-
-    A unit is stored as ONE chunk, so an unsplit 14k-char caption would embed as
-    a ~3,600-token blob -- inside SFR's 4080 window, so it would not error, but
-    wildly out of family with a 512-token collection and a poor retrieval unit.
-    """
-    return [t for t, _ in _split_long_pieces(label, body, max_chars)]
 
 
 class UnitLayout(NamedTuple):

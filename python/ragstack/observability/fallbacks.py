@@ -4,8 +4,8 @@
 back to the fused order 231 times on one tenant, and nothing outside the log
 file knew.* #751 PR-3 puts that fact in four places (principle 4 — one fact,
 projected everywhere): the caller's response (``degraded``), deep health
-(``observability.dependencies``), a counter (this module; PR-5 exports it as
-``ragstack_fallback_total{component}``) and the per-request summary line
+(``observability.dependencies``), a per-process counter (this module; nothing
+exports it yet) and the per-request summary line
 (``degraded=rerank`` via ``stages.note``).
 
 Two things live here, both deliberately dependency-free (no Prometheus client
@@ -37,10 +37,6 @@ from time import monotonic
 #: ``DegradedEntry``. ``graph`` and ``context`` are reserved: no fallback exists
 #: for them today and none is invented here.
 FALLBACK_COMPONENTS: tuple[str, ...] = ("rerank", "generation", "rewrite", "graph", "context")
-
-#: The metric name PR-5 will export this counter under. Named here so the two
-#: PRs agree on it without either importing the other.
-FALLBACK_METRIC = "ragstack_fallback_total"
 
 #: Upper bound on a ``DegradedEntry.reason`` — mirrors ``maxLength`` in the
 #: contract, so a long exception message can never make a response invalid.

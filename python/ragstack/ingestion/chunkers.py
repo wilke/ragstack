@@ -53,7 +53,8 @@ DEFAULT_BUDGET_MODE = "joined"
 
 
 def _validate_budget_mode(budget_mode: str) -> str:
-    """Reject an unknown ``budget_mode`` at construction time.
+    """Reject an unknown ``budget_mode`` (at chunker construction and again
+    when ``_pack_spans_tokens`` packs).
 
     Loud rather than silently falling back to a default: the two modes produce
     materially differently-sized chunks, and a typo that quietly selected the
@@ -1772,10 +1773,7 @@ def _pack_spans_tokens(
     exceed ``chunk_overlap``, then resume there. ``i`` always advances by at least
     one unit so a large overlap can't loop.
     """
-    if budget_mode not in BUDGET_MODES:
-        raise ValueError(
-            f"unknown budget_mode {budget_mode!r}; valid: {', '.join(BUDGET_MODES)}"
-        )
+    _validate_budget_mode(budget_mode)
     text = doc.content
     n = len(spans)
     # Per-span token counts, memoized (a span is re-counted across overlap).

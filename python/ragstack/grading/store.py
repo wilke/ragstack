@@ -51,18 +51,14 @@ SQLITE = "sqlite"
 POSTGRES = "postgres"
 
 
-class GradingStoreUnavailable(RuntimeError):
-    """The grading store could not answer. Mapped to a 503 by the router —
-    fail closed, never a 200 with a partial read (the #196 lesson)."""
-
-
 @runtime_checkable
 class GradingStore(Protocol):
     """Persist batches, tasks, verdicts and adjudications.
 
-    Every method may raise :class:`GradingStoreUnavailable`; the router maps it
-    to 503. ``None`` / an empty list means *no such row*, never *I could not
-    look* — the two are distinguishable precisely because the failure raises.
+    A method that cannot answer raises whatever its backend raises (a sqlite or
+    asyncpg error); the router's ``fail_closed`` maps any such exception to 503.
+    ``None`` / an empty list means *no such row*, never *I could not look* — the
+    two are distinguishable precisely because the failure raises.
     """
 
     async def create_batch(
@@ -745,7 +741,6 @@ def make_grading_store(backend: str, path: str, dsn: str = "") -> GradingStore:
 
 __all__ = [
     "GradingStore",
-    "GradingStoreUnavailable",
     "InMemoryGradingStore",
     "PostgresGradingStore",
     "SqliteGradingStore",

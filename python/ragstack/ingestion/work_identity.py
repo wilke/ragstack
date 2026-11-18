@@ -55,7 +55,7 @@ import re
 from collections import ChainMap
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any
 
 from ragstack.documents import DocumentSummary
 from ragstack.ingestion.doi_metadata import normalize_doi
@@ -307,14 +307,6 @@ class DuplicateWork(RuntimeError):
 # --------------------------------------------------------------------------- #
 # The lookup seam and the stage
 # --------------------------------------------------------------------------- #
-
-
-class KeyLookup(Protocol):
-    """The one store call the guard needs (``TextIndex.find_documents_by_key``)."""
-
-    async def find_documents_by_key(
-        self, keys: list[tuple[str, str]], tenants: list[str], *, limit: int = 20
-    ) -> dict[tuple[str, str], list[DocumentSummary]]: ...
 
 
 def match_summaries(

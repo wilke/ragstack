@@ -298,16 +298,19 @@ def _rows_from_report(report: ExtractReport | None) -> list[DocRow]:
         return []
     rows: list[DocRow] = []
     seen: set[str] = set()
+    # The PdfLoader keys a document by its resolved path; the extract tool
+    # already hands out resolved paths, so no further resolution here (a
+    # missing file must still get a stable id).
     for source, error in report.skipped:
         if source in seen:
             continue
         seen.add(source)
-        rows.append(DocRow(doc_id=_doc_id(source), source=source, error=error))
+        rows.append(DocRow(doc_id=deterministic_doc_id(source), source=source, error=error))
     for source in report.inputs:
         if source in seen:
             continue
         seen.add(source)
-        rows.append(DocRow(doc_id=_doc_id(source), source=source, error=NOT_EXTRACTED_ERROR))
+        rows.append(DocRow(doc_id=deterministic_doc_id(source), source=source, error=NOT_EXTRACTED_ERROR))
     return rows
 
 
@@ -316,7 +319,7 @@ def _merge_rows(loaded: list[DocRow], reported: list[DocRow]) -> list[DocRow]:
     did not deliver. A reported input the shard DID deliver is the loaded row."""
     delivered = {r.source for r in loaded} | {r.doc_id for r in loaded}
     rest = [r for r in reported
-            if r.source not in delivered and _doc_id(r.source) not in delivered]
+            if r.source not in delivered and deterministic_doc_id(r.source) not in delivered]
     return [*loaded, *rest]
 
 
@@ -345,13 +348,6 @@ def _receipt(
         embedding_file=embedding_file if status == COMPLETED else "",
         error=batch_error,
     )
-
-
-def _doc_id(source: str) -> str:
-    # The PdfLoader keys a document by its resolved path; the extract tool
-    # already hands out resolved paths, so no further resolution here (a
-    # missing file must still get a stable id).
-    return deterministic_doc_id(source)
 
 
 def _is_empty_shard(path: str) -> bool:

@@ -734,7 +734,3 @@ def merged(rules: Glossary, llm: Glossary, config: GlossaryConfig | None = None)
         for s, b in sorted(per.items())
     )
     return Glossary(entries, f"{llm.version}+{rules.version}")
-
-
-def stats_dict(stats: LLMGlossaryStats) -> dict[str, Any]:
-    return dict(stats.__dict__)

@@ -1154,7 +1154,7 @@ def derived_default_stores() -> tuple[str, str]:
     """The settings-derived collection's two physical legs: ``(Qdrant
     collection, ES index)``. This is the legacy shared surface — every tenant's
     data, isolated only by the per-chunk ``tenant_id`` — and it is what eviction
-    (#359, ``ops/evict.protected``) must never drop. Exposed as NAMES, never
+    (#359, ``ops/evict.make_protected``) must never drop. Exposed as NAMES, never
     via the ``default`` pointer: the pointer can be repointed at any owned
     collection and protection must not move with it; and when a configured
     spec CLAIMS these stores (ADR-0002 decision 5, the ``claimed_by`` branch
@@ -1260,33 +1260,15 @@ def _build_graph_store():
     support is disabled.
 
     ``graph_backend=neo4j`` selects the durable Neo4j property-graph backend.
-    The ``except ImportError`` below can never fire: ``ragstack.stores.neo4j``
-    only imports the real ``neo4j`` package lazily, inside
-    ``Neo4jGraphStore.__init__`` (``from neo4j import AsyncDriver`` at module
-    scope is ``TYPE_CHECKING``-only), so the module import always succeeds
-    whether or not the driver is installed. A missing driver instead surfaces
-    from the ``Neo4jGraphStore(...)`` call just below, as a ``RuntimeError``
-    naming the ``graph`` extra (see ``stores/neo4j.py``) — unconditionally, not
-    only under ``require_durable_backends``. That failure happens here, at
-    startup (``lifespan`` calls this), never lazily on the first graph call
-    (#404). The dead branch is left in place (harmless, ``# pragma: no cover``)
-    rather than restructured, since fixing dev-mode graceful-degrade behaviour
-    — if that's still wanted — is a separate decision from #404's scope.
+    ``ragstack.stores.neo4j`` imports the real ``neo4j`` package lazily, inside
+    ``Neo4jGraphStore.__init__``, so a missing driver surfaces from the
+    ``Neo4jGraphStore(...)`` call below as a ``RuntimeError`` naming the
+    ``graph`` extra (see ``stores/neo4j.py``) — here, at startup (``lifespan``
+    calls this), never lazily on the first graph call (#404).
     """
     if settings.graph_backend == "neo4j":
-        try:
-            from ragstack.stores.neo4j import Neo4jGraphStore
-        except ImportError as e:  # pragma: no cover - unreachable, see docstring
-            if settings.require_durable_backends:
-                raise RuntimeError(
-                    "graph_backend='neo4j' but the neo4j driver is not installed "
-                    "and require_durable_backends is set. Install ragstack[graph]."
-                ) from e
-            log.warning(
-                "neo4j driver not installed — falling back to InMemoryGraphStore. "
-                "Install ragstack[graph] to use Neo4j."
-            )
-            return InMemoryGraphStore()
+        from ragstack.stores.neo4j import Neo4jGraphStore
+
         return Neo4jGraphStore(
             uri=settings.neo4j_uri,
             user=settings.neo4j_user,
@@ -2752,10 +2734,6 @@ async def lifespan(app: FastAPI):
         collection_embed_bridges.clear()
 
 
-def get_pipeline(request: Request) -> IngestionPipeline:
-    return request.app.state.pipeline
-
-
 def get_vector_store(request: Request):
     return request.app.state.vector_store
 
@@ -2767,15 +2745,6 @@ def get_text_index(request: Request):
 def get_graph_store(request: Request):
     """The configured GraphStore, or ``None`` when graph support is disabled."""
     return request.app.state.graph_store
-
-
-def get_kg_extractor(request: Request):
-    """The configured KGExtractor, or ``None`` when KG extraction is disabled."""
-    return request.app.state.kg_extractor
-
-
-def get_embedder(request: Request):
-    return request.app.state.embedder
 
 
 def get_prompt_templates(request: Request) -> dict[str, Any]:
@@ -2790,10 +2759,6 @@ def get_prompt_templates(request: Request) -> dict[str, Any]:
 
 def get_generator(request: Request):
     return request.app.state.generator
-
-
-def get_retriever(request: Request):
-    return request.app.state.retriever
 
 
 def get_collections(request: Request) -> CollectionRegistry:
@@ -2896,10 +2861,6 @@ def build_rate_limiters() -> dict[str, TokenBucketLimiter]:
         ),
         "shares": TokenBucketLimiter(settings.rate_limit_shares_per_hour),
     }
-
-
-def get_rate_limiters(request: Request) -> dict[str, TokenBucketLimiter]:
-    return request.app.state.rate_limiters
 
 
 def rate_limited(bucket: str):

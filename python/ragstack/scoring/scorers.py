@@ -1,15 +1,10 @@
 """Scoring and reranking of retrieved chunks."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import httpx
 
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.sidecar_http import DEFAULT_TIMEOUT, SidecarClient
-
-if TYPE_CHECKING:
-    from sentence_transformers import CrossEncoder
 
 
 def rerank_passage(chunk: Chunk, include_symbol_glossary: bool) -> str:
@@ -22,8 +17,9 @@ def rerank_passage(chunk: Chunk, include_symbol_glossary: bool) -> str:
     scored TEXT changes — the reranker returns the original chunk, so a
     response's ``content`` never carries the glossary.
 
-    One helper for both cross-encoder scorers (local and sidecar), so the two
-    cannot disagree on what a passage is."""
+    Used by :class:`SidecarReranker`. ``scripts/eval/reranker_test.py`` does
+    not import it; its ``content+gloss`` rendering is pinned (by its
+    docstring) to equal this function with the glossary on."""
     if include_symbol_glossary and chunk.symbol_glossary:
         return f"{chunk.content}\n{chunk.symbol_glossary}"
     return chunk.content
@@ -76,77 +72,13 @@ class RRFScorer:
         return fused
 
 
-class CrossEncoderScorer:
-    """
-    Reranker using a cross-encoder model (HuggingFace sentence-transformers).
-
-    Requires `sentence-transformers` to be installed.
-    Falls back gracefully if the library is not available.
-    """
-
-    def __init__(
-        self,
-        model_name: str | None = None,
-        *,
-        include_symbol_glossary: bool | None = None,
-    ) -> None:
-        # Default to config.reranker_model so the reranker model has ONE Python
-        # source of truth (config.py) rather than a re-literal here. The
-        # glossary flag follows the same rule: unset reads
-        # rerank_include_symbol_glossary (default on), as the API's reranker does.
-        if model_name is None or include_symbol_glossary is None:
-            from ragstack.config import Settings
-
-            cfg = Settings()
-            if model_name is None:
-                model_name = cfg.reranker_model
-            if include_symbol_glossary is None:
-                include_symbol_glossary = cfg.rerank_include_symbol_glossary
-        self.model_name = model_name
-        #: Score content plus the chunk's symbol glossary (see :func:`rerank_passage`).
-        self.include_symbol_glossary = include_symbol_glossary
-        self._model: CrossEncoder | None = None
-
-    def _load_model(self) -> None:
-        if self._model is not None:
-            return
-        try:
-            from sentence_transformers import CrossEncoder  # type: ignore[import]
-
-            self._model = CrossEncoder(self.model_name)
-        except ImportError as exc:
-            raise RuntimeError(
-                "sentence-transformers is required for CrossEncoderScorer. "
-                "Install it with: pip install sentence-transformers"
-            ) from exc
-
-    async def score(
-        self, query: str, candidates: list[Chunk], top_k: int | None = None
-    ) -> list[ScoredChunk]:
-        self._load_model()
-        assert self._model is not None  # _load_model guarantees this or raises
-        pairs = [
-            (query, rerank_passage(c, self.include_symbol_glossary)) for c in candidates
-        ]
-        raw_scores: list[float] = self._model.predict(pairs).tolist()
-        scored = [
-            ScoredChunk(chunk=c, score=float(s), retrieval_method="reranked")
-            for c, s in zip(candidates, raw_scores, strict=True)
-        ]
-        ranked = sorted(scored, key=lambda x: x.score, reverse=True)
-        # Mirror SidecarReranker: honor the caller's cut so implementers of the
-        # Scorer protocol are interchangeable (top_k=None → the full ranked pool).
-        return ranked if top_k is None else ranked[:top_k]
-
-
 class SidecarReranker:
     """Cross-encoder reranker backed by the crossencoder sidecar (POST ``/rerank``).
 
     Mirrors :class:`~ragstack.embedders.SidecarEmbedder`: it keeps the heavy
     model out of the API process and behind an HTTP boundary that can scale or
-    swap models independently. Implements the ``Scorer`` protocol so it drops in
-    wherever ``CrossEncoderScorer`` would, without pulling sentence-transformers
-    into the API environment.
+    swap models independently. Implements the ``Scorer`` protocol without
+    pulling sentence-transformers into the API environment.
 
     The sidecar scores the whole pool and truncates to its ``top_k``. ``top_k``
     defaults to the full pool (caller decides the cut); pass a smaller value when

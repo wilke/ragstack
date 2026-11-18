@@ -108,11 +108,12 @@ class Neo4jGraphStore:
         try:
             from neo4j import AsyncGraphDatabase
         except ImportError as e:
-            # deps.py's `_build_graph_store` only guards the *module* import of
-            # `ragstack.stores.neo4j`, which succeeds even without the `neo4j`
-            # package installed (the driver import is lazy, right here). Without
-            # this wrap, a missing driver surfaces as a bare ModuleNotFoundError
-            # at construction time instead of a message that says what to do (#404).
+            # Importing `ragstack.stores.neo4j` succeeds even without the `neo4j`
+            # package installed (the driver import is lazy, right here), and
+            # deps.py's `_build_graph_store` does not catch ImportError. This is
+            # the only place a missing driver is caught: without this wrap it
+            # surfaces as a bare ModuleNotFoundError at construction time
+            # instead of a message that says what to do (#404).
             raise RuntimeError(
                 "graph_backend='neo4j' but the 'neo4j' driver package is not "
                 "installed. Install the 'graph' extra: pip install "
