@@ -535,6 +535,32 @@ def test_graph_cap_refusal_classified_by_exit_code_first():
     assert graph_cap_refusal_of({"state": "FAILED", "error": "boom"}) is None
 
 
+def _engine_record(code: int, tool_stderr: str) -> dict:
+    """A FAILED graph-extract submission as the deployed GoWe (0.26.1)
+    records it: ``context.exit_code`` is ALWAYS -1 for a failed apptainer
+    tool; the real code survives only in the worker's ``execute: apptainer
+    command failed (exit N): `` prefix at the head of ``context.stderr``
+    (#1027, the shape ``gowe_backend.tool_exit_code`` reads)."""
+    return {"state": "FAILED", "error": {
+        "code": "TASK_FAILED", "message": "step 'load' task failed with exit code -1",
+        "context": {"step_id": "load", "exit_code": -1,
+                    "stderr": f"execute: apptainer command failed (exit {code}): {tool_stderr}"}}}
+
+
+def test_graph_cap_refusal_read_from_the_engine_record_not_context_minus_1():
+    """#1027: a cap refusal (exit 4) on the real engine record is recognised;
+    any other real code is not a cap refusal, refusal line or not."""
+    line = format_graph_refusal(199_998, 3, 200_000)
+    assert graph_cap_refusal_of(_engine_record(4, f"store warning\n{line}\n")) == line
+    assert graph_cap_refusal_of(_engine_record(4, "store warning\n")) == GRAPH_CAP_EXCEEDED
+    for code in (1, 3, 137):
+        assert graph_cap_refusal_of(_engine_record(code, f"store warning\n{line}\n")) is None
+    # -1 with no worker prefix: the code cannot be told — not a cap refusal.
+    rec = _engine_record(4, line)
+    rec["error"]["context"]["stderr"] = line
+    assert graph_cap_refusal_of(rec) is None
+
+
 # --------------------------------------------------------------------------- #
 # restore: the replay loads the leg after the chunks
 # --------------------------------------------------------------------------- #

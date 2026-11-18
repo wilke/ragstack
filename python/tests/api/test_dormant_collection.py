@@ -463,6 +463,39 @@ async def test_classify_failure_is_exit_code_first():
     assert classify_failure({"id": "s", "state": "CANCELLED"})[0] == DORMANT
 
 
+def _engine_record(code: int, tool_stderr: str) -> dict:
+    """A FAILED restore submission as the deployed GoWe (0.26.1) records it:
+    ``context.exit_code`` is ALWAYS -1 for a failed apptainer tool; the real
+    code survives only in the worker's ``execute: apptainer command failed
+    (exit N): `` prefix at the head of a stderr cut to 1000 characters
+    (#1027, the shape ``gowe_backend.tool_exit_code`` reads)."""
+    stderr = f"execute: apptainer command failed (exit {code}): {tool_stderr}"
+    if len(stderr) > 1000:
+        stderr = stderr[:1000] + "...(truncated)"
+    return {"id": "sub_r", "state": "FAILED", "error": {
+        "code": "TASK_FAILED", "message": "step 'restore' task failed with exit code -1",
+        "context": {"step_id": "restore", "exit_code": -1, "stderr": stderr}}}
+
+
+async def test_classify_failure_reads_the_engine_exit_code_not_context_minus_1():
+    """#1027: the loader's refusal (exit 3) on the real engine record is
+    ``lost`` — even when the marker fell outside the 1000-char window, which is
+    exactly when the exit code is the only signal."""
+    noise = "client warning: store connect\n" * 60  # pushes the marker out of the window
+    rec = _engine_record(3, noise + "ArchiveCorrupt: vectors.f32: sha256 x != y\n")
+    assert "ArchiveCorrupt" not in rec["error"]["context"]["stderr"]
+    state, reason = classify_failure(rec)
+    assert state == LOST and "exit 3" in reason, reason
+    # Marker inside the window: it is quoted in the reason.
+    state, reason = classify_failure(_engine_record(3, "SpecMismatch: spec_hash a != b\n"))
+    assert state == LOST and reason.endswith("SpecMismatch: spec_hash a != b"), reason
+    # Any other real code stays retryable, with the REAL code recorded — even
+    # when a refusal-looking line made it into the window.
+    for code in (1, 2, 137):
+        state, reason = classify_failure(_engine_record(code, "ArchiveCorrupt: looks like one\n"))
+        assert state == DORMANT and f"(exit {code})" in reason and "exit -1)" not in reason, reason
+
+
 async def test_wait_timeout_does_not_demote_while_the_engine_still_runs(
     client, identity, world,
 ):

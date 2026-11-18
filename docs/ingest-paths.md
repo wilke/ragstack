@@ -549,8 +549,9 @@ collection is the unit), and by `extract` against its own output alone (a
 version that could never be loaded is refused before its leg is written); the
 refusal line is `graph_cap_exceeded: live=L incoming=I cap=C would_fit=W` on
 stderr (`live=?` from `extract`) and the API classifies the FAILED submission
-by `error.context.exit_code == 4` into the job error `graph_cap_exceeded`, as
-the chunk cap does. `graph_extraction_jobs_per_owner` (default **1**) bounds
+by the tool's exit code `== 4` (read with `gowe_backend.tool_exit_code`, since
+GoWe records `error.context.exit_code = -1` for every failed tool) into the
+job error `graph_cap_exceeded`, as the chunk cap does. `graph_extraction_jobs_per_owner` (default **1**) bounds
 in-flight extractions per owner — a second is **429 + `Retry-After`**, like the
 upload guard; admins are exempt. Extractions are jobs of kind `graph`
 (`IngestJob.kind`, an additive column; `""` is an ingest — every legacy row) and

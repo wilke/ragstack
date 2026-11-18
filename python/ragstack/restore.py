@@ -40,6 +40,7 @@ from ragstack.collection_store import (
     CollectionRecord,
     CollectionStore,
 )
+from ragstack.ingestion.gowe_backend import tool_exit_code
 from ragstack.ingestion.gowe_client import TERMINAL_STATES, GoWeError
 from ragstack.tool_image import provenance_inputs
 from ragstack.workspace import (
@@ -113,9 +114,12 @@ def _submission_error(record: dict[str, Any]) -> tuple[dict[str, Any], str]:
 def classify_failure(record: dict[str, Any]) -> tuple[str, str]:
     """Decide what a non-COMPLETED terminal submission record means.
 
-    DETERMINISTIC first: ``error.context.exit_code == 3`` is the loader's
-    refusal code (sha256 / geometry / spec_hash failure, before any write) →
-    ``lost``. The refusal marker in the captured stderr is only a SECONDARY
+    DETERMINISTIC first: the tool's exit code (``gowe_backend.tool_exit_code``
+    — the deployed engine records ``context.exit_code = -1`` for every failed
+    tool, so the real code is read where that function finds it, #1027)
+    ``== 3`` is the loader's refusal code (sha256 / geometry / spec_hash
+    failure, before any write) → ``lost``. The refusal marker in the captured
+    stderr is only a SECONDARY
     signal, because the engine keeps just the first 1000 characters of stderr
     and the loader builds its stores (client warnings and all) before it
     prints the marker — so the marker can fall outside the window while the
@@ -124,11 +128,7 @@ def classify_failure(record: dict[str, Any]) -> tuple[str, str]:
     again."""
     ctx, message = _submission_error(record)
     stderr = str(ctx.get("stderr") or "")
-    exit_code = ctx.get("exit_code")
-    try:
-        code = int(exit_code) if exit_code is not None else None
-    except (TypeError, ValueError):
-        code = None
+    code = tool_exit_code(record)
     sub = record.get("id", "?")
     if code == REFUSED_EXIT_CODE:
         marker = _marker_line(stderr) or _marker_line(message)
